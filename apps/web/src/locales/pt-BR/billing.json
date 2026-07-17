@@ -449,7 +449,8 @@
         "heading": "Título",
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
-        "richText": "Texto rico"
+        "richText": "Texto rico",
+        "contract": "Contrato"
       },
       "catalog": {
         "addSome": "Adicione alguns no Catálogo de Produtos",
@@ -520,7 +521,10 @@
         "updateDeposit": "Não foi possível atualizar o depósito.",
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
-        "uploadImage": "Não foi possível enviar a imagem."
+        "uploadImage": "Não foi possível enviar a imagem.",
+        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
+        "addContractSection": "Não foi possível adicionar a seção de contrato",
+        "saveCoverPage": "Não foi possível salvar a página de capa"
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -581,7 +585,8 @@
         "lineRemoved": "Linha removida",
         "savedToCatalog": "Salvo no catálogo",
         "sectionAdded": "Seção adicionada",
-        "sectionRemoved": "Seção removida"
+        "sectionRemoved": "Seção removida",
+        "contractSectionAdded": "Seção de contrato adicionada"
       },
       "symbols": {
         "check": "✓",
@@ -617,6 +622,36 @@
       "units": {
         "perMonth": "/mês",
         "perYear": "/ano"
+      },
+      "contract": {
+        "templateLabel": "Modelo de contrato",
+        "templatePlaceholder": "Selecione um modelo…",
+        "noTemplates": "Ainda não há modelos de contrato. Crie um em Contratos → Modelos.",
+        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de anexar.",
+        "pinnedVersion": "Fixado na v{{version}}",
+        "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
+        "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
+        "manualVariablesTitle": "Preencha para esta proposta",
+        "labelFieldLabel": "Rótulo da seção",
+        "labelPlaceholder": "Rótulo opcional (por exemplo, Contrato mestre de serviços)",
+        "variableRequired": "Insira um valor",
+        "variableUnresolved": "Esta variável ainda não foi resolvida",
+        "untitledTemplate": "Contrato",
+        "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis."
+      },
+      "coverPage": {
+        "title": "Página de capa",
+        "enable": "Mostrar uma página de capa",
+        "summaryOn": "Exibida como a primeira página da proposta.",
+        "summaryOff": "Sem página de capa — a proposta começa com seu conteúdo.",
+        "titleLabel": "Título da capa",
+        "titlePlaceholder": "por exemplo, Proposta de serviços de TI gerenciados",
+        "preparedForLabel": "Preparado para",
+        "preparedForPlaceholder": "Substituir o nome do cliente",
+        "showPreparedBy": "Mostrar “preparado por” (sua empresa)",
+        "imageLabel": "Imagem de capa",
+        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "removeImage": "Remover imagem"
       }
     },
     "actions": {

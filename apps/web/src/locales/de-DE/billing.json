@@ -449,7 +449,8 @@
         "heading": "Überschrift",
         "image": "Bild",
         "pricingTable": "Preistabelle",
-        "richText": "Rich-Text"
+        "richText": "Rich-Text",
+        "contract": "Vertrag"
       },
       "catalog": {
         "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
@@ -520,7 +521,10 @@
         "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
-        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
+        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
+        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
+        "saveCoverPage": "Das Deckblatt konnte nicht gespeichert werden"
       },
       "image": {
         "alt": "Angebotsbild",
@@ -581,7 +585,8 @@
         "lineRemoved": "Position entfernt",
         "savedToCatalog": "Im Katalog gespeichert",
         "sectionAdded": "Abschnitt hinzugefügt",
-        "sectionRemoved": "Abschnitt entfernt"
+        "sectionRemoved": "Abschnitt entfernt",
+        "contractSectionAdded": "Vertragsabschnitt hinzugefügt"
       },
       "symbols": {
         "check": "✓",
@@ -617,6 +622,36 @@
       "units": {
         "perMonth": "/Mo",
         "perYear": "/Jahr"
+      },
+      "contract": {
+        "templateLabel": "Vertragsvorlage",
+        "templatePlaceholder": "Vorlage auswählen…",
+        "noTemplates": "Noch keine Vertragsvorlagen. Erstellen Sie eine unter Verträge → Vorlagen.",
+        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie vor dem Anhängen.",
+        "pinnedVersion": "Angeheftet an v{{version}}",
+        "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
+        "manualVariablesTitle": "Für dieses Angebot ausfüllen",
+        "labelFieldLabel": "Abschnittsbezeichnung",
+        "labelPlaceholder": "Optionale Bezeichnung (z. B. Rahmenvertrag)",
+        "variableRequired": "Wert eingeben",
+        "variableUnresolved": "Diese Variable ist noch nicht aufgelöst",
+        "untitledTemplate": "Vertrag",
+        "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern."
+      },
+      "coverPage": {
+        "title": "Deckblatt",
+        "enable": "Deckblatt anzeigen",
+        "summaryOn": "Wird als erste Seite des Angebots angezeigt.",
+        "summaryOff": "Kein Deckblatt — das Angebot beginnt mit seinem Inhalt.",
+        "titleLabel": "Deckblatttitel",
+        "titlePlaceholder": "z. B. Angebot für Managed-IT-Services",
+        "preparedForLabel": "Erstellt für",
+        "preparedForPlaceholder": "Kundennamen überschreiben",
+        "showPreparedBy": "„Erstellt von“ anzeigen (Ihr Unternehmen)",
+        "imageLabel": "Deckblattbild",
+        "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
+        "removeImage": "Bild entfernen"
       }
     },
     "actions": {

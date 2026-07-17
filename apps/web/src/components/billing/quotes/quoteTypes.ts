@@ -6,8 +6,8 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage } from '@breeze/shared';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -78,6 +78,9 @@ export interface Quote {
   terms: string | null;
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
+  /** Enhanced-proposals cover page (quotes.cover_page jsonb). Optional/null so
+   *  older payloads and list fixtures without the column stay assignable. */
+  coverPage?: CoverPage | null;
   acceptedAt: string | null;
   declinedAt: string | null;
   convertedAt: string | null;

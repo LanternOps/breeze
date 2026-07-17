@@ -449,7 +449,8 @@
         "heading": "Heading",
         "image": "Image",
         "pricingTable": "Pricing table",
-        "richText": "Rich text"
+        "richText": "Rich text",
+        "contract": "Contract"
       },
       "catalog": {
         "addSome": "Add some in Product Catalog",
@@ -520,7 +521,10 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image."
+        "uploadImage": "Could not upload the image.",
+        "loadContractTemplates": "Couldn't load contract templates",
+        "addContractSection": "Couldn't add the contract section",
+        "saveCoverPage": "Couldn't save the cover page"
       },
       "image": {
         "alt": "Quote image",
@@ -581,7 +585,8 @@
         "lineRemoved": "Line removed",
         "savedToCatalog": "Saved to catalog",
         "sectionAdded": "Section added",
-        "sectionRemoved": "Section removed"
+        "sectionRemoved": "Section removed",
+        "contractSectionAdded": "Contract section added"
       },
       "symbols": {
         "check": "✓",
@@ -617,6 +622,36 @@
       "units": {
         "perMonth": "/mo",
         "perYear": "/yr"
+      },
+      "contract": {
+        "templateLabel": "Contract template",
+        "templatePlaceholder": "Select a template…",
+        "noTemplates": "No contract templates yet. Create one under Contracts → Templates.",
+        "noPublishedVersion": "This template has no published version yet. Publish it before attaching.",
+        "pinnedVersion": "Pinned to v{{version}}",
+        "autoVariablesTitle": "Filled automatically from the quote",
+        "autoHint": "These values resolve from the quote when the proposal is sent.",
+        "manualVariablesTitle": "Fill in for this proposal",
+        "labelFieldLabel": "Section label",
+        "labelPlaceholder": "Optional label (e.g. Master Services Agreement)",
+        "variableRequired": "Enter a value",
+        "variableUnresolved": "This variable is still unresolved",
+        "untitledTemplate": "Contract",
+        "readOnlyHint": "Remove and re-add this section to change the template, version, or variables."
+      },
+      "coverPage": {
+        "title": "Cover page",
+        "enable": "Show a cover page",
+        "summaryOn": "Shown as the first page of the proposal.",
+        "summaryOff": "No cover page — the proposal starts with its content.",
+        "titleLabel": "Cover title",
+        "titlePlaceholder": "e.g. Managed IT Services Proposal",
+        "preparedForLabel": "Prepared for",
+        "preparedForPlaceholder": "Override the customer name",
+        "showPreparedBy": "Show “prepared by” (your company)",
+        "imageLabel": "Cover image",
+        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "removeImage": "Remove image"
       }
     },
     "actions": {
