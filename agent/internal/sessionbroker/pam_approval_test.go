@@ -12,8 +12,8 @@ import (
 
 func TestRequestPamApprovalReturnsDialogResult(t *testing.T) {
 	session, clientIPC := createPamApprovalTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	go func() {
 		clientIPC.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -54,8 +54,8 @@ func TestRequestPamApprovalReturnsDialogResult(t *testing.T) {
 
 func TestRequestPamApprovalTimeoutDeniesAndDismisses(t *testing.T) {
 	session, clientIPC := createPamApprovalTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	go func() {
 		clientIPC.SetReadDeadline(time.Now().Add(2 * time.Second))

@@ -204,7 +204,7 @@ func TestDismissPamConsentTimesOut(t *testing.T) {
 
 func TestDismissPamConsentTransportFailureIsUncertain(t *testing.T) {
 	session, clientIPC := createPamDismissTestSession()
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if err := clientIPC.Close(); err != nil {
 		t.Fatalf("close helper connection: %v", err)
 	}
