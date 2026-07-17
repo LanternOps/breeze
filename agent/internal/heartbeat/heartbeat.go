@@ -3127,6 +3127,8 @@ func (h *Heartbeat) sendHeartbeat() {
 			payload.TCCPermissions = tccStatus
 		}
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
+	} else if runtime.GOOS == "linux" {
+		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
 
 	// Include user helper session info in heartbeat
