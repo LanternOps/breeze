@@ -33,6 +33,7 @@ import {
 } from '../routes/agentWs';
 import {
   cleanupExpiredSnapshots,
+  sweepUnreferencedBackupObjects,
 } from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
 import { resolveBackupStorageEncryptionPlan } from '../services/backupEncryption';
@@ -294,7 +295,13 @@ async function processExpireRecoveryTokens(): Promise<{ expired: number }> {
   return { expired: expired.length };
 }
 
-async function processCleanupExpiredSnapshots(): Promise<{ deleted: number; skipped: number; prunedByMaxVersions: number }> {
+export async function processCleanupExpiredSnapshots(): Promise<{
+  deleted: number;
+  skipped: number;
+  prunedByMaxVersions: number;
+  gcDeleted: number;
+  gcSkippedDestinations: number;
+}> {
   const orgRows = await db
     .selectDistinct({ orgId: backupSnapshots.orgId })
     .from(backupSnapshots);
@@ -310,7 +317,25 @@ async function processCleanupExpiredSnapshots(): Promise<{ deleted: number; skip
     prunedByMaxVersions += result.prunedByMaxVersions;
   }
 
-  return { deleted, skipped, prunedByMaxVersions };
+  // Mark-and-sweep GC runs ONCE per retention cycle, after row-level
+  // retention has finished for every org — not per-org, since a
+  // destination's live set spans every retained snapshot regardless of
+  // which org iteration deleted rows (see backupRetention.ts's
+  // deleteSnapshotRow: row deletion no longer touches object storage at
+  // all; GC is the only thing that does). A GC failure must never fail this
+  // job: row-level retention already succeeded, and BullMQ would otherwise
+  // retry/re-log the whole run over an unrelated object-storage problem.
+  let gcDeleted = 0;
+  let gcSkippedDestinations = 0;
+  try {
+    const gcResult = await sweepUnreferencedBackupObjects();
+    gcDeleted = gcResult.deleted;
+    gcSkippedDestinations = gcResult.skippedDestinations;
+  } catch (err) {
+    console.error('[BackupWorker] Backup object GC sweep failed — retention run still succeeded:', err);
+  }
+
+  return { deleted, skipped, prunedByMaxVersions, gcDeleted, gcSkippedDestinations };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────

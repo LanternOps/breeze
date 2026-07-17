@@ -7,6 +7,7 @@ const mockDb = {
   from: vi.fn().mockReturnThis(),
   where: vi.fn().mockReturnThis(),
   limit: vi.fn().mockResolvedValue([]),
+  selectDistinct: vi.fn(),
 };
 
 vi.mock('../db', () => ({
@@ -16,8 +17,16 @@ vi.mock('../db', () => ({
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, partnerId: null },
 }));
 
+const cleanupExpiredSnapshotsMock = vi.fn();
+const sweepUnreferencedBackupObjectsMock = vi.fn();
+
+vi.mock('./backupRetention', () => ({
+  cleanupExpiredSnapshots: cleanupExpiredSnapshotsMock,
+  sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
+}));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
-const { resolveBackupTargets } = await import('./backupWorker');
+const { resolveBackupTargets, processCleanupExpiredSnapshots } = await import('./backupWorker');
 
 describe('resolveBackupTargets', () => {
   beforeEach(() => {
@@ -293,5 +302,83 @@ describe('resolveBackupTargets', () => {
     expect(result).toEqual([
       { commandType: 'backup_run', payload: { paths: [] } },
     ]);
+  });
+});
+
+describe('processCleanupExpiredSnapshots — GC wiring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.selectDistinct.mockReset();
+    cleanupExpiredSnapshotsMock.mockReset();
+    sweepUnreferencedBackupObjectsMock.mockReset();
+  });
+
+  it('runs the GC sweep exactly once, after row-level retention has completed for every org', async () => {
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }]),
+    });
+    cleanupExpiredSnapshotsMock.mockResolvedValue({
+      deleted: 1,
+      skippedLegalHold: 0,
+      skippedImmutable: 0,
+      prunedByMaxVersions: 0,
+    });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedDestinations: 0 });
+
+    const result = await processCleanupExpiredSnapshots();
+
+    // Row-level retention for both orgs happens before the sweep is called.
+    expect(cleanupExpiredSnapshotsMock).toHaveBeenCalledTimes(2);
+    expect(cleanupExpiredSnapshotsMock).toHaveBeenNthCalledWith(1, 'org-a');
+    expect(cleanupExpiredSnapshotsMock).toHaveBeenNthCalledWith(2, 'org-b');
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+    // Sweep is destination-scoped, not org-scoped — called once total, not once per org.
+    expect(result).toEqual({
+      deleted: 2,
+      skipped: 0,
+      prunedByMaxVersions: 0,
+      gcDeleted: 5,
+      gcSkippedDestinations: 0,
+    });
+  });
+
+  it('does not fail the retention run when the GC sweep throws', async () => {
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }]),
+    });
+    cleanupExpiredSnapshotsMock.mockResolvedValue({
+      deleted: 3,
+      skippedLegalHold: 1,
+      skippedImmutable: 0,
+      prunedByMaxVersions: 0,
+    });
+    sweepUnreferencedBackupObjectsMock.mockRejectedValue(new Error('S3 listing failed'));
+
+    // Must resolve, not reject — a GC failure isn't a retention-run failure.
+    const result = await processCleanupExpiredSnapshots();
+
+    expect(result.deleted).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.gcDeleted).toBe(0);
+    expect(result.gcSkippedDestinations).toBe(0);
+  });
+
+  it('still runs the sweep when there are no orgs with snapshots (row-level retention is a no-op)', async () => {
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockResolvedValue([]),
+    });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedDestinations: 0 });
+
+    const result = await processCleanupExpiredSnapshots();
+
+    expect(cleanupExpiredSnapshotsMock).not.toHaveBeenCalled();
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      deleted: 0,
+      skipped: 0,
+      prunedByMaxVersions: 0,
+      gcDeleted: 0,
+      gcSkippedDestinations: 0,
+    });
   });
 });
