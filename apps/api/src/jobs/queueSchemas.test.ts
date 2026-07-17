@@ -232,6 +232,35 @@ describe('backupProcessResultSchema — system_image manifest passthrough', () =
   });
 });
 
+describe('backupProcessResultSchema — incremental dedup + partial-success passthrough', () => {
+  // Regression guard: same failure mode as the system_image block above — the
+  // strict schema (and the WS enqueue call) lacked referencedFiles/
+  // referencedBytes/errorCount, so an incremental job's upload savings and
+  // partial-failure count were silently dropped whenever Redis was available
+  // (the inline no-Redis fallback spread the full result and kept them).
+  it('accepts and preserves referencedFiles/referencedBytes/errorCount', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-2',
+      filesBackedUp: 15,
+      bytesBackedUp: 14614591,
+      referencedFiles: 13,
+      referencedBytes: 14351000,
+      errorCount: 2,
+    });
+    expect(result.referencedFiles).toBe(13);
+    expect(result.referencedBytes).toBe(14351000);
+    expect(result.errorCount).toBe(2);
+  });
+
+  it('leaves the fields undefined when omitted (legacy agent / full backup)', () => {
+    const result = backupProcessResultSchema.parse({ status: 'completed' });
+    expect(result.referencedFiles).toBeUndefined();
+    expect(result.referencedBytes).toBeUndefined();
+    expect(result.errorCount).toBeUndefined();
+  });
+});
+
 describe('discovery process-results adjacency', () => {
   const base = {
     type: 'process-results' as const,

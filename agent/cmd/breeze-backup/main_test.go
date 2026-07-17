@@ -228,3 +228,47 @@ func TestHandleBackupCommand_SyncBackupRunSendsExactlyOneReply(t *testing.T) {
 		}
 	}
 }
+
+// A server-managed device typically has NO agent.yaml backup config, so the
+// long-lived mgr is nil and every dispatched backup_run builds an ephemeral
+// payload manager tracked only by the command canceller. backup_stop must
+// still cancel those runs — routing it through the nil-mgr "backup not
+// configured" fallback silently made Stop a no-op for exactly the devices the
+// server dispatches to (found live: cancelled jobs kept uploading to
+// completion and wrote their manifests).
+func TestExecuteCommand_BackupStopNilManagerCancelsTrackedRun(t *testing.T) {
+	canceller := newActiveCommandCanceller()
+	ctx, cleanup := canceller.track("run-cmd-1")
+	defer cleanup()
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "stop-cmd-1",
+		CommandType: "backup_stop",
+	}, nil, nil, nil, canceller)
+
+	if !result.Success {
+		t.Fatalf("backup_stop with nil manager failed: %q", result.Stderr)
+	}
+	if result.Stdout != `{"stopped":true}` {
+		t.Fatalf("stdout = %q, want {\"stopped\":true}", result.Stdout)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("tracked run context was not cancelled by backup_stop")
+	}
+}
+
+func TestExecuteCommand_BackupStopNilManagerNothingRunning(t *testing.T) {
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "stop-cmd-2",
+		CommandType: "backup_stop",
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	if !result.Success {
+		t.Fatalf("backup_stop with nothing running should succeed, got: %q", result.Stderr)
+	}
+	if result.Stdout != `{"stopped":false}` {
+		t.Fatalf("stdout = %q, want {\"stopped\":false}", result.Stdout)
+	}
+}

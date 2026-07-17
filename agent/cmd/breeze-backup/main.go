@@ -486,6 +486,13 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return execBackupVerify(req.Payload, mgr, vaultState)
 		case "backup_test_restore":
 			return execBackupTestRestore(req.Payload, mgr, vaultState)
+		case "backup_stop":
+			// Server-dispatched backup_runs build ephemeral payload managers
+			// tracked only by the canceller — a device with no agent.yaml
+			// backup config still has runs to stop. Falling through to
+			// "backup not configured" made Stop a silent no-op for every
+			// policy-managed device.
+			return ok(fmt.Sprintf(`{"stopped":%t}`, commandCanceller.cancelAll()))
 		default:
 			return fail("backup not configured on this device")
 		}
