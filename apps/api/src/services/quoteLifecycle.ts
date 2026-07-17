@@ -14,62 +14,12 @@ import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
+import { portalBase } from './portalUrl';
+import { emitQuoteEvent } from './quoteEvents';
+
+export { portalBase };
 
 type QuoteRow = typeof quotes.$inferSelect;
-
-/**
- * Resolve the public origin (scheme + host [+ base path]) the customer portal is
- * served under, for outbound email links. `PUBLIC_PORTAL_URL` is expected to
- * already include the portal base prefix (default `/portal`, see .env.example) —
- * e.g. `https://example.com/portal` — matching the invoice-link convention in
- * invoicePdf.ts. The public quote route lives at `<portalBase>/quote/<token>`.
- *
- * Hardening (malformed `https:///quote/...` accept links): a configured value
- * that is empty, an empty-authority triple-slash form (`https:///portal`), or
- * otherwise parses to an empty host (e.g. a bare `https://`) must NEVER silently
- * produce an empty-host URL in a customer-facing email. We walk the configured
- * chain and, if none yields a usable host, throw loudly so the caller's
- * best-effort email swallow records the failure rather than mailing a dead link.
- */
-export function portalBase(): string {
-  const candidates = [
-    process.env.PUBLIC_PORTAL_URL,
-    process.env.PUBLIC_APP_URL,
-    process.env.DASHBOARD_URL,
-    'http://localhost:4321/portal',
-  ];
-
-  for (const candidate of candidates) {
-    const trimmed = candidate?.trim();
-    if (!trimmed) continue;
-    // Reject the empty-authority triple-slash form before parsing: `https:///portal`
-    // (a templating accident where the host var didn't interpolate) has an empty
-    // authority, but `new URL('https:///portal').hostname` reinterprets the first
-    // path segment (`portal`) as the host — so the parsed-hostname guard below would
-    // wrongly pass and we'd emit a dead `https:///portal/quote/...` link. Treat any
-    // value whose authority component (between `://` and the next `/`, `?`, `#`, or
-    // end) is empty as malformed and skip it.
-    if (/^[a-z][a-z0-9+.-]*:\/\/(?=[/?#]|$)/i.test(trimmed)) continue;
-    let parsed: URL;
-    try {
-      parsed = new URL(trimmed);
-    } catch {
-      // Not a parseable absolute URL (bare `https://`, host-only string, etc.) — skip.
-      continue;
-    }
-    // A bare scheme like `https://` parses with an empty hostname; reject it so
-    // we never emit `https:///quote/...`.
-    if (!parsed.hostname) continue;
-    return trimmed.replace(/\/+$/, '');
-  }
-
-  // The localhost fallback above always has a host, so this is unreachable in
-  // practice — but if every configured value were malformed we fail loudly
-  // rather than hand back an empty-host link.
-  throw new Error(
-    '[quoteLifecycle] Cannot build a public quote URL: PUBLIC_PORTAL_URL / PUBLIC_APP_URL / DASHBOARD_URL are unset or malformed (no host).',
-  );
-}
 
 /** Build the public accept link emailed to the prospect: `<portalBase>/quote/<token>`. */
 export function buildPublicQuoteAcceptUrl(token: string): string {
@@ -82,12 +32,29 @@ function formatMoneyish(n: string | null | undefined, currency: string): string 
   return currency === 'USD' ? `$${v}` : `${v} ${currency}`;
 }
 
+/** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
+ * reasons, plus 'send_failed' since quote email errors are swallowed, not thrown). */
+export type SendQuoteEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed';
+
+/** Composer fields for the send email. All optional — defaults reproduce the
+ * classic send (billing-contact recipient, standard subject, PDF attached). */
+export interface SendQuoteEmailOptions {
+  message?: string;
+  /** Explicit recipients; falls back to the org's billing contact email. */
+  to?: string[];
+  cc?: string[];
+  /** Subject override; falls back to `Proposal <n> from <partner>`. */
+  subject?: string;
+  /** Attach the rendered PDF (default true). */
+  includePdf?: boolean;
+}
+
 /** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
 export async function sendQuote(
   id: string,
   actor: QuoteActor,
-  opts: { message?: string } = {},
-): Promise<{ quote: QuoteRow; emailed: boolean; acceptUrl: string }> {
+  opts: SendQuoteEmailOptions = {},
+): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string }> {
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
@@ -233,13 +200,17 @@ export async function sendQuote(
   // post-commit — moving PDF+email outside the request txn is a tracked
   // follow-up (atom-3); the email-failure swallow keeps the send safe meanwhile.
   let emailed = false;
+  let emailReason: SendQuoteEmailReason | undefined;
   try {
     // Reuse partnerRow (already fetched above for the seller snapshot) rather than
     // re-querying the partner just for its name — one fewer round-trip per send.
     const partnerName = partnerRow?.name;
-    const recipient = resolveBillingEmail(org?.billingContact);
+    // Composer-picked recipients win; the org's billing contact is the fallback
+    // so a bare "Send" keeps working exactly as before.
+    const billingRecipient = resolveBillingEmail(org?.billingContact);
+    const recipients = opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []);
     const emailService = getEmailService();
-    if (emailService && recipient) {
+    if (emailService && recipients.length > 0) {
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Real image loader: pull bytes from quote_images, scoped to BOTH the image id
       // AND this quote (RLS blocks cross-tenant; the quote_id match closes the
@@ -259,38 +230,63 @@ export async function sendQuote(
       // applies its own visibility rules internally. Internal-only line names
       // + prices must never reach the customer's inbox.
       const customerLines = toCustomerLines(lines.filter((l) => l.customerVisible));
-      // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
-      // per authored contract block + any uploaded contract PDFs to append after
-      // rendering, so the emailed attachment matches the on-demand download.
-      const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
-      const { renderQuotePdf } = await import('./quotePdf');
-      const rawPdf = await renderQuotePdf(
-        frozenQuote,
-        blocks, customerLines, loadImage, {
-          partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-          footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-        }, undefined, contractRenderData);
-      const { mergeUploadedContractPdfs } = await import('./pdfMerge');
-      const pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
+      // PDF attachment is composer-optional (default on). When off, the render
+      // + contract-merge work is skipped entirely and the email copy drops its
+      // "A PDF copy is attached." sentence.
+      const includePdf = opts.includePdf !== false;
+      let pdf: Buffer | null = null;
+      if (includePdf) {
+        // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
+        // per authored contract block + any uploaded contract PDFs to append after
+        // rendering, so the emailed attachment matches the on-demand download.
+        const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
+        const { renderQuotePdf } = await import('./quotePdf');
+        const rawPdf = await renderQuotePdf(
+          frozenQuote,
+          blocks, customerLines, loadImage, {
+            partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+            footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+          }, undefined, contractRenderData);
+        const { mergeUploadedContractPdfs } = await import('./pdfMerge');
+        pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
+      }
       const template = buildQuoteTemplate({
         quoteNumber, partnerName: partnerName ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
         expiryDate: quote.expiryDate ?? undefined,
         message: opts.message,
+        subject: opts.subject,
+        pdfAttached: includePdf,
+        signature: partnerRow?.emailSignature ?? undefined,
       });
-      await emailService.sendEmail({ to: recipient, subject: template.subject, html: template.html, text: template.text, attachments: [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] });
+      // MSP-branded envelope: display name "<Partner> via Breeze" on the
+      // platform's own from-address (SPF/DKIM stays aligned — we never spoof
+      // the MSP's domain), and replies go to the MSP's billing email so a
+      // customer's "quick question" reply reaches the seller, not a no-reply box.
+      const replyTo = partnerRow?.billingEmail?.trim() || undefined;
+      await emailService.sendEmail({
+        to: recipients,
+        cc: opts.cc && opts.cc.length > 0 ? opts.cc : undefined,
+        from: partnerName ? emailService.fromWithDisplayName(`${partnerName} via Breeze`) : undefined,
+        replyTo,
+        subject: template.subject, html: template.html, text: template.text,
+        attachments: pdf ? [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
+      });
       emailed = true;
     } else if (!emailService) {
+      emailReason = 'no_email_service';
       console.warn(`[quoteLifecycle] Email not configured — quote ${id} sent but not emailed`);
     } else {
+      emailReason = 'no_billing_contact';
       console.warn(`[quoteLifecycle] No billing email for org ${quote.orgId} — quote ${id} sent but not emailed`);
     }
   } catch (err) {
+    emailReason = 'send_failed';
     console.error(`[quoteLifecycle] send email failed for quote ${id}:`, err);
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return { quote: updated!, emailed, acceptUrl };
+  return { quote: updated!, emailed, emailReason, acceptUrl };
 }
 
 /**
@@ -310,6 +306,9 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
     if (!q.firstViewedAt) set.firstViewedAt = now;
     if (q.status === 'sent') set.status = 'viewed';
     await db.update(quotes).set(set).where(eq(quotes.id, quoteId));
+    // First view only (invoice.viewed parity): the sales-timing signal a future
+    // notification worker cares about. Fire-and-forget — never fails the view.
+    if (!q.firstViewedAt) await emitQuoteEvent({ type: 'quote.viewed', quoteId, orgId: q.orgId, partnerId: q.partnerId });
   }));
 }
 

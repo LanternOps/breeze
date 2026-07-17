@@ -24,10 +24,14 @@ export interface RenderLayoutOptions {
   heading?: string;
   body: string;
   footer?: string;
+  /** Faint brand line under the card. Defaults to the platform brand; partner-
+   * facing emails (quotes/invoices) pass the MSP's name so the customer sees
+   * their provider, not Breeze. */
+  brandName?: string;
 }
 
 export function renderLayout(options: RenderLayoutOptions): string {
-  const { title, preheader, heading, body, footer } = options;
+  const { title, preheader, heading, body, footer, brandName } = options;
   const headingBlock = heading
     ? `<tr>
               <td style="padding: 28px 32px 4px; font-family: ${FONT_STACK};">
@@ -69,7 +73,7 @@ export function renderLayout(options: RenderLayoutOptions): string {
             </tr>
             ${footerBlock}
           </table>
-          <p style="margin: 16px 0 0; font-size: 12px; color: ${FAINT_COLOR}; font-family: ${FONT_STACK};">Breeze RMM</p>
+          <p style="margin: 16px 0 0; font-size: 12px; color: ${FAINT_COLOR}; font-family: ${FONT_STACK};">${escapeHtml(brandName ?? 'Breeze RMM')}</p>
         </td>
       </tr>
     </table>

@@ -36,13 +36,22 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
   }
 }
 
-// Optional sender note included in the customer email. `.strict()` so a mis-keyed
-// field (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
-const sendBodySchema = z.object({ message: z.string().trim().max(2000).optional() }).strict();
+// Composer options for the customer email. `.strict()` so a mis-keyed field
+// (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
+const sendEmailField = z.string().trim().email().max(255);
+const sendBodySchema = z.object({
+  message: z.string().trim().max(2000).optional(),
+  // Composer fields (all optional — an empty body reproduces the classic send):
+  // explicit recipients override the org billing-contact fallback.
+  to: z.array(sendEmailField).min(1).max(10).optional(),
+  cc: z.array(sendEmailField).max(10).optional(),
+  subject: z.string().trim().max(200).optional(),
+  includePdf: z.boolean().optional(),
+}).strict();
 
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  let message: string | undefined;
+  let emailOpts: z.infer<typeof sendBodySchema> = {};
   // Distinguish an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
   // yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
   // one. An empty body degrades to "no message"; a non-empty body that fails to
@@ -54,12 +63,19 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
       let json: unknown;
       try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
       const parsed = sendBodySchema.safeParse(json);
-      if (!parsed.success) return c.json({ error: 'Invalid message' }, 400);
-      message = parsed.data.message && parsed.data.message.length > 0 ? parsed.data.message : undefined;
+      if (!parsed.success) return c.json({ error: 'Invalid send options' }, 400);
+      emailOpts = parsed.data;
     }
   }
-  try { return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), { message }) }); }
-  catch (err) { return handleServiceError(c, err); }
+  try {
+    return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), {
+      message: emailOpts.message || undefined,
+      to: emailOpts.to,
+      cc: emailOpts.cc,
+      subject: emailOpts.subject || undefined,
+      includePdf: emailOpts.includePdf,
+    }) });
+  } catch (err) { return handleServiceError(c, err); }
 });
 
 // POST /:id/images — multipart file upload OR JSON {url} to copy a remote image

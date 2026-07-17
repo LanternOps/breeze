@@ -75,6 +75,43 @@ describe('POST /:id/send RBAC (quotes:send)', () => {
   });
 });
 
+describe('POST /:id/send — composer body', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+  const jsonReq = (body: unknown) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  it('forwards to/cc/subject/includePdf/message to the service', async () => {
+    const { sendQuote } = await import('../../services/quoteLifecycle');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({
+      to: ['buyer@customer.example'], cc: ['cfo@customer.example'],
+      subject: 'Your refresh', includePdf: false, message: 'hi',
+    }));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(sendQuote)).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), {
+      to: ['buyer@customer.example'], cc: ['cfo@customer.example'],
+      subject: 'Your refresh', includePdf: false, message: 'hi',
+    });
+  });
+
+  it('400s an invalid recipient email', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ to: ['not-an-email'] }));
+    expect(res.status).toBe(400);
+  });
+
+  it('400s an empty to array (explicit recipients must be non-empty)', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ to: [] }));
+    expect(res.status).toBe(400);
+  });
+
+  it('400s an unknown field (strict body)', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ bcc: ['x@y.z'] }));
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /:id/images — from URL (JSON body)', () => {
   const PERMS = ['quotes:read', 'quotes:write'];
   const jsonReq = (url: string) => ({

@@ -54,7 +54,7 @@ vi.mock('./quotePdf', async (importOriginal) => {
 
 vi.mock('./email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./email')>();
-  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })) };
+  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
 });
 
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
@@ -70,7 +70,7 @@ const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
  * matching the invoice-link convention in invoicePdf.ts.
  */
 describe('quoteLifecycle portal URL', () => {
-  const ENV_KEYS = ['PUBLIC_PORTAL_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL'] as const;
+  const ENV_KEYS = ['PUBLIC_PORTAL_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL', 'PORTAL_BASE_PATH'] as const;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -122,7 +122,7 @@ describe('quoteLifecycle portal URL', () => {
     expect(url).not.toMatch(/^https?:\/\/\//); // no empty-authority `://[/]`
     expect(url).not.toContain('https:///portal');
     expect(new URL(url).hostname).toBe('app.example.com'); // fell through to next valid candidate
-    expect(url).toBe('https://app.example.com/quote/tok');
+    expect(url).toBe('https://app.example.com/portal/quote/tok');
   });
 
   it('preserves a valid host + /portal base path (not over-eagerly skipped)', () => {
@@ -132,10 +132,34 @@ describe('quoteLifecycle portal URL', () => {
     expect(new URL(base).hostname).toBe('example.com');
   });
 
-  it('falls through an empty PUBLIC_PORTAL_URL to PUBLIC_APP_URL', () => {
+  it('falls through an empty PUBLIC_PORTAL_URL to PUBLIC_APP_URL and appends /portal', () => {
+    // The prod-symptom regression: PUBLIC_PORTAL_URL unset + PUBLIC_APP_URL set
+    // used to emit https://host/quote/<t> — a dead link missing /portal.
     process.env.PUBLIC_PORTAL_URL = '';
     process.env.PUBLIC_APP_URL = 'https://app.example.com';
-    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/quote/t');
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/portal/quote/t');
+  });
+
+  it('does not double-append when the app-origin fallback already ends with /portal', () => {
+    process.env.PUBLIC_APP_URL = 'https://app.example.com/portal';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/portal/quote/t');
+  });
+
+  it('appends /portal to the DASHBOARD_URL fallback too', () => {
+    process.env.DASHBOARD_URL = 'https://dash.example.com/';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://dash.example.com/portal/quote/t');
+  });
+
+  it('honors a custom PORTAL_BASE_PATH on app-origin fallbacks', () => {
+    process.env.PUBLIC_APP_URL = 'https://app.example.com';
+    process.env.PORTAL_BASE_PATH = '/c';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/c/quote/t');
+  });
+
+  it('never appends the base path to an explicit PUBLIC_PORTAL_URL', () => {
+    // PUBLIC_PORTAL_URL is authoritative — even one without a path segment.
+    process.env.PUBLIC_PORTAL_URL = 'https://portal.example.com';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://portal.example.com/quote/t');
   });
 
   it('falls back to a host-bearing localhost URL (with portal base) when nothing is configured', () => {
@@ -295,6 +319,153 @@ describe('sendQuote customer-facing PDF', () => {
     expect(renderedLines.some((l) => l.name === 'Internal markup buffer')).toBe(false);
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
+  });
+});
+
+/**
+ * Email delivery status: the send is best-effort-emailed, so the result must
+ * say honestly whether an email went out and WHY not (the web UI branches its
+ * toast on this — a silent `emailed:false` was the "no billing contact" black
+ * hole where the seller saw success while the customer received nothing).
+ */
+describe('sendQuote email delivery status', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  const quoteRow = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+  };
+  const lineRow = { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' };
+
+  /** getQuote (quote/blocks/lines/pax8/billTo-org) + partnerRow + org + claim. */
+  function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}) {
+    queueResult([quoteRow]);
+    queueResult([]); // blocks
+    queueResult([lineRow]); // lines
+    queueResult([]); // no staged Pax8 order
+    queueResult([org]); // getQuote's draft billTo org lookup
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, ...partner }]);
+    queueResult([org]); // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+  }
+
+  it('reports no_billing_contact (and sends nothing) when the org has no billing email', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    // No billingContact → the email branch short-circuits before the
+    // portalBranding read, straight to the final re-select.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('no_billing_contact');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(result.quote.status).toBe('sent'); // the send itself still commits
+  });
+
+  it('reports send_failed when the email provider throws (send still commits)', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    sendEmailMock.mockRejectedValue(new Error('smtp down'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('send_failed');
+    expect(result.quote.status).toBe('sent');
+  });
+
+  it('reports emailed:true with no reason on a successful send', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(result.emailReason).toBeUndefined();
+  });
+
+  it('sends with an MSP-branded from display name and the partner billing email as reply-to', async () => {
+    queueThroughClaim(
+      { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
+      { billingEmail: 'accounts@acmemsp.example' },
+    );
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor);
+
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      // Display name is the MSP ("via Breeze" keeps the platform address honest);
+      // the envelope address itself stays the platform's for SPF/DKIM alignment.
+      from: '"Acme MSP via Breeze" <no-reply@test.example>',
+      replyTo: 'accounts@acmemsp.example',
+    }));
+  });
+
+  it('uses composer recipients + cc over the billing-contact fallback', async () => {
+    // Org has NO billing contact — the explicit `to` must carry the send anyway.
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor, { to: ['buyer@customer.example'], cc: ['cfo@customer.example'] });
+
+    expect(result.emailed).toBe(true);
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['buyer@customer.example'],
+      cc: ['cfo@customer.example'],
+    }));
+  });
+
+  it('includePdf:false skips the PDF render and attaches nothing', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor, { includePdf: false });
+
+    expect(result.emailed).toBe(true);
+    expect(capturedPdfArgs).toBeNull(); // renderQuotePdf never invoked
+    const sent = sendEmailMock.mock.calls[0]![0] as { attachments?: unknown; html: string };
+    expect(sent.attachments).toBeUndefined();
+    expect(sent.html).not.toContain('PDF copy is attached');
+  });
+
+  it('passes subject override and partner signature through to the email', async () => {
+    queueThroughClaim(
+      { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
+      { emailSignature: 'Todd @ Acme MSP' },
+    );
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor, { subject: 'Your workstation refresh' });
+
+    const sent = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string };
+    expect(sent.subject).toBe('Your workstation refresh');
+    expect(sent.html).toContain('Todd @ Acme MSP');
+  });
+
+  it('omits reply-to when the partner has no billing email', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor);
+
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({ replyTo: undefined }));
   });
 });
 

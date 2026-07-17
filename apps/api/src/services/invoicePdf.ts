@@ -22,6 +22,7 @@ import { invoices, invoiceLines, invoiceDocuments, organizations, partners, port
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { portalBase } from './portalUrl';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 import type { BillToAddress } from './sellerSnapshot';
@@ -513,7 +514,7 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
 
   // 3. Resolve recipient + partner name for the email body.
   const [org] = await db.select({ billingContact: organizations.billingContact, name: organizations.name }).from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-  const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  const [partner] = await db.select({ name: partners.name, billingEmail: partners.billingEmail }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   const recipient = resolveBillingEmail(org?.billingContact);
 
   // 4. Send (graceful no-op if email is not configured or no recipient is known).
@@ -522,16 +523,11 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
   let emailed = false;
   let reason: SendInvoiceResult['reason'];
   if (emailService && recipient) {
-    // The customer portal is served under PUBLIC_PORTAL_URL (e.g.
-    // https://<domain>/c); the invoice detail page lives at <portal>/invoices/<id>.
-    // Fall back to the app/dashboard origin when the portal URL isn't configured.
-    const portalBase = (
-      process.env.PUBLIC_PORTAL_URL ||
-      process.env.PUBLIC_APP_URL ||
-      process.env.DASHBOARD_URL ||
-      'http://localhost:4321'
-    ).replace(/\/$/, '');
-    const portalLink = `${portalBase}/invoices/${invoiceId}`;
+    // The invoice detail page lives at <portalBase>/invoices/<id>; portalBase()
+    // handles the PUBLIC_PORTAL_URL → app-origin fallback chain and appends the
+    // portal base path to app-origin fallbacks (previously this inline chain
+    // emitted links missing /portal when PUBLIC_PORTAL_URL was unset).
+    const portalLink = `${portalBase()}/invoices/${invoiceId}`;
     // This IS the "Request balance payment" action for deposit invoices: the money
     // fields reflect the deposit-vs-balance split so the email states what's owed
     // NOW, not just the invoice total (which may already be partially covered).
@@ -547,6 +543,11 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
     });
     await emailService.sendEmail({
       to: recipient,
+      // MSP-branded envelope, mirroring the quote send path: display name
+      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
+      // aligned), replies routed to the MSP's billing inbox.
+      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
+      replyTo: partner?.billingEmail?.trim() || undefined,
       subject: template.subject,
       html: template.html,
       text: template.text,
