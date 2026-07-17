@@ -477,7 +477,7 @@ func TestPerFileUploadRetry_SucceedsOnSecondAttempt(t *testing.T) {
 }
 
 func TestPerFileUploadRetry_CancelDuringFirstAttempt_NoRetry(t *testing.T) {
-	// releasableUploadProvider (defined in backup_test.go) blocks its
+	// blockingUploadProvider (defined in backup_test.go) blocks its
 	// UploadContext call until ctx.Done(), signalling p.started once the
 	// call has begun so the test can cancel the job context mid-attempt.
 	p := newBlockingUploadProvider()
