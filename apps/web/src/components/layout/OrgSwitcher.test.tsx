@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OrgSwitcher, { getOrgSwitchRedirect } from './OrgSwitcher';
 
 const {
-  setOrganizationMock,
+  selectOrganizationMock,
+  selectAllOrgsMock,
   fetchOrganizationsMock,
   waitForPendingRefreshMock,
   mockStoreRef,
 } = vi.hoisted(() => ({
-  setOrganizationMock: vi.fn(),
+  selectOrganizationMock: vi.fn(),
+  selectAllOrgsMock: vi.fn(),
   fetchOrganizationsMock: vi.fn(),
   waitForPendingRefreshMock: vi.fn().mockResolvedValue(undefined),
   mockStoreRef: { current: null as any },
@@ -34,7 +36,8 @@ let mockStoreState: {
 vi.mock('@/stores/orgStore', () => {
   const buildStoreSnapshot = () => ({
     ...mockStoreRef.current,
-    setOrganization: setOrganizationMock,
+    selectOrganization: selectOrganizationMock,
+    selectAllOrgs: selectAllOrgsMock,
     fetchOrganizations: fetchOrganizationsMock,
   });
   const useOrgStore = vi.fn((selector?: (state: ReturnType<typeof buildStoreSnapshot>) => unknown) => {
@@ -83,7 +86,8 @@ describe('OrgSwitcher (unified control)', () => {
   const originalLocation = window.location;
 
   beforeEach(() => {
-    setOrganizationMock.mockReset();
+    selectOrganizationMock.mockReset();
+    selectAllOrgsMock.mockReset();
     fetchOrganizationsMock.mockReset();
     waitForPendingRefreshMock.mockClear();
     waitForPendingRefreshMock.mockResolvedValue(undefined);
@@ -150,7 +154,7 @@ describe('OrgSwitcher (unified control)', () => {
 
     openDropdownAndClickOrg('Org B');
 
-    expect(setOrganizationMock).toHaveBeenCalledWith('org-b');
+    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
     // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
     await waitFor(() => expect(hrefSetter).toHaveBeenCalledWith('/devices'));
     expect(reloadMock).not.toHaveBeenCalled();
@@ -164,7 +168,7 @@ describe('OrgSwitcher (unified control)', () => {
 
     openDropdownAndClickOrg('Org B');
 
-    expect(setOrganizationMock).toHaveBeenCalledWith('org-b');
+    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
     await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
     expect(hrefSetter).not.toHaveBeenCalled();
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
@@ -177,7 +181,8 @@ describe('OrgSwitcher (unified control)', () => {
 
     openDropdownAndClickOrg('Org A');
 
-    expect(setOrganizationMock).not.toHaveBeenCalled();
+    expect(selectOrganizationMock).not.toHaveBeenCalled();
+    expect(selectAllOrgsMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
   });
@@ -220,7 +225,7 @@ describe('OrgSwitcher (unified control)', () => {
     openDropdown();
     fireEvent.click(screen.getByTestId('org-option-all'));
 
-    expect(setOrganizationMock).toHaveBeenCalledWith('');
+    expect(selectAllOrgsMock).toHaveBeenCalled();
     await waitFor(() => expect(reloadMock).toHaveBeenCalledTimes(1));
     expect(waitForPendingRefreshMock).toHaveBeenCalled();
   });
@@ -235,7 +240,7 @@ describe('OrgSwitcher (unified control)', () => {
     openDropdown();
     fireEvent.click(screen.getByTestId('org-option-all'));
 
-    expect(setOrganizationMock).not.toHaveBeenCalled();
+    expect(selectAllOrgsMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
   });
 

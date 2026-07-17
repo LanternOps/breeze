@@ -8,7 +8,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
-import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
+import { loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
 import TicketWorkbench from './TicketWorkbench';
@@ -145,13 +145,6 @@ function hashFor(selection: string | null, sort: TicketSort): string {
 
 export default function TicketsPage() {
   const { t } = useTranslation('tickets');
-  // Re-read per render to hide the org filter for org-scoped users. On a cold
-  // page load the memory-only access token may not exist yet, so this can read
-  // null scope before token bootstrap — the options effect below re-reads the
-  // claims after its first fetches bootstrap the token, and `orgs.length > 1`
-  // keeps the filter hidden either way (belt and braces).
-  const orgScoped = getJwtClaims().scope === 'organization';
-
   // Soft-delete / restore / archived queue are all tickets:manage-gated (server
   // re-enforces). UX-only: hides controls the caller can't use. Partner/Org Admin.
   const { can } = usePermissions();
@@ -213,9 +206,7 @@ export default function TicketsPage() {
     let cancelled = false;
     const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
     void (async () => {
-      // Categories + users first: access tokens are memory-only, so on a cold
-      // load the JWT claims are unreadable at mount — these fetches bootstrap
-      // the token before we decide whether the orgs fetch is allowed.
+      // Load categories + users to populate the filter selects.
       const [catRes, userRes] = await Promise.allSettled([
         fetchWithAuth('/ticket-categories').then(readJson),
         fetchWithAuth('/users').then(readJson)

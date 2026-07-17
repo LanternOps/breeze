@@ -68,6 +68,11 @@ export default function EnrollmentKeyManager() {
   const [formSiteId, setFormSiteId] = useState('');
   const [formSites, setFormSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
+  // Track a failed site load so the form can offer a retry instead of showing
+  // the "this org has no sites" empty state — a 500 must not read as an
+  // unconfigured org. The nonce lets the retry button re-run the load effect.
+  const [sitesError, setSitesError] = useState(false);
+  const [sitesReloadNonce, setSitesReloadNonce] = useState(0);
 
   const fetchKeys = useCallback(async (page = 1) => {
     try {
@@ -119,6 +124,7 @@ export default function EnrollmentKeyManager() {
     // stale siteId could be defaulted (and submitted) for the newly-picked org.
     let cancelled = false;
     setFormSites([]);
+    setSitesError(false);
     setSitesLoading(true);
     fetchWithAuth(`/orgs/sites?organizationId=${formOrgId}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
@@ -132,7 +138,10 @@ export default function EnrollmentKeyManager() {
         setFormSites(list);
       })
       .catch(() => {
-        if (!cancelled) setFormSites([]);
+        if (!cancelled) {
+          setFormSites([]);
+          setSitesError(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setSitesLoading(false);
@@ -140,7 +149,7 @@ export default function EnrollmentKeyManager() {
     return () => {
       cancelled = true;
     };
-  }, [modalMode, formOrgId]);
+  }, [modalMode, formOrgId, sitesReloadNonce]);
 
   // Default the site selection once the list loads: first available site.
   useEffect(() => {
@@ -670,7 +679,18 @@ export default function EnrollmentKeyManager() {
               )}
               <div>
                 <label className="text-sm font-medium">{t('common:labels.site')}</label>
-                {formSitesResolved && formSites.length === 0 ? (
+                {formSitesResolved && sitesError ? (
+                  <div className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                    {t('enrollmentKeys.sitesLoadFailed')}{' '}
+                    <button
+                      type="button"
+                      onClick={() => setSitesReloadNonce((n) => n + 1)}
+                      className="font-medium underline hover:no-underline"
+                    >
+                      {t('enrollmentKeys.retrySites')}
+                    </button>
+                  </div>
+                ) : formSitesResolved && formSites.length === 0 ? (
                   <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                     {t('enrollmentKeys.noSitesForOrg')}{' '}
                     <a

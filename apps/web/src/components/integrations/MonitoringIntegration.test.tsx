@@ -8,7 +8,13 @@ import { fetchWithAuth } from "../../stores/auth";
 // orgs) states the working context; page ACCESS is a token capability read
 // from the JWT claims. Monitoring settings are per-org data, so for partner
 // admins the selected org only decides which org's settings load.
-let mockOrgState: { currentOrgId: string | null };
+let mockOrgState: {
+  currentOrgId: string | null;
+  allOrgs: boolean;
+  error: string | null;
+  organizationsLoaded: boolean;
+  organizations: Array<{ id: string; name: string }>;
+};
 let mockClaims: {
   scope: "system" | "partner" | "organization" | null;
   orgId: string | null;
@@ -41,7 +47,13 @@ const monitoringResponse = (): Response =>
   }) as unknown as Response;
 
 beforeEach(() => {
-  mockOrgState = { currentOrgId: "org-1" };
+  mockOrgState = {
+    currentOrgId: "org-1",
+    allOrgs: false,
+    error: null,
+    organizationsLoaded: true,
+    organizations: [{ id: "org-1", name: "Acme" }],
+  };
   mockClaims = { scope: "partner", orgId: null, partnerId: "partner-1" };
   fetchWithAuthMock.mockReset();
   fetchWithAuthMock.mockResolvedValue(monitoringResponse());
@@ -69,8 +81,11 @@ describe("MonitoringIntegration — token-capability gate (partner admin)", () =
     ).not.toBeInTheDocument();
   });
 
-  it("shows the pick-an-org note and fires no doomed request when no org is selected", async () => {
+  it("shows the pick-an-org note and fires no doomed request in explicit fleet view", async () => {
+    // Explicit All-orgs (fleet) is the resolved no-single-org state — the note
+    // shows here, not during the transient pre-hydration null.
     mockOrgState.currentOrgId = null;
+    mockOrgState.allOrgs = true;
     render(<MonitoringIntegration />);
 
     expect(
@@ -82,13 +97,21 @@ describe("MonitoringIntegration — token-capability gate (partner admin)", () =
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
-  it("starts fetching after an org is selected", async () => {
+  it("holds (no note, no doomed request) during the transient null, then fetches once an org is selected", async () => {
+    // Pre-hydration: no org, no explicit fleet intent → neither the note nor a
+    // doomed org-less GET; just wait.
     mockOrgState.currentOrgId = null;
+    mockOrgState.allOrgs = false;
+    mockOrgState.organizationsLoaded = false;
     const { rerender } = render(<MonitoringIntegration />);
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/configured per organization/i),
+    ).not.toBeInTheDocument();
 
     mockOrgState.currentOrgId = "org-1";
+    mockOrgState.organizationsLoaded = true;
     rerender(<MonitoringIntegration />);
 
     await waitFor(() =>

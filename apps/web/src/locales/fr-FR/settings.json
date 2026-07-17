@@ -541,6 +541,8 @@
     "selectSite": "Sélectionnez un site…",
     "siteHelp": "Les appareils inscrits avec cette clé sont affectés à ce site.",
     "noSitesForOrg": "Cette organisation n’a pas encore de site.",
+    "sitesLoadFailed": "Impossible de charger les sites de cette organisation.",
+    "retrySites": "Réessayer",
     "createASite": "Créer un site",
     "maxUsage": "Utilisation maximale (optionnelle)",
     "unlimited": "Illimité",

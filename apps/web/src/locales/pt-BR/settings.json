@@ -541,6 +541,8 @@
     "selectSite": "Selecione um local…",
     "siteHelp": "Os dispositivos registrados com esta chave são atribuídos a este local.",
     "noSitesForOrg": "Esta organização ainda não tem locais.",
+    "sitesLoadFailed": "Não foi possível carregar os locais desta organização.",
+    "retrySites": "Tentar novamente",
     "createASite": "Criar um local",
     "maxUsage": "Uso máximo (opcional)",
     "unlimited": "Ilimitado",

@@ -37,16 +37,20 @@ export type RouteScopeKind =
   | 'platform';
 
 // First match wins — put narrow exceptions before their broader prefix.
-const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
+// Exported for the routeScope contract test (reachability / shadowing check).
+// Not for runtime consumers — classification goes through getRouteScope.
+export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // --- exceptions that must precede broader prefixes ---
   // Execution history is device/org state living under the global /scripts prefix.
   { pattern: /^\/scripts\/[^/]+\/executions(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/settings\/alert-templates(\/.*)?$/, kind: 'catalog' }, // partner-wide alert-template catalog (#1425)
   // The organizations LIST is the org picker itself (works fleet-wide); the
-  // per-org detail pages need one org. /settings/organization redirects there.
+  // per-org detail pages need one org. The singular /settings/organization is a
+  // 301 stub to the LIST, so it takes the LIST's kind (it never renders its own
+  // shell — the classification only has to be self-consistent).
   { pattern: /^\/settings\/organizations\/[^/]+(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/settings\/organizations$/, kind: 'partner-settings' },
-  { pattern: /^\/settings\/organization$/, kind: 'org-required' },
+  { pattern: /^\/settings\/organization$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/profile$/, kind: 'self' },
   { pattern: /^\/account\/inactive$/, kind: 'auth' },
   { pattern: /^\/account(\/.*)?$/, kind: 'self' },
@@ -139,10 +143,10 @@ export function getRouteScope(pathname: string): RouteScopeKind | null {
 
 /**
  * Back-compat predicate used by the org-id injection chokepoint
- * (stores/orgStore.ts registerOrgIdProvider) and the switcher display:
- * catalog routes ignore the org selector entirely, so no orgId is injected.
- * Injection semantics are deliberately unchanged from the pre-registry
- * routeScope: ONLY catalog routes skip injection.
+ * (stores/orgStore.ts registerOrgIdProvider): catalog routes ignore the org
+ * selector entirely, so no orgId is injected. Injection semantics are
+ * deliberately unchanged from the pre-registry routeScope: ONLY catalog routes
+ * skip injection.
  */
 export function isGlobalScopeRoute(pathname: string): boolean {
   return getRouteScope(pathname) === 'catalog';

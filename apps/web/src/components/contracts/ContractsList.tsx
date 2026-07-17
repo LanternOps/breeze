@@ -21,6 +21,7 @@ import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import { ROW_LINK_CLASS, writeHashFilters } from '../billing/shared/listChrome';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
+import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from '../billing/bulk/useBulkSelection';
 import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -106,6 +107,9 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : EMPTY_FILTERS,
     (h) => (lockedOrgId || !h ? undefined : readFilters(h)),
   );
+  // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
+  // — but NOT in the locked embed, where `#orgId=` is the host's own pin.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'), !lockedOrgId);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadContracts).

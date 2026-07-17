@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Globe, Library, Building2 } from 'lucide-react';
 import { getRouteScope } from '../../lib/routeScope';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -23,8 +24,7 @@ export default function ContextScopeLine() {
   // content, so SSR must emit nothing scope-specific (the store is empty
   // server-side anyway) and the real line appears on hydration.
   const [pathname, setPathname] = useState<string | null>(null);
-  const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
+  const scope = useOrgScope();
   const orgCount = useOrgStore((s) => s.organizations.length);
 
   useEffect(() => {
@@ -33,7 +33,9 @@ export default function ContextScopeLine() {
 
   if (!pathname) return null;
   const kind = getRouteScope(pathname);
-  const isFleet = !currentOrgId && allOrgs;
+  // Explicit fleet view only — the hook's discriminated union keeps the
+  // transient/loading and error states from reading as fleet.
+  const isFleet = scope.scope === 'all';
 
   if (kind === 'catalog') {
     return (

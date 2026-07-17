@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { getRouteScope, isGlobalScopeRoute } from './routeScope';
+import { getRouteScope, isGlobalScopeRoute, ROUTE_SCOPES } from './routeScope';
 
 describe('isGlobalScopeRoute', () => {
   it('treats the script library, new, and detail routes as global', () => {
@@ -92,5 +92,33 @@ describe('routeScope contract — every page is registered', () => {
 
   it.each(routes)('$file ($route) has a declared scope', ({ route }) => {
     expect(getRouteScope(route)).not.toBeNull();
+  });
+
+  // Reachability / shadowing check: every ROUTE_SCOPES entry must be the FIRST
+  // match for at least one real page — otherwise it is dead (matches nothing) or
+  // shadowed (a broader prefix placed before it always wins), which is exactly
+  // what a mis-ordered narrow exception looks like. Patterns that intentionally
+  // cover routes with no static .astro page (client-routed, redirect stubs,
+  // synthetic error pages) are allowlisted below with a reason.
+  const PAGELESS_PATTERN_ALLOWLIST: Array<{ source: string; reason: string }> = [
+    { source: /^\/account\/inactive$/.source, reason: 'suspended-account interstitial, not a static page' },
+    { source: /^\/remote(\/.*)?$/.source, reason: 'remote surfaces are client-routed from device detail' },
+    { source: /^\/(login|register|register-partner|forgot-password|reset-password|accept-invite|setup|auth|404|500)(\/.*)?$/.source, reason: 'auth flows + synthetic 404/500 error pages' },
+    { source: /^\/oauth(\/.*)?$/.source, reason: 'OAuth callback routes are API-handled, not pages' },
+    { source: /^\/alert-templates(\/.*)?$/.source, reason: 'legacy top-level catalog route (moved under /settings/alert-templates, #1425); kept for classifier back-compat — see the isGlobalScopeRoute test above' },
+  ];
+  const allowed = new Set(PAGELESS_PATTERN_ALLOWLIST.map((a) => a.source));
+
+  it('every registry pattern is reachable (no dead or shadowed entries)', () => {
+    const reached = new Set<number>();
+    for (const { route } of routes) {
+      const idx = ROUTE_SCOPES.findIndex(({ pattern }) => pattern.test(route.replace(/\/+$/, '') || '/'));
+      if (idx >= 0) reached.add(idx);
+    }
+    const unreachable = ROUTE_SCOPES
+      .map(({ pattern }, i) => ({ source: pattern.source, i }))
+      .filter(({ source, i }) => !reached.has(i) && !allowed.has(source))
+      .map(({ source }) => source);
+    expect(unreachable).toEqual([]);
   });
 });

@@ -11,9 +11,11 @@ import NetworkTopologyMap from './NetworkTopologyMap';
 import NetworkChangesPanel from './NetworkChangesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '../../lib/navigation';
 import { OrgRequiredState } from '../shared/OrgRequiredState';
+import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -270,11 +272,12 @@ export default function DiscoveryPage() {
   // keying on the bare null would flash this prompt at single-org users on every
   // cold load before hydration completes.
   const allOrgsMode = allOrgs && currentOrgId === null;
-  // Neither an org nor the explicit All-orgs intent yet: the persisted context
-  // hasn't rehydrated (or the first org hasn't auto-selected). Mounting the
-  // tab content in that window fires org-less child fetches (e.g. the assets
-  // list) that 400 before the gate can flip.
-  const contextReady = allOrgsMode || currentOrgId !== null;
+  // Full context resolution for the render gate below. Distinguishes the
+  // transient pre-hydration window (loading → render nothing for that frame)
+  // from a genuine load failure (error → retry card) and a zero-org partner
+  // (empty → org-required prompt), instead of collapsing all three into a
+  // permanently blank page.
+  const scope = useOrgScope();
 
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
@@ -651,7 +654,9 @@ export default function DiscoveryPage() {
         )}
       </div>
 
-      {!contextReady ? null : allOrgsMode ? (
+      {scope.status === 'error' ? (
+        <OrgLoadFailedState error={scope.error} />
+      ) : scope.status === 'loading' ? null : (allOrgsMode || scope.status === 'empty') ? (
         <OrgRequiredState description={t('discoveryPage.allOrgs.description')} />
       ) : (
         <>

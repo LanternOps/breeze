@@ -247,7 +247,8 @@ describe('alert routes', () => {
                             modelVersion: 'rollup-v0',
                           },
                           deviceHostname: 'device-1',
-                          ruleName: 'CPU Alert'
+                          ruleName: 'CPU Alert',
+                          orgName: 'Acme Corp'
                         }
                       ])
                     })
@@ -298,6 +299,8 @@ describe('alert routes', () => {
         correlationChildCount: 2,
         noiseReductionPercent: 67
       }));
+      // The organizations join surfaces orgName for the fleet-view org column.
+      expect(body.data[0].orgName).toBe('Acme Corp');
       expect(body.pagination.total).toBe(1);
     });
 

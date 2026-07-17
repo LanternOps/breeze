@@ -20,8 +20,7 @@ import DRExecutionView from './DRExecutionView';
 import DRPlanEditor from './DRPlanEditor';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
-import { useOrgScope } from '@/hooks/useOrgScope';
-import { OrgRequiredState } from '../shared/OrgRequiredState';
+import { OrgRequiredGate } from '../shared/OrgRequiredGate';
 import '../../lib/i18n';
 
 type DRTab = 'plans' | 'executions';
@@ -479,15 +478,13 @@ function DRDashboardInner() {
   );
 }
 
-// The dr APIs are per-organization (they 400 on an
-// org-less request), so fleet view renders the standard org-required state and
-// the data component — with all its fetch effects — never mounts without an org.
+// The dr APIs are per-organization (they 400 on an org-less request), so the
+// gate resolves loading/error/empty/fleet before the data component — with all
+// its fetch effects — ever mounts without an org.
 export default function DRDashboard() {
-  const { ready, scope } = useOrgScope();
-  // Not-ready covers the pre-rehydration window (persisted context not yet
-  // loaded): mounting the data component there fires org-less fetches that
-  // 400 before the gate can flip. Render nothing for that frame.
-  if (!ready) return null;
-  if (scope === 'all') return <OrgRequiredState />;
-  return <DRDashboardInner />;
+  return (
+    <OrgRequiredGate>
+      <DRDashboardInner />
+    </OrgRequiredGate>
+  );
 }

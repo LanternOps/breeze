@@ -541,6 +541,8 @@
     "selectSite": "Standort auswählen…",
     "siteHelp": "Mit diesem Schlüssel registrierte Geräte werden diesem Standort zugeordnet.",
     "noSitesForOrg": "Diese Organisation hat noch keine Standorte.",
+    "sitesLoadFailed": "Standorte für diese Organisation konnten nicht geladen werden.",
+    "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
     "unlimited": "Unbegrenzt",

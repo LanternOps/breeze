@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
+import { useOrgScope } from "@/hooks/useOrgScope";
 import { getJwtClaims } from "../../lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
@@ -269,11 +270,21 @@ export default function MonitoringIntegration() {
   //   org for this per-org data and the GET/PUT would 400, so we show a
   //   pick-an-organization note instead of firing the doomed call.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgScope = useOrgScope();
   const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
   const isPartnerAdmin = jwtScope === "partner" && !!jwtPartnerId;
   // System tokens can also address many orgs; same missing-data-target state.
+  const canAddressManyOrgs = isPartnerAdmin || jwtScope === "system";
+  // Show the pick-an-org note only on the RESOLVED no-single-org states
+  // (explicit fleet view or a zero-org partner) — gating on the allOrgs intent,
+  // not bare `!currentOrgId`, so the transient pre-hydration null no longer
+  // flashes the note (and a failed org-context load no longer strands here).
   const needsOrgSelection =
-    !currentOrgId && (isPartnerAdmin || jwtScope === "system");
+    canAddressManyOrgs && (orgScope.scope === "all" || orgScope.status === "empty");
+  // Partner/system with no org yet but context still resolving (or it failed):
+  // hold the loading frame instead of firing the doomed org-less GET.
+  const awaitingOrgContext =
+    canAddressManyOrgs && !currentOrgId && !needsOrgSelection;
 
   const selectedMetricsCount = settings.metrics.selected.length;
 
@@ -348,8 +359,15 @@ export default function MonitoringIntegration() {
       setLoadError(undefined);
       return;
     }
+    // Context not resolved yet — keep the loading frame; don't fire an org-less
+    // request that would 400 before auto-select lands.
+    if (awaitingOrgContext) {
+      setLoading(true);
+      setLoadError(undefined);
+      return;
+    }
     fetchSettings();
-  }, [fetchSettings, currentOrgId, needsOrgSelection]);
+  }, [fetchSettings, currentOrgId, needsOrgSelection, awaitingOrgContext]);
 
   function updateSection<K extends keyof MonitoringSettings>(
     key: K,

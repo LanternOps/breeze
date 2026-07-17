@@ -526,7 +526,8 @@
       "fleetView": "Fleet view · {{count}} organizations",
       "noSelection": "Select organization",
       "searchOrganizations": "Search organizations…",
-      "noMatches": "No organizations match"
+      "noMatches": "No organizations match",
+      "legacyFilterNotice": "Organization filtering now follows the header selector."
     },
     "header": {
       "menu": "Menu",
@@ -622,6 +623,11 @@
       "title": "Select an organization",
       "description": "This page shows one organization at a time.",
       "moreHint": "Looking for another organization? Use the switcher above (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Couldn't load your organizations",
+      "description": "Something went wrong loading your organization list. Check your connection and try again.",
+      "retry": "Retry"
     }
   },
   "longTail": {

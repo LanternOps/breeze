@@ -526,7 +526,8 @@
       "fleetView": "Vista de flota · {{count}} organizaciones",
       "noSelection": "Seleccionar organización",
       "searchOrganizations": "Buscar organizaciones…",
-      "noMatches": "Ninguna organización coincide"
+      "noMatches": "Ninguna organización coincide",
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
     },
     "header": {
       "menu": "Menú",
@@ -622,6 +623,11 @@
       "title": "Selecciona una organización",
       "description": "Esta página muestra una organización a la vez.",
       "moreHint": "¿Buscas otra organización? Usa el selector de arriba (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "No se pudieron cargar tus organizaciones",
+      "description": "Ocurrió un error al cargar la lista de organizaciones. Verifica tu conexión e inténtalo de nuevo.",
+      "retry": "Reintentar"
     }
   },
   "longTail": {

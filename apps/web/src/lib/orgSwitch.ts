@@ -57,7 +57,9 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  * scope propagates everywhere at once.
  */
 export async function applyOrgSwitch(orgId: string | null, toastMessage: string): Promise<void> {
-  useOrgStore.getState().setOrganization(orgId ?? '');
+  const store = useOrgStore.getState();
+  if (orgId) store.selectOrganization(orgId);
+  else store.selectAllOrgs();
   stashSwitchToast(toastMessage);
   await waitForPendingRefresh();
   const redirect = getOrgSwitchRedirect(window.location.pathname);

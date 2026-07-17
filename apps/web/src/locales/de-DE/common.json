@@ -526,7 +526,8 @@
       "fleetView": "Flottenansicht · {{count}} Organisationen",
       "noSelection": "Organisation auswählen",
       "searchOrganizations": "Organisationen durchsuchen…",
-      "noMatches": "Keine passenden Organisationen"
+      "noMatches": "Keine passenden Organisationen",
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
     },
     "header": {
       "menu": "Menü",
@@ -622,6 +623,11 @@
       "title": "Organisation auswählen",
       "description": "Diese Seite zeigt jeweils eine Organisation.",
       "moreHint": "Eine andere Organisation? Nutzen Sie den Umschalter oben (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Organisationen konnten nicht geladen werden",
+      "description": "Beim Laden Ihrer Organisationsliste ist ein Fehler aufgetreten. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "retry": "Erneut versuchen"
     }
   },
   "longTail": {

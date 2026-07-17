@@ -6,8 +6,8 @@ import { fetchWithAuth } from '../../stores/auth';
 
 // Org scope, so the fleet-view gate stays open and the data paths under test run.
 vi.mock('@/hooks/useOrgScope', () => ({
-  useOrgScope: () => ({ ready: true, scope: 'org', orgId: 'org-1', org: null }),
-  getOrgScope: () => ({ ready: true, scope: 'org', orgId: 'org-1', org: null }),
+  useOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
+  getOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
 }));
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),

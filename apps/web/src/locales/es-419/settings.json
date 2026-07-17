@@ -541,6 +541,8 @@
     "selectSite": "Seleccione un sitio…",
     "siteHelp": "Los dispositivos inscritos con esta clave se asignan a este sitio.",
     "noSitesForOrg": "Esta organización aún no tiene sitios.",
+    "sitesLoadFailed": "No se pudieron cargar los sitios de esta organización.",
+    "retrySites": "Reintentar",
     "createASite": "Crear un sitio",
     "maxUsage": "Uso máximo (opcional)",
     "unlimited": "Ilimitado",

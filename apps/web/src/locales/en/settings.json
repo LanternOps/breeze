@@ -541,6 +541,8 @@
     "selectSite": "Select a site…",
     "siteHelp": "Devices enrolled with this key are assigned to this site.",
     "noSitesForOrg": "This organization has no sites yet.",
+    "sitesLoadFailed": "Couldn't load sites for this organization.",
+    "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
     "unlimited": "Unlimited",

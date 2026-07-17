@@ -11,6 +11,7 @@ import { Dialog } from '../../shared/Dialog';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { listQuotes, createQuote } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
+import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from '../bulk/useBulkSelection';
 import { BulkActionBar } from '../bulk/BulkActionBar';
 import { SortableTh } from '../shared/SortableTh';
@@ -104,6 +105,9 @@ export function QuotesPage() {
   // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
   // no-deep-link case keeps the default reference and never refetches.
   const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
+  // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
+  // so it doesn't silently widen the quote view to every org.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'));
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadQuotes).

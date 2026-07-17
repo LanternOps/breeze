@@ -167,8 +167,9 @@ export default function OrgSwitcher() {
 
   // Apply a context change: a concrete org id, or null for fleet view. The
   // reload (inside applyOrgSwitch) propagates the new scope everywhere at once
-  // (pages don't need to subscribe); detail routes redirect up to their list
-  // first so the new org doesn't 404 on the old org's record.
+  // (pages don't need to subscribe); registered detail routes (currently only
+  // device detail — see getOrgSwitchRedirect) redirect up to their list first so
+  // the new org doesn't 404 on the old org's record.
   const applyContext = async (orgId: string | null) => {
     setIsOpen(false);
     const changed = orgId ? orgId !== currentOrgId : !isFleet;
