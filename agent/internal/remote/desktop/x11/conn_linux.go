@@ -29,6 +29,12 @@ type Conn struct {
 	shmID  int
 	shmBuf []byte
 	shmSeg shm.Seg
+
+	// ownerUID is the uid of the session/X-server owner (from DisplayTarget).
+	// The agent runs as root but the X server on xrdp/GDM runs as this
+	// non-root user, so the SHM segment must be chowned to it after
+	// creation for the server to be able to attach.
+	ownerUID int
 }
 
 // Open dials the display's unix socket, injects the MIT-MAGIC-COOKIE-1, and
@@ -62,10 +68,11 @@ func Open(target DisplayTarget) (*Conn, error) {
 	setup := xproto.Setup(x)
 	screen := setup.DefaultScreen(x)
 	c := &Conn{
-		x:      x,
-		root:   screen.Root,
-		width:  int(screen.WidthInPixels),
-		height: int(screen.HeightInPixels),
+		x:        x,
+		root:     screen.Root,
+		width:    int(screen.WidthInPixels),
+		height:   int(screen.HeightInPixels),
+		ownerUID: target.OwnerUID,
 	}
 	c.initShm()
 	return c, nil
@@ -88,10 +95,23 @@ func (c *Conn) initShm() {
 		return
 	}
 	size := c.width * c.height * 4
-	id, err := unix.SysvShmGet(unix.IPC_PRIVATE, size, unix.IPC_CREAT|0o777)
+	id, err := unix.SysvShmGet(unix.IPC_PRIVATE, size, unix.IPC_CREAT|0o600)
 	if err != nil {
 		c.useShm = false
 		return
+	}
+	// The agent runs as root, but on xrdp/GDM the X server that must attach
+	// to this segment runs as the non-root session owner. Chown the segment
+	// to that uid so root (agent) and the owner (X server) can both attach,
+	// while other local users cannot read the framebuffer. Best-effort: if
+	// this fails (or ownerUID is unknown), shm.AttachChecked below fails
+	// cleanly and initShm falls back to the core-protocol capture path.
+	if c.ownerUID > 0 {
+		var desc unix.SysvShmDesc
+		if _, serr := unix.SysvShmCtl(id, unix.IPC_STAT, &desc); serr == nil {
+			desc.Perm.Uid = uint32(c.ownerUID)
+			_, _ = unix.SysvShmCtl(id, unix.IPC_SET, &desc)
+		}
 	}
 	buf, err := unix.SysvShmAttach(id, 0, 0)
 	if err != nil {
