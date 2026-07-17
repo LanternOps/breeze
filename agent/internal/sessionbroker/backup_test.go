@@ -75,8 +75,8 @@ func TestForwardBackupCommand_ThreadsAsyncFlag(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			serverConn, clientConn := net.Pipe()
-			defer serverConn.Close()
-			defer clientConn.Close()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
 
 			brokerSideConn := ipc.NewConn(serverConn)
 			helperSideConn := ipc.NewConn(clientConn)

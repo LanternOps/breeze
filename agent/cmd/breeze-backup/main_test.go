@@ -56,7 +56,7 @@ func startEnvelopeReader(conn *ipc.Conn) <-chan recvResult {
 	go func() {
 		defer close(ch)
 		for {
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			env, err := conn.Recv()
 			ch <- recvResult{env, err}
 			if err != nil {
@@ -94,8 +94,8 @@ func TestHandleBackupCommand_AsyncBackupRunSendsAckThenUnsolicitedResult(t *test
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
 
 	agentSide, helperSide := net.Pipe()
-	defer agentSide.Close()
-	defer helperSide.Close()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = helperSide.Close() }()
 
 	agentConn := ipc.NewConn(agentSide)
 	helperConn := ipc.NewConn(helperSide)
@@ -172,7 +172,7 @@ func TestHandleBackupCommand_SyncBackupRunSendsExactlyOneReply(t *testing.T) {
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
 
 	agentSide, helperSide := net.Pipe()
-	defer agentSide.Close()
+	defer func() { _ = agentSide.Close() }()
 
 	agentConn := ipc.NewConn(agentSide)
 	helperConn := ipc.NewConn(helperSide)
@@ -195,7 +195,7 @@ func TestHandleBackupCommand_SyncBackupRunSendsExactlyOneReply(t *testing.T) {
 	go func() {
 		defer close(done)
 		handleBackupCommand(helperConn, env, mgr, nil, newActiveCommandCanceller())
-		helperSide.Close()
+		_ = helperSide.Close()
 	}()
 
 	replyEnv := nextBackupResult(t, ch)

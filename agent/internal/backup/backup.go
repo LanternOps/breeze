@@ -429,7 +429,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// there is nothing eligible to dedupe against — the extra remote
 	// list+manifest-download would be pure waste.
 	var prevSnapshot *Snapshot
-	incrementalDedupeActive := !(m.config.SystemStateEnabled && len(m.config.Paths) == 0)
+	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
 		prev, reason := previousManifest(runCtx, m.config.Provider)
 		if prev == nil {

@@ -102,6 +102,14 @@ func journalFileName(identity string) string {
 	return "backup-journal-" + hex.EncodeToString(sum[:])[:16] + ".jsonl"
 }
 
+// identityFingerprint returns a short, non-reversible fingerprint of a
+// destination identity, safe to log. The raw identity embeds provider
+// credentials (e.g. an S3 secret key), so it must never be logged directly.
+func identityFingerprint(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // openSnapshotJournal opens (or creates) the checkpoint journal for the
 // given destination identity in dir. dir is required (there is deliberately
 // NO os.TempDir() fallback — see resolveJournalDir: a deterministic
@@ -178,7 +186,7 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 			// ID (see StaleSnapshotID).
 			if !identityMatches {
 				slog.Warn("backup journal identity mismatch, discarding",
-					"path", path, "want", identity, "got", header.Identity)
+					"path", path, "want", identityFingerprint(identity), "got", identityFingerprint(header.Identity))
 			}
 			staleID := header.SnapshotID
 			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
@@ -213,7 +221,7 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 	if err != nil {
 		return header, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

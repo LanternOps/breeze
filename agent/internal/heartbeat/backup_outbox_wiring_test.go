@@ -68,7 +68,7 @@ func TestSetWebSocketClient_ReconnectFlushesBackupOutbox(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		// Welcome frame — this is what fires OnConnected on the client read pump.
 		_ = conn.WriteJSON(map[string]any{"type": "connected"})
 		for {

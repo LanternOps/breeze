@@ -246,12 +246,12 @@ func TestConnectResetsTerminalOutputBase64Capability(t *testing.T) {
 
 func TestHasServerCapability_ReflectsHandshakeCapabilityList(t *testing.T) {
 	srv := newTestServer(t, func(conn *websocket.Conn) {
-		conn.WriteJSON(map[string]any{
+		_ = conn.WriteJSON(map[string]any{
 			"type":         "connected",
 			"capabilities": []string{"terminal_output_base64", "backup_run_async"},
 		})
 		time.Sleep(100 * time.Millisecond)
-		conn.Close()
+		_ = conn.Close()
 	})
 	defer srv.Close()
 
@@ -282,12 +282,12 @@ func TestHasServerCapability_FalseBeforeHandshake(t *testing.T) {
 
 func TestConnectResetsServerCapabilities(t *testing.T) {
 	srv := newTestServer(t, func(conn *websocket.Conn) {
-		conn.WriteJSON(map[string]any{
+		_ = conn.WriteJSON(map[string]any{
 			"type":         "connected",
 			"capabilities": []string{"backup_run_async"},
 		})
 		time.Sleep(100 * time.Millisecond)
-		conn.Close()
+		_ = conn.Close()
 	})
 	defer srv.Close()
 
@@ -683,7 +683,7 @@ func TestReadPump_OnConnectedFiresEveryReconnect(t *testing.T) {
 	srv := newTestServer(t, func(conn *websocket.Conn) {
 		_ = conn.WriteJSON(map[string]any{"type": "connected"})
 		time.Sleep(20 * time.Millisecond)
-		conn.Close()
+		_ = conn.Close()
 	})
 	defer srv.Close()
 

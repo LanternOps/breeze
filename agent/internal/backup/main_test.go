@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	if tmp != "" {
-		os.RemoveAll(tmp)
+		_ = os.RemoveAll(tmp)
 	}
 	os.Exit(code)
 }

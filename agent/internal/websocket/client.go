@@ -110,11 +110,11 @@ type Client struct {
 	// the frame never reached the wire. Results still buffered in this channel
 	// when a pump exits are NOT drained: the next reconnect's writePump drains
 	// them onto the fresh connection, so a plain WS blip loses nothing.
-	resultChan         chan outboundResult
-	binaryFrameChan    chan []byte
-	stopOnce           sync.Once
-	isRunning          bool
-	runningMu          sync.RWMutex
+	resultChan      chan outboundResult
+	binaryFrameChan chan []byte
+	stopOnce        sync.Once
+	isRunning       bool
+	runningMu       sync.RWMutex
 
 	// OnConnected, if set, is invoked synchronously from the read pump once
 	// the server's "connected" welcome frame has been parsed — i.e. after a
@@ -522,7 +522,7 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 				continue
 			}
 
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.TextMessage, res.data); err != nil {
 				log.Warn("result write error", "commandId", res.result.CommandID, "error", err.Error())
 				// The write failed with the frame in flight; preserve the result
