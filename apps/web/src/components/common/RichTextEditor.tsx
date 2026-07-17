@@ -199,7 +199,6 @@ export default function RichTextEditor({ value, onChange, ariaLabel, testId }: R
     if (value !== editor.getHTML()) {
       editor.commands.setContent(value, { emitUpdate: false });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, editor]);
 
   return (
