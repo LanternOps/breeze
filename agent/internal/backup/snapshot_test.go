@@ -251,6 +251,9 @@ func TestDeleteSnapshot_DoesNotDeleteAdjacentPrefix(t *testing.T) {
 }
 
 func TestCreateSnapshot_PartialUploadFailure(t *testing.T) {
+	restore := setUploadRetryDelayForTest(0) // the failing file now gets one retry; don't wait out the real backoff
+	defer restore()
+
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "good.txt", "good content")
 
@@ -279,13 +282,15 @@ func TestCreateSnapshot_PartialUploadFailure(t *testing.T) {
 	}
 }
 
-// stallOnceProvider blocks its first UploadContext call until the passed
-// context is done (returning ctx.Err()), then succeeds immediately on every
-// subsequent call. It models a single stalled TCP connection on one file in
-// an otherwise-healthy upload run.
+// stallOnceProvider blocks every UploadContext call for the first distinct
+// localPath it sees (returning ctx.Err() once the passed context is done),
+// and succeeds immediately for every other file. Keying on localPath (rather
+// than call count) means the stalled file stays stalled across the per-file
+// upload retry too, so it models a single permanently-dead connection to one
+// file in an otherwise-healthy upload run.
 type stallOnceProvider struct {
 	mu        sync.Mutex
-	callCount int
+	stallPath string
 }
 
 func (p *stallOnceProvider) Upload(localPath, remotePath string) error {
@@ -294,11 +299,13 @@ func (p *stallOnceProvider) Upload(localPath, remotePath string) error {
 
 func (p *stallOnceProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
 	p.mu.Lock()
-	first := p.callCount == 0
-	p.callCount++
+	if p.stallPath == "" {
+		p.stallPath = localPath
+	}
+	stall := localPath == p.stallPath
 	p.mu.Unlock()
 
-	if first {
+	if stall {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -376,15 +383,19 @@ func TestUploadDeadline(t *testing.T) {
 }
 
 func TestPerFileUploadTimeoutDoesNotAbortJob(t *testing.T) {
-	// stallOnceProvider: first UploadContext call blocks until ctx.Done() then
-	// returns ctx.Err(); subsequent calls succeed immediately.
+	// stallOnceProvider: every UploadContext call for the first file it sees
+	// blocks until ctx.Done() then returns ctx.Err() (so the file stalls on
+	// both the initial attempt and its retry); the other file succeeds
+	// immediately.
 	p := &stallOnceProvider{}
 	files := []backupFile{
 		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
 		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 1},
 	}
-	restore := setUploadTimeoutFloorForTest(50 * time.Millisecond) // test seam, see Step 3
-	defer restore()
+	restoreFloor := setUploadTimeoutFloorForTest(50 * time.Millisecond) // test seam, see Step 3
+	defer restoreFloor()
+	restoreDelay := setUploadRetryDelayForTest(0) // don't wait out the real backoff before the retry
+	defer restoreDelay()
 
 	snap, err := CreateSnapshotContext(context.Background(), p, files)
 	if err != nil {
@@ -395,7 +406,113 @@ func TestPerFileUploadTimeoutDoesNotAbortJob(t *testing.T) {
 	}
 }
 
+// failOnceProvider fails the first UploadContext call for each distinct
+// localPath with a plain (non-cancel) error, then succeeds on every
+// subsequent call for that same path. It models a transient per-file upload
+// error that clears up on retry. The manifest upload (identified by its
+// remotePath suffix) always succeeds unconditionally — it is not part of
+// what this double is exercising, and it never gets a retry by design.
+type failOnceProvider struct {
+	mu     sync.Mutex
+	calls  map[string]int
+	failed map[string]bool
+}
+
+func newFailOnceProvider() *failOnceProvider {
+	return &failOnceProvider{
+		calls:  make(map[string]int),
+		failed: make(map[string]bool),
+	}
+}
+
+func (p *failOnceProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *failOnceProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	if strings.HasSuffix(remotePath, snapshotManifestKey) {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls[localPath]++
+	if !p.failed[localPath] {
+		p.failed[localPath] = true
+		return errors.New("transient upload error")
+	}
+	return nil
+}
+
+func (p *failOnceProvider) callCount(localPath string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls[localPath]
+}
+
+func (p *failOnceProvider) Download(remotePath, localPath string) error { return nil }
+func (p *failOnceProvider) List(prefix string) ([]string, error)        { return nil, nil }
+func (p *failOnceProvider) Delete(remotePath string) error              { return nil }
+
+func TestPerFileUploadRetry_SucceedsOnSecondAttempt(t *testing.T) {
+	p := newFailOnceProvider()
+	sourcePath := writeTempFile(t, "a")
+	files := []backupFile{
+		{sourcePath: sourcePath, snapshotPath: "a", size: 1},
+	}
+	restore := setUploadRetryDelayForTest(0) // don't wait out the real backoff
+	defer restore()
+
+	snap, err := CreateSnapshotContext(context.Background(), p, files)
+	if err != nil {
+		t.Fatalf("want nil error once the retry succeeds, got %v", err)
+	}
+	if len(snap.Files) != 1 {
+		t.Fatalf("want 1 uploaded file, got %d", len(snap.Files))
+	}
+	if got := p.callCount(sourcePath); got != 2 {
+		t.Fatalf("want exactly 2 UploadContext calls (initial + one retry), got %d", got)
+	}
+}
+
+func TestPerFileUploadRetry_CancelDuringFirstAttempt_NoRetry(t *testing.T) {
+	// blockingUploadProvider (defined in backup_test.go) blocks its
+	// UploadContext call until ctx.Done(), signalling p.started once the
+	// call has begun so the test can cancel the job context mid-attempt.
+	p := newBlockingUploadProvider()
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+	}
+	restore := setUploadRetryDelayForTest(0) // retry must not happen at all; keep any accidental wait short
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := CreateSnapshotContext(ctx, p, files)
+		errCh <- err
+	}()
+
+	select {
+	case <-p.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for upload to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not unwind after job-context cancel")
+	}
+}
+
 func TestCreateSnapshot_AllUploadsFail(t *testing.T) {
+	restore := setUploadRetryDelayForTest(0) // the failing upload now gets one retry; don't wait out the real backoff
+	defer restore()
+
 	provider := newMockProvider()
 	provider.uploadErr = errors.New("storage unavailable")
 

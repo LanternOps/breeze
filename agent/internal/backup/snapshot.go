@@ -138,6 +138,20 @@ func uploadDeadline(size int64) time.Duration {
 	return d
 }
 
+// uploadRetryDelay is the backoff wait before the single per-file upload
+// retry (see the retry loop in createSnapshotWithProgress). It is
+// interruptible by job-context cancellation.
+var uploadRetryDelay = 30 * time.Second
+
+// setUploadRetryDelayForTest overrides uploadRetryDelay so tests can exercise
+// the per-file retry path without waiting out the real backoff. Call the
+// returned restore func (typically via defer) to put the real delay back.
+func setUploadRetryDelayForTest(d time.Duration) (restore func()) {
+	old := uploadRetryDelay
+	uploadRetryDelay = d
+	return func() { uploadRetryDelay = old }
+}
+
 // CreateSnapshot creates a new snapshot and uploads files via the provider.
 func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
 	return CreateSnapshotContext(context.Background(), provider, files)
@@ -200,12 +214,18 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
 
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(file.size))
-		uploadErr := uploadSnapshotFile(attemptCtx, provider, file.sourcePath, backupPath)
-		cancelAttempt()
-		if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
-			// The per-file deadline fired, not a job cancel: skip this file, keep going.
-			uploadErr = fmt.Errorf("upload stalled: no completion within %s", uploadDeadline(file.size))
+		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
+		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
+			// Exactly one retry, only for a non-cancel failure (including a
+			// per-file deadline expiry, which attemptFileUpload has already
+			// converted to a plain error). Job-context cancel during the
+			// backoff wait aborts immediately — never retried.
+			select {
+			case <-ctx.Done():
+				uploadErr = errBackupStopped
+			case <-time.After(uploadRetryDelay):
+				uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+			}
 		}
 		if uploadErr != nil {
 			if errors.Is(uploadErr, errBackupStopped) {
@@ -290,6 +310,22 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	return snapshot, nil
+}
+
+// attemptFileUpload runs a single upload attempt for file against a fresh
+// per-attempt context scoped to ctx with a size-scaled deadline (see
+// uploadDeadline). A deadline expiry that is not also a job-context cancel is
+// converted to a plain error so the caller can distinguish "this file
+// stalled" (retry / skip-and-continue) from "the job was cancelled" (abort).
+func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, file backupFile, backupPath string) error {
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(file.size))
+	defer cancelAttempt()
+	uploadErr := uploadSnapshotFile(attemptCtx, provider, file.sourcePath, backupPath)
+	if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
+		// The per-file deadline fired, not a job cancel.
+		uploadErr = fmt.Errorf("upload stalled: no completion within %s", uploadDeadline(file.size))
+	}
+	return uploadErr
 }
 
 func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, localPath, remotePath string) error {
