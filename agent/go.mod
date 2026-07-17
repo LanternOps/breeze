@@ -20,6 +20,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/gosnmp/gosnmp v1.43.2
 	github.com/hirochachacha/go-smb2 v1.1.0
+	github.com/jezek/xgb v1.3.1
 	github.com/pion/rtcp v1.2.17
 	github.com/pion/webrtc/v4 v4.2.16
 	github.com/shirou/gopsutil/v3 v3.24.5
