@@ -23,10 +23,14 @@ import (
 // (BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS in
 // apps/api/src/jobs/backupRetention.ts) protects a manifest-less (no
 // manifest.json yet) snapshot prefix from deletion until it's older than
-// this SAME 7-day window, because a fresher partial prefix may still be
-// this journal's live resume target. If this value changes, that constant
-// must change with it (and vice versa) or GC can delete state a resumable
-// run still depends on.
+// journalMaxAge PLUS a 48h resume-headroom margin (9 days total), because a
+// fresher partial prefix may still be this journal's live resume target.
+// The GC threshold MUST stay STRICTLY LARGER than journalMaxAge, not merely
+// equal — equality left a boundary race where a resume opened just inside
+// the journal window (e.g. day 6.9) legitimately keeps running past day 7,
+// and GC could sweep its still-live prefix out from under it (corrected
+// 2026-07-17, GC re-review). If this value changes, the API constant must
+// change with it (and vice versa), preserving that strict inequality.
 var journalMaxAge = 7 * 24 * time.Hour
 
 // setJournalMaxAgeForTest overrides journalMaxAge so tests can exercise the

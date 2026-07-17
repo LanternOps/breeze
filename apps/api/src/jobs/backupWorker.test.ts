@@ -323,7 +323,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedDestinations: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 0 });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -332,13 +332,13 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(cleanupExpiredSnapshotsMock).toHaveBeenNthCalledWith(1, 'org-a');
     expect(cleanupExpiredSnapshotsMock).toHaveBeenNthCalledWith(2, 'org-b');
     expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
-    // Sweep is destination-scoped, not org-scoped — called once total, not once per org.
+    // Sweep is storage-identity-scoped, not org-scoped — called once total, not once per org.
     expect(result).toEqual({
       deleted: 2,
       skipped: 0,
       prunedByMaxVersions: 0,
       gcDeleted: 5,
-      gcSkippedDestinations: 0,
+      gcSkippedIdentities: 0,
     });
   });
 
@@ -360,14 +360,14 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(result.deleted).toBe(3);
     expect(result.skipped).toBe(1);
     expect(result.gcDeleted).toBe(0);
-    expect(result.gcSkippedDestinations).toBe(0);
+    expect(result.gcSkippedIdentities).toBe(0);
   });
 
   it('still runs the sweep when there are no orgs with snapshots (row-level retention is a no-op)', async () => {
     mockDb.selectDistinct.mockReturnValue({
       from: vi.fn().mockResolvedValue([]),
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedDestinations: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedIdentities: 0 });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -378,7 +378,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skipped: 0,
       prunedByMaxVersions: 0,
       gcDeleted: 0,
-      gcSkippedDestinations: 0,
+      gcSkippedIdentities: 0,
     });
   });
 });

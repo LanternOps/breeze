@@ -52,12 +52,19 @@ const {
   cleanupExpiredSnapshots,
   sweepUnreferencedBackupObjects,
   resolveBackupGcMaxDeletesPerRun,
+  normalizeStorageIdentity,
   BACKUP_GC_GRACE_MS,
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS,
 } = await import('./backupRetention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SEVEN_DAYS_MS = 7 * DAY_MS;
+const AGENT_JOURNAL_MAX_AGE_MS = 7 * DAY_MS;
+// Ages relative to the ACTUAL current threshold (not a hardcoded "7 days")
+// so these fixtures stay correct even if the headroom formula changes again.
+const JUST_PAST_MANIFESTLESS_THRESHOLD = () =>
+  new Date(Date.now() - BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS - DAY_MS);
+const EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD = () =>
+  new Date(Date.now() - BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS - 2 * DAY_MS);
 
 function manifestJson(files: { backupPath: string }[]): string {
   return JSON.stringify({ formatVersion: 2, files });
@@ -172,7 +179,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(deletedArg.keys).toEqual(['snapshots/A/files/orphan.dat']);
     expect(deletedArg.keys).not.toContain('snapshots/A/files/foo.dat');
     expect(deletedArg.keys).not.toContain('snapshots/B/manifest.json');
-    expect(result).toEqual({ deleted: 1, skippedDestinations: 0 });
+    expect(result).toEqual({ deleted: 1, skippedIdentities: 0 });
   });
 
   it('keeps a loose unreferenced object under a manifest-bearing prefix that is still inside the 48h grace window', async () => {
@@ -191,7 +198,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     const result = await sweepUnreferencedBackupObjects();
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+    expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
   });
 
   it('never deletes an object with no last-modified data, even if otherwise unreferenced (fail-closed per-object)', async () => {
@@ -209,12 +216,13 @@ describe('sweepUnreferencedBackupObjects', () => {
     const result = await sweepUnreferencedBackupObjects();
 
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+    expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
   });
 
   // CRITICAL 3 — manifest-less prefixes are protected at PREFIX granularity
-  // for BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS (7 days, mirrors the agent's
-  // journalMaxAge), not the 48h loose-object grace.
+  // for BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS (9 days = the agent's 7-day
+  // journalMaxAge + 48h resume headroom, corrected 2026-07-17), not the 48h
+  // loose-object grace.
   describe('manifest-less prefix protection (CRITICAL 3)', () => {
     it('leaves a manifest-less prefix entirely untouched while ANY of its objects is fresh (mixed-age)', async () => {
       selectQueue.push([]);
@@ -236,17 +244,17 @@ describe('sweepUnreferencedBackupObjects', () => {
       // The single fresh object protects the WHOLE "C" prefix — including
       // partial-old.dat, which on its own would look well past any grace.
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
     });
 
-    it('sweeps a manifest-less prefix in full once its newest object clears the 7-day window', async () => {
+    it('sweeps a manifest-less prefix in full once its newest object clears the (9-day) window', async () => {
       selectQueue.push([]);
       selectQueue.push([destination]);
       selectQueue.push([{ snapshotId: 'B' }]);
 
       fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-      const allOld = new Date(Date.now() - SEVEN_DAYS_MS - DAY_MS); // 8 days — past the window
+      const allOld = JUST_PAST_MANIFESTLESS_THRESHOLD(); // past the (headroom-inclusive) window
       listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
         { key: 'snapshots/B/manifest.json', lastModified: allOld },
         { key: 'snapshots/C/files/partial-1.dat', lastModified: allOld },
@@ -267,8 +275,33 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.deleted).toBe(2);
     });
 
-    it('BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS matches the agent journalMaxAge (7 days)', () => {
-      expect(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    it('boundary regression: protects a resume opened just inside the agent journal window (day ~6.9) that legitimately runs past day 7', async () => {
+      // This is exactly the scenario the 2026-07-17 correction targets: using
+      // journalMaxAge (7 days) alone as the sweep threshold would have swept
+      // this prefix (its newest object is 7 days + a few hours old — past the
+      // OLD threshold). With the 48h headroom, it must stay protected.
+      selectQueue.push([]);
+      selectQueue.push([destination]);
+      selectQueue.push([{ snapshotId: 'B' }]);
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+
+      const justPastOldSevenDayThreshold = new Date(Date.now() - AGENT_JOURNAL_MAX_AGE_MS - 6 * 60 * 60 * 1000); // 7d + 6h
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/B/manifest.json', lastModified: justPastOldSevenDayThreshold },
+        { key: 'snapshots/D/files/resume-chunk.dat', lastModified: justPastOldSevenDayThreshold },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
+    });
+
+    it('BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS is strictly larger than the agent journalMaxAge (7 days), not merely equal', () => {
+      expect(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS).toBeGreaterThan(AGENT_JOURNAL_MAX_AGE_MS);
+      // Exact value pinned for regression safety: 7 days + 48h headroom = 9 days.
+      expect(BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS).toBe(9 * DAY_MS);
     });
   });
 
@@ -289,7 +322,7 @@ describe('sweepUnreferencedBackupObjects', () => {
       .mockRejectedValueOnce(new Error('network error fetching manifest')) // destinationBroken's snapshot X
       .mockResolvedValueOnce(manifestJson([])); // destinationOk's snapshot Y
 
-    const old = new Date(Date.now() - SEVEN_DAYS_MS - DAY_MS);
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock
       .mockResolvedValueOnce([]) // destinationBroken's identity — empty listing, mark still attempted+fails on X
       .mockResolvedValueOnce([
@@ -310,7 +343,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(deleteBackupObjectKeysMock).toHaveBeenCalledWith(
       expect.objectContaining({ providerConfig: destinationOk.providerConfig }),
     );
-    expect(result).toEqual({ deleted: 1, skippedDestinations: 1 });
+    expect(result).toEqual({ deleted: 1, skippedIdentities: 1 });
   });
 
   it('honors the per-run deletion cap, leaving the rest for a later run', async () => {
@@ -322,8 +355,8 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-    const old = new Date(Date.now() - SEVEN_DAYS_MS - DAY_MS);
-    const older = new Date(Date.now() - SEVEN_DAYS_MS - 2 * DAY_MS);
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+    const older = EVEN_FURTHER_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/B/manifest.json', lastModified: old },
       { key: 'snapshots/A/files/orphan-1.dat', lastModified: old },
@@ -357,7 +390,7 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
     expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedDestinations: 1 });
+    expect(result).toEqual({ deleted: 0, skippedIdentities: 1 });
   });
 
   it('does not crash the sweep when a delete is rejected (e.g. object-lock) — counts it and moves on', async () => {
@@ -367,7 +400,7 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
 
-    const old = new Date(Date.now() - SEVEN_DAYS_MS - DAY_MS);
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/B/manifest.json', lastModified: old },
       { key: 'snapshots/A/files/locked.dat', lastModified: old },
@@ -380,7 +413,7 @@ describe('sweepUnreferencedBackupObjects', () => {
 
     const result = await sweepUnreferencedBackupObjects();
 
-    expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+    expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
   });
 
   // CRITICAL 1 — sweep scope must be storage identity (provider + endpoint +
@@ -412,19 +445,54 @@ describe('sweepUnreferencedBackupObjects', () => {
       const result = await sweepUnreferencedBackupObjects();
 
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
     });
 
     it('blocks the entire run when any backup_snapshots row has a null config_id (cannot be attributed to a bucket)', async () => {
       selectQueue.push([{ id: 'orphan-snap-1' }]); // unattributedRows — one exists
-      selectQueue.push([destination]); // destinations — used only to size skippedDestinations
+      selectQueue.push([destination]); // destinations — used only to size skippedIdentities
 
       const result = await sweepUnreferencedBackupObjects();
 
       expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
       expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ deleted: 0, skippedDestinations: 1 });
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 1 });
+    });
+
+    it('belt-and-braces: fail-closed-skips every identity that coarsely collides on bucket+host despite normalizeStorageIdentity keeping them apart', async () => {
+      // Genuine variant normalizeStorageIdentity does NOT currently collapse:
+      // one config specifies the port explicitly, the other omits it. That's
+      // a real gap (an implicit default port could mean the same physical
+      // endpoint), so the two land in DIFFERENT identities by construction —
+      // exactly the "unanticipated variant" the coarse check exists to catch.
+      const configWithPort = {
+        id: 'cfg-port',
+        provider: 's3',
+        providerConfig: { bucket: 'collide-bucket', endpoint: 'https://minio.local:9000' },
+      };
+      const configWithoutPort = {
+        id: 'cfg-noport',
+        provider: 's3',
+        providerConfig: { bucket: 'collide-bucket', endpoint: 'https://minio.local' },
+      };
+
+      // Sanity check the premise: normalizeStorageIdentity really does treat
+      // these as different (otherwise this test would be proving nothing).
+      expect(normalizeStorageIdentity('s3', configWithPort.providerConfig))
+        .not.toBe(normalizeStorageIdentity('s3', configWithoutPort.providerConfig));
+
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([configWithPort, configWithoutPort]); // destinations — 2 identities, coarsely the same bucket+host
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      // Neither identity's retained-rows query, listing, mark, or delete
+      // ever runs — both are excluded before any provider call.
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
+      expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: 0, skippedIdentities: 2 });
     });
   });
 
@@ -444,7 +512,7 @@ describe('sweepUnreferencedBackupObjects', () => {
     );
 
     const recent = new Date(Date.now() - 1 * DAY_MS);
-    const old = new Date(Date.now() - SEVEN_DAYS_MS - DAY_MS);
+    const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
     listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
       { key: 'snapshots/NEW/manifest.json', lastModified: recent }, // newest manifest in the listing — no DB row
       { key: 'snapshots/OLD/files/base.dat', lastModified: old }, // referenced by NEW — must survive despite being old and manifest-less
@@ -457,7 +525,68 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect.objectContaining({ key: 'snapshots/NEW/manifest.json' }),
     );
     expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ deleted: 0, skippedDestinations: 0 });
+    expect(result).toEqual({ deleted: 0, skippedIdentities: 0 });
+  });
+});
+
+// IMPORTANT 1 — normalizeStorageIdentity must collapse cosmetic differences
+// between configs describing the SAME physical bucket, or two configs on one
+// bucket split into two identities and CRITICAL 1 (cross-config deletion)
+// comes back via the back door.
+describe('normalizeStorageIdentity (IMPORTANT 1)', () => {
+  it('treats a blank S3 endpoint as identical to an explicit default AWS endpoint', () => {
+    const blank = normalizeStorageIdentity('s3', { bucket: 'my-bucket' });
+    const explicitGlobalDefault = normalizeStorageIdentity('s3', {
+      bucket: 'my-bucket',
+      endpoint: 'https://s3.amazonaws.com',
+    });
+    const explicitRegionalDefault = normalizeStorageIdentity('s3', {
+      bucket: 'my-bucket',
+      endpoint: 's3.us-west-2.amazonaws.com',
+    });
+
+    expect(blank).toBe(explicitGlobalDefault);
+    expect(blank).toBe(explicitRegionalDefault);
+  });
+
+  it('treats an endpoint trailing slash and host case as cosmetic', () => {
+    const withSlashAndMixedCase = normalizeStorageIdentity('s3', {
+      bucket: 'my-bucket',
+      endpoint: 'https://Minio.local:9000/',
+    });
+    const canonical = normalizeStorageIdentity('s3', {
+      bucket: 'my-bucket',
+      endpoint: 'https://minio.local:9000',
+    });
+
+    expect(withSlashAndMixedCase).toBe(canonical);
+  });
+
+  it('treats a scheme-less endpoint as identical to its https-schemed equivalent', () => {
+    const schemeLess = normalizeStorageIdentity('s3', { bucket: 'my-bucket', endpoint: 'minio.local:9000' });
+    const schemed = normalizeStorageIdentity('s3', { bucket: 'my-bucket', endpoint: 'https://minio.local:9000' });
+
+    expect(schemeLess).toBe(schemed);
+  });
+
+  it('normalizes local provider paths (trailing slash, double slash, "." segments) via path.resolve', () => {
+    const trailingSlash = normalizeStorageIdentity('local', { path: '/mnt/backups/' });
+    const doubleSlash = normalizeStorageIdentity('local', { path: '/mnt//backups' });
+    const dotSegment = normalizeStorageIdentity('local', { path: '/mnt/backups/./' });
+
+    expect(trailingSlash).toBe(doubleSlash);
+    expect(trailingSlash).toBe(dotSegment);
+  });
+
+  it('produces DIFFERENT identities for genuinely different buckets and hosts', () => {
+    const bucketA = normalizeStorageIdentity('s3', { bucket: 'bucket-a', endpoint: 'https://minio.local:9000' });
+    const bucketB = normalizeStorageIdentity('s3', { bucket: 'bucket-b', endpoint: 'https://minio.local:9000' });
+    const differentHost = normalizeStorageIdentity('s3', { bucket: 'bucket-a', endpoint: 'https://other-host.local:9000' });
+    const differentLocalPath = normalizeStorageIdentity('local', { path: '/mnt/backups' });
+
+    expect(bucketA).not.toBe(bucketB);
+    expect(bucketA).not.toBe(differentHost);
+    expect(bucketA).not.toBe(differentLocalPath);
   });
 });
 

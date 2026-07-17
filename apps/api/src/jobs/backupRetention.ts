@@ -6,6 +6,7 @@
  * holds and immutability windows.
  */
 
+import { resolve as resolveLocalPath } from 'node:path';
 import { db } from '../db';
 import {
   backupSnapshots,
@@ -409,25 +410,40 @@ export function computeExpiresAt(
 //                 BACKUP_GC_GRACE_MS (48h).
 //               - NO manifest.json (partial/resumable run): protected at
 //                 PREFIX granularity for BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS
-//                 (7 days, mirrors the agent's journalMaxAge) — a prefix is
-//                 swept in full only once its NEWEST object clears that
-//                 window; one single fresh object protects the WHOLE prefix.
+//                 (9 days = the agent's 7-day journalMaxAge + 48h resume
+//                 headroom, corrected 2026-07-17 — equality with journalMaxAge
+//                 alone left a boundary race) — a prefix is swept in full
+//                 only once its NEWEST object clears that window; one single
+//                 fresh object protects the WHOLE prefix.
 //   Null config_id: a backup_snapshots row with no config_id can't be
 //             attributed to any specific storage identity — its objects
 //             could live in ANY bucket we're about to sweep. Its mere
 //             existence blocks GC for every identity this run (fail-closed;
 //             see sweepUnreferencedBackupObjects).
+//   Identity normalization: two configs describing the SAME physical bucket
+//             through cosmetically different config values (blank vs
+//             explicit-default endpoint, trailing slash, host case, local
+//             path spelling) must still collapse to ONE identity, or
+//             CRITICAL 1 comes back via the back door — see
+//             normalizeStorageIdentity and its belt-and-braces collision
+//             check, detectSuspiciousStorageIdentityCollisions.
 
 export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
 
-// Mirrors agent/internal/backup/journal.go's journalMaxAge EXACTLY — the
-// agent trusts its checkpoint journal (and therefore a partial/manifest-less
-// snapshot prefix) for resume during this window and does not re-verify
-// remote objects on resume. Deleting a manifest-less prefix's objects while
-// its journal is still "trusted" would corrupt an in-progress resumed run.
-// If journalMaxAge changes, this must change with it (and vice versa) — see
-// the cross-reference comment on journalMaxAge itself.
-export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// Must stay STRICTLY LARGER than agent/internal/backup/journal.go's
+// journalMaxAge (7 days) — the agent trusts its checkpoint journal (and
+// therefore a partial/manifest-less snapshot prefix) for resume during that
+// window and does not re-verify remote objects on resume. Using
+// journalMaxAge as an exact equality boundary left a race: a resume opened
+// at, say, day 6.9 legitimately keeps running past day 7, so GC could sweep
+// its still-live manifest-less prefix out from under it (corrected
+// 2026-07-17, GC re-review). The +48h below is resume headroom, not the
+// unrelated BACKUP_GC_GRACE_MS concept, though it happens to reuse the same
+// 48h value — see the cross-reference comment on journalMaxAge itself, which
+// must stay strictly SMALLER than this constant.
+const BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // must equal the agent's journalMaxAge
+export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS =
+  BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS + BACKUP_GC_GRACE_MS; // journalMaxAge + 48h resume headroom = 9 days
 
 // Providers this GC path knows how to list-with-last-modified and delete for.
 // Mirrors deleteBackupSnapshotArtifacts's s3/local support — other providers
@@ -436,7 +452,11 @@ export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // age data means no safe sweep decision).
 const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
 
-export type BackupGcResult = { deleted: number; skippedDestinations: number };
+// Named `skippedIdentities` (not `skippedDestinations`) to match the rest of
+// this file's terminology post-CRITICAL-1: the unit of GC work is a storage
+// identity (possibly several backupConfigs rows sharing one bucket), not a
+// single "destination" row.
+export type BackupGcResult = { deleted: number; skippedIdentities: number };
 
 type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
 
@@ -487,20 +507,66 @@ export type BackupGcStorageIdentity = {
   configIds: string[];
 };
 
+// AWS's own default S3 endpoints. An endpoint that's EXPLICITLY the default
+// AWS endpoint must canonicalize to the same identity as a blank/omitted
+// endpoint (both mean "use AWS's default") — otherwise two configs that only
+// differ by "left it blank" vs "typed the default in by hand" would split
+// into two identities and resurrect CRITICAL 1. Covers the same host shapes
+// deriveS3RegionFromEndpoint (packages/shared/src/utils/s3Region.ts) knows
+// about, plus the bare regionless legacy host.
+const DEFAULT_AWS_S3_ENDPOINT_PATTERN = /^s3(\.dualstack)?([.-][a-z0-9-]+)?\.amazonaws\.com$/;
+
 /**
- * Identity = provider + endpoint + bucket (S3) or provider + root path
- * (local) — deliberately EXCLUDING providerConfig.prefix. See the
+ * Normalizes an S3-compatible endpoint for identity comparison: strips
+ * scheme/path/trailing-slash (only host+port matter), lowercases the host
+ * (URL parsing already does this, but be explicit — this value feeds a
+ * cross-config grouping decision, not just an HTTP call), and canonicalizes
+ * a blank endpoint and an explicit default-AWS endpoint to the SAME value.
+ * A genuinely unparseable endpoint falls back to a trimmed+lowercased raw
+ * string rather than being treated as blank — fail toward "different
+ * identity" (safe: at worst splits one bucket into two, never merges two
+ * different ones), never toward "same identity", for anything not
+ * confidently understood.
+ */
+function normalizeS3Endpoint(endpoint: string | null | undefined): string {
+  const raw = endpoint?.trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    const host = url.hostname.toLowerCase();
+    if (DEFAULT_AWS_S3_ENDPOINT_PATTERN.test(host)) return '';
+    return url.port ? `${host}:${url.port}` : host;
+  } catch {
+    return raw.toLowerCase().replace(/\/+$/, '');
+  }
+}
+
+/**
+ * Identity = provider + endpoint + bucket (S3) or provider + resolved root
+ * path (local) — deliberately EXCLUDING providerConfig.prefix. See the
  * IMPORTANT-1 comment on backupSnapshotRootPrefix in backupSnapshotStorage.ts
  * for why: the agent ignores prefix when writing, so two configs that only
  * differ by prefix are, physically, the exact same object namespace.
+ *
+ * Cosmetic variants that must NOT split one physical bucket into two
+ * identities (GC re-review 2026-07-17, IMPORTANT 1): blank endpoint vs the
+ * explicit default AWS endpoint; endpoint trailing slash and host
+ * case (`https://Minio.local:9000/` vs `https://minio.local:9000`);
+ * scheme-less vs schemed (both parsed the same way); local paths differing
+ * only by trailing slash, `//`, or `.` segments (`path.resolve` collapses
+ * these exactly like `ensureContainedLocalPath` in backupSnapshotStorage.ts
+ * already does for the same reason).
  */
-function backupStorageIdentityKey(provider: string, providerConfig: Record<string, unknown>): string {
+export function normalizeStorageIdentity(provider: string, providerConfig: Record<string, unknown>): string {
   if (provider === 'local') {
-    const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath') || '';
-    return `local::${rootPath}`;
+    const rawPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath') || '';
+    const normalizedPath = rawPath ? resolveLocalPath(rawPath) : '';
+    return `local::${normalizedPath}`;
   }
-  const endpoint = getStringValue(providerConfig, 'endpoint') ?? '';
-  const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName') || '';
+  const endpoint = normalizeS3Endpoint(getStringValue(providerConfig, 'endpoint'));
+  // Bucket names are case-sensitive per the S3 spec — trim whitespace only,
+  // never lowercase.
+  const bucket = (getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName') || '').trim();
   return `${provider}::${endpoint}::${bucket}`;
 }
 
@@ -509,7 +575,7 @@ function groupBackupConfigsByStorageIdentity(
 ): Map<string, BackupGcStorageIdentity> {
   const identities = new Map<string, BackupGcStorageIdentity>();
   for (const config of configs) {
-    const key = backupStorageIdentityKey(config.provider, asRecord(config.providerConfig));
+    const key = normalizeStorageIdentity(config.provider, asRecord(config.providerConfig));
     const existing = identities.get(key);
     if (existing) {
       existing.configIds.push(config.id);
@@ -523,6 +589,65 @@ function groupBackupConfigsByStorageIdentity(
     });
   }
   return identities;
+}
+
+/**
+ * Belt-and-braces (GC re-review 2026-07-17, IMPORTANT 1 suggestion): even
+ * after normalizeStorageIdentity, an unanticipated cosmetic variant it
+ * doesn't yet account for could still produce two DIFFERENT identity keys
+ * for the SAME physical bucket — silently re-opening CRITICAL 1, since each
+ * identity would only see its own configs' retained snapshots and could
+ * delete the other's live objects. Cross-check with a CRUDER comparison —
+ * bucket name case-insensitively + hostname only, ignoring port/scheme/the
+ * AWS-default canonicalization entirely — and if THAT collapses two
+ * identities normalizeStorageIdentity kept apart, something is wrong: log
+ * loudly and fail-closed by excluding ALL of them from this run rather than
+ * risk two overlapping sweeps on one bucket. Local identities are already
+ * exact-path-resolved and have no separate coarse check.
+ */
+function detectSuspiciousStorageIdentityCollisions(
+  identities: Map<string, BackupGcStorageIdentity>,
+): Set<string> {
+  const coarseGroups = new Map<string, Set<string>>();
+
+  for (const identity of identities.values()) {
+    if (identity.provider === 'local') continue;
+
+    const providerConfig = asRecord(identity.providerConfig);
+    const bucket = (getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName') || '')
+      .trim()
+      .toLowerCase();
+    const rawEndpoint = getStringValue(providerConfig, 'endpoint');
+    let hostOnly = '';
+    if (rawEndpoint?.trim()) {
+      try {
+        hostOnly = new URL(rawEndpoint.includes('://') ? rawEndpoint : `https://${rawEndpoint}`).hostname.toLowerCase();
+      } catch {
+        hostOnly = rawEndpoint.trim().toLowerCase();
+      }
+    }
+    const coarseKey = `${identity.provider}::${hostOnly}::${bucket}`;
+
+    let identityKeys = coarseGroups.get(coarseKey);
+    if (!identityKeys) {
+      identityKeys = new Set();
+      coarseGroups.set(coarseKey, identityKeys);
+    }
+    identityKeys.add(identity.key);
+  }
+
+  const suspicious = new Set<string>();
+  for (const [coarseKey, identityKeys] of coarseGroups) {
+    if (identityKeys.size <= 1) continue;
+    console.error(
+      `[BackupGC] ${identityKeys.size} DIFFERENT normalized storage identities (${[...identityKeys].join(', ')}) ` +
+      `all resolve to the same bucket+host (${coarseKey}) under a cruder comparison — normalizeStorageIdentity ` +
+      `likely missed a cosmetic variant. Excluding all of them from this run (fail-closed) to avoid two ` +
+      `overlapping sweeps on the same physical bucket.`,
+    );
+    for (const key of identityKeys) suspicious.add(key);
+  }
+  return suspicious;
 }
 
 // ── Listing grouped by snapshot-ID prefix ─────────────────────────────────────
@@ -768,15 +893,25 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   const identities = groupBackupConfigsByStorageIdentity(destinations);
 
   if (unattributedRows.length > 0) {
+    // Ops-visible (console.error, not debug) and states the remediation:
+    // nothing about this self-heals. Someone has to either attribute the
+    // row (backfill its config_id) or confirm it's truly orphaned and
+    // delete the row — until then, EVERY GC run is a no-op.
     console.error(
-      `[BackupGC] ${unattributedRows.length} backup_snapshots row(s) have no config_id — cannot attribute to a storage identity, blocking ALL ${identities.size} identity sweep(s) this run (fail-closed)`,
+      `[BackupGC] ${unattributedRows.length} backup_snapshots row(s) have no config_id — cannot attribute to a ` +
+      `storage identity, so their objects could live in ANY bucket. Blocking ALL ${identities.size} identity ` +
+      `sweep(s) this run (fail-closed). REMEDIATION REQUIRED: this does not self-heal — attribute the affected ` +
+      `row(s) to the correct backup_configs.id, or confirm they're orphaned and delete the row(s), then GC will ` +
+      `resume on its next run.`,
     );
-    console.log(`[BackupGC] Run complete: deleted 0 object(s), ${identities.size} destination(s) skipped`);
-    return { deleted: 0, skippedDestinations: identities.size };
+    console.log(`[BackupGC] Run complete: deleted 0 object(s), ${identities.size} identity/identities skipped`);
+    return { deleted: 0, skippedIdentities: identities.size };
   }
 
+  const suspiciousIdentityKeys = detectSuspiciousStorageIdentityCollisions(identities);
+
   let deleted = 0;
-  let skippedDestinations = 0;
+  let skippedIdentities = 0;
   let deletesRemaining = resolveBackupGcMaxDeletesPerRun();
 
   for (const identity of identities.values()) {
@@ -785,8 +920,13 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       break;
     }
 
+    if (suspiciousIdentityKeys.has(identity.key)) {
+      skippedIdentities++;
+      continue; // detectSuspiciousStorageIdentityCollisions already logged the error
+    }
+
     if (!BACKUP_GC_SUPPORTED_PROVIDERS.has(identity.provider)) {
-      skippedDestinations++;
+      skippedIdentities++;
       console.warn(
         `[BackupGC] Identity ${identity.key}: provider '${identity.provider}' has no GC listing support — skipping (fail-closed)`,
       );
@@ -800,29 +940,29 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         .where(inArray(backupSnapshots.configId, identity.configIds));
       const retainedSnapshotIds = retainedRows.map((row) => row.snapshotId);
 
-      const destDeleted = await sweepStorageIdentity(
+      const identityDeleted = await sweepStorageIdentity(
         { id: identity.key, provider: identity.provider, providerConfig: identity.providerConfig },
         retainedSnapshotIds,
         nowMs,
         deletesRemaining,
       );
-      deleted += destDeleted;
-      deletesRemaining -= destDeleted;
+      deleted += identityDeleted;
+      deletesRemaining -= identityDeleted;
 
-      if (destDeleted > 0) {
-        console.log(`[BackupGC] Identity ${identity.key}: deleted ${destDeleted} unreferenced object(s)`);
+      if (identityDeleted > 0) {
+        console.log(`[BackupGC] Identity ${identity.key}: deleted ${identityDeleted} unreferenced object(s)`);
       } else {
         console.debug(`[BackupGC] Identity ${identity.key}: 0 objects deleted`);
       }
     } catch (error) {
-      skippedDestinations++;
+      skippedIdentities++;
       console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
     }
   }
 
   console.log(
-    `[BackupGC] Run complete: deleted ${deleted} object(s), ${skippedDestinations} destination(s) skipped`,
+    `[BackupGC] Run complete: deleted ${deleted} object(s), ${skippedIdentities} identity/identities skipped`,
   );
 
-  return { deleted, skippedDestinations };
+  return { deleted, skippedIdentities };
 }

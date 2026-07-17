@@ -300,7 +300,11 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   skipped: number;
   prunedByMaxVersions: number;
   gcDeleted: number;
-  gcSkippedDestinations: number;
+  // Named `gcSkippedIdentities` (not `gcSkippedDestinations`) to match
+  // backupRetention.ts's BackupGcResult post-CRITICAL-1: GC's unit of work is
+  // a storage identity (possibly several backupConfigs rows sharing one
+  // bucket), not a single "destination" row.
+  gcSkippedIdentities: number;
 }> {
   const orgRows = await db
     .selectDistinct({ orgId: backupSnapshots.orgId })
@@ -326,16 +330,16 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // job: row-level retention already succeeded, and BullMQ would otherwise
   // retry/re-log the whole run over an unrelated object-storage problem.
   let gcDeleted = 0;
-  let gcSkippedDestinations = 0;
+  let gcSkippedIdentities = 0;
   try {
     const gcResult = await sweepUnreferencedBackupObjects();
     gcDeleted = gcResult.deleted;
-    gcSkippedDestinations = gcResult.skippedDestinations;
+    gcSkippedIdentities = gcResult.skippedIdentities;
   } catch (err) {
     console.error('[BackupWorker] Backup object GC sweep failed — retention run still succeeded:', err);
   }
 
-  return { deleted, skipped, prunedByMaxVersions, gcDeleted, gcSkippedDestinations };
+  return { deleted, skipped, prunedByMaxVersions, gcDeleted, gcSkippedIdentities };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────
