@@ -213,10 +213,7 @@
     "huntressIntegration": "Huntress-Integration",
     "connectOnePartnerLevelHuntressAccountAndMap": "Verbinden Sie ein Huntress-Konto auf Partnerebene und ordnen Sie Huntress-Organisationen Breeze-Organisationen zu.",
     "huntressIsntConnectedYet": "Huntress ist noch nicht verbunden",
-    "huntressIsConfiguredOnceAtThePartnerLevel": "Huntress wird einmal auf Partnerebene konfiguriert und in allen Organisationen geteilt. Wechseln Sie Ihren Bereich zu",
-    "allOrgs": "Alle Organisationen",
-    "toAddTheAPIKeyAndSecret": "um den API Schlüssel und das Geheimnis hinzuzufügen.",
-    "thisBreezeOrganizationIsNotMappedToA": "Diese Breeze-Organisation ist noch keiner Huntress-Organisation zugeordnet. Wechseln Sie als Partneradministrator zu „Alle Organisationen“, um es zuzuordnen.",
+    "thisBreezeOrganizationIsNotMappedToA": "Diese Breeze-Organisation ist noch keiner Huntress-Organisation zugeordnet. Bitten Sie Ihren MSP-Administrator um die Zuordnung.",
     "partnerConnection": "Partneranbindung",
     "oneAPIKeyAndSecretCoversEveryHuntress": "Ein Schlüssel und Geheimnis im Wert von API gilt für jede Huntress-Organisation unter diesem Partnerkonto.",
     "partnerHuntress": "Partner Huntress",
@@ -309,7 +306,8 @@
     "webhookSecretPlaceholder": "Geben Sie ein Webhook-Geheimnis ein oder generieren Sie es",
     "update": "Aktualisieren",
     "saveAndConnect": "Speichern und verbinden",
-    "unknownTime": "Unbekannte Zeit"
+    "unknownTime": "Unbekannte Zeit",
+    "askAdminToConnect": "Huntress wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten."
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -441,9 +439,6 @@
     "connectionTestFailed": "Verbindungstest fehlgeschlagen",
     "monitoringIntegrations": "Überwachung von Integrationen",
     "connectObservabilityPlatformsAlertingToolsAndExternalMonitoring": "Verbinden Sie Observability-Plattformen, Alarmierungstools und externe Überwachungsendpunkte.",
-    "monitoringIntegrationsAreConfiguredPerOrganizationSwitchThe": "Überwachungsintegrationen werden pro Organisation konfiguriert. Schalten Sie den Bereich in der oberen Leiste um",
-    "allOrgs": "Alle Organisationen",
-    "toASingleOrganizationToViewOrEdit": "einer einzelnen Organisation, um deren Überwachungseinstellungen anzuzeigen oder zu bearbeiten.",
     "loadingMonitoringIntegrations": "Überwachungsintegrationen werden geladen...",
     "unsavedChanges": "Nicht gespeicherte Änderungen",
     "prometheus": "Prometheus",
@@ -478,7 +473,8 @@
     "metricsSelected": "Metriken ausgewählt.",
     "connectionSuccessful": "Verbindung erfolgreich.",
     "saving": "Speichern...",
-    "saveSettings": "Einstellungen speichern"
+    "saveSettings": "Einstellungen speichern",
+    "selectOrgToConfigure": "Monitoring-Integrationen werden pro Organisation konfiguriert. Wählen Sie in der oberen Leiste eine Organisation aus, um deren Monitoring-Einstellungen anzusehen oder zu bearbeiten."
   },
   "psaConnectionList": {
     "ticketsCompaniesAndConfigs": "Tickets, Unternehmen und Konfigurationen",
@@ -684,10 +680,7 @@
     "sentineloneIntegration": "SentinelOne-Integration",
     "connectOnePartnerLevelSentinelOneTenantAndMap": "Verbinden Sie einen SentinelOne-Mandanten auf Partnerebene und ordnen Sie SentinelOne-Standorte Breeze-Organisationen zu.",
     "sentineloneIsntConnectedYet": "SentinelOne ist noch nicht verbunden",
-    "sentineloneIsConfiguredOnceAtThePartnerLevel": "SentinelOne wird einmal auf Partnerebene konfiguriert und in allen Organisationen gemeinsam genutzt. Wechseln Sie Ihren Bereich zu",
-    "allOrgs": "Alle Organisationen",
-    "toAddTheManagementURLAndAPIToken": "um den Management-Token URL und API hinzuzufügen.",
-    "thisOrganizationIsntMappedToASentinelOneSite": "Diese Organisation ist noch keiner SentinelOne-Standort zugeordnet. Wechseln Sie als Partneradministrator zu „Alle Organisationen“, um es zuzuordnen.",
+    "thisOrganizationIsntMappedToASentinelOneSite": "Diese Organisation ist noch keiner SentinelOne-Site zugeordnet. Bitten Sie Ihren MSP-Administrator um die Zuordnung.",
     "partnerConnection": "Partneranbindung",
     "oneManagementURLAndAPITokenCoversEvery": "Ein Management-Token im Wert von URL und API deckt jede SentinelOne-Standort unter diesem Partnerkonto ab.",
     "myS1Tenant": "Mein S1-Mieter",
@@ -721,7 +714,8 @@
     "hideApiToken": "API-Token ausblenden",
     "showApiToken": "API-Token anzeigen",
     "update": "Aktualisieren",
-    "saveAndConnect": "Speichern und verbinden"
+    "saveAndConnect": "Speichern und verbinden",
+    "askAdminToConnect": "SentinelOne wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten."
   },
   "stripePaymentsIntegration": {
     "loadFailed": "Laden fehlgeschlagen",

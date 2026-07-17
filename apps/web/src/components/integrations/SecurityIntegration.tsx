@@ -14,7 +14,7 @@ import {
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
-import { loginPathWithNext } from "../../lib/authScope";
+import { getJwtClaims, loginPathWithNext } from "../../lib/authScope";
 import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
@@ -147,10 +147,17 @@ export default function SecurityIntegration() {
   );
   const [mappingError, setMappingError] = useState<string | null>(null);
 
-  // SentinelOne is configured once at the partner level (no org selected) and
-  // shared across every organization. Org scope is read-only.
+  // SentinelOne is configured once at the partner level and shared across
+  // every organization. Whether the caller can manage that partner connection
+  // is a property of the TOKEN (partner scope + partnerId claim), not of the
+  // org currently selected in the header — a partner admin keeps the config +
+  // mapping UI while working in a single org's context. Org-scope tokens get
+  // the read-only per-org views. currentOrgId is kept only as a data
+  // dependency (fetchWithAuth scopes /s1/status coverage to the selected
+  // org); it must never gate which UI renders.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const isPartnerView = !currentOrgId;
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerAdmin = jwtScope === "partner" && !!jwtPartnerId;
 
   const unmappedCount = useMemo(
     () => sites.filter((row) => !row.mappedOrgId).length,
@@ -198,7 +205,7 @@ export default function SecurityIntegration() {
   }, []);
 
   const fetchSites = useCallback(async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     const res = await fetchWithAuth("/s1/sites");
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -210,10 +217,10 @@ export default function SecurityIntegration() {
     setSites((json as { data?: SiteRow[] }).data ?? []);
     const id = (json as { integrationId?: string }).integrationId;
     if (id) setIntegrationId(id);
-  }, [isPartnerView]);
+  }, [isPartnerAdmin]);
 
   const fetchOrgs = useCallback(async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     const res = await fetchWithAuth("/orgs/organizations");
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -224,7 +231,7 @@ export default function SecurityIntegration() {
     }
     const data = (json as { data?: Organization[] }).data;
     setOrgOptions(Array.isArray(data) ? data : []);
-  }, [isPartnerView]);
+  }, [isPartnerAdmin]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -245,10 +252,10 @@ export default function SecurityIntegration() {
 
   useEffect(() => {
     void load();
-  }, [load, currentOrgId, isPartnerView]);
+  }, [load, currentOrgId, isPartnerAdmin]);
 
   const handleSave = useCallback(async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     setSaveState({ status: "saving" });
     try {
       const body: Record<string, unknown> = {
@@ -287,10 +294,10 @@ export default function SecurityIntegration() {
         t("securityIntegration.failedToSaveTheSentinelOneIntegration"),
       );
     }
-  }, [isPartnerView, name, managementUrl, apiToken, integration, load]);
+  }, [isPartnerAdmin, name, managementUrl, apiToken, integration, load]);
 
   const handleSync = useCallback(async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     setSyncState({ status: "syncing" });
     try {
       await runAction({
@@ -322,7 +329,7 @@ export default function SecurityIntegration() {
         t("securityIntegration.failedToScheduleASentinelOneSync"),
       );
     }
-  }, [isPartnerView, load]);
+  }, [isPartnerAdmin, load]);
 
   const handleMap = useCallback(
     async (s1SiteId: string, orgId: string | null) => {
@@ -398,7 +405,7 @@ export default function SecurityIntegration() {
       )}
 
       {/* Org scope, partner not connected: SentinelOne is partner-level. */}
-      {!isPartnerView && !partnerConnected && (
+      {!isPartnerAdmin && !partnerConnected && (
         <div
           className="rounded-xl border bg-card p-8 text-center shadow-xs"
           data-testid="s1-org-not-connected"
@@ -410,19 +417,16 @@ export default function SecurityIntegration() {
             {t("securityIntegration.sentineloneIsntConnectedYet")}
           </h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            {t(
-              "securityIntegration.sentineloneIsConfiguredOnceAtThePartnerLevel",
-            )}
-            <span className="font-medium text-foreground">
-              {t("securityIntegration.allOrgs")}
-            </span>{" "}
-            {t("securityIntegration.toAddTheManagementURLAndAPIToken")}
+            {/* Org-scope audience only (partner admins always see the config
+                form) — so the actionable path is their MSP admin, not a scope
+                switch they can't perform. */}
+            {t("securityIntegration.askAdminToConnect")}
           </p>
         </div>
       )}
 
       {/* Org scope, partner connected but this org isn't mapped to a site. */}
-      {!isPartnerView && partnerConnected && !mappedForOrg && (
+      {!isPartnerAdmin && partnerConnected && !mappedForOrg && (
         <div
           className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
           data-testid="s1-org-unmapped"
@@ -434,7 +438,7 @@ export default function SecurityIntegration() {
       )}
 
       {/* Partner connection form */}
-      {isPartnerView && (
+      {isPartnerAdmin && (
         <div
           className="rounded-xl border bg-card p-6 shadow-xs"
           data-testid="s1-connection"
@@ -647,7 +651,7 @@ export default function SecurityIntegration() {
       )}
 
       {/* Site → organization mapping (partner scope, once connected) */}
-      {isPartnerView && integration && (
+      {isPartnerAdmin && integration && (
         <div
           className="rounded-xl border bg-card p-6 shadow-xs"
           data-testid="s1-mapping"

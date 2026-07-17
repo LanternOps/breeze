@@ -4,9 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MonitoringIntegration from "./MonitoringIntegration";
 import { fetchWithAuth } from "../../stores/auth";
 
-// All-orgs scope is modeled by currentOrgId === null (see orgStore): monitoring
-// settings are per-org, so there is no single org to load under All orgs.
+// Two-layer context model: the header org picker (currentOrgId, null = All
+// orgs) states the working context; page ACCESS is a token capability read
+// from the JWT claims. Monitoring settings are per-org data, so for partner
+// admins the selected org only decides which org's settings load.
 let mockOrgState: { currentOrgId: string | null };
+let mockClaims: {
+  scope: "system" | "partner" | "organization" | null;
+  orgId: string | null;
+  partnerId: string | null;
+};
 
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: vi.fn(),
@@ -20,6 +27,10 @@ vi.mock("../../stores/orgStore", () => ({
   ),
 }));
 
+vi.mock("../../lib/authScope", () => ({
+  getJwtClaims: () => mockClaims,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const monitoringResponse = (): Response =>
@@ -31,6 +42,7 @@ const monitoringResponse = (): Response =>
 
 beforeEach(() => {
   mockOrgState = { currentOrgId: "org-1" };
+  mockClaims = { scope: "partner", orgId: null, partnerId: "partner-1" };
   fetchWithAuthMock.mockReset();
   fetchWithAuthMock.mockResolvedValue(monitoringResponse());
 });
@@ -39,22 +51,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("MonitoringIntegration — per-org page under All-orgs scope", () => {
-  it("shows the switch-to-a-single-org prompt and fires no doomed request under All orgs", async () => {
-    mockOrgState.currentOrgId = null;
-    render(<MonitoringIntegration />);
-
-    expect(
-      screen.getByText(/configured per organization/i),
-    ).toBeInTheDocument();
-
-    // The whole point of the skip-and-prompt shape: never call the API that
-    // would 400 without a single org in context.
-    await new Promise((r) => setTimeout(r, 0));
-    expect(fetchWithAuthMock).not.toHaveBeenCalled();
-  });
-
-  it("loads settings normally when scoped to a single org", async () => {
+describe("MonitoringIntegration — token-capability gate (partner admin)", () => {
+  it("keeps the full config UI for a partner admin with an org selected", async () => {
     mockOrgState.currentOrgId = "org-1";
     render(<MonitoringIntegration />);
 
@@ -63,12 +61,28 @@ describe("MonitoringIntegration — per-org page under All-orgs scope", () => {
         "/integrations/monitoring",
       ),
     );
+    // Config sections render; the pick-an-org prompt does not.
+    expect(await screen.findByText("Prometheus")).toBeInTheDocument();
+    expect(screen.getByText("Grafana")).toBeInTheDocument();
     expect(
       screen.queryByText(/configured per organization/i),
     ).not.toBeInTheDocument();
   });
 
-  it("starts fetching after flipping back from All orgs to a single org", async () => {
+  it("shows the pick-an-org note and fires no doomed request when no org is selected", async () => {
+    mockOrgState.currentOrgId = null;
+    render(<MonitoringIntegration />);
+
+    expect(
+      screen.getByText(/configured per organization/i),
+    ).toBeInTheDocument();
+
+    // Per-org data with no target org: never fire the call that would 400.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("starts fetching after an org is selected", async () => {
     mockOrgState.currentOrgId = null;
     const { rerender } = render(<MonitoringIntegration />);
     await new Promise((r) => setTimeout(r, 0));
@@ -82,5 +96,42 @@ describe("MonitoringIntegration — per-org page under All-orgs scope", () => {
         "/integrations/monitoring",
       ),
     );
+  });
+});
+
+describe("MonitoringIntegration — org-scope users are never gated by header context", () => {
+  beforeEach(() => {
+    mockClaims = { scope: "organization", orgId: "org-1", partnerId: null };
+  });
+
+  it("loads even while currentOrgId is the transient pre-hydration null", async () => {
+    // The org store hydrates after mount; the token already identifies the
+    // org and the API resolves it server-side, so the fetch must fire.
+    mockOrgState.currentOrgId = null;
+    render(<MonitoringIntegration />);
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        "/integrations/monitoring",
+      ),
+    );
+    expect(
+      screen.queryByText(/configured per organization/i),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText("Prometheus")).toBeInTheDocument();
+  });
+
+  it("loads normally with the org store hydrated", async () => {
+    mockOrgState.currentOrgId = "org-1";
+    render(<MonitoringIntegration />);
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        "/integrations/monitoring",
+      ),
+    );
+    expect(
+      screen.queryByText(/configured per organization/i),
+    ).not.toBeInTheDocument();
   });
 });
