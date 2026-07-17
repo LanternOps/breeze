@@ -855,7 +855,16 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	if !dxgiActive && !onSecure {
 		if !s.differ.HasChanged(img.Pix) {
 			captureImagePool.Put(img)
-			_ = s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+			// Static screen: bump the capture-alive heartbeat so the no-video
+			// watchdog does not kill a healthy idle session. Linux/X11 has no
+			// damage events, so a genuinely static desktop produces byte-identical
+			// frames indefinitely. Mirrors the DXGI "no new frame" path above.
+			// maybeResendCachedFrameOnIdle only bumps when the last write is older
+			// than staticDesktopResendInterval, so it can't mask a dead capture.
+			resent := s.maybeResendCachedFrameOnSecureDesktop(cap, frameDuration)
+			if !resent {
+				s.maybeResendCachedFrameOnIdle(frameDuration)
+			}
 			s.metrics.RecordSkip()
 			return
 		}

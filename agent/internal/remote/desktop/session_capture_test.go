@@ -1,9 +1,67 @@
 package desktop
 
 import (
+	"image"
 	"testing"
 	"time"
 )
+
+// staticTestCapturer is a minimal ScreenCapturer that returns a fixed frame. It
+// deliberately implements ONLY ScreenCapturer — not TightLoopHint,
+// DesktopSwitchNotifier, or BGRAProvider — so captureAndSendFrame takes the
+// non-DXGI, non-secure, RGBA path straight into the frame differ.
+type staticTestCapturer struct{ img *image.RGBA }
+
+func (c *staticTestCapturer) Capture() (*image.RGBA, error) { return c.img, nil }
+func (c *staticTestCapturer) CaptureRegion(x, y, w, h int) (*image.RGBA, error) {
+	return c.img, nil
+}
+func (c *staticTestCapturer) GetScreenBounds() (int, int, error) {
+	return c.img.Rect.Dx(), c.img.Rect.Dy(), nil
+}
+func (c *staticTestCapturer) Close() error { return nil }
+
+// TestCaptureLoopStaticScreenBumpsVideoWriteHeartbeat verifies the static-screen
+// watchdog fix (Task 11 change #6): when the frame differ reports an unchanged
+// frame on a non-secure desktop, captureAndSendFrame bumps lastVideoWriteUnixNano
+// via the idle-resend path so the no-video watchdog does not terminate a healthy
+// static (e.g. Linux/X11) session. It drives the real capture method end-to-end
+// through the differ-skip branch rather than re-implementing it.
+func TestCaptureLoopStaticScreenBumpsVideoWriteHeartbeat(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range img.Pix {
+		img.Pix[i] = 0x40
+	}
+
+	s := &Session{id: "test", isActive: true}
+	s.capturer = &staticTestCapturer{img: img}
+	// nil backend: IsGPUOnly() is false and Encode() is never reached on the
+	// differ-skip path, so no real encoder is required.
+	s.encoder.Store(&VideoEncoder{})
+	s.metrics = newStreamMetrics()
+	s.differ = newFrameDiffer()
+	// Match desiredPF so SetPixelFormat is never called on the nil backend.
+	s.encoderPF = PixelFormatRGBA
+
+	// Prime the differ with the frame's bytes so the next identical capture is
+	// reported as UNCHANGED, entering the differ-skip branch.
+	if !s.differ.HasChanged(img.Pix) {
+		t.Fatal("precondition: first frame should be reported as changed")
+	}
+
+	// Stale last-write so the idle-resend threshold is exceeded and the bump fires.
+	stale := time.Now().Add(-time.Second)
+	s.lastVideoWriteUnixNano.Store(stale.UnixNano())
+
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	if got := s.lastVideoWriteUnixNano.Load(); got <= stale.UnixNano() {
+		t.Fatalf("static-screen differ-skip did not bump lastVideoWriteUnixNano (still %d, want > %d)", got, stale.UnixNano())
+	}
+	if skipped := s.metrics.FramesSkipped.Load(); skipped != 1 {
+		t.Fatalf("expected exactly one skipped frame via the differ-skip branch, got %d", skipped)
+	}
+}
 
 func TestSampleDuration(t *testing.T) {
 	const fallback = 16 * time.Millisecond

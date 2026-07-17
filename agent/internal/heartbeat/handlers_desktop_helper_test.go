@@ -370,7 +370,13 @@ func TestFindOrSpawnHelperSkipsPollOnUnsupportedPlatform(t *testing.T) {
 	}
 }
 
-func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
+// TestHandleStopDesktopFallsThroughToDirectWhenOwnerHelperGone: when a desktop
+// session has a registered owner whose helper session is no longer connected
+// (desktopOwnerSession resolves to nil), the state-based stop routing (Task 11
+// change #3) falls through to the direct desktopMgr.StopSession rather than
+// failing. It must NEVER route the stop to a different, still-connected helper
+// (no fallback-helper routing).
+func TestHandleStopDesktopFallsThroughToDirectWhenOwnerHelperGone(t *testing.T) {
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -393,7 +399,10 @@ func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
 	h := &Heartbeat{
 		sessionBroker: broker,
 		isHeadless:    true,
+		desktopMgr:    desktop.NewSessionManager(),
 	}
+	// Owner registered, but its helper session ("missing-session") is not in the
+	// broker, so desktopOwnerSession resolves to nil.
 	h.rememberDesktopOwner("desktop-stop-missing", "missing-session")
 
 	result := handleStopDesktop(h, Command{
@@ -407,15 +416,12 @@ func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
 	_ = session.Close()
 	_ = clientIPC.Close()
 
-	if result.Status != "failed" {
-		t.Fatalf("expected failed, got %s", result.Status)
-	}
-	if result.Error != "desktop session owner unavailable; cannot safely stop session" {
-		t.Fatalf("unexpected error: %s", result.Error)
+	if result.Status != "completed" {
+		t.Fatalf("expected completed (direct fallthrough), got status=%q error=%q", result.Status, result.Error)
 	}
 	select {
 	case <-seen:
-		t.Fatal("desktop_stop should not be routed to a fallback helper")
+		t.Fatal("desktop_stop must not be routed to a fallback helper")
 	default:
 	}
 }
