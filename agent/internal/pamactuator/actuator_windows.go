@@ -157,6 +157,10 @@ func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 // here (the deny path carries no credential), so it uses the same default
 // 8000ms window Trigger falls back to when TimeoutMs<=0.
 func (a *windowsActuator) Dismiss(ctx context.Context) Result {
+	if result, cancelled := dismissCancellationResult(ctx); cancelled {
+		return result
+	}
+
 	// SetThreadDesktop is per-thread; stay on the same OS thread for the
 	// duration so the desktop binding doesn't follow a reparked goroutine.
 	runtime.LockOSThread()
@@ -190,6 +194,9 @@ func (a *windowsActuator) Dismiss(ctx context.Context) Result {
 
 	hwnd := waitForConsent(ctx, deadline)
 	if hwnd == 0 {
+		if result, cancelled := dismissCancellationResult(ctx); cancelled {
+			return result
+		}
 		return Result{
 			Success:       false,
 			Reason:        "no_consent_window",
@@ -197,6 +204,13 @@ func (a *windowsActuator) Dismiss(ctx context.Context) Result {
 		}
 	}
 
+	// Minimize input after the broker-authorized window has closed. This check
+	// deliberately sits immediately next to pressVK; if the thread is delayed
+	// between the check and input, the broker retains the PAM actuation gate
+	// until this helper returns its correlated response.
+	if result, cancelled := dismissCancellationResult(ctx); cancelled {
+		return result
+	}
 	if err := pressVK(vkEscape); err != nil {
 		return Result{
 			Success:       false,
@@ -206,6 +220,9 @@ func (a *windowsActuator) Dismiss(ctx context.Context) Result {
 	}
 
 	if !waitForConsentClose(ctx, hwnd, deadline) {
+		if result, cancelled := dismissPostInputCancellationResult(ctx); cancelled {
+			return result
+		}
 		return Result{
 			Success:       false,
 			Reason:        "consent_did_not_close",
@@ -266,4 +283,3 @@ func typeString(s string) error {
 	}
 	return nil
 }
-

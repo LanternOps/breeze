@@ -3,6 +3,7 @@ package sessionbroker
 import (
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 
 func TestRequestPamApprovalReturnsDialogResult(t *testing.T) {
 	session, clientIPC := createPamApprovalTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	go func() {
 		clientIPC.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -53,8 +54,8 @@ func TestRequestPamApprovalReturnsDialogResult(t *testing.T) {
 
 func TestRequestPamApprovalTimeoutDeniesAndDismisses(t *testing.T) {
 	session, clientIPC := createPamApprovalTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	go func() {
 		clientIPC.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -73,10 +74,54 @@ func TestRequestPamApprovalTimeoutDeniesAndDismisses(t *testing.T) {
 	}
 }
 
+func TestRequestPamApprovalRequiresSystemPamSession(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    string
+		scopes  []string
+		wantErr string
+	}{
+		{
+			name:    "user helper with PAM scope",
+			role:    ipc.HelperRoleUser,
+			scopes:  []string{ipc.ScopePam},
+			wantErr: "SYSTEM helper",
+		},
+		{
+			name:    "system helper without PAM scope",
+			role:    ipc.HelperRoleSystem,
+			scopes:  []string{"desktop"},
+			wantErr: ipc.ScopePam,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			serverConn, clientConn := net.Pipe()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
+			if err := serverConn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+				t.Fatalf("set write deadline: %v", err)
+			}
+
+			session := NewSession(ipc.NewConn(serverConn), 1000, "1000", "testuser", "x11:0", "test-session-1", tc.scopes)
+			session.HelperRole = tc.role
+			got, err := (&Broker{}).RequestPamApproval(session, "pam-rejected", ipc.PamRequestDialog{}, time.Millisecond)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("RequestPamApproval error = %v, want substring %q", err, tc.wantErr)
+			}
+			if got.Approved || !got.DismissedByUser {
+				t.Fatalf("rejected result = %+v, want deny+dismiss", got)
+			}
+		})
+	}
+}
+
 func createPamApprovalTestSession() (*Session, *ipc.Conn) {
 	serverConn, clientConn := net.Pipe()
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
 	session := NewSession(serverIPC, 1000, "1000", "testuser", "x11:0", "test-session-1", []string{ipc.ScopePam})
+	session.HelperRole = ipc.HelperRoleSystem
 	return session, clientIPC
 }

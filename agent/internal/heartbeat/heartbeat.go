@@ -208,18 +208,23 @@ type Heartbeat struct {
 	stopBrokerAcceptingAndWait func(context.Context) error
 	stopHelperLifecycleAndWait func(context.Context) error
 	closeSessionBroker         func()
-	// pamFindSession / pamRequestDialog default to the real broker methods in
-	// RunPamFlow when nil; overridden in pam_flow_test.go.
-	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
-	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// PAM seams default to the real broker methods in RunPamFlow/denyConsent
+	// when nil; overridden in pam_flow_test.go.
+	pamFindSession    func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog  func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamActuateMu serializes consent.exe actuation/dismissal so the local
 	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
 	// concurrently (e.g. an await_remote technician approval firing
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
-	pamActuateMu   sync.Mutex
-	wsDesktopStart func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners  sync.Map // desktop session ID -> helper session ID
+	pamActuateMu sync.Mutex
+	// pamDismissalUncertain is protected by pamActuateMu. It keeps later PAM
+	// input fail-closed after a broker failure until the helper's correlated
+	// response proves the old dismissal command has stopped.
+	pamDismissalUncertain bool
+	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool
