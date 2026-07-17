@@ -41,6 +41,11 @@ const STATUS_OPTIONS: { value: '' | ContractStatus; label: string }[] = [
 ];
 
 // ---- hash filter state (key=value&key=value) ----------------------------
+// `orgId` exists solely for the lockedOrgId embed (an org detail page pinning
+// its own contracts). The free-standing org filter is gone: the header
+// switcher owns org scoping (fetchWithAuth injects the selected org), so the
+// hash never reads or writes orgId — a deep-linked orgId would suppress that
+// injection and silently disagree with the header.
 interface Filters {
   orgId: string;
   status: '' | ContractStatus;
@@ -52,14 +57,13 @@ function readFilters(hash: string): Filters {
   const params = new URLSearchParams(hash);
   const status = params.get('status') ?? '';
   return {
-    orgId: params.get('orgId') ?? '',
+    orgId: '',
     status: (STATUS_OPTIONS.some((o) => o.value === status) ? status : '') as Filters['status'],
   };
 }
 
 function writeFilters(f: Filters): void {
   const params = new URLSearchParams();
-  if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   // Shared writer: clearing strips the fragment via replaceState so no bare '#'
   // is left dangling (quotes/invoices carried this fix; contracts now shares it).
@@ -222,8 +226,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
   // first-run empty state (offer "create your first contract").
-  const hasActiveFilters =
-    Boolean(search.trim()) || Boolean(filters.status) || (!lockedOrgId && Boolean(filters.orgId));
+  const hasActiveFilters = Boolean(search.trim()) || Boolean(filters.status);
 
   // Estimated monthly recurring across active contracts (normalized by cadence).
   const mrr = useMemo(() => {
@@ -326,22 +329,6 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           data-testid="contracts-search"
           className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
-        {!lockedOrgId && (
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            {t('common:labels.organization')}
-            <select
-              value={filters.orgId}
-              onChange={(e) => applyFilter({ orgId: e.target.value })}
-              data-testid="contracts-filter-org"
-              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            >
-              <option value="">{t('contracts.contractsList.filters.allOrganizations')}</option>
-              {orgs.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-          </label>
-        )}
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           {t('common:labels.status')}
           <select
@@ -391,7 +378,7 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
               <p className="text-sm text-muted-foreground">{t('contracts.contractsList.empty.noMatches')}</p>
               <button
                 type="button"
-                onClick={() => { setSearch(''); applyFilter(lockedOrgId ? { status: '' } : { status: '', orgId: '' }); }}
+                onClick={() => { setSearch(''); applyFilter({ status: '' }); }}
                 data-testid="contracts-clear-filters"
                 className="mt-3 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
               >

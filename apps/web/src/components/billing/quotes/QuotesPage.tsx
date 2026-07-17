@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
+import { useOrgStore } from '../../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
@@ -42,25 +43,25 @@ type SortKey = 'created' | 'total';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }
 
 // ---- hash filter state (key=value&key=value) ----------------------------
+// Org scoping deliberately absent: the header switcher owns it (fetchWithAuth
+// injects the selected org), and a page-local orgId — typed or deep-linked —
+// would suppress that injection and silently disagree with the header.
 interface Filters {
-  orgId: string;
   status: '' | QuoteStatus;
 }
-const EMPTY_FILTERS: Filters = { orgId: '', status: '' };
+const EMPTY_FILTERS: Filters = { status: '' };
 
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
 function readFilters(hash: string): Filters {
   const params = new URLSearchParams(hash);
   const status = params.get('status') ?? '';
   return {
-    orgId: params.get('orgId') ?? '',
     status: (STATUS_OPTION_VALUES.some((value) => value === status) ? status : '') as Filters['status'],
   };
 }
 
 function writeFilters(f: Filters): void {
   const params = new URLSearchParams();
-  if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   writeHashFilters(params);
 }
@@ -143,7 +144,7 @@ export function QuotesPage() {
       setLoading(true);
       setError(undefined);
       setForbidden(false);
-      const res = await listQuotes({ orgId: f.orgId || undefined, status: f.status || undefined });
+      const res = await listQuotes({ status: f.status || undefined });
       if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
@@ -166,7 +167,7 @@ export function QuotesPage() {
   // change so stale invisible rows are never acted on.
   useEffect(() => {
     bulk.clear();
-  }, [filters.orgId, filters.status, search, bulk.clear]);
+  }, [filters.status, search, bulk.clear]);
 
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
@@ -184,7 +185,7 @@ export function QuotesPage() {
 
   // Distinguishes a filtered-empty result (offer "clear filters") from a genuine
   // first-run empty state (offer "create your first quote").
-  const hasActiveFilters = !!(filters.orgId || filters.status || search.trim());
+  const hasActiveFilters = !!(filters.status || search.trim());
 
   // Load sites for the org picker in the dialog.
   const loadNewSites = useCallback(async (orgId: string) => {
@@ -199,12 +200,14 @@ export function QuotesPage() {
   }, [t]);
 
   const openCreate = useCallback(() => {
-    setNewOrgId(filters.orgId || '');
+    // Default the target org to the header's context when one is selected.
+    const contextOrgId = useOrgStore.getState().currentOrgId ?? '';
+    setNewOrgId(contextOrgId);
     setNewSiteId('');
     setNewSites([]);
     setCreateOpen(true);
-    if (filters.orgId) void loadNewSites(filters.orgId);
-  }, [filters.orgId, loadNewSites]);
+    if (contextOrgId) void loadNewSites(contextOrgId);
+  }, [loadNewSites]);
 
   const submitCreate = useCallback(async () => {
     if (creating || !newOrgId) return;
@@ -371,18 +374,6 @@ export function QuotesPage() {
           className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="quotes-search"
         />
-        <select
-          value={filters.orgId}
-          onChange={(e) => applyFilter({ orgId: e.target.value })}
-          data-testid="quotes-filter-org"
-          aria-label={t('quotes.page.filters.organizationAria')}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-        >
-          <option value="">{t('quotes.page.filters.allOrganizations')}</option>
-          {orgs.map((o) => (
-            <option key={o.id} value={o.id}>{o.name}</option>
-          ))}
-        </select>
         <select
           value={filters.status}
           onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}

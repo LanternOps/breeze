@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // Mock fetchWithAuth for loadOrgs (called directly) and bulk action calls.
 const fetchWithAuth = vi.fn();
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a), registerOrgIdProvider: vi.fn() }));
 
 // Mock showToast to suppress UI side-effects.
 const showToast = vi.fn();
