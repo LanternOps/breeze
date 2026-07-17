@@ -173,7 +173,7 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -1238,8 +1238,16 @@ describe('patch routes', () => {
     expect(body.data).toHaveLength(1);
     // Before the fix this was 'pending' because the approval read was skipped.
     expect(body.data[0].approvalStatus).toBe('approved');
-    // The read must be scoped to the caller's OWN token partner — never widened.
-    expect(JSON.stringify(approvalWhere)).toContain(PARTNER_ID);
+    // The partner-axis read runs through the system-context escape (patch_approvals
+    // is invisible in a partner request context otherwise).
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+    // The filter must bind the caller's OWN token partner to the partnerId COLUMN
+    // — not merely appear somewhere in the WHERE. The mocked eq/and yield
+    // { op:'and', conditions: [{ op:'eq', left, right }] }.
+    expect(approvalWhere).toEqual({
+      op: 'and',
+      conditions: [{ op: 'eq', left: 'patchApprovals.partnerId', right: PARTNER_ID }]
+    });
   });
 
   it('does not read partner-wide approvals for an org-scoped caller with no orgId', async () => {
@@ -1280,8 +1288,9 @@ describe('patch routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data[0].approvalStatus).toBe('pending');
-    // Exactly the three base selects (patch list, count, source counts) —
-    // the partner-scoped approvals read must NOT fire for an org-scoped caller.
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+    // The contract: the partner-axis approvals read must NOT fire for an
+    // org-scoped caller. Assert the system-context escape was never entered
+    // (states the isolation guarantee directly, rather than counting selects).
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

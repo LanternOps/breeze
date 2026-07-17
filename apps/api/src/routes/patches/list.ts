@@ -165,6 +165,17 @@ listRoutes.get(
     const approvalPartnerId = query.orgId
       ? await resolvePartnerIdForOrg(query.orgId)
       : (auth.scope !== 'organization' ? auth.partnerId : null);
+    // A partner-scoped token should always carry its own partnerId. If it
+    // doesn't, the read below is skipped and every patch renders 'pending' —
+    // the exact #2597 symptom via a different cause. Surface that invariant
+    // violation instead of failing invisibly. (Org scope with no orgId and
+    // system scope with no partnerId both legitimately yield null and are
+    // silent — only the partner case is unexpected.)
+    if (approvalPartnerId === null && auth.scope === 'partner') {
+      console.warn(
+        `[Patches] partner-scope token has null partnerId (user=${auth.user?.id ?? 'unknown'}); patch approvals will render as pending`
+      );
+    }
     if (approvalPartnerId !== null) {
       const approvalConditions = [eq(patchApprovals.partnerId, approvalPartnerId)];
       if (query.ringId) {
@@ -191,8 +202,8 @@ listRoutes.get(
         approvals.map(a => [a.patchId, a.status])
       );
     }
-    // If approvalPartnerId is null (org has no partner, or an org-scoped caller
-    // with no orgId) no approvals apply — leave approvalStatuses empty.
+    // If approvalPartnerId is null (see the scope cases above) no approvals
+    // apply — leave approvalStatuses empty.
 
     const data = patchList.map(patch => ({
       ...patch,
