@@ -114,10 +114,19 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
   const claims = await resolve(c); const body = c.req.valid('json');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   try {
+    // Pre-fetch the contract-block render data BEFORE the accept transaction —
+    // symmetry with the portal path. loadContractBlockRenderData resolves the
+    // pinned template versions under a system context; acceptQuote's guard
+    // hard-fails if any contract block on the quote is missing from this set.
+    const blocks = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType, content: quoteBlocks.content })
+        .from(quoteBlocks).where(eq(quoteBlocks.quoteId, claims.quoteId)).orderBy(quoteBlocks.sortOrder)));
+    const contractRenderData = await loadContractBlockRenderData(blocks);
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: claims.quoteId, signerName: body.signerName, signerEmail: body.signerEmail ?? null,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
       acceptanceTokenJti: claims.jti, actorUserId: null,
+      contractRenderData,
     })));
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
     // A failed revoke leaves the accept link replayable (security-relevant) → capture.
@@ -149,7 +158,12 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
       }
     }
     return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
-  } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
+  } catch (err) {
+    if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    // loadContractBlockRenderData throws this for a missing/mismatched pinned version.
+    if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // POST /:token/decline

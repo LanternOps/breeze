@@ -157,6 +157,15 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
   const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
+    // Pre-fetch the contract-block render data BEFORE the accept transaction:
+    // loadContractBlockRenderData resolves the pinned template versions under a
+    // SYSTEM context (the dual-axis template rows are invisible to this org scope),
+    // and the executed-document snapshot must read immutable version content from
+    // outside the org-scoped accept transaction. acceptQuote's guard hard-fails if
+    // any contract block is missing from this set.
+    const blocks = await db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType, content: quoteBlocks.content })
+      .from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
+    const contractRenderData = await loadContractBlockRenderData(blocks);
     // Run in a system sub-context: acceptQuote now auto-issues the converted
     // invoice, which writes the partner-axis partner_invoice_sequences counter.
     // This portal context is org-scoped with NO partner access (auth.ts:
@@ -167,13 +176,20 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: id, signerName, signerEmail: auth.user.email,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null, actorUserId: null,
+      contractRenderData,
     })));
     // Post-commit (outside the DB context): emit invoice.issued + enqueue the PDF
     // render, matching invoiceService.issueInvoice. Fire-and-forget; never fails the
     // accept the customer already completed.
     await emitAcceptInvoiceIssued(res, auth.user.id);
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status, pax8OrderId: res.pax8OrderId } });
-  } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
+  } catch (err) {
+    if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    // loadContractBlockRenderData throws this when a contract block references a
+    // missing/mismatched template version (404 VERSION_NOT_FOUND).
+    if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // POST /quotes/:id/decline

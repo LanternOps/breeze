@@ -61,7 +61,13 @@ export type QuoteServiceErrorCode =
   // contract block still has one or more declared variables (auto or manual)
   // with no resolved value — sending would ship a raw `{{token}}` placeholder
   // into a legal document.
-  | 'CONTRACT_VARIABLES_UNRESOLVED';
+  | 'CONTRACT_VARIABLES_UNRESOLVED'
+  // Accept-time legal-snapshot gate (quoteAcceptService, Task 15): a quote that
+  // embeds one or more contract blocks was accepted without the pre-fetched
+  // render data those blocks need to produce their executed-document snapshot.
+  // An accept must never silently skip its legal snapshot, so this hard-fails
+  // (500) and rolls the whole accept back rather than recording a bare acceptance.
+  | 'CONTRACT_RENDER_DATA_MISSING';
 
 export class QuoteServiceError extends Error {
   constructor(
