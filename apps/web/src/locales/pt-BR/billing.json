@@ -402,6 +402,11 @@
       "back": "Voltar",
       "loadError": "Falha ao carregar o modelo",
       "newVersion": "Nova versão",
+      "newVersionConfirm": {
+        "title": "Descartar alterações não salvas?",
+        "message": "Iniciar uma nova versão limpará o editor. Suas alterações não salvas neste rascunho serão perdidas.",
+        "confirm": "Iniciar nova versão"
+      },
       "uploadPdf": "Enviar PDF",
       "versions": "Versões",
       "noVersions": "Ainda sem versões",
@@ -757,6 +762,7 @@
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",
         "noEmailService": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — o e-mail não está configurado neste servidor.",
+        "pdfRenderFailed": "Proposta marcada como Enviada, mas o PDF não pôde ser gerado, portanto nenhum e-mail foi entregue. Verifique os arquivos de contrato anexados e envie novamente.",
         "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço ou compartilhe o link de aceitação manualmente."
       },
       "sendError": "Não foi possível enviar a proposta.",

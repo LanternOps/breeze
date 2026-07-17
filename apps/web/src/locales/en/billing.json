@@ -402,6 +402,11 @@
       "back": "Back",
       "loadError": "Failed to load the template",
       "newVersion": "New version",
+      "newVersionConfirm": {
+        "title": "Discard unsaved changes?",
+        "message": "Starting a new version will clear the editor. Your unsaved edits to this draft will be lost.",
+        "confirm": "Start new version"
+      },
       "uploadPdf": "Upload PDF",
       "versions": "Versions",
       "noVersions": "No versions yet",
@@ -757,6 +762,7 @@
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
         "noEmailService": "Proposal marked Sent, but no email was delivered — email is not configured on this server.",
+        "pdfRenderFailed": "Proposal marked Sent, but the PDF could not be generated, so no email was delivered. Check the attached contract files, then resend.",
         "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually."
       },
       "sendError": "Could not send the proposal.",

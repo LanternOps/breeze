@@ -59,7 +59,9 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
       const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
-      await markQuoteViewed(quote.id, quote.orgId);
+      // Cosmetic view-stamping only — must never fail the render. Mirrors the
+      // authenticated counterpart at portal/quotes.ts:48.
+      try { await markQuoteViewed(quote.id, quote.orgId); } catch (err) { console.error('[quotesPublic] quote markViewed failed', { id: quote.id, err }); }
       // Derive the amount accept actually invoices (one-time only) so the prospect
       // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
       // plus the deposit due + per-category subtotals for the summary panel.

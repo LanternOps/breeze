@@ -60,7 +60,15 @@ function decodeEntities(raw: string): string {
   return raw.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, entity: string) => {
     if (entity[0] === '#') {
       const codePoint = entity[1] === 'x' || entity[1] === 'X' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : whole;
+      // String.fromCodePoint throws RangeError outside 0..0x10FFFF (and for lone
+      // surrogates) — fall back to the original text rather than letting a
+      // malformed numeric character reference crash the render.
+      if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) return whole;
+      try {
+        return String.fromCodePoint(codePoint);
+      } catch {
+        return whole;
+      }
     }
     return ENTITY_MAP[entity] ?? whole;
   });

@@ -32,6 +32,7 @@ const resp = (payload: unknown, status = 200) =>
 const draftVersion = {
   id: 'ver-draft',
   templateId: 'tpl-1',
+  ownerScope: 'organization',
   orgId: 'org-1',
   partnerId: null,
   versionNumber: 1,
@@ -50,6 +51,7 @@ const draftVersion = {
 function activeTemplate(overrides: Record<string, unknown> = {}) {
   return {
     id: 'tpl-1',
+    ownerScope: 'organization',
     orgId: 'org-1',
     partnerId: null,
     name: 'Acme SOW',
@@ -97,11 +99,13 @@ describe('TemplateEditor', () => {
     expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe('<p>My unsaved contract text</p>');
   });
 
-  it('clears dirty and re-enables Publish after saving a link-bearing body (rel-attr normalization)', async () => {
-    // TipTap emits rel="noopener noreferrer nofollow"; the sanitizer stores
-    // rel="noopener noreferrer". A raw string compare would keep `dirty` true
-    // forever after a save on any link body, permanently disabling Publish and
-    // minting duplicate versions on retry.
+  it('clears dirty and re-enables Publish after saving a body the sanitizer normalizes', async () => {
+    // The server sanitizer can canonicalize a saved body (here a link's rel attr)
+    // so the stored form differs from the editor buffer. A raw string compare would
+    // keep `dirty` true forever after such a save, permanently disabling Publish and
+    // minting duplicate versions on retry — the force-reseed clears it. (RichTextEditor
+    // now emits the sanitizer's exact rel; this synthetic diff still guards the
+    // general normalization case.)
     const normalizedLinkBody = '<p><a href="https://ex.com" rel="noopener noreferrer">L</a></p>';
     const tiptapLinkBody = '<p><a href="https://ex.com" rel="noopener noreferrer nofollow">L</a></p>';
     const linkVersion = { ...draftVersion, bodyHtml: normalizedLinkBody };
@@ -123,6 +127,47 @@ describe('TemplateEditor', () => {
     fireEvent.click(screen.getByTestId('template-save-draft-btn'));
     await waitFor(() => expect(api.createTemplateVersion).toHaveBeenCalledWith('tpl-1', { bodyHtml: tiptapLinkBody }));
     await waitFor(() => expect(screen.getByTestId('template-version-publish')).not.toBeDisabled());
+  });
+
+  it('confirms before New Version discards unsaved edits, and preserves the body on cancel', async () => {
+    render(<TemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('contract-template-editor');
+
+    const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '<p>Precious unsaved draft</p>' } });
+
+    // Dirty → New Version must not clear immediately; it opens a confirm dialog.
+    fireEvent.click(screen.getByTestId('template-add-version-btn'));
+    const confirmBtn = await screen.findByTestId('template-new-version-confirm');
+    expect(confirmBtn).toBeInTheDocument();
+    // Body is untouched while the dialog is open.
+    expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe(
+      '<p>Precious unsaved draft</p>',
+    );
+
+    // Cancel → the typed text survives.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByTestId('template-new-version-confirm')).not.toBeInTheDocument(),
+    );
+    expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe(
+      '<p>Precious unsaved draft</p>',
+    );
+  });
+
+  it('clears the body when New Version is confirmed', async () => {
+    render(<TemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('contract-template-editor');
+
+    const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '<p>Discard me</p>' } });
+
+    fireEvent.click(screen.getByTestId('template-add-version-btn'));
+    fireEvent.click(await screen.findByTestId('template-new-version-confirm'));
+
+    await waitFor(() =>
+      expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe(''),
+    );
   });
 
   it('lists manual variables detected live in the body', async () => {

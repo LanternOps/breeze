@@ -569,6 +569,36 @@ describe('stored-XSS: substituted href re-sanitized at every served/PDF surface'
   });
 });
 
+describe('loadContractPdfInputs (uploaded block with no stored bytes)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const templateRow = {
+    id: 'tmpl-1', orgId: null, partnerId: 'partner-1', name: 'MSA', description: null,
+    status: 'active', createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const uploadedVersionRowNoBytes = {
+    id: 'ver-2', templateId: 'tmpl-1', orgId: null, partnerId: 'partner-1', versionNumber: 1, status: 'published',
+    sourceType: 'uploaded' as const, bodyHtml: null, fileData: null, mime: 'application/pdf', byteSize: null, sha256: 'abc123',
+    declaredVariables: [], publishedAt: new Date('2026-07-01T00:00:00Z'), createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const uploadedBlock = {
+    id: 'block-1', blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-2' },
+  };
+
+  it('throws CONTRACT_RENDER_DATA_MISSING (500) instead of silently omitting the upload', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploadedVersionRowNoBytes]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    await expect(loadContractPdfInputs([uploadedBlock], fixtureQuote())).rejects.toMatchObject({
+      status: 500,
+      code: 'CONTRACT_RENDER_DATA_MISSING',
+    });
+  });
+});
+
 describe('loadContractBlockAuthoring (admin-only editor fields)', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();

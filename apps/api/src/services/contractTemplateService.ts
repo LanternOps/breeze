@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { PDFDocument, EncryptedPDFError } from 'pdf-lib';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type {
+  ContractTemplateOwnership,
   ContractVariable,
   CreateContractTemplateInput,
   UpdateContractTemplateInput,
@@ -27,11 +28,78 @@ export type VersionRow = typeof contractTemplateVersions.$inferSelect;
 // listTemplates' latestVersion omits the binary fileData column — a list
 // response has no business round-tripping a multi-MB PDF buffer per row
 // (only GET /:id/versions/:versionId/file streams that). Adjusted from the
-// original TemplateRow & { latestVersion: VersionRow | null } shape per Task
-// 9's note: "if [the list shape is] unsuitable for the UI, adjust the
-// service list function minimally."
+// original TemplateRow & { latestVersion: VersionRow | null } shape to keep
+// list responses lean.
 export type VersionSummary = Omit<VersionRow, 'fileData'>;
 export type TemplateWithLatest = TemplateRow & { latestVersion: VersionSummary | null };
+
+// ---------------------------------------------------------------------------
+// Read-side ownership DTOs
+// ---------------------------------------------------------------------------
+//
+// TemplateRow/VersionRow are Drizzle-inferred straight off the table shape,
+// so orgId/partnerId show up as two independent `string | null` columns —
+// refactoring the inferred type itself would mean hand-maintaining a parallel
+// schema-shaped type forever. Instead, narrow at the serialization boundary:
+// deriveTemplateOwnership converts the two nullable columns into the
+// discriminated ContractTemplateOwnership shape (packages/shared/validators/
+// contractTemplates.ts) that API responses actually go out as. Routes
+// (routes/contracts/templates.ts) call this on every row before it hits
+// `c.json(...)` — see serializeTemplate/serializeVersion there.
+
+/** A `contract_templates` row as it goes out over the API — `ownerScope` replaces the raw orgId/partnerId pair. */
+export type TemplateDTO = Omit<TemplateRow, 'orgId' | 'partnerId'> & ContractTemplateOwnership;
+/** A version row (already stripped of the binary fileData column) as it goes out over the API. */
+export type VersionSummaryDTO = Omit<VersionSummary, 'orgId' | 'partnerId'> & ContractTemplateOwnership;
+export type TemplateWithLatestDTO = TemplateDTO & { latestVersion: VersionSummaryDTO | null };
+export type TemplateDetailDTO = TemplateDTO & { versions: VersionSummaryDTO[] };
+
+/**
+ * Narrows a row's independent `orgId`/`partnerId` columns into the
+ * discriminated `ContractTemplateOwnership` shape. The DB CHECK constraint
+ * (and createTemplate's own branch above) guarantees exactly one is set —
+ * this throws rather than silently guessing if that invariant is ever
+ * violated, since a row reaching serialization with neither/both set would
+ * mean the constraint itself was bypassed (a real bug, not a shape to paper
+ * over with a fallback).
+ */
+export function deriveTemplateOwnership<T extends { orgId: string | null; partnerId: string | null }>(
+  row: T
+): Omit<T, 'orgId' | 'partnerId'> & ContractTemplateOwnership {
+  const { orgId, partnerId, ...rest } = row;
+  if (orgId !== null && partnerId === null) {
+    return { ...rest, ownerScope: 'organization', orgId, partnerId: null } as Omit<T, 'orgId' | 'partnerId'> &
+      ContractTemplateOwnership;
+  }
+  if (orgId === null && partnerId !== null) {
+    return { ...rest, ownerScope: 'partner', orgId: null, partnerId } as Omit<T, 'orgId' | 'partnerId'> &
+      ContractTemplateOwnership;
+  }
+  throw new Error(
+    `Contract template ownership invariant violated: orgId=${String(orgId)} partnerId=${String(partnerId)}`
+  );
+}
+
+// Every code this service (and contractTemplateRender.ts's shared VERSION_NOT_FOUND
+// throw) actually raises — literal union so a typo'd/renamed code is a compile
+// error, not a silently-mismatched string. Same idiom as QuoteServiceErrorCode
+// in quoteTypes.ts.
+export type ContractTemplateServiceErrorCode =
+  | 'ORG_DENIED'
+  | 'TEMPLATE_NOT_FOUND'
+  | 'VERSION_NOT_FOUND'
+  | 'PARTNER_SCOPE_REQUIRED'
+  | 'VALIDATION_ERROR'
+  | 'TEMPLATE_CREATE_FAILED'
+  | 'TEMPLATE_UPDATE_FAILED'
+  | 'TEMPLATE_ARCHIVED'
+  | 'VERSION_CREATE_FAILED'
+  | 'FILE_TOO_LARGE'
+  | 'INVALID_FILE'
+  | 'ENCRYPTED_FILE'
+  | 'VERSION_IMMUTABLE'
+  | 'VERSION_MISSING_FILE'
+  | 'VERSION_PUBLISH_FAILED';
 
 export class ContractTemplateServiceError extends Error {
   constructor(
@@ -39,7 +107,7 @@ export class ContractTemplateServiceError extends Error {
     // Literal union (not number) so Hono's c.json(status) overloads accept it
     // directly — same idiom as QuoteServiceError in quoteTypes.ts.
     public status: 400 | 403 | 404 | 409 | 413 | 422 | 500,
-    public code: string
+    public code: ContractTemplateServiceErrorCode
   ) {
     super(message);
     this.name = 'ContractTemplateServiceError';

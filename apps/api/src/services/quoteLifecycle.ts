@@ -16,6 +16,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
+import { captureException } from './sentry';
 
 export { portalBase };
 
@@ -33,8 +34,14 @@ function formatMoneyish(n: string | null | undefined, currency: string): string 
 }
 
 /** Why the best-effort email did not go out (mirrors invoicePdf's SendInvoiceResult
- * reasons, plus 'send_failed' since quote email errors are swallowed, not thrown). */
-export type SendQuoteEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed';
+ * reasons, plus:
+ *  - 'pdf_render_failed': building the attachment (contract input load, PDF
+ *    render, or uploaded-contract merge) threw — the email was never attempted.
+ *  - 'send_failed': the PDF built fine but the transport (emailService.sendEmail)
+ *    threw.
+ * Both are swallowed here rather than thrown, so this union exists to tell the
+ * caller which stage failed. */
+export type SendQuoteEmailReason = 'no_email_service' | 'no_billing_contact' | 'pdf_render_failed' | 'send_failed';
 
 /** Composer fields for the send email. All optional — defaults reproduce the
  * classic send (billing-contact recipient, standard subject, PDF attached). */
@@ -65,10 +72,11 @@ export async function sendQuote(
   // variables (auto or manual) can be left unresolved — sending would ship a
   // raw `{{token}}` placeholder straight into a legal document. Read-only and
   // MUST run before any org-scoped write below: loadContractBlockRenderData
-  // is a system-context read (contract_templates/contract_template_versions
-  // are dual-axis and invisible under this org-scoped RLS context — same
-  // contract as Task 10), and pinned version content is immutable, so this
-  // pre-transaction read can never race a template edit happening concurrently.
+  // is a system-context read that escapes the ambient request transaction via
+  // runOutsideDbContext (contract_templates/contract_template_versions are
+  // dual-axis and invisible under this org-scoped RLS context — same contract
+  // as Task 10), and pinned version content is immutable, so this early read
+  // can never race a template edit happening concurrently.
   const contractRenderData = await loadContractBlockRenderData(blocks);
   if (contractRenderData.length > 0) {
     const autoValues = resolveAutoVariables(quote);
@@ -235,44 +243,60 @@ export async function sendQuote(
       // "A PDF copy is attached." sentence.
       const includePdf = opts.includePdf !== false;
       let pdf: Buffer | null = null;
+      let pdfBuildFailed = false;
       if (includePdf) {
-        // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
-        // per authored contract block + any uploaded contract PDFs to append after
-        // rendering, so the emailed attachment matches the on-demand download.
-        const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
-        const { renderQuotePdf } = await import('./quotePdf');
-        const rawPdf = await renderQuotePdf(
-          frozenQuote,
-          blocks, customerLines, loadImage, {
-            partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-            footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-          }, undefined, contractRenderData);
-        const { mergeUploadedContractPdfs } = await import('./pdfMerge');
-        pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
+        // Own try/catch, deliberately separate from the transport try/catch below:
+        // a failure building the attachment (contract input load, PDF render, or
+        // uploaded-contract merge — e.g. an uploaded contract block with no stored
+        // bytes, contractTemplateRender.ts's CONTRACT_RENDER_DATA_MISSING) is a
+        // different failure mode than emailService.sendEmail throwing, and must not
+        // collapse to the same 'send_failed' reason — the send was never attempted.
+        try {
+          // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
+          // per authored contract block + any uploaded contract PDFs to append after
+          // rendering, so the emailed attachment matches the on-demand download.
+          const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
+          const { renderQuotePdf } = await import('./quotePdf');
+          const rawPdf = await renderQuotePdf(
+            frozenQuote,
+            blocks, customerLines, loadImage, {
+              partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+              footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+            }, undefined, contractRenderData);
+          const { mergeUploadedContractPdfs } = await import('./pdfMerge');
+          pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
+        } catch (pdfErr) {
+          pdfBuildFailed = true;
+          emailReason = 'pdf_render_failed';
+          console.error(`[quoteLifecycle] contract PDF build failed for quote ${id}:`, pdfErr);
+          captureException(pdfErr instanceof Error ? pdfErr : new Error(String(pdfErr)));
+        }
       }
-      const template = buildQuoteTemplate({
-        quoteNumber, partnerName: partnerName ?? 'your provider',
-        total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
-        expiryDate: quote.expiryDate ?? undefined,
-        message: opts.message,
-        subject: opts.subject,
-        pdfAttached: includePdf,
-        signature: partnerRow?.emailSignature ?? undefined,
-      });
-      // MSP-branded envelope: display name "<Partner> via Breeze" on the
-      // platform's own from-address (SPF/DKIM stays aligned — we never spoof
-      // the MSP's domain), and replies go to the MSP's billing email so a
-      // customer's "quick question" reply reaches the seller, not a no-reply box.
-      const replyTo = partnerRow?.billingEmail?.trim() || undefined;
-      await emailService.sendEmail({
-        to: recipients,
-        cc: opts.cc && opts.cc.length > 0 ? opts.cc : undefined,
-        from: partnerName ? emailService.fromWithDisplayName(`${partnerName} via Breeze`) : undefined,
-        replyTo,
-        subject: template.subject, html: template.html, text: template.text,
-        attachments: pdf ? [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
-      });
-      emailed = true;
+      if (!pdfBuildFailed) {
+        const template = buildQuoteTemplate({
+          quoteNumber, partnerName: partnerName ?? 'your provider',
+          total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
+          expiryDate: quote.expiryDate ?? undefined,
+          message: opts.message,
+          subject: opts.subject,
+          pdfAttached: includePdf,
+          signature: partnerRow?.emailSignature ?? undefined,
+        });
+        // MSP-branded envelope: display name "<Partner> via Breeze" on the
+        // platform's own from-address (SPF/DKIM stays aligned — we never spoof
+        // the MSP's domain), and replies go to the MSP's billing email so a
+        // customer's "quick question" reply reaches the seller, not a no-reply box.
+        const replyTo = partnerRow?.billingEmail?.trim() || undefined;
+        await emailService.sendEmail({
+          to: recipients,
+          cc: opts.cc && opts.cc.length > 0 ? opts.cc : undefined,
+          from: partnerName ? emailService.fromWithDisplayName(`${partnerName} via Breeze`) : undefined,
+          replyTo,
+          subject: template.subject, html: template.html, text: template.text,
+          attachments: pdf ? [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
+        });
+        emailed = true;
+      }
     } else if (!emailService) {
       emailReason = 'no_email_service';
       console.warn(`[quoteLifecycle] Email not configured — quote ${id} sent but not emailed`);
@@ -283,6 +307,7 @@ export async function sendQuote(
   } catch (err) {
     emailReason = 'send_failed';
     console.error(`[quoteLifecycle] send email failed for quote ${id}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);

@@ -122,7 +122,7 @@ describe('quote accept → executed contract document', () => {
       db.select().from(quoteAcceptances).where(eq(quoteAcceptances.id, res.acceptanceId)));
     expect(acc!.quoteSha256).toBe(expectedHash);
     // Sanity: the fold actually changed the hash vs. the contract-free canonical.
-    expect(acc!.quoteSha256).not.toBe(computeQuoteSha256(q as any, blocks2 as any, lines2 as any));
+    expect(acc!.quoteSha256).not.toBe(computeQuoteSha256(q as any, blocks2 as any, lines2 as any, []));
 
     // (2) One contract_documents row, linked to the acceptance + first contract,
     //     valid PDF magic, sha256 over the stored bytes.

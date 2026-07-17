@@ -92,6 +92,29 @@ describe('quotesPublic GET /:token', () => {
     expect(res.status).toBe(401);
   });
 
+  // Cosmetic view-stamping must never fail the unauthenticated render — a
+  // transient markQuoteViewed failure is swallowed (console.error'd) and the
+  // route still returns 200 with the quote payload. Mirrors the authenticated
+  // counterpart's coverage in routes/portal/quotes.test.ts.
+  it('still returns 200 with the quote payload when markQuoteViewed rejects', async () => {
+    (markQuoteViewed as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('transient db failure'));
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT
+    dbResults.push([]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.quote.id).toBe(QUOTE_ID);
+  });
+
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {
     dbResults.push([{
       id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',

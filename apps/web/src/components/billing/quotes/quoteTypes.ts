@@ -32,7 +32,10 @@ export interface ContractBlockContent {
   /** ADMIN editor ONLY (added by GET /quotes/:id's admin serialization, never by
    *  the portal/public serves): the raw authoring fields the editor needs to
    *  render an editable manual-variable form and offer a version-update nudge.
-   *  Absent on portal/public payloads and on legacy/uploaded blocks. */
+   *  Populated for authored AND uploaded-PDF blocks alike (loadContractBlockAuthoring
+   *  keys off the pinned version row, not sourceType). Absent on portal/public
+   *  payloads, and on a block whose pinned template version no longer exists
+   *  (deleted/malformed) — that block is omitted from the authoring map. */
   authoring?: ContractBlockAuthoring;
 }
 

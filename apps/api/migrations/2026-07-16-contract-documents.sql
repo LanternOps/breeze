@@ -5,16 +5,19 @@
 -- tables (epic #2135 shape): org_id XOR partner_id, one dual-axis RLS policy,
 -- mirroring 2026-07-01-software-policies-partner-ownership.sql. Versions
 -- denormalize the owner axes from their template (FK children get NO RLS
--- coverage for free); owner change is disallowed once versions exist, so the
--- denorm cannot drift. contract_documents is an org-owned transactional
+-- coverage for free); the owner (org_id/partner_id) is unconditionally
+-- immutable post-create — updateTemplate only ever touches name/description —
+-- so the denorm cannot drift. contract_documents is an org-owned transactional
 -- record (executed instance for a specific client org — org_id NOT NULL is
 -- deliberate, not an oversight); it uses the shape-1 (direct org_id) RLS
--- idiom, matching 2026-06-16-quotes.sql / 2026-06-15-c-invoice-documents.sql /
--- 2026-07-19-service-principals.sql (four per-command breeze_org_isolation_*
--- policies, no explicit system-scope branch — breeze_has_org_access() already
--- returns TRUE under system scope; the explicit branch is only needed on
--- dual-axis tables where the policy's own `org_id IS NOT NULL` guard would
--- otherwise block that short-circuit for partner-owned rows).
+-- idiom, matching 2026-06-16-quotes.sql / 2026-06-15-c-invoice-documents.sql
+-- (four per-command breeze_org_isolation_* policies, no explicit system-scope
+-- branch — breeze_has_org_access() already returns TRUE under system scope;
+-- the explicit branch is only needed on dual-axis tables where the policy's
+-- own `org_id IS NOT NULL` guard would otherwise block that short-circuit for
+-- partner-owned rows). service_principals is NOT the same shape here — it
+-- uses a single combined USING/WITH CHECK policy rather than four per-command
+-- ones.
 --
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps the file).
 
@@ -132,10 +135,11 @@ CREATE POLICY contract_template_versions_isolation ON contract_template_versions
   );
 
 -- contract_documents: shape 1 (direct org_id, always NOT NULL). Four
--- per-command policies, matching quotes.sql / invoice_documents /
--- service_principals — NOT the dual-axis single-policy shape above, since
--- there is only one ownership axis here and breeze_has_org_access() already
--- resolves system scope internally.
+-- per-command policies, matching quotes.sql / invoice_documents.sql — NOT the
+-- dual-axis single-policy shape above, and NOT service_principals (which uses
+-- one combined USING/WITH CHECK policy instead of four per-command ones) —
+-- since there is only one ownership axis here and breeze_has_org_access()
+-- already resolves system scope internally.
 ALTER TABLE contract_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contract_documents FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS breeze_org_isolation_select ON contract_documents;

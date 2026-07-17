@@ -26,6 +26,7 @@ import { sanitizeRichTextHtml } from './richTextSanitize';
 import { formatMoney, formatDate, contractUploadedMarker, type ContractPdfBlockData } from './quotePdf';
 import type { SellerSnapshot, BillToAddress } from './sellerSnapshot';
 import { ContractTemplateServiceError } from './contractTemplateService';
+import { QuoteServiceError } from './quoteTypes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -367,8 +368,11 @@ export function findUnresolvedVariables(
 // ---------------------------------------------------------------------------
 
 /** Exact shape a `contract` quote block's `content` takes once serialized for
- *  ANY client (portal, public link, admin editor) — never the raw
- *  templateId/templateVersionId/variableValues authoring shape. */
+ *  a TENANT-FACING client (portal, public link) — never the raw
+ *  templateId/templateVersionId/variableValues authoring shape. The `authoring`
+ *  key is deliberately absent from this interface (not just unset) so a stray
+ *  `content.authoring = ...` assignment against a `ContractClientBlockContent`-
+ *  typed value is a compile error, not just an unused write. */
 export interface ContractClientBlockContent {
   label?: string;
   templateName: string;
@@ -376,6 +380,80 @@ export interface ContractClientBlockContent {
   sourceType: 'authored' | 'uploaded';
   renderedHtml: string | null;
   fileUrl: string | null;
+}
+
+/** The ADMIN-only variant of `ContractClientBlockContent`: everything a
+ *  tenant-facing client gets, PLUS the raw authoring fields the in-app quote
+ *  editor needs (manual-variable form, auto-vs-manual split, version-update
+ *  nudge). This is the ONLY block-content shape allowed to carry `authoring` —
+ *  attachContractAuthoring below is the ONLY place that constructs one, and it
+ *  is called exclusively from the authenticated admin quote route
+ *  (routes/quotes/quotes.ts). Portal/public routes never import
+ *  loadContractBlockAuthoring or this type. */
+export type ContractAdminBlockContent = ContractClientBlockContent & {
+  authoring?: ContractBlockAuthoring;
+};
+
+/** Build the client-facing `content` for a single resolved `contract` block —
+ *  the one place that turns pinned-version render data + a block's raw
+ *  (authoring) content into the public/portal/admin-safe shape. Extracted to
+ *  its own function (rather than inlined in the `.map()` below) so the
+ *  `: ContractClientBlockContent` return annotation's excess-property check
+ *  guards this construction specifically: adding an `authoring` (or any other
+ *  undeclared) key to the returned literal is a compile error here, not just
+ *  a runtime possibility caught only by a route-level test. */
+function buildContractClientContent(
+  block: { id: string; content: unknown },
+  data: ContractBlockRenderData,
+  autoValues: Record<string, string>,
+  quote: QuoteRow,
+  fileUrlFor: (blockId: string) => string
+): ContractClientBlockContent {
+  const raw =
+    block.content && typeof block.content === 'object' && !Array.isArray(block.content)
+      ? (block.content as Record<string, unknown>)
+      : {};
+  const manualValues =
+    raw.variableValues && typeof raw.variableValues === 'object' && !Array.isArray(raw.variableValues)
+      ? (raw.variableValues as Record<string, string>)
+      : {};
+  const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label : undefined;
+
+  let renderedHtml: string | null = null;
+  if (data.sourceType === 'authored') {
+    const values = { ...autoValues, ...manualValues };
+    const first = substituteVariables(data.bodyHtml ?? '', values);
+    let html = first.html;
+    if (first.missing.length > 0) {
+      // The send gate (findUnresolvedVariables, Task 12) is supposed to block
+      // send while any declared variable is unresolved — this should be
+      // unreachable post-send. Substitute defensively anyway (never let a raw
+      // {{token}} reach a rendered client payload) and log so a gate gap is
+      // observable rather than silently shipping placeholder text.
+      console.error('[contractTemplateRender] unresolved variable(s) at render time', {
+        blockId: block.id,
+        quoteId: quote.id,
+        missing: first.missing,
+      });
+      const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
+      html = substituteVariables(html, blanks).html;
+    }
+    // Re-sanitize the FINAL substituted HTML before serving: a value
+    // substituted into an href (`<a href="{{link}}">`) is HTML-escaped but not
+    // scheme-checked, so a `javascript:` value would otherwise survive as a
+    // live hostile link on the public/portal/admin dangerouslySetInnerHTML
+    // paths. The write-time sanitize ran BEFORE the variable was in the attribute.
+    renderedHtml = sanitizeRichTextHtml(html);
+  }
+
+  return {
+    ...(label ? { label } : {}),
+    templateName: data.templateName,
+    versionNumber: data.versionNumber,
+    sourceType: data.sourceType,
+    renderedHtml,
+    fileUrl: data.sourceType === 'uploaded' ? fileUrlFor(block.id) : null,
+  };
 }
 
 /** Replace every `contract` block's raw authoring content
@@ -390,7 +468,12 @@ export interface ContractClientBlockContent {
  *  requires of its callers.
  *
  *  `fileUrlFor` builds the caller's own asset route (portal/public/admin all
- *  mirror the existing quote-image asset route under different mounts). */
+ *  mirror the existing quote-image asset route under different mounts).
+ *
+ *  Every caller (public, portal, and the admin route before it separately
+ *  layers `authoring` back on via attachContractAuthoring) gets this exact
+ *  same tenant-safe shape — there is no second code path that builds
+ *  `content` for a contract block. */
 export async function renderContractBlocksForClient<T extends { id: string; blockType: string; content: unknown }>(
   blocks: T[],
   quote: QuoteRow,
@@ -404,52 +487,32 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
   return blocks.map((block) => {
     const data = byBlockId.get(block.id);
     if (!data) return block;
+    const content = buildContractClientContent(block, data, autoValues, quote, fileUrlFor);
+    return { ...block, content };
+  });
+}
 
-    const raw =
-      block.content && typeof block.content === 'object' && !Array.isArray(block.content)
-        ? (block.content as Record<string, unknown>)
-        : {};
-    const manualValues =
-      raw.variableValues && typeof raw.variableValues === 'object' && !Array.isArray(raw.variableValues)
-        ? (raw.variableValues as Record<string, string>)
-        : {};
-    const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label : undefined;
-
-    let renderedHtml: string | null = null;
-    if (data.sourceType === 'authored') {
-      const values = { ...autoValues, ...manualValues };
-      const first = substituteVariables(data.bodyHtml ?? '', values);
-      let html = first.html;
-      if (first.missing.length > 0) {
-        // The send gate (findUnresolvedVariables, Task 12) is supposed to block
-        // send while any declared variable is unresolved — this should be
-        // unreachable post-send. Substitute defensively anyway (never let a raw
-        // {{token}} reach a rendered client payload) and log so a gate gap is
-        // observable rather than silently shipping placeholder text.
-        console.error('[contractTemplateRender] unresolved variable(s) at render time', {
-          blockId: block.id,
-          quoteId: quote.id,
-          missing: first.missing,
-        });
-        const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
-        html = substituteVariables(html, blanks).html;
-      }
-      // Re-sanitize the FINAL substituted HTML before serving: a value
-      // substituted into an href (`<a href="{{link}}">`) is HTML-escaped but not
-      // scheme-checked, so a `javascript:` value would otherwise survive as a
-      // live hostile link on the public/portal/admin dangerouslySetInnerHTML
-      // paths. The write-time sanitize ran BEFORE the variable was in the attribute.
-      renderedHtml = sanitizeRichTextHtml(html);
-    }
-
-    const content: ContractClientBlockContent = {
-      ...(label ? { label } : {}),
-      templateName: data.templateName,
-      versionNumber: data.versionNumber,
-      sourceType: data.sourceType,
-      renderedHtml,
-      fileUrl: data.sourceType === 'uploaded' ? fileUrlFor(block.id) : null,
-    };
+/** ADMIN-ONLY: layer the raw authoring fields (templateId/templateVersionId/
+ *  variableValues + the pinned version's declaredVariables + latest-published
+ *  nudge target) back onto an already-rendered block's content, for the
+ *  in-app quote editor's manual-variable form and version-update affordance.
+ *  Call this AFTER renderContractBlocksForClient, on its output — never
+ *  before. `authoring` is keyed by blockId (loadContractBlockAuthoring's
+ *  return shape); a block with no entry (non-contract, or its pinned version
+ *  failed to resolve) passes through unchanged.
+ *
+ *  This is the ONLY function in the codebase that constructs a
+ *  ContractAdminBlockContent — the admin quote route (routes/quotes/quotes.ts)
+ *  is its only caller. Portal/public routes must never call this. */
+export function attachContractAuthoring<T extends { id: string; blockType: string; content: unknown }>(
+  blocks: T[],
+  authoring: Map<string, ContractBlockAuthoring>
+): T[] {
+  if (authoring.size === 0) return blocks;
+  return blocks.map((block) => {
+    const a = authoring.get(block.id);
+    if (!a || block.blockType !== 'contract') return block;
+    const content: ContractAdminBlockContent = { ...(block.content as ContractClientBlockContent), authoring: a };
     return { ...block, content };
   });
 }
@@ -525,10 +588,20 @@ export async function loadContractPdfInputs(
       // a live link annotation. Write-time sanitize predates the substitution.
       contractRenderData.set(block.id, { html: sanitizeRichTextHtml(html), templateName: data.templateName });
     } else {
-      contractRenderData.set(block.id, { html: null, templateName: data.templateName });
-      if (data.fileData) {
-        uploads.push({ afterMarker: contractUploadedMarker(data.templateName), data: data.fileData });
+      if (!data.fileData) {
+        // A published uploaded version with no stored bytes can't be appended —
+        // without this the PDF would still render the "attached below" marker
+        // (contractRenderData below) for an attachment that never shows up, a
+        // legal-integrity bug. Fail loudly instead, same code as the accept-time
+        // guard for the identical condition (contractDocumentService.ts).
+        throw new QuoteServiceError(
+          `Uploaded contract block ${block.id} has no stored file to render`,
+          500,
+          'CONTRACT_RENDER_DATA_MISSING',
+        );
       }
+      contractRenderData.set(block.id, { html: null, templateName: data.templateName });
+      uploads.push({ afterMarker: contractUploadedMarker(data.templateName), data: data.fileData });
     }
   }
 

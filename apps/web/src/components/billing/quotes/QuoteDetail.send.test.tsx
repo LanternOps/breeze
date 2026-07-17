@@ -152,6 +152,30 @@ describe('QuoteDetail — send proposal', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
+  it.each([
+    ['no_email_service', 'not configured'],
+    ['send_failed', 'could not be delivered'],
+    ['pdf_render_failed', 'PDF could not be generated'],
+  ])('shows a distinct WARNING toast for emailReason %s', async (reason, fragment) => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    sendQuote.mockResolvedValue(resp({ data: { emailed: false, emailReason: reason } }));
+    const { showToast } = await import('../../shared/Toast');
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining(fragment),
+      }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
   it('shows the success toast when the email actually went out', async () => {
     const sendQuote = vi.mocked(quotesApi.sendQuote);
     sendQuote.mockResolvedValue(resp({ data: { emailed: true } }));

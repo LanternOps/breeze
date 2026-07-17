@@ -402,6 +402,11 @@
       "back": "Zurück",
       "loadError": "Vorlage konnte nicht geladen werden",
       "newVersion": "Neue Version",
+      "newVersionConfirm": {
+        "title": "Nicht gespeicherte Änderungen verwerfen?",
+        "message": "Wenn Sie eine neue Version beginnen, wird der Editor geleert. Ihre nicht gespeicherten Änderungen an diesem Entwurf gehen verloren.",
+        "confirm": "Neue Version beginnen"
+      },
       "uploadPdf": "PDF hochladen",
       "versions": "Versionen",
       "noVersions": "Noch keine Versionen",
@@ -757,6 +762,7 @@
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",
         "noEmailService": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — E-Mail ist auf diesem Server nicht konfiguriert.",
+        "pdfRenderFailed": "Vorschlag als Gesendet markiert, aber das PDF konnte nicht erstellt werden, daher wurde keine E-Mail zugestellt. Prüfen Sie die angehängten Vertragsdateien und senden Sie erneut.",
         "sendFailed": "Vorschlag als Gesendet markiert, aber die E-Mail konnte nicht zugestellt werden. Prüfen Sie die Adresse oder teilen Sie den Annahme-Link manuell."
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",

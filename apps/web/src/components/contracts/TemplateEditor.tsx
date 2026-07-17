@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { StatusPill } from '../billing/shared/StatusPill';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import RichTextEditor from '../common/RichTextEditor';
 import {
   getContractTemplate,
@@ -50,6 +51,7 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   const [body, setBody] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [newVersionConfirmOpen, setNewVersionConfirmOpen] = useState(false);
   // The body value we last seeded from the server. `body !== lastLoaded` means the
   // user has typed un-saved changes — used to guard the re-seed in load() and to
   // block Publish (which would publish the OLD stored draft while silently
@@ -71,9 +73,11 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
       // both call load(); an unconditional re-seed would irrecoverably wipe typed,
       // un-saved contract text. `force` (used right after a successful saveDraft)
       // re-seeds unconditionally: the server-stored (sanitizer-normalized) body is
-      // now the source of truth, and re-seeding to it clears `dirty` — otherwise the
-      // TipTap buffer (which emits rel="…nofollow") never string-equals the stored
-      // rel="noopener noreferrer" and Publish stays permanently disabled.
+      // now the source of truth, and re-seeding to it clears `dirty`. RichTextEditor
+      // now emits the sanitizer's exact rel, but the sanitizer can still normalize a
+      // body in other ways (entity/whitespace/attribute canonicalization); without
+      // this force-reseed any such residual diff would keep `dirty` true and leave
+      // Publish permanently disabled.
       const latestAuthored = payload.data.versions.find((v) => v.sourceType === 'authored' && v.bodyHtml);
       const seed = latestAuthored?.bodyHtml ?? '';
       // Capture the previously-loaded value BEFORE mutating the ref: the functional
@@ -100,6 +104,18 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   const variables = useMemo(() => detectVariables(body), [body]);
   const manualVariables = useMemo(() => variables.filter((v) => v.kind === 'manual'), [variables]);
 
+  // "New version" clears the editor to start a fresh draft. If the buffer has
+  // un-saved edits, confirm first — an unconditional clear silently destroyed
+  // typed contract text despite the tracked `dirty` flag.
+  const startNewVersion = () => {
+    if (dirty) { setNewVersionConfirmOpen(true); return; }
+    setBody('');
+  };
+  const confirmNewVersion = () => {
+    setBody('');
+    setNewVersionConfirmOpen(false);
+  };
+
   const insertVariable = (name: string) => {
     // RichTextEditor is controlled via value/onChange with no cursor API, so a
     // chip appends the token as a new paragraph; the author moves it as needed.
@@ -120,7 +136,8 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       // Force-reseed from the server-normalized body just saved so `dirty` clears
-      // (the TipTap buffer's rel="…nofollow" never string-equals the stored form).
+      // even when the sanitizer canonicalized the body (entities/whitespace/attrs)
+      // into a form the editor buffer doesn't string-equal.
       await load({ force: true });
     } catch (err) {
       handleActionError(err, t('contracts.templateEditor.saveError'));
@@ -212,7 +229,7 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setBody('')}
+              onClick={startNewVersion}
               data-testid="template-add-version-btn"
               className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
@@ -386,6 +403,17 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
           </div>
         </aside>
       </div>
+
+      <ConfirmDialog
+        open={newVersionConfirmOpen}
+        onClose={() => setNewVersionConfirmOpen(false)}
+        onConfirm={confirmNewVersion}
+        variant="warning"
+        title={t('contracts.templateEditor.newVersionConfirm.title')}
+        message={t('contracts.templateEditor.newVersionConfirm.message')}
+        confirmLabel={t('contracts.templateEditor.newVersionConfirm.confirm')}
+        confirmTestId="template-new-version-confirm"
+      />
     </div>
   );
 }

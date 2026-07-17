@@ -32,6 +32,7 @@ const resp = (payload: unknown, status = 200) =>
 
 const PARTNER_TEMPLATE = {
   id: '11111111-1111-1111-1111-111111111111',
+  ownerScope: 'partner',
   orgId: null,
   partnerId: 'p1',
   name: 'MSA (All orgs)',
@@ -43,6 +44,7 @@ const PARTNER_TEMPLATE = {
   latestVersion: {
     id: 'v1',
     templateId: '11111111-1111-1111-1111-111111111111',
+    ownerScope: 'partner',
     orgId: null,
     partnerId: 'p1',
     versionNumber: 2,
@@ -61,6 +63,7 @@ const PARTNER_TEMPLATE = {
 
 const ORG_TEMPLATE = {
   id: '22222222-2222-2222-2222-222222222222',
+  ownerScope: 'organization',
   orgId: 'org-1',
   partnerId: null,
   name: 'Acme SOW',

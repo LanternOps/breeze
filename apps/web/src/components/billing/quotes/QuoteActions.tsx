@@ -10,7 +10,7 @@ import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
 import { isValidEmail } from '@/lib/email';
-import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions } from '../../../lib/api/quotes';
+import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { useQuotePdfDownload } from './useQuoteImage';
@@ -73,8 +73,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [sending, setSending] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [sendMessage, setSendMessage] = useState('');
-  // Send composer fields. To/Cc are raw comma-separated inputs parsed on the
-  // fly; Subject left blank means "use the server default".
+  // Send composer fields. To/Cc are raw text inputs parsed on the fly
+  // (parseAddressList splits on comma / semicolon / newline); Subject left blank
+  // means "use the server default".
   const [sendTo, setSendTo] = useState('');
   const [sendCc, setSendCc] = useState('');
   const [ccOpen, setCcOpen] = useState(false);
@@ -158,8 +159,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         if (email) setSendTo((cur) => cur || email);
       } catch { /* leave To empty — the user types the recipient */ }
     })();
-    // Signature + Stripe status are partner-only endpoints; an org-scoped token
-    // would just 403, so skip the round-trips entirely (see lib/authScope.ts).
+    // Signature + Stripe status are partner-level support data. The endpoints
+    // aren't scope-gated (they gate on permission + a non-null partnerId, not a
+    // partner-vs-org token), but an org-scoped session has no partner context
+    // worth previewing here — so gate the round-trips on partner scope
+    // client-side (see lib/authScope.ts) rather than fire doomed/irrelevant GETs.
     if (getJwtClaims().scope === 'partner') {
       void (async () => {
         try {
@@ -215,7 +219,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       const note = sendMessage.trim();
       if (note) opts.message = note;
       if (!includePdf) opts.includePdf = false;
-      const result = await runAction<{ data?: { emailed?: boolean; emailReason?: string } }>({
+      const result = await runAction<{ data?: { emailed?: boolean; emailReason?: QuoteSendEmailReason } }>({
         request: () => sendQuote(quote.id, opts),
         errorFallback: t('quotes.actions.sendError'),
         onUnauthorized: UNAUTHORIZED,
@@ -227,13 +231,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         // The send committed but NO email went out (the API's email step is
         // best-effort) — a plain success toast here would hide that the
         // customer never received anything. Say so, with the why.
-        const warnByReason: Record<string, string> = {
+        const warnByReason: Record<QuoteSendEmailReason, string> = {
           no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
           no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
+          pdf_render_failed: t('quotes.actions.sendEmailWarning.pdfRenderFailed'),
           send_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
         };
         showToast({
-          message: warnByReason[result.data.emailReason ?? ''] ?? warnByReason.send_failed,
+          message: (result.data.emailReason && warnByReason[result.data.emailReason]) ?? warnByReason.send_failed,
           type: 'warning',
         });
       } else {
@@ -462,7 +467,8 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       {/* Send composer — a lightweight email-client dialog. To is prefilled from
           the org billing contact (best-effort; the server keeps its own fallback),
           Subject left blank means the server default, and the partner's email
-          signature / Stripe-connect status are partner-scope-only support data. */}
+          signature / Stripe-connect status are support data loaded only under a
+          partner-scoped session (not because the endpoints reject org tokens). */}
       <Dialog
         open={sendOpen}
         onClose={closeSend}

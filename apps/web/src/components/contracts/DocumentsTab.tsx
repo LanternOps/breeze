@@ -85,13 +85,18 @@ export default function DocumentsTab() {
 
   useEffect(() => {
     void (async () => {
-      const res = await fetchWithAuth('/orgs/organizations');
-      if (!res.ok) return;
-      const body = (await res.json().catch(() => null)) as
-        | { data?: Organization[]; organizations?: Organization[] }
-        | null;
-      const list = body?.data ?? body?.organizations ?? [];
-      setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
+      try {
+        const res = await fetchWithAuth('/orgs/organizations');
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as
+          | { data?: Organization[]; organizations?: Organization[] }
+          | null;
+        const list = body?.data ?? body?.organizations ?? [];
+        setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
+      } catch {
+        // Cosmetic org-name enrichment only — a failed GET just leaves the
+        // organization column showing its '—' fallback. No toast.
+      }
     })();
   }, []);
 

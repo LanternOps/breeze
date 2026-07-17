@@ -20,7 +20,12 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
-import { renderContractBlocksForClient, loadContractPdfInputs, loadContractBlockAuthoring } from '../../services/contractTemplateRender';
+import {
+  renderContractBlocksForClient,
+  loadContractPdfInputs,
+  loadContractBlockAuthoring,
+  attachContractAuthoring,
+} from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 
@@ -96,15 +101,12 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // explicit version-update action. This is the ONLY route that does this — the
     // portal + public serves deliberately expose the stripped display shape only
     // (tenant-facing boundary; see loadContractBlockAuthoring's doc comment).
+    // attachContractAuthoring builds the ContractAdminBlockContent shape
+    // (ContractClientBlockContent + optional `authoring`) explicitly — the
+    // portal/public routes never call it, so their block content can never
+    // carry `authoring`.
     const authoring = await loadContractBlockAuthoring(detail.blocks);
-    const blocksForEditor = authoring.size === 0
-      ? blocks
-      : blocks.map((b) => {
-          const a = authoring.get(b.id);
-          return a && b.blockType === 'contract'
-            ? { ...b, content: { ...(b.content as Record<string, unknown>), authoring: a } }
-            : b;
-        });
+    const blocksForEditor = attachContractAuthoring(blocks, authoring);
     return c.json({ data: { ...detail, blocks: blocksForEditor, branding } });
   } catch (err) { return handleServiceError(c, err); }
 });

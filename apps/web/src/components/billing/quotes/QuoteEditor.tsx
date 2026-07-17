@@ -90,10 +90,9 @@ function latestPublishedVersion(detail: ContractTemplateDetail): TemplateVersion
   return detail.versions.find((v) => v.status === 'published') ?? null;
 }
 
-/** Parse the comma-separated variable names out of a send-time 422
- *  CONTRACT_VARIABLES_UNRESOLVED message ("Contract variables unresolved: a, b").
- *  Falls back to substring matching against the known names, so a wording change
- *  never silently drops the inline errors. */
+/** Parse the variable names out of a send-time 422 CONTRACT_VARIABLES_UNRESOLVED
+ *  message ("Contract variables unresolved: a, b") by substring-matching the
+ *  known names, so a wording change never silently drops the inline errors. */
 function unresolvedNamesFromMessage(message: string, knownNames: string[]): string[] {
   return knownNames.filter((name) => message.includes(name));
 }
@@ -961,8 +960,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             onUnauthorized: UNAUTHORIZED,
           });
         } catch (err) {
-          // A send-time variable gate can also fire here if the server rejects the
-          // attach: map the unresolved names back to inline errors on their inputs.
+          // The attach route itself only rejects with INVALID_CONTRACT_TEMPLATE —
+          // the unresolved-variables gate (CONTRACT_VARIABLES_UNRESOLVED) fires at
+          // SEND, not here (the client-side gate above already blocks blank manual
+          // vars pre-attach). Kept defensively: if a future server change ever
+          // surfaces that code at attach, map the names back to inline input errors.
           if (err instanceof ActionError && err.code === 'CONTRACT_VARIABLES_UNRESOLVED') {
             const named = unresolvedNamesFromMessage(err.message, manualNames);
             const targets = named.length > 0 ? named : manualNames;
@@ -2163,12 +2165,16 @@ function BlockCard({
   const lastHeading = useRef(heading);
   const lastHtml = useRef(html);
   const lastLabel = useRef(tableLabel);
+  // Set right after our own rich_text save so the next html-prop resync adopts
+  // the server-normalized body unconditionally (see commitRich).
+  const forceRichResync = useRef(false);
   useEffect(() => {
     setHeadingDraft((cur) => (cur === lastHeading.current ? heading : cur));
     lastHeading.current = heading;
   }, [heading]);
   useEffect(() => {
-    setRichDraft((cur) => (cur === lastHtml.current ? html : cur));
+    setRichDraft((cur) => (forceRichResync.current || cur === lastHtml.current ? html : cur));
+    forceRichResync.current = false;
     lastHtml.current = html;
   }, [html]);
   useEffect(() => {
@@ -2194,7 +2200,15 @@ function BlockCard({
   };
   const commitRich = async () => {
     if (richDraft === html) return;
-    if (await onEditBlock(block, { html: richDraft })) flashSaved();
+    if (await onEditBlock(block, { html: richDraft })) {
+      // The server sanitizes the body on write (rel/attribute normalization), so
+      // the reloaded html prop is the source of truth. Force the next resync to
+      // adopt it — otherwise a residual TipTap-vs-sanitizer string mismatch would
+      // keep the block flagged "unsaved" and re-PATCH on every blur. Mirrors the
+      // force-reseed TemplateEditor uses after saveDraft.
+      forceRichResync.current = true;
+      flashSaved();
+    }
   };
   // Rename a pricing table. An empty label is a valid clear (the document falls
   // back to its "Pricing" default), so — unlike heading — we commit the trimmed

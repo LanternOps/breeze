@@ -47,6 +47,20 @@ export const updateContractTemplateSchema = contractTemplateShape
 export type CreateContractTemplateInput = z.infer<typeof createContractTemplateSchema>;
 export type UpdateContractTemplateInput = z.infer<typeof updateContractTemplateSchema>;
 
+// Read-side mirror of the write-side XOR invariant above (contractTemplateShape's
+// superRefine, and the DB's contract_templates_one_owner_chk / contract_template_versions
+// equivalent): every persisted template or version row has exactly one of
+// orgId/partnerId set, never both, never neither. Modeling that as two independent
+// `string | null` fields on a read DTO lets a caller observe an impossible
+// `{ orgId: null, partnerId: null }` or `{ orgId: '...', partnerId: '...' }` combination
+// without a type error. This discriminated union makes the invariant a compile-time
+// fact instead of something only the write path enforces — API serializers attach
+// `ownerScope` (see deriveTemplateOwnership in contractTemplateService.ts) and web
+// consumers narrow on it instead of re-deriving `orgId === null`.
+export type ContractTemplateOwnership =
+  | { ownerScope: 'organization'; orgId: string; partnerId: null }
+  | { ownerScope: 'partner'; orgId: null; partnerId: string };
+
 // Authored version body. File uploads (source_type='uploaded') go through the
 // multipart route and are not shaped by this schema.
 export const createTemplateVersionSchema = z.object({

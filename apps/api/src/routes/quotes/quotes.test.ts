@@ -41,6 +41,17 @@ vi.mock('../../services/contractTemplateRender', () => ({
   // ADMIN-only authoring fields for the editor. Default empty map so every other
   // GET /:id test is unaffected (no `authoring` merged onto contract blocks).
   loadContractBlockAuthoring: vi.fn(async () => new Map()),
+  // Real implementation (not a bare vi.fn()) — mirrors contractTemplateRender.ts's
+  // attachContractAuthoring exactly, so the "merges authoring onto contract
+  // blocks" test below exercises the actual merge semantics the route relies on.
+  attachContractAuthoring: vi.fn((blocks: Array<{ id: string; blockType: string; content: unknown }>, authoring: Map<string, unknown>) => {
+    if (authoring.size === 0) return blocks;
+    return blocks.map((block) => {
+      const a = authoring.get(block.id);
+      if (!a || block.blockType !== 'contract') return block;
+      return { ...block, content: { ...(block.content as Record<string, unknown>), authoring: a } };
+    });
+  }),
 }));
 
 // Mock the PDF renderer — the route is what we exercise here, not pdfkit. The

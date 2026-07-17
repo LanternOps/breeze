@@ -129,6 +129,43 @@ describe('RichTextEditor', () => {
     expect(emitted).not.toContain('mailto:');
   });
 
+  it('rejects a protocol-relative link (//host) with a validation alert and sets no link', async () => {
+    // The server sanitizer (richTextSanitize.ts, allowProtocolRelative:false)
+    // strips `//evil.example`, so the editor must reject it up front rather than
+    // accept a link the server will silently drop.
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('//evil.example');
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const onChange = vi.fn();
+    render(
+      <RichTextEditor value="<p>Hello</p>" onChange={onChange} ariaLabel="Proposal text" testId="rte-test" />,
+    );
+
+    fireEvent.click(screen.getByTestId('rte-link'));
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    expect(promptSpy).toHaveBeenCalled();
+    const emitted = onChange.mock.calls.map((c) => c[0] as string).join('');
+    expect(emitted).not.toContain('//evil.example');
+  });
+
+  it('renders links with rel="noopener noreferrer" (no nofollow) matching the server sanitizer', () => {
+    // TipTap's Link default adds a trailing `nofollow`; the sanitizer stores
+    // rel="noopener noreferrer". The editor is configured to emit the sanitizer's
+    // exact rel so a link-bearing block settles to "saved" instead of re-PATCHing.
+    render(
+      <RichTextEditor
+        value='<p><a href="https://ex.com">Link</a></p>'
+        onChange={() => {}}
+        ariaLabel="Proposal text"
+        testId="rte-test"
+      />,
+    );
+    const anchor = screen.getByTestId('rte-test').querySelector('a');
+    expect(anchor).not.toBeNull();
+    expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(anchor?.getAttribute('rel')).not.toContain('nofollow');
+  });
+
   it('strips content outside the allowed subset (blockquote/code)', () => {
     render(
       <RichTextEditor

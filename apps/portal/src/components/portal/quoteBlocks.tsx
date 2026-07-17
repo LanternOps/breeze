@@ -6,7 +6,7 @@
 // lines (no blockId) fall into a trailing default pricing table — same as the
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
-import type { QuoteBlock, QuoteLine } from '@/lib/api';
+import type { QuoteBlock, QuoteContractBlockContent, QuoteLine } from '@/lib/api';
 
 export function money(value: string | number, currencyCode: string): string {
   const n = Number(value);
@@ -198,12 +198,19 @@ export function QuoteBlocks({
     }
 
     if (block.blockType === 'contract') {
-      const label = typeof content.label === 'string' ? content.label : '';
-      const templateName = typeof content.templateName === 'string' ? content.templateName : 'Contract';
-      const versionNumber = Number(content.versionNumber ?? 0);
-      const sourceType = content.sourceType === 'uploaded' ? 'uploaded' : 'authored';
-      const renderedHtml = typeof content.renderedHtml === 'string' ? content.renderedHtml : null;
-      const fileUrl = typeof content.fileUrl === 'string' ? content.fileUrl : null;
+      // Typed as QuoteContractBlockContent (never `authoring`) for documentation —
+      // still narrowed field-by-field below rather than trusted outright, since a
+      // TS type doesn't validate the JSON actually on the wire. `Record<string,
+      // unknown>` doesn't structurally overlap with the (mostly-required) typed
+      // shape, so route through `unknown` — the same escape hatch this
+      // component already leans on for `content` itself.
+      const c = content as unknown as QuoteContractBlockContent;
+      const label = typeof c.label === 'string' ? c.label : '';
+      const templateName = typeof c.templateName === 'string' ? c.templateName : 'Contract';
+      const versionNumber = Number(c.versionNumber ?? 0);
+      const sourceType = c.sourceType === 'uploaded' ? 'uploaded' : 'authored';
+      const renderedHtml = typeof c.renderedHtml === 'string' ? c.renderedHtml : null;
+      const fileUrl = typeof c.fileUrl === 'string' ? c.fileUrl : null;
       return (
         <div key={block.id} className="space-y-3 rounded-lg border bg-card p-4 sm:p-5" data-testid="contract-block">
           {label && <h3 className="text-base font-semibold text-foreground">{label}</h3>}

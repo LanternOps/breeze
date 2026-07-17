@@ -12,11 +12,13 @@
  *
  * Hardening (carried over from the original quoteLifecycle implementation):
  * a candidate that is empty, an empty-authority triple-slash form
- * (`https:///portal`), or otherwise parses to an empty host (e.g. a bare
- * `https://`) must NEVER silently produce an empty-host URL in a
- * customer-facing email. We walk the configured chain and, if none yields a
- * usable host, throw loudly so callers' best-effort email swallows record the
- * failure rather than mailing a dead link.
+ * (`https:///portal`), or otherwise parses to an empty host (e.g. a scheme-only
+ * value like `localhost:4321`, which `new URL` reads as scheme `localhost:`
+ * with an empty hostname rather than throwing — a bare `https://` instead
+ * throws and is caught by the branch below) must NEVER silently produce an
+ * empty-host URL in a customer-facing email. We walk the configured chain
+ * and, if none yields a usable host, throw loudly so callers' best-effort
+ * email swallows record the failure rather than mailing a dead link.
  */
 
 /** Portal base path appended to app-origin fallbacks. Normalized to a leading
@@ -59,8 +61,10 @@ export function portalBase(): string {
       // Not a parseable absolute URL (bare `https://`, host-only string, etc.) — skip.
       continue;
     }
-    // A bare scheme like `https://` parses with an empty hostname; reject it so
-    // we never emit `https:///quote/...`.
+    // A misconfigured value that parses successfully but yields no host (e.g. a
+    // scheme-only string like `localhost:4321`, parsed as scheme `localhost:`
+    // with an empty hostname — a bare `https://` instead throws and is caught
+    // above) must be rejected too, so we never emit an empty-host URL.
     if (!parsed.hostname) continue;
     const base = trimmed.replace(/\/+$/, '');
     // Tolerate an app-origin value that was already configured with the portal

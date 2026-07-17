@@ -37,6 +37,7 @@ import { renderRichTextIntoPdf } from './richTextPdf';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import { formatDate } from './quotePdf';
 import type { AuthContext } from '../middleware/auth';
+import { captureException } from './sentry';
 
 // Only the three fields this service reads off a quote_blocks row — the caller
 // passes the full Drizzle rows, which satisfy this structurally.
@@ -224,6 +225,9 @@ export async function createExecutedDocuments(
           quoteId: quote.id,
           missing: first.missing,
         });
+        captureException(new Error(
+          `[contractDocumentService] unresolved variable(s) at accept-time snapshot: blockId=${data.blockId} quoteId=${quote.id} missing=${first.missing.join(',')}`
+        ));
         html = substituteVariables(html, Object.fromEntries(first.missing.map((n) => [n, '']))).html;
       }
       // Re-sanitize the FINAL substituted HTML before it becomes the executed legal
@@ -264,13 +268,23 @@ export async function createExecutedDocuments(
 // to a contract after the fact.
 // ---------------------------------------------------------------------------
 
+// Every code this service actually raises — literal union so a typo'd/renamed
+// code is a compile error, not a silently-mismatched string. Same idiom as
+// ContractTemplateServiceErrorCode.
+export type ContractDocumentServiceErrorCode =
+  | 'DOCUMENT_NOT_FOUND'
+  | 'ORG_DENIED'
+  | 'ALREADY_LINKED'
+  | 'CONTRACT_NOT_FOUND'
+  | 'DOCUMENT_LINK_FAILED';
+
 export class ContractDocumentServiceError extends Error {
   constructor(
     message: string,
     // Literal union (not number) so Hono's c.json(status) overloads accept it
     // directly — same idiom as ContractTemplateServiceError.
     public status: 400 | 403 | 404 | 409 | 500,
-    public code: string,
+    public code: ContractDocumentServiceErrorCode,
   ) {
     super(message);
     this.name = 'ContractDocumentServiceError';

@@ -14,6 +14,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { buildContractSpecsFromQuote } from './quoteToContract';
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
+import { captureException } from './sentry';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import {
   assertContractRenderDataComplete,
@@ -377,5 +378,6 @@ export async function emitAcceptInvoiceIssued(
     await enqueueInvoicePdfRender(res.invoiceId);
   } catch (err) {
     console.error('[quoteAccept] enqueueInvoicePdfRender failed (accept already committed)', `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }

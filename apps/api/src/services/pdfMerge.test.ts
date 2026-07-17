@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { mergeUploadedContractPdfs, PdfMergeError } from './pdfMerge';
+import { mergeUploadedContractPdfs, PdfMergeError, MAX_MERGED_PAGES } from './pdfMerge';
 
 async function makePdf(pageCount: number): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -80,5 +80,20 @@ describe('mergeUploadedContractPdfs', () => {
     await expect(
       mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: encrypted }]),
     ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_UNREADABLE' });
+  });
+
+  it('throws a typed PdfMergeError when the aggregate page count exceeds the cap', async () => {
+    const main = await makePdf(1);
+    const hugeUpload = await makePdf(MAX_MERGED_PAGES); // main(1) + upload(cap) > cap
+    await expect(
+      mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: hugeUpload }]),
+    ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_PAGE_LIMIT_EXCEEDED' });
+  });
+
+  it('allows a merge that lands exactly at the page cap', async () => {
+    const main = await makePdf(1);
+    const upload = await makePdf(MAX_MERGED_PAGES - 1); // main(1) + upload = exactly the cap
+    const merged = await mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: upload }]);
+    expect(await pageCountOf(merged)).toBe(MAX_MERGED_PAGES);
   });
 });

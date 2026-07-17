@@ -60,11 +60,14 @@ describe('contract template routes', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('GET / lists templates', async () => {
-    (svc.listTemplates as any).mockResolvedValue([{ id: TEMPLATE_ID, name: 'MSA', latestVersion: null }]);
+    (svc.listTemplates as any).mockResolvedValue([
+      { id: TEMPLATE_ID, name: 'MSA', orgId: ORG_ID, partnerId: null, latestVersion: null },
+    ]);
     const res = await app().request(BASE, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toHaveLength(1);
+    expect(body.data[0].ownerScope).toBe('organization');
     expect(svc.listTemplates).toHaveBeenCalledOnce();
   });
 
@@ -78,6 +81,8 @@ describe('contract template routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(TEMPLATE_ID);
+    expect(body.data.ownerScope).toBe('organization');
+    expect(body.data.partnerId).toBeNull();
     expect(svc.createTemplate).toHaveBeenCalledOnce();
   });
 
@@ -120,8 +125,18 @@ describe('contract template routes', () => {
     (svc.getTemplate as any).mockResolvedValue({
       id: TEMPLATE_ID,
       name: 'MSA',
+      orgId: ORG_ID,
+      partnerId: null,
       versions: [
-        { id: VERSION_ID, sourceType: 'authored', bodyHtml: '<p>Hi</p>', fileData: null, status: 'draft' },
+        {
+          id: VERSION_ID,
+          sourceType: 'authored',
+          bodyHtml: '<p>Hi</p>',
+          fileData: null,
+          status: 'draft',
+          orgId: ORG_ID,
+          partnerId: null,
+        },
         {
           id: 'v2',
           sourceType: 'uploaded',
@@ -130,6 +145,8 @@ describe('contract template routes', () => {
           mime: 'application/pdf',
           byteSize: 8,
           status: 'draft',
+          orgId: ORG_ID,
+          partnerId: null,
         },
       ],
     });
@@ -137,8 +154,10 @@ describe('contract template routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(TEMPLATE_ID);
+    expect(body.data.ownerScope).toBe('organization');
     expect(body.data.versions).toHaveLength(2);
     expect(body.data.versions[0].bodyHtml).toBe('<p>Hi</p>');
+    expect(body.data.versions[0].ownerScope).toBe('organization');
     expect(body.data.versions[1].fileData).toBeUndefined();
     expect(body.data.versions[1].mime).toBe('application/pdf');
   });
@@ -152,7 +171,7 @@ describe('contract template routes', () => {
   });
 
   it('PATCH /:id updates a template', async () => {
-    (svc.updateTemplate as any).mockResolvedValue({ id: TEMPLATE_ID, name: 'Renamed' });
+    (svc.updateTemplate as any).mockResolvedValue({ id: TEMPLATE_ID, name: 'Renamed', orgId: ORG_ID, partnerId: null });
     const res = await app().request(`${BASE}/${TEMPLATE_ID}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
@@ -180,6 +199,8 @@ describe('contract template routes', () => {
       sourceType: 'authored',
       bodyHtml: '<p>New draft</p>',
       status: 'draft',
+      orgId: ORG_ID,
+      partnerId: null,
     });
     const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions`, {
       method: 'POST',
@@ -225,6 +246,8 @@ describe('contract template routes', () => {
         { name: 'client.name', kind: 'auto' },
         { name: 'special_clause', kind: 'manual' },
       ],
+      orgId: ORG_ID,
+      partnerId: null,
     });
     const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions/${VERSION_ID}/publish`, { method: 'POST' });
     expect(res.status).toBe(200);
@@ -242,6 +265,8 @@ describe('contract template routes', () => {
       bodyHtml: '<p>Body text</p>',
       fileData: null,
       status: 'draft',
+      orgId: ORG_ID,
+      partnerId: null,
     });
     const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions/${VERSION_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -258,6 +283,8 @@ describe('contract template routes', () => {
       mime: 'application/pdf',
       byteSize: 8,
       status: 'draft',
+      orgId: ORG_ID,
+      partnerId: null,
     });
     const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions/${VERSION_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -317,6 +344,8 @@ describe('contract template routes', () => {
       mime: 'application/pdf',
       byteSize: 14,
       status: 'draft',
+      orgId: ORG_ID,
+      partnerId: null,
     });
     const form = new FormData();
     form.append('file', new File([Buffer.from('%PDF-1.7\n%%EOF')], 'contract.pdf', { type: 'application/pdf' }));

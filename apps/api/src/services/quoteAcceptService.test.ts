@@ -267,7 +267,7 @@ describe('acceptQuote contract document snapshot', () => {
     );
     expect(acceptanceValues.quoteSha256).toBe(expected);
     // And that hash genuinely differs from the no-contract hash (proves folding).
-    const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any);
+    const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any, []);
     expect(acceptanceValues.quoteSha256).not.toBe(withoutContracts);
   });
 

@@ -72,14 +72,19 @@ export default function TemplatesTab() {
 
   useEffect(() => {
     void (async () => {
-      const res = await fetchWithAuth('/orgs/organizations');
-      if (!res.ok) return;
-      const body = (await res.json().catch(() => null)) as
-        | { data?: Organization[]; organizations?: Organization[] }
-        | null;
-      const list = body?.data ?? body?.organizations ?? [];
-      setOrgs(list);
-      setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
+      try {
+        const res = await fetchWithAuth('/orgs/organizations');
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as
+          | { data?: Organization[]; organizations?: Organization[] }
+          | null;
+        const list = body?.data ?? body?.organizations ?? [];
+        setOrgs(list);
+        setOrgNames(Object.fromEntries(list.map((o) => [o.id, o.name])));
+      } catch {
+        // Cosmetic org-name enrichment only — a failed GET just leaves the org
+        // column blank (and the create dialog without its org picker). No toast.
+      }
     })();
   }, []);
 
@@ -154,7 +159,7 @@ export default function TemplatesTab() {
   }
 
   const ownerLabel = (tpl: ContractTemplateWithLatest): string => {
-    if (tpl.orgId === null) return t('contracts.templatesTab.allOrgs');
+    if (tpl.ownerScope === 'partner') return t('contracts.templatesTab.allOrgs');
     return orgNames[tpl.orgId] ?? t('contracts.templatesTab.ownerOrg');
   };
 
@@ -237,7 +242,7 @@ export default function TemplatesTab() {
                     )}
                   </td>
                   <td className="px-3 py-2">
-                    {tpl.orgId === null ? (
+                    {tpl.ownerScope === 'partner' ? (
                       <span
                         data-testid="contract-template-all-orgs-badge"
                         className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"

@@ -22,8 +22,14 @@ export interface RichTextEditorProps {
 // accepted here and then silently stripped server-side; a custom isAllowedUri is
 // the only way to actually reject them in the editor.
 function isHttpOrHttpsUri(uri: string): boolean {
-  const scheme = uri.trim().match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
-  if (!scheme) return true; // relative URL — allowed (the sanitizer permits it)
+  const trimmed = uri.trim();
+  // Protocol-relative (`//evil.example`) carries no scheme but still navigates
+  // off-origin under the page's own scheme. The server rejects it
+  // (richTextSanitize.ts allowProtocolRelative:false), so reject it here too —
+  // otherwise the editor accepts a link the sanitizer would silently strip.
+  if (trimmed.startsWith('//')) return false;
+  const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+  if (!scheme) return true; // scheme-less relative URL (e.g. /path) — the sanitizer permits these
   return scheme === 'http' || scheme === 'https';
 }
 
@@ -52,6 +58,13 @@ function buildExtensions() {
       openOnClick: false,
       protocols: ['http', 'https'],
       autolink: false,
+      // Emit exactly the rel the server sanitizer settles on (richTextSanitize.ts
+      // forces rel="noopener noreferrer"). TipTap's default adds a trailing
+      // `nofollow`, so its output would never string-equal the stored/sanitized
+      // HTML — leaving a link-bearing rich_text block permanently "unsaved" and
+      // re-PATCHing on every blur. Overriding rel here closes that gap; target
+      // keeps TipTap's `_blank` default (which the sanitizer also forces).
+      HTMLAttributes: { rel: 'noopener noreferrer' },
       // Actually enforce the allowlist — protocols alone doesn't reject extras.
       isAllowedUri: (uri) => isHttpOrHttpsUri(uri),
     }),

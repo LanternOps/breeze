@@ -39,6 +39,17 @@ describe('parseRichText', () => {
     // Whitespace text nodes between block elements must not become paragraphs.
     expect(parseRichText('<p>a</p>\n  \n<p>b</p>').map((b) => b.kind)).toEqual(['p', 'p']);
   });
+  it('does not throw on an out-of-range numeric character reference (body text)', () => {
+    // String.fromCodePoint(0x110000) throws RangeError — must fall back to the
+    // original literal text instead of crashing the render.
+    expect(() => parseRichText('<p>bad &#x110000; ref</p>')).not.toThrow();
+    const blocks = parseRichText('<p>bad &#x110000; ref</p>');
+    expect(blocks[0]!.runs.map((r) => r.text).join('')).toContain('&#x110000;');
+  });
+  it('does not throw on an out-of-range numeric character reference (attribute value)', () => {
+    // Same decode path runs for attribute values via parseAttrs.
+    expect(() => parseRichText('<p><a href="https://x.example?bad=&#x110000;">link</a></p>')).not.toThrow();
+  });
 });
 
 describe('renderRichTextIntoPdf', () => {

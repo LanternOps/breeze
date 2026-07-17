@@ -43,7 +43,7 @@ export function computeQuoteSha256(
   quote: HashableQuote,
   blocks: HashableBlock[],
   lines: HashableLine[],
-  contractParts?: HashableContractPart[]
+  contractParts: HashableContractPart[]
 ): string {
   const canonical: { quote: Record<string, unknown>; blocks: unknown[]; lines: unknown[]; contracts?: unknown[] } = {
     quote: {
@@ -75,7 +75,7 @@ export function computeQuoteSha256(
   // Contract block content is part of what the customer signs once the quote
   // embeds one. Included ONLY when non-empty so every pre-contract acceptance
   // hash stays verifiable — same pattern as the deposit block above.
-  if (contractParts && contractParts.length > 0) {
+  if (contractParts.length > 0) {
     canonical.contracts = [...contractParts]
       .sort((a, b) => a.blockId.localeCompare(b.blockId))
       .map((p) => ({

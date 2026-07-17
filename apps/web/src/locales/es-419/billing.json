@@ -402,6 +402,11 @@
       "back": "Volver",
       "loadError": "No se pudo cargar la plantilla",
       "newVersion": "Nueva versión",
+      "newVersionConfirm": {
+        "title": "¿Descartar los cambios sin guardar?",
+        "message": "Iniciar una nueva versión vaciará el editor. Se perderán los cambios sin guardar de este borrador.",
+        "confirm": "Iniciar nueva versión"
+      },
       "uploadPdf": "Subir PDF",
       "versions": "Versiones",
       "noVersions": "Aún sin versiones",
@@ -757,6 +762,7 @@
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
         "noEmailService": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — el correo no está configurado en este servidor.",
+        "pdfRenderFailed": "La propuesta se marcó como Enviada, pero no se pudo generar el PDF, por lo que no se entregó ningún correo. Revise los archivos de contrato adjuntos y vuelva a enviarla.",
         "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección o comparta el enlace de aceptación manualmente."
       },
       "sendError": "No se pudo enviar la propuesta.",

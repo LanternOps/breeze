@@ -8,9 +8,9 @@
 // Every route responds with a `{ data: ... }` envelope.
 
 import { fetchWithAuth } from '../../stores/auth';
-import { AUTO_CONTRACT_VARIABLES, type ContractVariable } from '@breeze/shared';
+import { AUTO_CONTRACT_VARIABLES, type ContractTemplateOwnership, type ContractVariable } from '@breeze/shared';
 
-export type { ContractVariable };
+export type { ContractVariable, ContractTemplateOwnership };
 export { AUTO_CONTRACT_VARIABLES };
 
 const BASE = '/contracts/contract-templates';
@@ -21,11 +21,19 @@ export type TemplateVersionStatus = 'draft' | 'published';
 export type TemplateSourceType = 'authored' | 'uploaded';
 export type TemplateOwnerScope = 'organization' | 'partner';
 
-/** A `contract_templates` row as returned by the API. */
-export interface ContractTemplate {
+// `ContractTemplateOwnership` (packages/shared/validators/contractTemplates.ts)
+// is a discriminated union of `{ ownerScope: 'organization'; orgId: string;
+// partnerId: null }` and `{ ownerScope: 'partner'; orgId: null; partnerId: string
+// }`, mirroring the server's org_id XOR partner_id CHECK constraint. Intersecting
+// it onto the base shape below (rather than modeling orgId/partnerId as two
+// independent `string | null` fields) makes the impossible `{ orgId: null,
+// partnerId: null }` / `{ orgId: '...', partnerId: '...' }` combinations a type
+// error, and lets callers narrow on `ownerScope` instead of re-deriving it from
+// `orgId === null`. The API's serializeTemplate/serializeVersion
+// (routes/contracts/templates.ts) emit this shape.
+
+interface ContractTemplateBase {
   id: string;
-  orgId: string | null;
-  partnerId: string | null;
   name: string;
   description: string | null;
   status: ContractTemplateStatus;
@@ -34,12 +42,12 @@ export interface ContractTemplate {
   updatedAt: string;
 }
 
-/** A version row minus the binary `fileData` column (stripped server-side). */
-export interface TemplateVersionSummary {
+/** A `contract_templates` row as returned by the API. */
+export type ContractTemplate = ContractTemplateBase & ContractTemplateOwnership;
+
+interface TemplateVersionSummaryBase {
   id: string;
   templateId: string;
-  orgId: string | null;
-  partnerId: string | null;
   versionNumber: number;
   status: TemplateVersionStatus;
   sourceType: TemplateSourceType;
@@ -53,15 +61,14 @@ export interface TemplateVersionSummary {
   createdAt: string;
 }
 
+/** A version row minus the binary `fileData` column (stripped server-side). */
+export type TemplateVersionSummary = TemplateVersionSummaryBase & ContractTemplateOwnership;
+
 /** A row from `GET /` — the list shape, with a `latestVersion` summary. */
-export interface ContractTemplateWithLatest extends ContractTemplate {
-  latestVersion: TemplateVersionSummary | null;
-}
+export type ContractTemplateWithLatest = ContractTemplate & { latestVersion: TemplateVersionSummary | null };
 
 /** `GET /:id` — the template plus every version, newest first. */
-export interface ContractTemplateDetail extends ContractTemplate {
-  versions: TemplateVersionSummary[];
-}
+export type ContractTemplateDetail = ContractTemplate & { versions: TemplateVersionSummary[] };
 
 export interface CreateContractTemplateBody {
   name: string;

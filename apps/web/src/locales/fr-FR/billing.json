@@ -402,6 +402,11 @@
       "back": "Retour",
       "loadError": "Échec du chargement du modèle",
       "newVersion": "Nouvelle version",
+      "newVersionConfirm": {
+        "title": "Ignorer les modifications non enregistrées ?",
+        "message": "Démarrer une nouvelle version videra l'éditeur. Vos modifications non enregistrées de ce brouillon seront perdues.",
+        "confirm": "Démarrer une nouvelle version"
+      },
       "uploadPdf": "Importer un PDF",
       "versions": "Versions",
       "noVersions": "Aucune version pour l’instant",
@@ -757,6 +762,7 @@
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
         "noEmailService": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — l'e-mail n'est pas configuré sur ce serveur.",
+        "pdfRenderFailed": "Proposition marquée comme Envoyée, mais le PDF n'a pas pu être généré, aucun e-mail n'a donc été remis. Vérifiez les fichiers de contrat joints, puis renvoyez-la.",
         "sendFailed": "Proposition marquée comme Envoyée, mais l'e-mail n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement."
       },
       "sendError": "Impossible d'envoyer la proposition.",

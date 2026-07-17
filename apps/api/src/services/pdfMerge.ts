@@ -19,10 +19,13 @@
 import { PDFDocument } from 'pdf-lib';
 
 /** A merge input that pdf-lib can't load (encrypted, truncated, or otherwise
- *  corrupt). Uploads are validated at write time (contractTemplateService's
- *  createUploadedVersion), so this is a defense-in-depth backstop — surfacing a
- *  typed 4xx-mappable error instead of an uncaught pdf-lib throw that becomes a
- *  raw 500 on the admin/portal quote PDF (and a silently-skipped send email). */
+ *  corrupt), or an aggregate page count over MAX_MERGED_PAGES. Uploads are
+ *  validated at write time (contractTemplateService's createUploadedVersion),
+ *  so this is a defense-in-depth backstop — surfacing a typed 4xx-mappable
+ *  error instead of an uncaught pdf-lib throw that becomes a raw 500 on the
+ *  admin/portal quote PDF (and, on the send path, is now reported as the
+ *  distinct emailReason 'pdf_render_failed' rather than collapsing into the
+ *  generic 'send_failed' — see quoteLifecycle.ts's sendQuote). */
 export class PdfMergeError extends Error {
   constructor(
     message: string,
@@ -34,6 +37,12 @@ export class PdfMergeError extends Error {
     this.name = 'PdfMergeError';
   }
 }
+
+/** Generous aggregate cap (main document + every uploaded contract's pages) on
+ *  a single merged quote PDF. Not a realistic proposal/contract size — a guard
+ *  against a runaway/hostile upload turning one merge into a multi-minute
+ *  pdf-lib job or an oversized email attachment. */
+export const MAX_MERGED_PAGES = 500;
 
 export interface UploadedContractPdf {
   /** The exact marker line quotePdf.ts drew for this block (contractUploadedMarker
@@ -54,6 +63,7 @@ export async function mergeUploadedContractPdfs(
   if (uploads.length === 0) return mainPdf;
 
   const mainDoc = await PDFDocument.load(mainPdf);
+  let pageCount = mainDoc.getPageCount();
   for (const upload of uploads) {
     let uploadDoc: PDFDocument;
     try {
@@ -64,6 +74,14 @@ export async function mergeUploadedContractPdfs(
       // route can map to a 4xx rather than letting the raw pdf-lib throw 500.
       throw new PdfMergeError(
         `An attached contract PDF could not be read: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    pageCount += uploadDoc.getPageCount();
+    if (pageCount > MAX_MERGED_PAGES) {
+      throw new PdfMergeError(
+        `Merged quote PDF would exceed the ${MAX_MERGED_PAGES}-page limit (${pageCount} pages)`,
+        422,
+        'CONTRACT_PDF_PAGE_LIMIT_EXCEEDED',
       );
     }
     const copiedPages = await mainDoc.copyPages(uploadDoc, uploadDoc.getPageIndices());

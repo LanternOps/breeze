@@ -19,9 +19,13 @@ import {
   createUploadedVersion,
   getTemplateVersion,
   publishVersion,
+  deriveTemplateOwnership,
   ContractTemplateServiceError,
   PartnerWideWriteDeniedError,
+  type TemplateRow,
   type VersionRow,
+  type TemplateDTO,
+  type VersionSummaryDTO,
 } from '../../services/contractTemplateService';
 
 export const contractTemplateRoutes = new Hono();
@@ -51,18 +55,30 @@ function handleTemplateError(c: { json: (b: unknown, s: number) => Response }, e
  * Strips the binary fileData column out of a version row before it goes over
  * JSON — an authored version's bodyHtml survives (source of "authored: body"
  * in the route contract); an uploaded version is left as metadata only
- * (mime/byteSize/sha256/declaredVariables etc, no bodyHtml, no bytes).
+ * (mime/byteSize/sha256/declaredVariables etc, no bodyHtml, no bytes). Also
+ * folds the raw orgId/partnerId pair into `ownerScope` via
+ * deriveTemplateOwnership so web consumers get the discriminated shape
+ * instead of re-deriving it from two independent nullable fields.
  */
-function serializeVersion(v: VersionRow) {
+function serializeVersion(v: VersionRow): VersionSummaryDTO {
   const { fileData: _fileData, ...rest } = v;
-  return rest;
+  return deriveTemplateOwnership(rest);
+}
+
+/** Folds a template row's raw orgId/partnerId pair into `ownerScope` — see serializeVersion. */
+function serializeTemplate(t: TemplateRow): TemplateDTO {
+  return deriveTemplateOwnership(t);
 }
 
 contractTemplateRoutes.get('/', scopes, readPerm, zValidator('query', listQuery), async (c) => {
   try {
     const { includeArchived } = c.req.valid('query');
     const templates = await listTemplates(authFrom(c), { includeArchived });
-    return c.json({ data: templates });
+    const data = templates.map(({ latestVersion, ...template }) => ({
+      ...serializeTemplate(template),
+      latestVersion: latestVersion ? deriveTemplateOwnership(latestVersion) : null,
+    }));
+    return c.json({ data });
   } catch (err) {
     return handleTemplateError(c, err);
   }
@@ -71,7 +87,7 @@ contractTemplateRoutes.get('/', scopes, readPerm, zValidator('query', listQuery)
 contractTemplateRoutes.post('/', scopes, writePerm, zValidator('json', createContractTemplateSchema), async (c) => {
   try {
     const template = await createTemplate(authFrom(c), c.req.valid('json'));
-    return c.json({ data: template });
+    return c.json({ data: serializeTemplate(template) });
   } catch (err) {
     return handleTemplateError(c, err);
   }
@@ -81,7 +97,7 @@ contractTemplateRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam
   try {
     const { id } = c.req.valid('param');
     const { versions, ...template } = await getTemplate(authFrom(c), id);
-    return c.json({ data: { ...template, versions: versions.map(serializeVersion) } });
+    return c.json({ data: { ...serializeTemplate(template), versions: versions.map(serializeVersion) } });
   } catch (err) {
     return handleTemplateError(c, err);
   }
@@ -97,7 +113,7 @@ contractTemplateRoutes.patch(
     try {
       const { id } = c.req.valid('param');
       const template = await updateTemplate(authFrom(c), id, c.req.valid('json'));
-      return c.json({ data: template });
+      return c.json({ data: serializeTemplate(template) });
     } catch (err) {
       return handleTemplateError(c, err);
     }
@@ -134,9 +150,11 @@ contractTemplateRoutes.post(
 // POST /:id/versions/upload — multipart PDF upload (new draft version, sourceType='uploaded').
 // 10MB cap + application/pdf declared content-type are enforced here; the
 // %PDF- magic-byte check (and a second 10MB cap check on the decoded buffer)
-// happens in createUploadedVersion — defense in depth, same shape as
-// catalog.ts's image upload (route-level mime gate + bodyLimit, service-level
-// byte sniff).
+// happens in createUploadedVersion — defense in depth, but a different split
+// than catalog.ts's image upload: there, the magic-byte sniff (sniffImageMime)
+// runs at the ROUTE level and the service does no byte-format check of its
+// own. Here the sniff is pushed into the service instead, so any future
+// caller of createUploadedVersion can't skip it by bypassing this route.
 contractTemplateRoutes.post(
   '/:id/versions/upload',
   scopes,
@@ -200,7 +218,7 @@ contractTemplateRoutes.get('/:id/versions/:versionId', scopes, readPerm, zValida
 });
 
 // GET /:id/versions/:versionId/file — streams the uploaded PDF's raw bytes.
-// 404s (not a JSON error body) if the version has no file, e.g. an authored
+// 404s with a JSON error body if the version has no file, e.g. an authored
 // version — this route only exists for uploaded ones.
 contractTemplateRoutes.get(
   '/:id/versions/:versionId/file',

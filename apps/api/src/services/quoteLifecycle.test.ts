@@ -58,6 +58,7 @@ vi.mock('./email', async (importOriginal) => {
 });
 
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
+import { renderQuotePdf } from './quotePdf';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -383,6 +384,20 @@ describe('sendQuote email delivery status', () => {
     expect(result.emailed).toBe(false);
     expect(result.emailReason).toBe('send_failed');
     expect(result.quote.status).toBe('sent');
+  });
+
+  it('reports pdf_render_failed (and never calls the email transport) when building the attachment throws', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    vi.mocked(renderQuotePdf).mockRejectedValueOnce(new Error('pdfkit blew up'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('pdf_render_failed');
+    expect(sendEmailMock).not.toHaveBeenCalled(); // never reached the transport
+    expect(result.quote.status).toBe('sent'); // the send itself still commits
   });
 
   it('reports emailed:true with no reason on a successful send', async () => {

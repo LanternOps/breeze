@@ -208,10 +208,23 @@ export interface SendQuoteOptions {
   includePdf?: boolean;
 }
 
+/** Why the best-effort email step did NOT deliver after a send committed
+ *  (`data.emailed === false`). Kept in sync with the API's send route:
+ *  - `no_billing_contact` — the org has no billing-contact email to fall back to
+ *  - `no_email_service`   — email isn't configured on this server
+ *  - `pdf_render_failed`  — the PDF attachment couldn't be generated
+ *  - `send_failed`        — the transport itself rejected/failed the message */
+export type QuoteSendEmailReason =
+  | 'no_billing_contact'
+  | 'no_email_service'
+  | 'pdf_render_failed'
+  | 'send_failed';
+
 /** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
  *  quotes:send. Only non-empty / non-default fields are POSTed, so a bare
  *  `sendQuote(id)` reproduces the classic body-less send. Responds with
- *  `{ data: { quote, emailed, emailReason?, acceptUrl } }`. */
+ *  `{ data: { quote, emailed, emailReason?, acceptUrl } }` (emailReason is a
+ *  `QuoteSendEmailReason` when emailed is false). */
 export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
   const body: Record<string, unknown> = {};
   if (opts.to && opts.to.length > 0) body.to = opts.to;
