@@ -13,9 +13,15 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
+
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
 
@@ -307,24 +313,35 @@ export default function BackupJobList() {
     // Mark as recently-cancelled up front so even a poll GET that was already in
     // flight when this POST resolves gets reconciled to the terminal status.
     recentlyCancelledRef.current.set(jobId, Date.now());
+    setCancellingId(jobId);
     try {
-      setCancellingId(jobId);
-      const response = await fetchWithAuth(`/backup/jobs/${jobId}/cancel`, {
-        method: 'POST'
+      // runAction surfaces every failure (including HTTP-200 {success:false})
+      // and returns the parsed success body. The cancel route additionally
+      // returns HTTP 200 with a `warning` field when the job was marked
+      // cancelled but the stop signal could NOT be delivered to the agent — a
+      // partial success runAction treats as success, so we inspect the body and
+      // surface the warning ourselves. Without this the user sees a clean
+      // "Cancelled" row while the device may still be uploading.
+      const result = await runAction<{ warning?: string } | null>({
+        request: () => fetchWithAuth(`/backup/jobs/${jobId}/cancel`, { method: 'POST' }),
+        errorFallback: 'Failed to cancel job',
+        onUnauthorized: UNAUTHORIZED,
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to cancel job');
-      }
       setJobs((prev) =>
         prev.map((job) =>
           job.id === jobId ? { ...job, status: 'cancelled' as JobStatus } : job
         )
       );
+      const warning = result && typeof result === 'object' ? result.warning : undefined;
+      if (typeof warning === 'string' && warning.length > 0) {
+        showToast({ message: warning, type: 'warning' });
+      }
     } catch (err) {
       // The cancel failed — stop overriding the server's view of this job.
+      // runAction already toasted non-401 ActionErrors; handleActionError toasts
+      // network failures and lets the auth redirect handle 401s.
       recentlyCancelledRef.current.delete(jobId);
-      setError(err instanceof Error ? err.message : 'Failed to cancel job');
+      handleActionError(err, 'Failed to cancel job');
     } finally {
       setCancellingId(null);
     }

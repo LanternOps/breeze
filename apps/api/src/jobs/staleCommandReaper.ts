@@ -14,6 +14,7 @@ import {
   restoreJobs,
   backupJobs,
   devices,
+  STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
@@ -582,7 +583,12 @@ async function reapBackupJobRow(
   errorMsg: string,
 ): Promise<boolean> {
   const now = new Date();
-  const errorLog = existingErrorLog ? `${existingErrorLog}\n${errorMsg}` : errorMsg;
+  // Stamp the reaper marker so the result-persistence path can later recognize a
+  // "failed-because-reaped" job and still record a late-but-genuine `completed`
+  // result (flipping failed→completed) instead of stranding its snapshot — see
+  // STALE_BACKUP_REAP_MARKER / FIX 7 in backupResultPersistence.ts.
+  const markedMsg = `${STALE_BACKUP_REAP_MARKER} ${errorMsg}`;
+  const errorLog = existingErrorLog ? `${existingErrorLog}\n${markedMsg}` : markedMsg;
 
   const updated = await db
     .update(backupJobs)
@@ -640,6 +646,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
       deviceId: backupJobs.deviceId,
       lastProgressAt: backupJobs.lastProgressAt,
       startedAt: backupJobs.startedAt,
+      createdAt: backupJobs.createdAt,
       errorLog: backupJobs.errorLog,
       deviceStatus: devices.status,
       deviceLastSeenAt: devices.lastSeenAt,
@@ -649,7 +656,11 @@ export async function reapStaleBackupJobs(): Promise<number> {
     .where(
       and(
         eq(backupJobs.status, 'running'),
-        sql`COALESCE(${backupJobs.lastProgressAt}, ${backupJobs.startedAt}) < ${conservativeCutoff.toISOString()}`,
+        // Fall back to createdAt so a `running` row with BOTH last_progress_at
+        // and started_at NULL is still a candidate (createdAt is NOT NULL) —
+        // otherwise COALESCE(null, null) is NULL, the `< cutoff` is never true,
+        // and the row is an unreapable zombie.
+        sql`COALESCE(${backupJobs.lastProgressAt}, ${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${conservativeCutoff.toISOString()}`,
       ),
     )
     .limit(MAX_REAP_PER_RUN);
@@ -657,7 +668,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
   for (const job of runningCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
 
-    const progressRef = job.lastProgressAt ?? job.startedAt;
+    // createdAt is NOT NULL, so progressRef is always defined even for a row
+    // whose last_progress_at and started_at are both NULL (the zombie case).
+    const progressRef = job.lastProgressAt ?? job.startedAt ?? job.createdAt;
     if (!progressRef) continue;
 
     const deviceOffline = isDeviceOfflineForReap(job.deviceStatus, job.deviceLastSeenAt);
@@ -667,7 +680,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
       errorMsg = 'Backup stalled: no progress reported for 15 minutes';
     } else if (deviceOffline && now - progressRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
       errorMsg = 'Device went offline during backup';
-    } else if (!job.lastProgressAt && job.startedAt && now - job.startedAt.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
+    } else if (!job.lastProgressAt && now - progressRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
+      // No progress signal ever (legacy agent) OR a zombie with no started_at —
+      // reap on the absolute cap against progressRef (started_at ?? createdAt).
       errorMsg = 'Backup timed out (no completion after 24h)';
     }
 
@@ -687,17 +702,25 @@ export async function reapStaleBackupJobs(): Promise<number> {
   }
 
   const pendingCutoff = new Date(now - BACKUP_PENDING_TIMEOUT_MS);
+  // applyBackupStartedAck / applyBackupProgress accept a `pending` job and bump
+  // last_progress_at WITHOUT promoting it to `running`, so a pending job that is
+  // still receiving progress pings is alive and must NOT be reaped on createdAt
+  // alone. Spare any pending job whose last_progress_at is recent (within the
+  // stall window).
+  const pendingProgressCutoff = new Date(now - BACKUP_STALL_TIMEOUT_MS);
   const pendingCandidates = await db
     .select({
       id: backupJobs.id,
       errorLog: backupJobs.errorLog,
       createdAt: backupJobs.createdAt,
+      lastProgressAt: backupJobs.lastProgressAt,
     })
     .from(backupJobs)
     .where(
       and(
         eq(backupJobs.status, 'pending'),
         lt(backupJobs.createdAt, pendingCutoff),
+        sql`(${backupJobs.lastProgressAt} IS NULL OR ${backupJobs.lastProgressAt} < ${pendingProgressCutoff.toISOString()})`,
       ),
     )
     .limit(MAX_REAP_PER_RUN);
@@ -705,6 +728,8 @@ export async function reapStaleBackupJobs(): Promise<number> {
   for (const job of pendingCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
     if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+    // A pending job still being kept alive by recent progress pings is not dead.
+    if (job.lastProgressAt && now - job.lastProgressAt.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
 
     const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
     if (wasReaped) reaped++;

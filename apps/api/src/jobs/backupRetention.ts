@@ -15,7 +15,7 @@ import {
   configPolicyBackupSettings,
   backupConfigs,
 } from '../db/schema';
-import { eq, and, lt, desc, inArray, isNull } from 'drizzle-orm';
+import { eq, and, or, lt, desc, inArray, isNull } from 'drizzle-orm';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -27,6 +27,7 @@ import {
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
+import { captureException } from '../services/sentry';
 
 // ── GFS tag types ────────────────────────────────────────────────────────────
 
@@ -380,9 +381,8 @@ export function computeExpiresAt(
 // deleted expired backup_snapshots rows, and is the ONLY code path that
 // deletes backup objects.
 //
-// Amended 2026-07-17 after data-safety review found the sweep scope was
-// wrong (see docs/superpowers/specs/2026-07-16-incremental-backups-design.md,
-// "Amendments from GC review"). Current shape:
+// Shape (see docs/superpowers/specs/2026-07-16-incremental-backups-design.md,
+// "Amendments from GC review"):
 //
 //   Identity: sweeps run per STORAGE IDENTITY (provider + endpoint + bucket),
 //             not per backupConfigs row. Two configs can point at the same
@@ -390,20 +390,27 @@ export function computeExpiresAt(
 //             sweeping per-config would see only ITS OWN retained snapshots
 //             and delete objects a sibling config's retained snapshot still
 //             references. Identity deliberately EXCLUDES providerConfig.prefix
-//             (see backupSnapshotStorage.ts's IMPORTANT-1 comment: the agent
-//             ignores prefix when writing, so two configs differing only by
-//             prefix are the same physical namespace).
+//             (see backupSnapshotStorage.ts's prefix-exclusion comment: the
+//             agent ignores prefix when writing, so two configs differing only
+//             by prefix are the same physical namespace).
 //   Mark:     live set = every backupPath + manifest key from EVERY retained
-//             (still-existing) backup_snapshots row across ALL configs
-//             sharing an identity, PLUS the newest manifest found in the
-//             identity's own object LISTING regardless of row retention
-//             (dedup-source race: agents pick their reference base from the
-//             bucket listing, not from DB rows — a just-uploaded manifest
-//             may not have a backup_snapshots row yet, or ever, if
-//             persistence failed after upload succeeded). ANY manifest
-//             fetch/parse failure anywhere in that combined set aborts the
-//             mark for the WHOLE identity — an incomplete live set must
-//             never justify a delete.
+//             (still-existing) FILE-type backup_snapshots row across ALL
+//             configs sharing an identity, PLUS every manifest-bearing
+//             snapshot found in the identity's own object LISTING regardless
+//             of row retention. Marking EVERY listed manifest (not just the
+//             newest) closes the dedup-source race: agents pick their
+//             reference base by the manifest's INTERNAL timestamp (agent
+//             clock, stamped at snapshot start), which can diverge from the
+//             S3 object's last-modified (server/upload clock) on overlapping
+//             runs or clock skew — so "newest by last-modified" could protect
+//             snapshot X while an in-flight backup dedups against snapshot Y.
+//             A just-uploaded manifest may also have no backup_snapshots row
+//             yet, or ever, if persistence failed after upload succeeded. ANY
+//             manifest fetch/parse failure anywhere in that combined set
+//             aborts the mark for the WHOLE identity — an incomplete live set
+//             must never justify a delete. (Only FILE-type snapshots use the
+//             snapshots/<id>/manifest.json layout; see the backupType filter
+//             in sweepUnreferencedBackupObjects.)
 //   Sweep:    per snapshot-ID prefix found in the listing:
 //               - has a manifest.json: normal per-object rule — delete
 //                 objects not in the live set AND older than
@@ -411,10 +418,10 @@ export function computeExpiresAt(
 //               - NO manifest.json (partial/resumable run): protected at
 //                 PREFIX granularity for BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS
 //                 (9 days = the agent's 7-day journalMaxAge + 48h resume
-//                 headroom, corrected 2026-07-17 — equality with journalMaxAge
-//                 alone left a boundary race) — a prefix is swept in full
-//                 only once its NEWEST object clears that window; one single
-//                 fresh object protects the WHOLE prefix.
+//                 headroom — equality with journalMaxAge alone left a boundary
+//                 race) — a prefix is swept in full only once its NEWEST
+//                 object clears that window; one single fresh object protects
+//                 the WHOLE prefix.
 //   Null config_id: a backup_snapshots row with no config_id can't be
 //             attributed to any specific storage identity — its objects
 //             could live in ANY bucket we're about to sweep. Its mere
@@ -424,7 +431,7 @@ export function computeExpiresAt(
 //             through cosmetically different config values (blank vs
 //             explicit-default endpoint, trailing slash, host case, local
 //             path spelling) must still collapse to ONE identity, or
-//             CRITICAL 1 comes back via the back door — see
+//             cross-config over-deletion comes back via the back door — see
 //             normalizeStorageIdentity and its belt-and-braces collision
 //             check, detectSuspiciousStorageIdentityCollisions.
 
@@ -436,9 +443,9 @@ export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
 // window and does not re-verify remote objects on resume. Using
 // journalMaxAge as an exact equality boundary left a race: a resume opened
 // at, say, day 6.9 legitimately keeps running past day 7, so GC could sweep
-// its still-live manifest-less prefix out from under it (corrected
-// 2026-07-17, GC re-review). The +48h below is resume headroom, not the
-// unrelated BACKUP_GC_GRACE_MS concept, though it happens to reuse the same
+// its still-live manifest-less prefix out from under it. The +48h below is
+// resume headroom, not the unrelated BACKUP_GC_GRACE_MS concept, though it
+// happens to reuse the same
 // 48h value — see the cross-reference comment on journalMaxAge itself, which
 // must stay strictly SMALLER than this constant.
 const BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // must equal the agent's journalMaxAge
@@ -452,11 +459,17 @@ export const BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS =
 // age data means no safe sweep decision).
 const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
 
-// Named `skippedIdentities` (not `skippedDestinations`) to match the rest of
-// this file's terminology post-CRITICAL-1: the unit of GC work is a storage
-// identity (possibly several backupConfigs rows sharing one bucket), not a
-// single "destination" row.
-export type BackupGcResult = { deleted: number; skippedIdentities: number };
+// The unit of GC work is a storage identity (possibly several backupConfigs
+// rows sharing one bucket), not a single "destination" row.
+//   skippedIdentities — every identity NOT swept this run, for ANY reason
+//     (unsupported provider, suspicious collision, null-config whole-run block,
+//     OR a fail-closed mark/sweep abort). Kept as the broad "not swept" total.
+//   blockedIdentities — the SUBSET of skippedIdentities we tried to sweep but
+//     had to abort fail-closed because a FILE-type manifest was unfetchable/
+//     unparseable. This is the one that signals a genuine, non-self-healing
+//     storage leak (vs. the benign unsupported-provider skips), so surface it
+//     distinctly rather than letting it hide inside skippedIdentities.
+export type BackupGcResult = { deleted: number; skippedIdentities: number; blockedIdentities: number };
 
 type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
 
@@ -492,7 +505,7 @@ function parseBackupGcManifest(raw: string): BackupGcManifest {
   return parsed as BackupGcManifest;
 }
 
-// ── Storage identity grouping (CRITICAL 1 / IMPORTANT 1) ─────────────────────
+// ── Storage identity grouping ────────────────────────────────────────────────
 
 type BackupGcDestination = { id: string; provider: string; providerConfig: unknown };
 
@@ -511,7 +524,8 @@ export type BackupGcStorageIdentity = {
 // AWS endpoint must canonicalize to the same identity as a blank/omitted
 // endpoint (both mean "use AWS's default") — otherwise two configs that only
 // differ by "left it blank" vs "typed the default in by hand" would split
-// into two identities and resurrect CRITICAL 1. Covers the same host shapes
+// into two identities and resurrect the cross-config over-deletion bug.
+// Covers the same host shapes
 // deriveS3RegionFromEndpoint (packages/shared/src/utils/s3Region.ts) knows
 // about, plus the bare regionless legacy host.
 const DEFAULT_AWS_S3_ENDPOINT_PATTERN = /^s3(\.dualstack)?([.-][a-z0-9-]+)?\.amazonaws\.com$/;
@@ -544,13 +558,14 @@ function normalizeS3Endpoint(endpoint: string | null | undefined): string {
 /**
  * Identity = provider + endpoint + bucket (S3) or provider + resolved root
  * path (local) — deliberately EXCLUDING providerConfig.prefix. See the
- * IMPORTANT-1 comment on backupSnapshotRootPrefix in backupSnapshotStorage.ts
- * for why: the agent ignores prefix when writing, so two configs that only
- * differ by prefix are, physically, the exact same object namespace.
+ * prefix-exclusion comment on backupSnapshotRootPrefix in
+ * backupSnapshotStorage.ts for why: the agent ignores prefix when writing, so
+ * two configs that only differ by prefix are, physically, the exact same
+ * object namespace.
  *
  * Cosmetic variants that must NOT split one physical bucket into two
- * identities (GC re-review 2026-07-17, IMPORTANT 1): blank endpoint vs the
- * explicit default AWS endpoint; endpoint trailing slash and host
+ * identities: blank endpoint vs the explicit default AWS endpoint; endpoint
+ * trailing slash and host
  * case (`https://Minio.local:9000/` vs `https://minio.local:9000`);
  * scheme-less vs schemed (both parsed the same way); local paths differing
  * only by trailing slash, `//`, or `.` segments (`path.resolve` collapses
@@ -592,12 +607,12 @@ function groupBackupConfigsByStorageIdentity(
 }
 
 /**
- * Belt-and-braces (GC re-review 2026-07-17, IMPORTANT 1 suggestion): even
- * after normalizeStorageIdentity, an unanticipated cosmetic variant it
- * doesn't yet account for could still produce two DIFFERENT identity keys
- * for the SAME physical bucket — silently re-opening CRITICAL 1, since each
- * identity would only see its own configs' retained snapshots and could
- * delete the other's live objects. Cross-check with a CRUDER comparison —
+ * Belt-and-braces: even after normalizeStorageIdentity, an unanticipated
+ * cosmetic variant it doesn't yet account for could still produce two
+ * DIFFERENT identity keys for the SAME physical bucket — silently re-opening
+ * cross-config over-deletion, since each identity would only see its own
+ * configs' retained snapshots and could delete the other's live objects.
+ * Cross-check with a CRUDER comparison —
  * bucket name case-insensitively + hostname only, ignoring port/scheme/the
  * AWS-default canonicalization entirely — and if THAT collapses two
  * identities normalizeStorageIdentity kept apart, something is wrong: log
@@ -683,27 +698,30 @@ function groupListingBySnapshotId(listing: BackupObjectListing[]): Map<string, B
 }
 
 /**
- * IMPORTANT 2 (dedup-source race): finds the snapshot ID whose manifest.json
- * has the newest last-modified among every manifest-bearing group in the
- * listing. Groups whose manifest has no last-modified data are ignored for
- * this purpose (can't compare ages) but are NOT thereby excluded from the
- * live set some other way — if such a group also happens to be the true
- * newest, its objects still get the normal per-object grace-window
- * protection, just not the extra "always live" guarantee this function adds.
+ * Dedup-source race: every manifest-bearing snapshot in the LISTING is marked
+ * live, not just retained DB rows — collects the snapshot IDs of all such
+ * groups so their backupPaths join the live set.
+ *
+ * Why EVERY listed manifest, not just the newest: an in-flight backup picks
+ * its incremental dedup base by the manifest's INTERNAL `timestamp` (stamped
+ * on the AGENT clock at snapshot START), while the S3 object's last-modified
+ * is the SERVER/upload clock. Those diverge on overlapping runs, clock skew,
+ * or a smaller later-started snapshot finishing first — so "newest by
+ * last-modified" could protect snapshot X while the running backup references
+ * snapshot Y. If Y then lacks a retained DB row and its objects are past the
+ * grace window, GC would sweep the very BackupPath the in-flight snapshot
+ * points at → a dangling reference / silent missing file at restore. Marking
+ * ALL listed manifests is race-proof; the only added cost is extra manifest
+ * GETs, and the mark phase already fail-closes on any fetch/parse error. A
+ * manifest whose object carries no last-modified is still included here — age
+ * is irrelevant to whether its references are live.
  */
-function pickNewestListedManifestSnapshotId(groups: Map<string, BackupGcSnapshotGroup>): string | null {
-  let newestId: string | null = null;
-  let newestMs = -Infinity;
+function listedManifestSnapshotIds(groups: Map<string, BackupGcSnapshotGroup>): string[] {
+  const ids: string[] = [];
   for (const [snapshotId, group] of groups) {
-    const lastModified = group.manifestItem?.lastModified;
-    if (!lastModified) continue;
-    const ms = lastModified.getTime();
-    if (ms > newestMs) {
-      newestMs = ms;
-      newestId = snapshotId;
-    }
+    if (group.manifestItem) ids.push(snapshotId);
   }
-  return newestId;
+  return ids;
 }
 
 /**
@@ -759,8 +777,8 @@ async function markLiveBackupObjects(
 /**
  * Sweep phase for one storage identity. Lists the identity's snapshot root
  * ONCE, groups it by snapshot-ID prefix, marks the live set (retained DB
- * rows + the newest listed manifest — IMPORTANT 2), then applies the
- * per-group deletion rule (CRITICAL 3): manifest-bearing prefixes use the
+ * rows + EVERY manifest-bearing snapshot in the listing — dedup-source race),
+ * then applies the per-group deletion rule: manifest-bearing prefixes use the
  * existing per-object 48h grace; manifest-less prefixes are protected at
  * prefix granularity until their newest object clears
  * BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS. Throws on listing/mark failure so
@@ -779,10 +797,11 @@ async function sweepStorageIdentity(
   });
 
   const groups = groupListingBySnapshotId(listing);
-  const newestListedSnapshotId = pickNewestListedManifestSnapshotId(groups);
 
   const snapshotIdsToMark = new Set(retainedSnapshotIds);
-  if (newestListedSnapshotId) snapshotIdsToMark.add(newestListedSnapshotId);
+  for (const snapshotId of listedManifestSnapshotIds(groups)) {
+    snapshotIdsToMark.add(snapshotId);
+  }
 
   const liveSet = await markLiveBackupObjects(identity, snapshotIdsToMark);
   if (liveSet === null) {
@@ -807,8 +826,8 @@ async function sweepStorageIdentity(
       continue;
     }
 
-    // Manifest-less (partial/resumable) prefix — CRITICAL 3: protected at
-    // PREFIX granularity for the agent's journal lifetime. A single object
+    // Manifest-less (partial/resumable) prefix — protected at PREFIX
+    // granularity for the agent's journal lifetime. A single object
     // with unknown age, or a newest-object age still inside the window,
     // leaves the ENTIRE prefix untouched this run.
     let newestMs: number | null = null;
@@ -862,9 +881,9 @@ async function sweepStorageIdentity(
 
 /**
  * Mark-and-sweep GC over every backup storage identity (provider + endpoint +
- * bucket, grouped across backupConfigs rows — CRITICAL 1). Per-identity
- * failure isolation: one bad/unreachable identity never blocks GC for the
- * others. Bounded total deletes per run (BACKUP_GC_MAX_DELETES_PER_RUN,
+ * bucket, grouped across backupConfigs rows). Per-identity failure isolation:
+ * one bad/unreachable identity never blocks GC for the others. Bounded total
+ * deletes per run (BACKUP_GC_MAX_DELETES_PER_RUN,
  * default 2000, 0 = unlimited) — hitting the cap mid-run just stops cleanly;
  * the sweep is resumable by construction.
  *
@@ -897,21 +916,36 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     // nothing about this self-heals. Someone has to either attribute the
     // row (backfill its config_id) or confirm it's truly orphaned and
     // delete the row — until then, EVERY GC run is a no-op.
-    console.error(
+    const wedgeMessage =
       `[BackupGC] ${unattributedRows.length} backup_snapshots row(s) have no config_id — cannot attribute to a ` +
       `storage identity, so their objects could live in ANY bucket. Blocking ALL ${identities.size} identity ` +
       `sweep(s) this run (fail-closed). REMEDIATION REQUIRED: this does not self-heal — attribute the affected ` +
       `row(s) to the correct backup_configs.id, or confirm they're orphaned and delete the row(s), then GC will ` +
-      `resume on its next run.`,
-    );
+      `resume on its next run.`;
+    console.error(wedgeMessage);
+    // Permanently-wedged, non-self-healing state — surface to Sentry once per
+    // run (not per row) so a stuck GC is visible beyond the worker's stdout.
+    captureException(new Error(wedgeMessage));
     console.log(`[BackupGC] Run complete: deleted 0 object(s), ${identities.size} identity/identities skipped`);
-    return { deleted: 0, skippedIdentities: identities.size };
+    return { deleted: 0, skippedIdentities: identities.size, blockedIdentities: 0 };
   }
 
   const suspiciousIdentityKeys = detectSuspiciousStorageIdentityCollisions(identities);
+  if (suspiciousIdentityKeys.size > 0) {
+    // Fail-closed exclusion already logged loudly per coarse group above;
+    // escalate once to Sentry so the misconfiguration isn't stdout-only.
+    captureException(
+      new Error(
+        `[BackupGC] ${suspiciousIdentityKeys.size} storage identity/identities excluded this run: a cruder ` +
+        `bucket+host comparison collapses identities normalizeStorageIdentity kept apart — likely an ` +
+        `unhandled cosmetic config variant.`,
+      ),
+    );
+  }
 
   let deleted = 0;
   let skippedIdentities = 0;
+  let blockedIdentities = 0;
   let deletesRemaining = resolveBackupGcMaxDeletesPerRun();
 
   for (const identity of identities.values()) {
@@ -934,10 +968,24 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     }
 
     try {
+      // Only FILE-type snapshots use the snapshots/<id>/manifest.json layout
+      // the mark phase fetches. system_image / hyperv (backupType 'application')
+      // / mssql (backupType 'database') snapshots write their manifests to
+      // DIFFERENT keys and never share the snapshots/ namespace, so fetching
+      // snapshots/<id>/manifest.json for them 404s and fail-closes the WHOLE
+      // identity forever (a single such row sharing a bucket with file backups
+      // would silently wedge GC). Excluding them here confines GC to the layout
+      // it actually understands. Legacy rows with NULL backupType predate the
+      // column's 'file' default and are file backups, so include them too.
       const retainedRows = await db
         .select({ snapshotId: backupSnapshots.snapshotId })
         .from(backupSnapshots)
-        .where(inArray(backupSnapshots.configId, identity.configIds));
+        .where(
+          and(
+            inArray(backupSnapshots.configId, identity.configIds),
+            or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
+          ),
+        );
       const retainedSnapshotIds = retainedRows.map((row) => row.snapshotId);
 
       const identityDeleted = await sweepStorageIdentity(
@@ -955,14 +1003,22 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         console.debug(`[BackupGC] Identity ${identity.key}: 0 objects deleted`);
       }
     } catch (error) {
+      // A sweep abort here is the fail-closed mark/list failure path (an
+      // unfetchable/unparseable FILE-type manifest). Count it as BOTH skipped
+      // (broad "not swept" total) and blocked (the distinct signal that a
+      // genuine, non-self-healing storage leak may be accumulating for this
+      // identity — vs. the benign unsupported-provider/collision skips).
       skippedIdentities++;
+      blockedIdentities++;
       console.error(`[BackupGC] Identity ${identity.key}: sweep failed — isolated, other identities proceed:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   console.log(
-    `[BackupGC] Run complete: deleted ${deleted} object(s), ${skippedIdentities} identity/identities skipped`,
+    `[BackupGC] Run complete: deleted ${deleted} object(s), ${skippedIdentities} identity/identities skipped` +
+    (blockedIdentities > 0 ? ` (${blockedIdentities} blocked by unfetchable manifest — fail-closed)` : ''),
   );
 
-  return { deleted, skippedIdentities };
+  return { deleted, skippedIdentities, blockedIdentities };
 }

@@ -44,6 +44,29 @@ export const backupStatusEnum = pgEnum('backup_status', [
   'partial',
 ]);
 
+/**
+ * The two non-terminal `backup_status` values. A job in one of these is still
+ * in-flight and may legitimately accept a progress update or a terminal result;
+ * the other four (completed / failed / cancelled / partial) are terminal.
+ *
+ * Single source of truth for the "terminal vs in-flight" invariant over
+ * backupStatusEnum — imported by both services/backupProgress.ts and
+ * services/backupResultPersistence.ts so the invariant is defined exactly once,
+ * co-located with the enum it partitions.
+ */
+export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
+
+/**
+ * Marker the stale-backup-job reaper (jobs/staleCommandReaper.ts) stamps into a
+ * reaped job's `error_log`. The result-persistence path reads it to distinguish
+ * a "failed-because-reaped" job from a user `cancelled` job or a genuine
+ * agent-reported failure, so a late-but-genuine `completed` result can still be
+ * recorded (flipping failed→completed) instead of stranding its already-uploaded
+ * snapshot in the bucket with no backup_snapshots row. Contains no LIKE
+ * metacharacters (`%` / `_`) so it is safe to match with a plain `LIKE`.
+ */
+export const STALE_BACKUP_REAP_MARKER = '[stale-backup-reaper]';
+
 export const backupJobTypeEnum = pgEnum('backup_job_type', [
   'scheduled',
   'manual',
@@ -184,8 +207,11 @@ export const backupJobs = pgTable(
     // job; dispatch falls back to reading the feature link's settings.
     backupMode: backupModeEnum('backup_mode'),
     modeTargets: jsonb('mode_targets'),
-    startedAt: timestamp('started_at'),
-    completedAt: timestamp('completed_at'),
+    // timestamptz to match last_progress_at below: the stale reaper COALESCEs
+    // started_at with last_progress_at, which is only correct when both carry
+    // timezone. Aligned by migration 2026-08-02-align-backup-jobs-timestamptz.sql.
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
     totalSize: bigint('total_size', { mode: 'number' }),
     transferredSize: bigint('transferred_size', { mode: 'number' }),
     fileCount: integer('file_count'),

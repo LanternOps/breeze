@@ -342,6 +342,59 @@ func TestSnapshotJournal_Complete_RemovesFile(t *testing.T) {
 	}
 }
 
+// When Complete's remove fails (e.g. a read-only parent dir), the surviving
+// journal file must be POISONED (emptied) so the next run cannot resume the
+// already-COMPLETED snapshot's ID and silently mutate a historical restore
+// point. The remove failure is forced via the journalRemoveFn seam so the test
+// is deterministic regardless of process privilege.
+func TestSnapshotJournal_Complete_PoisonsWhenRemoveFails(t *testing.T) {
+	dir := t.TempDir()
+	identity := "poison-identity"
+	j, _, err := openSnapshotJournal(dir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := j.Record(SnapshotFile{SourcePath: "/data.txt", Size: 5, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	path := j.path
+	completedID := j.snapshotID
+
+	restore := setJournalRemoveFnForTest(func(string) error { return os.ErrPermission })
+	defer restore()
+
+	if err := j.Complete(); err == nil {
+		t.Fatal("Complete must report an error when the remove fails")
+	}
+
+	// The file must still exist (remove was blocked) but be empty (poisoned).
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("expected the journal file to survive a failed remove, stat err = %v", statErr)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("expected the journal to be poisoned (empty), got size %d", info.Size())
+	}
+
+	// Re-opening the poisoned journal (with a real remove restored) must NOT
+	// resume the completed snapshot and must not trigger stale-prefix cleanup.
+	restore()
+	j2, resumed, err := openSnapshotJournal(dir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("re-open after poison failed: %v", err)
+	}
+	if resumed {
+		t.Fatal("a poisoned journal must never be resumed")
+	}
+	if j2.snapshotID == completedID {
+		t.Fatal("a poisoned journal must not carry the completed snapshot ID forward")
+	}
+	if _, ok := j2.StaleSnapshotID(); ok {
+		t.Fatal("a poisoned (empty→corrupt) journal must not trigger stale-prefix cleanup")
+	}
+	j2.Abandon()
+}
+
 func TestSnapshotJournal_Abandon_KeepsFile(t *testing.T) {
 	dir := t.TempDir()
 	j, _, err := openSnapshotJournal(dir, "test-identity", journalMaxAge)

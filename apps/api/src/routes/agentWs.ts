@@ -777,10 +777,10 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
 }
 
 // Live upload-progress ping for an in-flight backup_run (agent side:
-// agent/internal/websocket/client.go:613-632). `progress` is intentionally
-// loose here (z.record/z.any-ish) — applyBackupProgress does the strict
-// field-level validation so a malformed progress body is dropped rather than
-// failing the whole WS message parse.
+// websocket.Client.SendBackupProgress in agent/internal/websocket/client.go).
+// `progress` is intentionally loose here (z.record/z.any-ish) —
+// applyBackupProgress does the strict field-level validation so a malformed
+// progress body is dropped rather than failing the whole WS message parse.
 const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
   commandId: z.string(),
@@ -1357,16 +1357,25 @@ export async function processOrphanedCommandResult(
     // result.
     const startedAckPayload = tryParseBackupResultPayload(result.result, result.stdout);
     if (isBackupStartedAck(startedAckPayload)) {
-      await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
-      console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
+      // applyBackupStartedAck's guarded update no-ops (returns false) when the
+      // job is already terminal — only log the "started-ack" line when it
+      // actually applied, so an incident timeline isn't misled by a started-ack
+      // that landed after the job had already completed/failed/been reaped.
+      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
+      if (startedAckApplied) {
+        console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
+      } else {
+        console.debug(`[AgentWs] Ignoring started-ack for already-terminal backup job ${backupJob.id} from agent ${agentId} (no-op)`);
+      }
       return;
     }
 
     // Legacy timed-out guard: old agents' forwardToBackupHelper
-    // (sessionbroker/session.go) emits a "command timed out" result at
-    // exactly 10 minutes while the upload helper is still running. This
-    // falsely fails every backup over 10 minutes today; the Task 8 reaper now
-    // owns deciding when a silent job is actually dead.
+    // (agent/internal/heartbeat/backup_forwarder.go, timing out via
+    // sessionbroker Session.SendCommand) surfaces a "command timed out" result
+    // at exactly 10 minutes while the upload helper is still running. This
+    // falsely fails every backup over 10 minutes today; the stale-backup-job
+    // reaper now owns deciding when a silent job is actually dead.
     if (isLegacyBackupTimeoutResult({ status: result.status, error: result.error, stderr: result.stderr })) {
       console.warn(
         `[AgentWs] Ignoring legacy 10-minute timed-out result for backup job ${backupJob.id} from agent ${agentId}: ` +
@@ -2292,7 +2301,11 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               const applied = await applyBackupProgress({
                 agentId,
                 commandId: progressMessage.commandId,
-                progress: progressMessage.progress,
+                // Default to {} so a bare keepalive ping (no counters) still
+                // parses and bumps last_progress_at instead of being dropped as
+                // invalid-payload. All fields on the progress schema are
+                // optional, so an empty body is a valid "still alive" signal.
+                progress: progressMessage.progress ?? {},
               });
               if (!applied.applied) {
                 // agent-mismatch is a real anomaly (an agent pinging another

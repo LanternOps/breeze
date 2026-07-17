@@ -273,6 +273,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		return job, errBackupStopped
 	}
 
+	// Whole-run progress keepalive. The long pre-upload phases below (VSS
+	// creation up to 10min, system-state collection, tree walk,
+	// previous-manifest download) emit no progress of their own, so the API's
+	// stale-progress reaper would treat a healthy job as dead and fail it
+	// before the first byte uploads. Capture the callback up front and heartbeat
+	// every progressKeepaliveInterval from run start until the upload loop's own
+	// live-counter keepalive takes over. Best-effort/fire-and-forget, matching
+	// the existing progress sends. The stop func is idempotent and joins the
+	// goroutine (no leak); the defer is a safety net for every early return, and
+	// it is stopped explicitly before the upload loop so the two keepalives
+	// never emit concurrently.
+	m.mu.Lock()
+	progressFn := m.progressFn
+	m.mu.Unlock()
+	stopRunKeepalive := startRunKeepalive(runCtx, progressFn)
+	defer stopRunKeepalive()
+
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if m.config.VSSEnabled && runtime.GOOS == "windows" {
@@ -412,7 +429,8 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// there is nothing eligible to dedupe against — the extra remote
 	// list+manifest-download would be pure waste.
 	var prevSnapshot *Snapshot
-	if !(m.config.SystemStateEnabled && len(m.config.Paths) == 0) {
+	incrementalDedupeActive := !(m.config.SystemStateEnabled && len(m.config.Paths) == 0)
+	if incrementalDedupeActive {
 		prev, reason := previousManifest(runCtx, m.config.Provider)
 		if prev == nil {
 			log.Printf("[backup] running full backup (no reference dedupe): %s", reason)
@@ -421,9 +439,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	m.mu.Lock()
-	progressFn := m.progressFn
-	m.mu.Unlock()
+	// Hand off from the whole-run keepalive to the upload loop's own
+	// live-counter keepalive: stop it here so the two never emit concurrently
+	// (the upload-phase keepalive reports real filesDone/bytesDone, which the
+	// whole-run one cannot see). The remaining pre-upload work (journal open,
+	// stale-prefix cleanup) is fast local/one-shot I/O, not a reaper concern.
+	stopRunKeepalive()
+
 	if progressFn != nil {
 		var bytesTotal int64
 		for _, f := range files {
@@ -502,7 +524,21 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
 	}
-	if snapshot != nil && m.config.Retention > 0 {
+	// Agent-side retention pruning is DISABLED whenever incremental dedupe is
+	// active for this run. Incremental is now unconditional (previousManifest is
+	// consulted on every file-mode run), and a reference entry carries the
+	// ORIGINAL upload's BackupPath forward: an unchanged file's bytes live under
+	// the OLDEST snapshot's prefix indefinitely while every newer manifest
+	// references back into it. DeleteSnapshotContext deletes an expired
+	// snapshot's ENTIRE prefix with ZERO reference-awareness, so pruning the
+	// oldest prefix here would strand every retained manifest's references as
+	// dangling pointers — an unrestorable backup that only surfaces at restore
+	// time. Only a reference-aware GC may prune, and the server is the sole
+	// retention authority (dispatched runs pin Retention:0 — see exec_backup.go's
+	// server-owns-retention invariant). Reference-aware agent-side pruning for
+	// standalone storage reclamation is deliberately deferred: reimplementing
+	// mark-and-sweep GC on the agent is out of scope and too risky to one-shot.
+	if snapshot != nil && m.config.Retention > 0 && !incrementalDedupeActive {
 		retentionErr = DeleteSnapshotContext(runCtx, m.config.Provider, m.config.Retention)
 		if retentionErr != nil {
 			if errors.Is(retentionErr, errBackupStopped) {
@@ -532,12 +568,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if snapshot != nil && len(snapshot.UploadFailures) > 0 {
 		job.ErrorCount = len(snapshot.UploadFailures)
 		failureWarning := summarizeUploadFailures(snapshot.UploadFailures, len(files))
-		if job.Warning != "" {
-			job.Warning += "; " + failureWarning
-		} else {
-			job.Warning = failureWarning
-		}
+		appendWarning(job, failureWarning)
 		log.Printf("[backup] %s", failureWarning)
+	}
+
+	// Collection-phase (scan) errors — permission-denied files, walk failures,
+	// unreadable stat — are folded into the SAME ErrorCount/Warning summary as
+	// upload failures so they're visible on the wire. scanErr is an errors.Join
+	// of per-file errors; without this a run that silently skipped hundreds of
+	// unreadable files would complete as a GREEN job with errorCount 0, because
+	// BackupJob.Error marshals to `{}` and the server never reads it (see the
+	// Error field's doc comment). Success path only: on a hard failure scanErr
+	// already rides job.Error alongside the fatal error above.
+	if scanFailures := flattenJoinedErrors(scanErr); len(scanFailures) > 0 {
+		job.ErrorCount += len(scanFailures)
+		scanWarning := summarizeScanErrors(scanFailures)
+		appendWarning(job, scanWarning)
+		log.Printf("[backup] %s", scanWarning)
 	}
 
 	job.Status = jobStatusCompleted
@@ -570,6 +617,104 @@ func summarizeUploadFailures(failures []error, filesTotal int) string {
 		summary += fmt.Sprintf(" (+%d more)", len(failures)-maxUploadFailureDetails)
 	}
 	return summary
+}
+
+// summarizeScanErrors renders a run's collection-phase (scan) failures as a
+// human-readable Warning fragment: "N file(s) could not be read during
+// collection: <first errors> (+K more)". Detail count is capped the same way
+// as summarizeUploadFailures (the full list can be thousands of entries and
+// the Warning lands in a DB text column and the UI).
+func summarizeScanErrors(failures []error) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	details := make([]string, 0, maxUploadFailureDetails)
+	for i, err := range failures {
+		if i >= maxUploadFailureDetails {
+			break
+		}
+		details = append(details, err.Error())
+	}
+	summary := fmt.Sprintf("%d file(s) could not be read during collection: %s",
+		len(failures), strings.Join(details, "; "))
+	if len(failures) > maxUploadFailureDetails {
+		summary += fmt.Sprintf(" (+%d more)", len(failures)-maxUploadFailureDetails)
+	}
+	return summary
+}
+
+// flattenJoinedErrors unwraps an errors.Join tree (or a single wrapped error)
+// into its individual leaf errors so per-file failures can be counted. Returns
+// nil for a nil error. collectBackupFilesFromPaths returns its per-file errors
+// as one errors.Join, and this recovers the individual count for ErrorCount.
+func flattenJoinedErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var out []error
+		for _, e := range joined.Unwrap() {
+			out = append(out, flattenJoinedErrors(e)...)
+		}
+		return out
+	}
+	return []error{err}
+}
+
+// appendWarning appends fragment to job.Warning, joining with "; " when the
+// job already carries an earlier warning (e.g. a partial system-state note).
+func appendWarning(job *BackupJob, fragment string) {
+	if fragment == "" {
+		return
+	}
+	if job.Warning != "" {
+		job.Warning += "; " + fragment
+	} else {
+		job.Warning = fragment
+	}
+}
+
+// startRunKeepalive launches a best-effort heartbeat goroutine that re-emits a
+// zero-progress notice via onProgress every progressKeepaliveInterval, covering
+// the long pre-upload phases of a run (VSS creation, system-state collection,
+// tree walk, previous-manifest download) that emit no progress of their own.
+// Without it the API's stale-progress reaper can fail a healthy job before its
+// first upload. onProgress==nil yields a no-op stop func. The returned stop
+// func is idempotent and joins the goroutine (no leak); callers must stop it
+// before the upload loop's own live-counter keepalive begins so the two never
+// emit concurrently.
+func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func()) {
+	if onProgress == nil {
+		return func() {}
+	}
+	ticker := time.NewTicker(progressKeepaliveInterval)
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Totals are unknown until the scan completes; a zero heartbeat
+				// exists purely to refresh the server's last_progress_at during
+				// the pre-upload phases. filesDone stays 0, so nothing the loop
+				// later reports can appear to go backwards.
+				onProgress(0, 0, 0, 0)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			ticker.Stop()
+			close(stopCh)
+			<-doneCh
+		})
+	}
 }
 
 // journalHomeDirFn/journalDataDirFn are test seams over the secure journal

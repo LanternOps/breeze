@@ -140,8 +140,7 @@ function keyMatchesSnapshotPrefix(key: string, normalizedPrefix: string): boolea
 // "snapshot root" GC lists once per storage identity, and the manifest key
 // GC expects every retained snapshot to have.
 //
-// KNOWN GAP (GC review 2026-07-17, IMPORTANT 1): these deliberately IGNORE
-// `providerConfig.prefix` entirely — the agent
+// KNOWN GAP: these deliberately IGNORE `providerConfig.prefix` entirely — the agent
 // (agent/internal/backup/snapshot.go's snapshotRootDir) writes every object
 // under `snapshots/<id>/...` VERBATIM regardless of any configured prefix,
 // so applying a prefix here made GC 404 on manifest fetches for any
@@ -169,7 +168,7 @@ async function listS3ObjectsWithLastModified(
   prefix: string,
 ): Promise<BackupObjectListing[]> {
   const { bucket, client } = buildS3StorageClient(providerConfig);
-  // CRITICAL (GC review 2026-07-17): a bare "snapshots" Prefix string-matches
+  // A bare "snapshots" Prefix string-matches
   // ANY key that merely starts with those characters — e.g. "snapshots-old/db.dump"
   // or "snapshotsummary.txt" — not just the "snapshots/" namespace. That would
   // make an unrelated object a GC delete candidate. Force exactly one trailing

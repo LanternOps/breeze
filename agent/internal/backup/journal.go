@@ -28,9 +28,9 @@ import (
 // The GC threshold MUST stay STRICTLY LARGER than journalMaxAge, not merely
 // equal — equality left a boundary race where a resume opened just inside
 // the journal window (e.g. day 6.9) legitimately keeps running past day 7,
-// and GC could sweep its still-live prefix out from under it (corrected
-// 2026-07-17, GC re-review). If this value changes, the API constant must
-// change with it (and vice versa), preserving that strict inequality.
+// and GC could sweep its still-live prefix out from under it. If this value
+// changes, the API constant must change with it (and vice versa), preserving
+// that strict inequality.
 var journalMaxAge = 7 * 24 * time.Hour
 
 // setJournalMaxAgeForTest overrides journalMaxAge so tests can exercise the
@@ -363,21 +363,56 @@ func (j *snapshotJournal) ResumedBytes() int64 {
 	return j.resumedBytesTotal
 }
 
+// journalRemoveFn is a test seam over os.Remove so Complete's Remove-failure
+// (poison) path can be exercised deterministically regardless of process
+// privilege — a read-only parent dir does not block removal when the test runs
+// as root, so a seam is the only reliable way to force the failure.
+var journalRemoveFn = os.Remove
+
+// setJournalRemoveFnForTest overrides journalRemoveFn so tests can force
+// Complete's remove-failure (poison) path deterministically. Call the returned
+// restore func (typically via defer) to put os.Remove back.
+func setJournalRemoveFnForTest(fn func(string) error) (restore func()) {
+	old := journalRemoveFn
+	journalRemoveFn = fn
+	return func() { journalRemoveFn = old }
+}
+
 // Complete marks the run as fully successful: closes the journal file and
 // removes it. Call this only after the snapshot manifest has been uploaded
 // — the point at which the snapshot is restorable and the checkpoint is no
 // longer needed.
+//
+// If the remove fails (e.g. a read-only parent dir), the file survives on disk
+// still carrying the COMPLETED snapshot's ID and a valid header. Left as-is,
+// the NEXT run would RESUME it — same snapshot ID, changed files uploaded into
+// the already-completed prefix, manifest.json overwritten — silently mutating a
+// historical restore point. To prevent that, Complete poisons the file
+// (truncates it to empty) so it can never be resumed: openSnapshotJournal reads
+// an empty journal as corrupt and discards it, starting fresh with no resume
+// and no stale-prefix cleanup. Truncating the FILE needs only file-level write
+// permission, which survives the read-only PARENT dir that blocked the remove.
 func (j *snapshotJournal) Complete() error {
 	if j == nil {
 		return nil
 	}
 	closeErr := j.file.Close()
-	if rmErr := os.Remove(j.path); rmErr != nil && !os.IsNotExist(rmErr) {
-		if closeErr == nil {
-			closeErr = rmErr
-		}
+	if rmErr := journalRemoveFn(j.path); rmErr != nil && !os.IsNotExist(rmErr) {
+		poisonErr := poisonJournalFile(j.path)
+		return errors.Join(closeErr, rmErr, poisonErr)
 	}
 	return closeErr
+}
+
+// poisonJournalFile renders the journal at path permanently non-resumable by
+// truncating it to empty. openSnapshotJournal treats an empty journal as
+// corrupt — discarding it and starting a fresh run — rather than resuming a
+// COMPLETED snapshot's ID. Used by Complete when the remove fails.
+func poisonJournalFile(path string) error {
+	if err := os.Truncate(path, 0); err != nil {
+		return fmt.Errorf("failed to poison completed backup journal %s: %w", path, err)
+	}
+	return nil
 }
 
 // Abandon closes the journal file handle but keeps the file on disk: the

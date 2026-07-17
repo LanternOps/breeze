@@ -1,4 +1,4 @@
-# rIncremental Backups Implementation Plan
+# Incremental Backups Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -79,16 +79,16 @@ func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, 
 - Modify: `apps/api/src/jobs/backupRetention.ts` (read it FIRST end-to-end — reuse its existing provider/S3 client helpers, config iteration, and logging conventions; do not build a second S3 access path)
 - Test: `apps/api/src/jobs/backupRetention.test.ts` (extend; if none exists, create following `staleCommandReaper.test.ts` mock style)
 
-**Interfaces:** `export async function sweepUnreferencedBackupObjects(): Promise<{ deleted: number; skippedDestinations: number }>` (or fold into the existing retention run function as a phase — match the file's structure), constants:
+**Interfaces:** `export async function sweepUnreferencedBackupObjects(): Promise<{ deleted: number; skippedIdentities: number }>` (or fold into the existing retention run function as a phase — match the file's structure), constants:
 
 ```ts
 const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
 const RAW_GC_MAX = Number(process.env.BACKUP_GC_MAX_DELETES_PER_RUN ?? '2000'); // 0 = unlimited, same normalization as STALE_REAPER_MAX_PER_RUN
 ```
 
-Behavior (spec is binding): per destination — mark from ALL retained `backup_snapshots` rows' manifests (+ each manifest key itself); ANY manifest fetch/parse failure → skip that destination's sweep entirely (fail-closed, log why); sweep = list snapshot root, delete objects not live AND older than grace (use the provider's object last-modified from the list call); manifest-less prefixes older than grace swept; per-destination try/catch isolation; one summary log line with deletion count per destination (even 0 is fine to log at debug, &gt;0 at info).
+Behavior (spec is binding): per storage identity (provider + endpoint + bucket, the union of ALL configs sharing that identity — NOT per destination/config) — mark from ALL retained `backup_snapshots` rows' manifests (+ each manifest key itself); ANY manifest fetch/parse failure → skip that identity's sweep entirely (fail-closed, log why); an unattributable snapshot row (`config_id NULL`) has no identity and blocks EVERY identity's sweep for the whole run (fail-closed); sweep = list snapshot root, delete objects not live AND older than grace (use the provider's object last-modified from the list call); manifest-less prefixes older than grace swept; per-identity try/catch isolation; one summary log line with deletion count per identity (even 0 is fine to log at debug, &gt;0 at info). The result's `skippedIdentities` counts identities whose sweep was skipped.
 
-- [ ] **Step 1: Failing tests** — live referenced old-prefix object survives after its snapshot row is deleted; unreferenced + old → deleted; unreferenced + young (grace) → kept; mark fetch error → zero deletes for that destination, others proceed; cap honored; manifest-less old prefix swept.
+- [ ] **Step 1: Failing tests** — live referenced old-prefix object survives after its snapshot row is deleted; unreferenced + old → deleted; unreferenced + young (grace) → kept; mark fetch error → zero deletes for that identity, others proceed; unattributable (`config_id NULL`) row → zero deletes for the whole run; cap honored; manifest-less old prefix swept.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** `npx vitest run src/jobs/backupRetention*` — PASS, then full `npx vitest run` once — PASS.
 - [ ] **Step 5: Commit** — `feat(api): mark-and-sweep GC for unreferenced backup objects (incremental retention safety)`
 

@@ -3,12 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BackupJobList from './BackupJobList';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// Mock the Toast singleton so we can assert what the cancel handler surfaces to
+// the user (runAction and the warning path both route through showToast).
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn(),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -599,6 +607,109 @@ describe('BackupJobList', () => {
     // No negative byte value should ever be rendered.
     expect(savings.textContent).not.toMatch(/-\d/);
     expect(savings.textContent).toContain('1.00 KB'); // protected
+  });
+
+  it('surfaces the warning when a cancel returns HTTP 200 with a partial-delivery warning', async () => {
+    const warning =
+      'Job marked as cancelled but the stop signal could not be delivered to the agent. The backup may still be running on the device.';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [runningJob({ transferredSize: 100, totalSize: 1000, fileCount: 1, totalFiles: 2 })],
+        });
+      }
+      if (url === '/backup/jobs/job-run/cancel') {
+        // 200 OK, no success:false — a partial success runAction treats as
+        // success. The `warning` must still reach the user.
+        return makeJsonResponse({ id: 'job-run', status: 'cancelled', warning });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const stopButton = await screen.findByRole('button', { name: /Stop backup for Beta Server/i });
+    fireEvent.click(stopButton);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('still be running') })
+    );
+    // The partial failure must NOT be reported as a clean success.
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('renders a recently-cancelled job as completed when an in-flight poll reports completed', async () => {
+    // Pins that the reconcile uses TERMINAL_STATUSES (not a narrowed
+    // `=== "cancelled"` check): the server winning with a DIFFERENT terminal
+    // status must be accepted, not stuck showing "Cancelled".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));
+
+    let listCall = 0;
+    let releasePoll: (() => void) | undefined;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        listCall += 1;
+        if (listCall === 1) {
+          return makeJsonResponse({
+            data: [runningJob({ id: 'job-run', transferredSize: 1_000_000, totalSize: 10_000_000, fileCount: 2, totalFiles: 20 })],
+          });
+        }
+        // Poll GET: resolve only when released, reporting a terminal "completed".
+        const completed = {
+          data: [
+            runningJob({
+              id: 'job-run',
+              status: 'completed',
+              completedAt: '2026-04-01T00:00:20.000Z',
+              transferredSize: 10_000_000,
+              totalSize: 10_000_000,
+              fileCount: 20,
+              totalFiles: 20,
+            }),
+          ],
+        };
+        return new Promise<Response>((resolve) => {
+          releasePoll = () => resolve(makeJsonResponse(completed));
+        });
+      }
+      if (url === '/backup/jobs/job-run/cancel') {
+        return makeJsonResponse({ id: 'job-run', status: 'cancelled' });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    // Poll GET goes in flight before the user cancels.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await flush();
+    });
+
+    // User stops the job — optimistic Cancelled shown.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Stop backup for Beta Server/i }));
+      await flush();
+    });
+    const rowAfterCancel = screen.getByText('Beta Server').closest('tr') as HTMLElement;
+    expect(within(rowAfterCancel).getByText('Cancelled')).toBeTruthy();
+
+    // The in-flight poll resolves reporting "completed" — a terminal status the
+    // reconcile must accept, replacing the optimistic Cancelled.
+    await act(async () => {
+      releasePoll?.();
+      await flush();
+    });
+    const rowAfterPoll = screen.getByText('Beta Server').closest('tr') as HTMLElement;
+    expect(within(rowAfterPoll).getByText('Completed')).toBeTruthy();
+    expect(within(rowAfterPoll).queryByText('Cancelled')).toBeNull();
   });
 
   it('labels the running-job action button "Stop"', async () => {

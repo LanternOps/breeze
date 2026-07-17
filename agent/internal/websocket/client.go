@@ -71,6 +71,16 @@ type CommandResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// outboundResult pairs a marshalled command-result frame with the structured
+// result it was encoded from, so writePump can hand the structured value back
+// to the outbox owner (OnResultWriteFailed) if the write is dropped — see the
+// resultChan handling in writePump. The bytes are marshalled once in
+// SendResult so the pump never has to re-encode.
+type outboundResult struct {
+	data   []byte
+	result CommandResult
+}
+
 // CommandHandler processes commands received via WebSocket
 type CommandHandler func(cmd Command) CommandResult
 
@@ -91,6 +101,16 @@ type Client struct {
 	cmdHandler         CommandHandler
 	done               chan struct{}
 	sendChan           chan []byte
+	// resultChan carries command results on a dedicated path (separate from the
+	// generic sendChan) so writePump can distinguish a terminal command result
+	// from an ephemeral status/progress frame. A result popped from this
+	// channel that then fails to write (conn nil during a teardown gap, or a
+	// WriteMessage error) is handed to OnResultWriteFailed instead of being
+	// dropped — closing the loss window where SendResult reported success but
+	// the frame never reached the wire. Results still buffered in this channel
+	// when a pump exits are NOT drained: the next reconnect's writePump drains
+	// them onto the fresh connection, so a plain WS blip loses nothing.
+	resultChan         chan outboundResult
 	binaryFrameChan    chan []byte
 	stopOnce           sync.Once
 	isRunning          bool
@@ -106,6 +126,25 @@ type Client struct {
 	// before Start() is called — never mutated afterwards, so it's safe to
 	// read without a lock.
 	OnConnected func()
+
+	// OnResultWriteFailed, if set, is invoked from writePump when a command
+	// result popped off resultChan cannot be delivered to the wire — either the
+	// connection was already torn down (conn == nil) or WriteMessage returned an
+	// error. Without this, SendResult would have already reported success (the
+	// frame made it into the channel) yet the terminal result would be silently
+	// lost on a WS blip. The heartbeat layer sets this to re-persist the result
+	// to its backup-result outbox, which the next reconnect flushes. Runs inline
+	// on the write-pump goroutine and must not block. Set once at construction
+	// time (see SetWebSocketClient), before Start(), so it needs no lock.
+	//
+	// NOTE: this hook fires for EVERY failed command-result write, not just
+	// backup results — writePump can't tell them apart. That is deliberately
+	// safe: the outbox re-sends via SendResult and the server tolerates a late
+	// or duplicate terminal result. The only residual loss window is a result
+	// whose WriteMessage returns nil (bytes accepted by the OS TCP buffer) but
+	// which the server never processes before the connection drops; closing
+	// that fully would need an application-level per-result ACK.
+	OnResultWriteFailed func(CommandResult)
 }
 
 // New creates a new WebSocket client
@@ -115,6 +154,7 @@ func New(cfg *Config, handler CommandHandler) *Client {
 		cmdHandler:      handler,
 		done:            make(chan struct{}),
 		sendChan:        make(chan []byte, 256),
+		resultChan:      make(chan outboundResult, 256),
 		binaryFrameChan: make(chan []byte, 30),
 	}
 }
@@ -469,6 +509,29 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 				return
 			}
 
+		case res := <-c.resultChan:
+			c.connMu.RLock()
+			conn := c.conn
+			c.connMu.RUnlock()
+
+			if conn == nil {
+				// Teardown gap: no live connection to write to. Hand the result
+				// back to the outbox owner so the next reconnect re-delivers it
+				// rather than dropping it silently. (FIX 3)
+				c.handleResultWriteFailure(res.result)
+				continue
+			}
+
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.TextMessage, res.data); err != nil {
+				log.Warn("result write error", "commandId", res.result.CommandID, "error", err.Error())
+				// The write failed with the frame in flight; preserve the result
+				// before the pump exits so the reconnect flush re-delivers it,
+				// instead of losing a terminal result on a WS blip. (FIX 3)
+				c.handleResultWriteFailure(res.result)
+				return
+			}
+
 		case frame := <-c.binaryFrameChan:
 			c.connMu.RLock()
 			conn := c.conn
@@ -514,7 +577,13 @@ func (c *Client) processCommand(cmd Command) {
 	}
 }
 
-// SendResult sends a command result back to the server
+// SendResult sends a command result back to the server.
+//
+// Command results travel on the dedicated resultChan (not the generic
+// sendChan) so writePump can preserve them via OnResultWriteFailed if the
+// write is dropped. A nil return means the result was accepted into the
+// channel — NOT that it reached the wire; the pump completes delivery and
+// re-persists it on failure.
 func (c *Client) SendResult(result CommandResult) error {
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -522,12 +591,22 @@ func (c *Client) SendResult(result CommandResult) error {
 	}
 
 	select {
-	case c.sendChan <- data:
+	case c.resultChan <- outboundResult{data: data, result: result}:
 		return nil
 	case <-c.done:
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel is full")
+	}
+}
+
+// handleResultWriteFailure hands a command result that writePump could not
+// deliver back to the outbox owner (if one is registered) so it can be
+// re-persisted for redelivery on the next reconnect. Safe to call with no
+// hook set.
+func (c *Client) handleResultWriteFailure(result CommandResult) {
+	if c.OnResultWriteFailed != nil {
+		c.OnResultWriteFailed(result)
 	}
 }
 

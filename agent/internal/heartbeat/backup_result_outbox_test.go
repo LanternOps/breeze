@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -176,5 +177,108 @@ func TestBackupResultOutbox_EnqueueRejectsEmptyCommandID(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("expected no persisted entry for empty commandId, got %v", entries)
 		}
+	}
+}
+
+// TestBackupResultOutbox_RejectsUnsafeCommandID proves the path-traversal
+// hardening (FIX 8): a server-supplied CommandID that is not a single,
+// non-traversing path element is refused before any file is written, so it can
+// never redirect the write outside the outbox directory.
+func TestBackupResultOutbox_RejectsUnsafeCommandID(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "outbox")
+	o := newBackupResultOutbox(dir)
+
+	unsafe := []string{"../escape", "../../etc/x", "a/b", `a\b`, "..", ".", "", "   "}
+	for _, id := range unsafe {
+		if safeOutboxFilenameID(id) {
+			t.Fatalf("safeOutboxFilenameID(%q) = true, want false", id)
+		}
+		o.Enqueue(testResult(id))
+	}
+
+	// Nothing persisted inside the outbox dir.
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) != 0 {
+		t.Fatalf("expected no persisted entries for unsafe IDs, got %v", entries)
+	}
+	// Nothing escaped one level up either — "../escape" would land at
+	// root/escape.json if the traversal weren't rejected.
+	if _, err := os.Stat(filepath.Join(root, "escape.json")); !os.IsNotExist(err) {
+		t.Fatalf("path traversal wrote outside outbox dir: stat err=%v", err)
+	}
+
+	// Sanity: a safe ID still persists normally.
+	o.Enqueue(testResult("cmd-ok"))
+	if _, err := os.Stat(o.entryPath("cmd-ok")); err != nil {
+		t.Fatalf("expected safe entry cmd-ok persisted, stat err=%v", err)
+	}
+}
+
+// TestBackupResultOutbox_FlushDeliversOldestFirst proves multi-entry flush
+// ordering: three enqueued entries are delivered oldest-first in a single
+// Flush.
+func TestBackupResultOutbox_FlushDeliversOldestFirst(t *testing.T) {
+	o := newTestBackupResultOutbox(t) // strictly-increasing synthetic clock
+
+	for _, id := range []string{"cmd-a", "cmd-b", "cmd-c"} {
+		o.Enqueue(testResult(id))
+	}
+
+	var order []string
+	o.Flush(func(r websocket.CommandResult) error {
+		order = append(order, r.CommandID)
+		return nil
+	})
+
+	want := []string{"cmd-a", "cmd-b", "cmd-c"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("flush delivery order = %v, want %v", order, want)
+	}
+	if entries, err := os.ReadDir(o.dir); err != nil || len(entries) != 0 {
+		t.Fatalf("expected all entries removed after successful flush, got %v (err=%v)", entries, err)
+	}
+}
+
+// TestBackupResultOutbox_FlushMixedSuccessFailSuccess proves that within one
+// Flush a middle entry whose send fails is retained while the entries around it
+// (which succeed) are delivered and removed — and that a later Flush picks up
+// the retained one.
+func TestBackupResultOutbox_FlushMixedSuccessFailSuccess(t *testing.T) {
+	o := newTestBackupResultOutbox(t)
+
+	for _, id := range []string{"cmd-1", "cmd-2", "cmd-3"} {
+		o.Enqueue(testResult(id))
+	}
+
+	var attempted []string
+	o.Flush(func(r websocket.CommandResult) error {
+		attempted = append(attempted, r.CommandID)
+		if r.CommandID == "cmd-2" {
+			return errors.New("transient send failure")
+		}
+		return nil
+	})
+
+	if want := []string{"cmd-1", "cmd-2", "cmd-3"}; !reflect.DeepEqual(attempted, want) {
+		t.Fatalf("flush attempted %v, want all three oldest-first %v", attempted, want)
+	}
+	if _, err := os.Stat(o.entryPath("cmd-1")); !os.IsNotExist(err) {
+		t.Fatalf("cmd-1 (succeeded) should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(o.entryPath("cmd-3")); !os.IsNotExist(err) {
+		t.Fatalf("cmd-3 (succeeded) should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(o.entryPath("cmd-2")); err != nil {
+		t.Fatalf("cmd-2 (failed) should be retained for retry, stat err=%v", err)
+	}
+
+	// Next flush (e.g. next reconnect) delivers the retained cmd-2.
+	var delivered []string
+	o.Flush(func(r websocket.CommandResult) error {
+		delivered = append(delivered, r.CommandID)
+		return nil
+	})
+	if len(delivered) != 1 || delivered[0] != "cmd-2" {
+		t.Fatalf("second flush delivered %v, want [cmd-2]", delivered)
 	}
 }

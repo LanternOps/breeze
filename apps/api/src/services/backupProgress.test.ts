@@ -25,6 +25,7 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     agentId: 'devices.agentId',
   },
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
 }));
 
 vi.mock('./agentWorkExpectation', () => ({
@@ -192,6 +193,28 @@ describe('applyBackupProgress', () => {
 
     expect(result).toEqual({ applied: false, reason: 'invalid-payload' });
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('drops progress on a concurrent terminal transition between select and the guarded update', async () => {
+    // The row is `running` at select time, but the guarded UPDATE (which carries
+    // inArray(status, IN_FLIGHT)) matches zero rows because the job transitioned
+    // to a terminal status in between. Dropping the `inArray` guard from the
+    // UPDATE would let this write through and make this test fail.
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([
+        { id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' },
+      ]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([]) as any);
+
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: { current: 100, total: 200 },
+    });
+
+    expect(result).toEqual({ applied: false, reason: 'terminal-status' });
+    expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
   });
 });
 

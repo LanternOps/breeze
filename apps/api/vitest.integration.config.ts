@@ -71,6 +71,13 @@ export default defineConfig({
       // it FIND a FORCE-RLS `users` row (a contextless read would be 0 rows =
       // "no such user" = silent password-reset breakage for everyone).
       'src/jobs/authEmailWorker.integration.test.ts',
+      // Real-DB integration test for the stale-backup-job reaper: asserts the
+      // status WHERE guard (terminal job NOT reaped, in-flight stalled job IS)
+      // that the mocked unit suite's chainable mock swallows. Lives under
+      // src/__tests__/integration/ so the shared glob above already covers it
+      // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
+      // named here for discoverability.
+      'src/__tests__/integration/staleBackupReaper.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

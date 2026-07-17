@@ -78,6 +78,18 @@ type backupRunProviderConfig struct {
 	Path      string `json:"path"` // local provider destination
 }
 
+// defaultVSS decides whether VSS shadow-copy defaults on for a backup_run,
+// given the target OS and whether this is a system_image run. VSS is a
+// Windows-only feature; it stays off for system_image mode, which manages its
+// own consistency via system-state collection. Extracted as a pure function of
+// goos so the OS decision is table-testable on EVERY platform — the
+// internal/backup package (and this command's VSS-by-default flip) is excluded
+// from the Windows CI job, so a runtime.GOOS-only assertion would be vacuous on
+// the Linux runners that actually run these tests.
+func defaultVSS(goos string, systemImage bool) bool {
+	return goos == "windows" && !systemImage
+}
+
 // managerFromBackupRunPayload builds a BackupManager from the backup_run command
 // payload's provider + providerConfig + paths. Returns (nil,nil) when the payload
 // carries no provider config so the caller falls back to the agent.yaml manager.
@@ -109,7 +121,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// state collection, so it stays off there unless the payload overrides it.
 	// The server can force it either way via the optional `vss` field (not
 	// currently sent by apps/api/src/jobs/backupWorker.ts).
-	vssEnabled := runtime.GOOS == "windows" && !p.SystemImage
+	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage)
 	if p.Vss != nil {
 		vssEnabled = *p.Vss
 	}

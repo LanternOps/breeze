@@ -751,6 +751,79 @@ func TestRunBackup_SecondSnapshotIncludesUnmodifiedFiles(t *testing.T) {
 	}
 }
 
+// Incremental dedupe (now unconditional) carries an unchanged file's bytes
+// forward under the OLDEST snapshot's prefix, and every newer manifest
+// references back into it. Agent-side retention pruning deletes an expired
+// snapshot's ENTIRE prefix with zero reference-awareness — so pruning the
+// oldest prefix while newer manifests still reference it turns every retained
+// snapshot into an unrestorable manifest of dangling references (a failure
+// that only surfaces at restore time). This proves the fix: with Retention:2
+// and 3+ incremental runs over an UNCHANGED source, the agent must NOT prune,
+// and a verify/restore from the NEWEST manifest must still succeed.
+//
+// Before the fix (DeleteSnapshotContext reached in the incremental path) this
+// test fails: the oldest prefix — holding the referenced object bytes — is
+// deleted, and VerifyIntegrity of the newest snapshot reports failed objects.
+func TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects(t *testing.T) {
+	tmpDir := t.TempDir()
+	// A single unchanged file: every run after the first references its bytes
+	// from the first snapshot's prefix.
+	createTempFile(t, tmpDir, "data.txt", "unchanging content that is referenced forward")
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		Retention:  2,
+		StagingDir: t.TempDir(),
+	})
+
+	const runs = 4
+	var lastSnapshotID string
+	for i := 0; i < runs; i++ {
+		job, err := mgr.RunBackupContext(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("RunBackupContext #%d failed: %v", i+1, err)
+		}
+		if job.Status != jobStatusCompleted {
+			t.Fatalf("run #%d status = %q, want %q", i+1, job.Status, jobStatusCompleted)
+		}
+		if job.Snapshot == nil {
+			t.Fatalf("run #%d produced no snapshot", i+1)
+		}
+		lastSnapshotID = job.Snapshot.ID
+		// Runs after the first must reference the earlier object, not re-upload.
+		if i > 0 && job.ReferencedFiles == 0 {
+			t.Fatalf("run #%d expected to reference the unchanged file, got ReferencedFiles=0", i+1)
+		}
+	}
+
+	// All snapshots must be retained: reference-blind agent pruning is disabled
+	// in the incremental path (only the server may prune).
+	snapshots, err := ListSnapshots(provider)
+	if err != nil {
+		t.Fatalf("ListSnapshots failed: %v", err)
+	}
+	if len(snapshots) != runs {
+		t.Fatalf("expected all %d snapshots retained (no agent-side prune in incremental path), got %d", runs, len(snapshots))
+	}
+
+	// The newest snapshot's referenced objects must all still exist: a verify
+	// downloads every manifest entry's BackupPath (which for a reference entry
+	// points into an OLDER prefix) and checks its checksum.
+	result, err := VerifyIntegrity(provider, lastSnapshotID)
+	if err != nil {
+		t.Fatalf("VerifyIntegrity returned error: %v", err)
+	}
+	if result.Status != "passed" {
+		t.Fatalf("newest snapshot must verify clean after retention runs, got status=%q failed=%v (referenced objects were pruned)",
+			result.Status, result.FailedFiles)
+	}
+	if result.FilesVerified == 0 {
+		t.Fatalf("expected the newest snapshot to verify at least one file, got 0")
+	}
+}
+
 // failSubstringUploadProvider fails every upload whose localPath contains
 // failSubstring (persistently — across the per-file retry too) and delegates
 // everything else to the backing mock provider.
@@ -805,6 +878,81 @@ func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 	}
 }
 
+// A run that skips unreadable files during collection (permission-denied,
+// walk failures, missing paths) must complete WITH a visible Warning +
+// ErrorCount — never as a green job with errorCount 0. scan errors only ride
+// job.Error otherwise, which marshals to `{}` and the server never reads.
+func TestRunBackupContext_ScanErrorSetsWarningAndErrorCount(t *testing.T) {
+	goodDir := t.TempDir()
+	createTempFile(t, goodDir, "readable.txt", "content that uploads fine")
+	// A second configured path that does not exist: os.Stat fails during
+	// collection, producing a per-file scan error, while the good dir's file
+	// still yields a completable snapshot.
+	missingPath := pathpkg.Join(t.TempDir(), "does-not-exist")
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{goodDir, missingPath},
+		StagingDir: t.TempDir(),
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("a partial-scan run must still complete, got: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("expected completed status, got %q", job.Status)
+	}
+	if job.ErrorCount != 1 {
+		t.Fatalf("expected ErrorCount=1 for one unreadable path, got %d", job.ErrorCount)
+	}
+	if !strings.Contains(job.Warning, "could not be read during collection") {
+		t.Fatalf("Warning must surface the collection failure, got: %q", job.Warning)
+	}
+	if !strings.Contains(job.Warning, "does-not-exist") {
+		t.Fatalf("Warning must name the failed path, got: %q", job.Warning)
+	}
+	if job.FilesBackedUp != 1 {
+		t.Fatalf("expected the readable file to still be backed up, got %d", job.FilesBackedUp)
+	}
+}
+
+func TestSummarizeScanErrors(t *testing.T) {
+	if got := summarizeScanErrors(nil); got != "" {
+		t.Fatalf("no failures must summarize to empty, got %q", got)
+	}
+
+	var many []error
+	for i := 0; i < 8; i++ {
+		many = append(many, fmt.Errorf("scan boom %d", i))
+	}
+	got := summarizeScanErrors(many)
+	if !strings.Contains(got, "8 file(s) could not be read during collection") {
+		t.Fatalf("unexpected summary: %q", got)
+	}
+	if !strings.Contains(got, "(+3 more)") {
+		t.Fatalf("expected overflow suffix for 8 failures with 5 details, got: %q", got)
+	}
+	if strings.Contains(got, "scan boom 5") {
+		t.Fatalf("details must be capped at 5, got: %q", got)
+	}
+}
+
+func TestFlattenJoinedErrors(t *testing.T) {
+	if got := flattenJoinedErrors(nil); got != nil {
+		t.Fatalf("nil error must flatten to nil, got %v", got)
+	}
+	single := errors.New("solo")
+	if got := flattenJoinedErrors(single); len(got) != 1 {
+		t.Fatalf("single error must flatten to 1, got %d", len(got))
+	}
+	joined := errors.Join(errors.New("a"), errors.New("b"), errors.Join(errors.New("c"), errors.New("d")))
+	if got := flattenJoinedErrors(joined); len(got) != 4 {
+		t.Fatalf("nested join must flatten to 4 leaves, got %d", len(got))
+	}
+}
+
 func TestSummarizeUploadFailures(t *testing.T) {
 	if got := summarizeUploadFailures(nil, 10); got != "" {
 		t.Fatalf("no failures must summarize to empty, got %q", got)
@@ -834,6 +982,62 @@ func TestSummarizeUploadFailures(t *testing.T) {
 	if strings.Contains(got, "boom 5") {
 		t.Fatalf("details must be capped at 5, got: %q", got)
 	}
+}
+
+// The whole-run keepalive must heartbeat during the pre-upload phases and then
+// stop cleanly with no further emissions and no goroutine leak.
+func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
+	restore := setProgressKeepaliveIntervalForTest(2 * time.Millisecond)
+	defer restore()
+
+	var mu sync.Mutex
+	var calls int
+	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	}
+
+	stop := startRunKeepalive(context.Background(), onProgress)
+
+	// Wait for at least one heartbeat.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		c := calls
+		mu.Unlock()
+		if c > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("keepalive never emitted a heartbeat")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	stop()
+	mu.Lock()
+	afterStop := calls
+	mu.Unlock()
+
+	// No emissions may fire after stop returns (goroutine joined).
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	final := calls
+	mu.Unlock()
+	if final != afterStop {
+		t.Fatalf("keepalive emitted after stop: %d -> %d (goroutine not joined)", afterStop, final)
+	}
+
+	// A second stop is a safe no-op (idempotent).
+	stop()
+}
+
+// A nil callback yields a no-op stop func that never panics.
+func TestStartRunKeepalive_NilCallbackNoOp(t *testing.T) {
+	stop := startRunKeepalive(context.Background(), nil)
+	stop()
+	stop()
 }
 
 func TestResolveJournalDir_ExplicitStagingDirWins(t *testing.T) {

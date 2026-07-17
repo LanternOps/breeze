@@ -1,19 +1,14 @@
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { backupJobs, devices } from '../db/schema';
+import { backupJobs, devices, IN_FLIGHT_BACKUP_JOB_STATUSES } from '../db/schema';
 import { UUID_REGEX } from '../utils/uuid';
 import { refreshDispatchedExpectation } from './agentWorkExpectation';
 
 /**
- * A `running` (or `pending`, for the async started-ack path in Task 7) job is
- * still in-flight and may legitimately accept a progress update.
- */
-const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
-
-/**
  * Payload shape emitted by the agent's `backup_progress` WS message
- * (agent/internal/websocket/client.go:613-632). `current`/`total` are BYTES;
+ * (agent side: websocket.Client.SendBackupProgress in
+ * agent/internal/websocket/client.go). `current`/`total` are BYTES;
  * `filesDone`/`filesTotal` are counts. `phase` is always "uploading" today —
  * treat it as an opaque optional string, never branch on it.
  */
@@ -125,7 +120,7 @@ export async function applyBackupProgress(params: {
   return { applied: true };
 }
 
-// --- Task 7: non-terminal `command_result` guards -------------------------
+// --- non-terminal `command_result` guards ---------------------------------
 //
 // An async backup_run agent (capability `backup_run_async`) reports two
 // non-terminal signals through the normal command_result channel instead of
@@ -171,11 +166,12 @@ export function isBackupStartedAck(payload: unknown): boolean {
 
 /**
  * True when a non-completed command_result is the legacy (pre-async-capable)
- * agent's false "command timed out" result — `forwardToBackupHelper` in
- * `sessionbroker/session.go` emits this at exactly 10 minutes while the
- * upload helper is still running. Treating this as a real failure falsely
- * fails every backup over 10 minutes; the Task 8 reaper now owns deciding
- * when a silent job is actually dead.
+ * agent's false "command timed out" result — `forwardToBackupHelper`
+ * (agent/internal/heartbeat/backup_forwarder.go, timing out via sessionbroker
+ * Session.SendCommand) surfaces this at exactly 10 minutes while the upload
+ * helper is still running. Treating this as a real failure falsely fails every
+ * backup over 10 minutes; the stale-backup-job reaper now owns deciding when a
+ * silent job is actually dead.
  */
 export function isLegacyBackupTimeoutResult(params: {
   status: string;

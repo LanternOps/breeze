@@ -65,10 +65,30 @@ func (o *backupResultOutbox) entryPath(commandID string) string {
 	return filepath.Join(o.dir, commandID+".json")
 }
 
+// safeOutboxFilenameID reports whether a server-supplied CommandID can be used
+// verbatim as an outbox filename component without escaping o.dir. The ID
+// reaches us over IPC from the server's command, so a value containing a path
+// separator or a "."/".." segment could otherwise redirect the write outside
+// the outbox directory (path traversal, e.g. "../../etc/x"). We don't demand a
+// strict UUID here — synthetic IDs like "cmd-1" are legitimate — only that the
+// ID is a single, non-traversing path element on any platform.
+func safeOutboxFilenameID(id string) bool {
+	if strings.TrimSpace(id) == "" || id == "." || id == ".." {
+		return false
+	}
+	// Reject both separators explicitly so a Windows-style "a\b" is caught even
+	// on a POSIX host, where filepath.Base would not treat "\" as a separator.
+	if strings.ContainsAny(id, `/\`) || strings.ContainsRune(id, os.PathSeparator) {
+		return false
+	}
+	return filepath.Base(id) == id
+}
+
 // loadAllLocked reads every persisted entry, oldest first. Corrupt entries
-// (unreadable/malformed JSON) are dropped on sight — they can never be
-// delivered and would otherwise wedge Flush forever. Must be called with
-// o.mu held.
+// (malformed JSON) are dropped on sight — they can never be delivered and
+// would otherwise wedge Flush forever. Unreadable entries (e.g. a transient
+// permissions error) are logged and skipped but kept on disk for a later
+// Flush. Must be called with o.mu held.
 func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
 	matches, err := filepath.Glob(filepath.Join(o.dir, "*.json"))
 	if err != nil || len(matches) == 0 {
@@ -77,11 +97,13 @@ func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
 
 	files := make([]backupResultOutboxFile, 0, len(matches))
 	for _, path := range matches {
-		if strings.HasSuffix(path, ".tmp") {
-			continue
-		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
+			// Unlike a corrupt entry (dropped below), an unreadable one may be a
+			// transient/permissions problem, so we keep the file for a later
+			// Flush — but log it, otherwise redelivery silently stalls until the
+			// 48h expiry with no trace of why.
+			log.Warn("skipping unreadable backup result outbox entry", "path", path, "error", err.Error())
 			continue
 		}
 		var entry backupResultOutboxEntry
@@ -106,8 +128,8 @@ func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
 // the oldest surviving entries — so Enqueue never leaves more than
 // backupResultOutboxMaxPending files behind.
 func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
-	if strings.TrimSpace(result.CommandID) == "" {
-		log.Warn("refusing to outbox backup result with empty commandId")
+	if !safeOutboxFilenameID(result.CommandID) {
+		log.Warn("refusing to outbox backup result with empty or unsafe commandId", "commandId", result.CommandID)
 		return
 	}
 

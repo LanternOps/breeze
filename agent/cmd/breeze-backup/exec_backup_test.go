@@ -252,6 +252,34 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 	}
 }
 
+// defaultVSS's OS decision must be asserted on EVERY platform, not just
+// Windows: the internal/backup package (and this VSS-by-default flip) is
+// excluded from the Windows CI job, so a `runtime.GOOS == "windows"`-based
+// expectation is vacuously true on the Linux runners that actually run these
+// tests. Passing goos explicitly makes windows→true testable everywhere.
+func TestDefaultVSS(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		systemImage bool
+		want        bool
+	}{
+		{"windows file backup defaults VSS on", "windows", false, true},
+		{"windows system_image defaults VSS off", "windows", true, false},
+		{"linux file backup defaults VSS off", "linux", false, false},
+		{"linux system_image defaults VSS off", "linux", true, false},
+		{"darwin file backup defaults VSS off", "darwin", false, false},
+		{"darwin system_image defaults VSS off", "darwin", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultVSS(tt.goos, tt.systemImage); got != tt.want {
+				t.Fatalf("defaultVSS(%q, %v) = %v, want %v", tt.goos, tt.systemImage, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagerFromBackupRunPayload(t *testing.T) {
 	tests := []struct {
 		name            string

@@ -25,6 +25,9 @@ vi.mock('./backupRetention', () => ({
   sweepUnreferencedBackupObjects: sweepUnreferencedBackupObjectsMock,
 }));
 
+const captureExceptionMock = vi.fn();
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
 const { resolveBackupTargets, processCleanupExpiredSnapshots } = await import('./backupWorker');
 
@@ -323,7 +326,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 2, blockedIdentities: 1 });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -338,7 +341,8 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skipped: 0,
       prunedByMaxVersions: 0,
       gcDeleted: 5,
-      gcSkippedIdentities: 0,
+      gcSkippedIdentities: 2,
+      gcBlockedIdentities: 1,
     });
   });
 
@@ -361,13 +365,16 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(result.skipped).toBe(1);
     expect(result.gcDeleted).toBe(0);
     expect(result.gcSkippedIdentities).toBe(0);
+    expect(result.gcBlockedIdentities).toBe(0);
+    // A thrown GC sweep is escalated to Sentry (retention run still succeeds).
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('still runs the sweep when there are no orgs with snapshots (row-level retention is a no-op)', async () => {
     mockDb.selectDistinct.mockReturnValue({
       from: vi.fn().mockResolvedValue([]),
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedIdentities: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -379,6 +386,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       prunedByMaxVersions: 0,
       gcDeleted: 0,
       gcSkippedIdentities: 0,
+      gcBlockedIdentities: 0,
     });
   });
 });

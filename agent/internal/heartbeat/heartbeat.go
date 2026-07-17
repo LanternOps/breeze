@@ -655,7 +655,25 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	// the read pump goroutine that invokes it (terminal-result outbox).
 	if ws != nil {
 		ws.OnConnected = h.flushBackupResultOutbox
+		// Re-persist any command result that writePump popped but failed to
+		// deliver (conn torn down mid-write, or a WriteMessage error) so it
+		// isn't silently lost after SendResult already reported success. The
+		// next reconnect's OnConnected flush redelivers it. (FIX 3)
+		ws.OnResultWriteFailed = h.preserveUndeliveredResult
 	}
+}
+
+// preserveUndeliveredResult persists a command result whose WS write failed to
+// the backup-result outbox for redelivery on the next reconnect. Invoked from
+// the websocket write pump (see Client.OnResultWriteFailed). This catches all
+// failed command-result writes, not just backup results — the write pump can't
+// distinguish them — which is safe: the outbox re-sends via SendResult and the
+// server tolerates a late or duplicate terminal result.
+func (h *Heartbeat) preserveUndeliveredResult(result websocket.CommandResult) {
+	if h.backupOutbox == nil {
+		return
+	}
+	h.backupOutbox.Enqueue(result)
 }
 
 // flushBackupResultOutbox retries delivery of any backup results persisted
@@ -742,9 +760,11 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		h.forgetDesktopOwner(notice.SessionID)
 		go h.sendDesktopDisconnectNotification(notice.SessionID)
 	case backupipc.TypeBackupResult:
-		if h.wsClient == nil {
-			return
-		}
+		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no
+		// live WS client, and a terminal backup result that arrives during
+		// startup or a WS teardown gap must still be persisted so the next
+		// reconnect flushes it — otherwise the server-side job is stuck
+		// "running" until a reaper falsely fails it. (FIX 2)
 		var backupResult backupipc.BackupCommandResult
 		if err := json.Unmarshal(env.Payload, &backupResult); err != nil {
 			log.Warn("invalid backup result payload", "error", err.Error())
@@ -769,6 +789,22 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 				result.Result = backupResult.Stdout
 			}
 		}
+
+		// No live WS client yet (startup) or the connection is torn down: skip
+		// the send entirely and persist to the outbox so redelivery happens on
+		// the next reconnect rather than dropping the result outright. (FIX 2)
+		if h.wsClient == nil {
+			if h.backupOutbox != nil {
+				log.Info("no WS client for terminal backup result, persisting to outbox for retry on reconnect",
+					"commandId", backupResult.CommandID)
+				h.backupOutbox.Enqueue(result)
+			} else {
+				log.Warn("dropping terminal backup result: no WS client and no outbox configured",
+					"commandId", backupResult.CommandID)
+			}
+			return
+		}
+
 		if err := h.wsClient.SendResult(result); err != nil {
 			log.Warn("failed to send backup result, persisting to outbox for retry on reconnect",
 				"commandId", backupResult.CommandID, "error", err.Error())
