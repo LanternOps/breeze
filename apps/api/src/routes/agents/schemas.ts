@@ -26,6 +26,10 @@ const desktopAccessReasonSchema = z.enum([
   'virtual_display_unavailable',
   'unsupported_os',
   'manual_install',
+  'no_display_session',
+  'wayland_unsupported',
+  'x11_connect_failed',
+  'x11_auth_failed',
 ]);
 
 export const enrollSchema = z.object({

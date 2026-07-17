@@ -310,7 +310,11 @@ export type DesktopAccessReason =
   | 'helper_not_connected'
   | 'virtual_display_unavailable'
   | 'unsupported_os'
-  | 'manual_install';
+  | 'manual_install'
+  | 'no_display_session'
+  | 'wayland_unsupported'
+  | 'x11_connect_failed'
+  | 'x11_auth_failed';
 
 export interface DesktopAccessState {
   mode: DesktopAccessMode;
