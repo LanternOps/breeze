@@ -296,6 +296,93 @@
       "errors": {
         "loadSubscriptions": "Could not load Pax8 subscriptions for this organization."
       }
+    },
+    "tabs": {
+      "contracts": "Contracts",
+      "templates": "Templates"
+    },
+    "templatesTab": {
+      "title": "Contract templates",
+      "description": "Reusable contract documents you can attach to accepted quotes.",
+      "newTemplate": "New template",
+      "includeArchived": "Show archived",
+      "allOrgs": "All orgs",
+      "ownerOrg": "Organization",
+      "noVersions": "No versions yet",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archive",
+      "loadError": "Failed to load contract templates",
+      "createError": "Failed to create the template",
+      "created": "Template created",
+      "archiveError": "Failed to archive the template",
+      "archiveSuccess": "Template archived",
+      "columns": {
+        "name": "Name",
+        "owner": "Owner",
+        "status": "Status",
+        "latestVersion": "Latest version"
+      },
+      "status": {
+        "active": "Active",
+        "archived": "Archived"
+      },
+      "empty": {
+        "title": "No templates yet",
+        "description": "Create your first contract template to get started."
+      },
+      "createDialog": {
+        "title": "New contract template",
+        "name": "Name",
+        "namePlaceholder": "e.g. Master Services Agreement",
+        "description": "Description",
+        "descriptionPlaceholder": "Optional summary of this template",
+        "scope": "Ownership",
+        "allOrganizations": "All organizations",
+        "partnerWide": "Partner-wide template",
+        "thisOrgOnly": "This organization only",
+        "organization": "Organization",
+        "selectOrg": "Select an organization",
+        "orgRequired": "Select an organization for an organization-owned template.",
+        "nameRequired": "Enter a template name.",
+        "cancel": "Cancel",
+        "create": "Create template",
+        "creating": "Creating…"
+      }
+    },
+    "templateEditor": {
+      "back": "Back",
+      "loadError": "Failed to load the template",
+      "newVersion": "New version",
+      "uploadPdf": "Upload PDF",
+      "versions": "Versions",
+      "noVersions": "No versions yet",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Draft",
+        "published": "Published"
+      },
+      "sourceType": {
+        "authored": "Authored",
+        "uploaded": "Uploaded PDF"
+      },
+      "publish": "Publish",
+      "body": "Body",
+      "bodyAria": "Contract template body",
+      "preview": "Preview",
+      "edit": "Edit",
+      "saveDraft": "Save draft",
+      "saving": "Saving…",
+      "emptyBody": "Add some content before saving.",
+      "autoVariables": "Auto variables",
+      "manualVariables": "Manual variables",
+      "noManualVariables": "None detected",
+      "archivedNotice": "This template is archived. New versions cannot be added.",
+      "saveError": "Failed to save the draft version",
+      "saveSuccess": "Draft version saved",
+      "uploadError": "Failed to upload the PDF",
+      "uploadSuccess": "PDF version uploaded",
+      "publishError": "Failed to publish the version",
+      "publishSuccess": "Version published"
     }
   },
   "quotes": {

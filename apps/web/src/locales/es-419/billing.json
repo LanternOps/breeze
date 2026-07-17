@@ -296,6 +296,93 @@
       "errors": {
         "loadSubscriptions": "No se pudieron cargar las suscripciones de Pax8 para esta organización."
       }
+    },
+    "tabs": {
+      "contracts": "Contratos",
+      "templates": "Plantillas"
+    },
+    "templatesTab": {
+      "title": "Plantillas de contrato",
+      "description": "Documentos de contrato reutilizables que puedes adjuntar a cotizaciones aceptadas.",
+      "newTemplate": "Nueva plantilla",
+      "includeArchived": "Mostrar archivadas",
+      "allOrgs": "Todas las org.",
+      "ownerOrg": "Organización",
+      "noVersions": "Aún sin versiones",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archivar",
+      "loadError": "No se pudieron cargar las plantillas de contrato",
+      "createError": "No se pudo crear la plantilla",
+      "created": "Plantilla creada",
+      "archiveError": "No se pudo archivar la plantilla",
+      "archiveSuccess": "Plantilla archivada",
+      "columns": {
+        "name": "Nombre",
+        "owner": "Propietario",
+        "status": "Estado",
+        "latestVersion": "Última versión"
+      },
+      "status": {
+        "active": "Activa",
+        "archived": "Archivada"
+      },
+      "empty": {
+        "title": "Aún no hay plantillas",
+        "description": "Crea tu primera plantilla de contrato para empezar."
+      },
+      "createDialog": {
+        "title": "Nueva plantilla de contrato",
+        "name": "Nombre",
+        "namePlaceholder": "ej. Acuerdo maestro de servicios",
+        "description": "Descripción",
+        "descriptionPlaceholder": "Resumen opcional de esta plantilla",
+        "scope": "Propiedad",
+        "allOrganizations": "Todas las organizaciones",
+        "partnerWide": "Plantilla para todo el socio",
+        "thisOrgOnly": "Solo esta organización",
+        "organization": "Organización",
+        "selectOrg": "Selecciona una organización",
+        "orgRequired": "Selecciona una organización para una plantilla propiedad de la organización.",
+        "nameRequired": "Ingresa un nombre de plantilla.",
+        "cancel": "Cancelar",
+        "create": "Crear plantilla",
+        "creating": "Creando…"
+      }
+    },
+    "templateEditor": {
+      "back": "Volver",
+      "loadError": "No se pudo cargar la plantilla",
+      "newVersion": "Nueva versión",
+      "uploadPdf": "Subir PDF",
+      "versions": "Versiones",
+      "noVersions": "Aún sin versiones",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Borrador",
+        "published": "Publicada"
+      },
+      "sourceType": {
+        "authored": "Redactada",
+        "uploaded": "PDF subido"
+      },
+      "publish": "Publicar",
+      "body": "Cuerpo",
+      "bodyAria": "Cuerpo de la plantilla de contrato",
+      "preview": "Vista previa",
+      "edit": "Editar",
+      "saveDraft": "Guardar borrador",
+      "saving": "Guardando…",
+      "emptyBody": "Agrega contenido antes de guardar.",
+      "autoVariables": "Variables automáticas",
+      "manualVariables": "Variables manuales",
+      "noManualVariables": "Ninguna detectada",
+      "archivedNotice": "Esta plantilla está archivada. No se pueden agregar nuevas versiones.",
+      "saveError": "No se pudo guardar la versión borrador",
+      "saveSuccess": "Versión borrador guardada",
+      "uploadError": "No se pudo subir el PDF",
+      "uploadSuccess": "Versión PDF subida",
+      "publishError": "No se pudo publicar la versión",
+      "publishSuccess": "Versión publicada"
     }
   },
   "quotes": {

@@ -296,6 +296,93 @@
       "errors": {
         "loadSubscriptions": "Não foi possível carregar assinaturas Pax8 para esta organização."
       }
+    },
+    "tabs": {
+      "contracts": "Contratos",
+      "templates": "Modelos"
+    },
+    "templatesTab": {
+      "title": "Modelos de contrato",
+      "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
+      "newTemplate": "Novo modelo",
+      "includeArchived": "Mostrar arquivados",
+      "allOrgs": "Todas as orgs",
+      "ownerOrg": "Organização",
+      "noVersions": "Ainda sem versões",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Arquivar",
+      "loadError": "Falha ao carregar os modelos de contrato",
+      "createError": "Falha ao criar o modelo",
+      "created": "Modelo criado",
+      "archiveError": "Falha ao arquivar o modelo",
+      "archiveSuccess": "Modelo arquivado",
+      "columns": {
+        "name": "Nome",
+        "owner": "Proprietário",
+        "status": "Status",
+        "latestVersion": "Última versão"
+      },
+      "status": {
+        "active": "Ativo",
+        "archived": "Arquivado"
+      },
+      "empty": {
+        "title": "Ainda não há modelos",
+        "description": "Crie seu primeiro modelo de contrato para começar."
+      },
+      "createDialog": {
+        "title": "Novo modelo de contrato",
+        "name": "Nome",
+        "namePlaceholder": "ex. Contrato mestre de serviços",
+        "description": "Descrição",
+        "descriptionPlaceholder": "Resumo opcional deste modelo",
+        "scope": "Propriedade",
+        "allOrganizations": "Todas as organizações",
+        "partnerWide": "Modelo para todo o parceiro",
+        "thisOrgOnly": "Apenas esta organização",
+        "organization": "Organização",
+        "selectOrg": "Selecione uma organização",
+        "orgRequired": "Selecione uma organização para um modelo de propriedade da organização.",
+        "nameRequired": "Informe um nome de modelo.",
+        "cancel": "Cancelar",
+        "create": "Criar modelo",
+        "creating": "Criando…"
+      }
+    },
+    "templateEditor": {
+      "back": "Voltar",
+      "loadError": "Falha ao carregar o modelo",
+      "newVersion": "Nova versão",
+      "uploadPdf": "Enviar PDF",
+      "versions": "Versões",
+      "noVersions": "Ainda sem versões",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Rascunho",
+        "published": "Publicada"
+      },
+      "sourceType": {
+        "authored": "Redigida",
+        "uploaded": "PDF enviado"
+      },
+      "publish": "Publicar",
+      "body": "Corpo",
+      "bodyAria": "Corpo do modelo de contrato",
+      "preview": "Pré-visualização",
+      "edit": "Editar",
+      "saveDraft": "Salvar rascunho",
+      "saving": "Salvando…",
+      "emptyBody": "Adicione algum conteúdo antes de salvar.",
+      "autoVariables": "Variáveis automáticas",
+      "manualVariables": "Variáveis manuais",
+      "noManualVariables": "Nenhuma detectada",
+      "archivedNotice": "Este modelo está arquivado. Novas versões não podem ser adicionadas.",
+      "saveError": "Falha ao salvar a versão de rascunho",
+      "saveSuccess": "Versão de rascunho salva",
+      "uploadError": "Falha ao enviar o PDF",
+      "uploadSuccess": "Versão PDF enviada",
+      "publishError": "Falha ao publicar a versão",
+      "publishSuccess": "Versão publicada"
     }
   },
   "quotes": {

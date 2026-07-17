@@ -296,6 +296,93 @@
       "errors": {
         "loadSubscriptions": "Pax8-Abonnements für diese Organisation konnten nicht geladen werden."
       }
+    },
+    "tabs": {
+      "contracts": "Verträge",
+      "templates": "Vorlagen"
+    },
+    "templatesTab": {
+      "title": "Vertragsvorlagen",
+      "description": "Wiederverwendbare Vertragsdokumente, die Sie an angenommene Angebote anhängen können.",
+      "newTemplate": "Neue Vorlage",
+      "includeArchived": "Archivierte anzeigen",
+      "allOrgs": "Alle Orgs",
+      "ownerOrg": "Organisation",
+      "noVersions": "Noch keine Versionen",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archivieren",
+      "loadError": "Vertragsvorlagen konnten nicht geladen werden",
+      "createError": "Vorlage konnte nicht erstellt werden",
+      "created": "Vorlage erstellt",
+      "archiveError": "Vorlage konnte nicht archiviert werden",
+      "archiveSuccess": "Vorlage archiviert",
+      "columns": {
+        "name": "Name",
+        "owner": "Eigentümer",
+        "status": "Status",
+        "latestVersion": "Neueste Version"
+      },
+      "status": {
+        "active": "Aktiv",
+        "archived": "Archiviert"
+      },
+      "empty": {
+        "title": "Noch keine Vorlagen",
+        "description": "Erstellen Sie Ihre erste Vertragsvorlage, um zu beginnen."
+      },
+      "createDialog": {
+        "title": "Neue Vertragsvorlage",
+        "name": "Name",
+        "namePlaceholder": "z. B. Rahmendienstleistungsvertrag",
+        "description": "Beschreibung",
+        "descriptionPlaceholder": "Optionale Zusammenfassung dieser Vorlage",
+        "scope": "Eigentum",
+        "allOrganizations": "Alle Organisationen",
+        "partnerWide": "Partnerweite Vorlage",
+        "thisOrgOnly": "Nur diese Organisation",
+        "organization": "Organisation",
+        "selectOrg": "Organisation auswählen",
+        "orgRequired": "Wählen Sie eine Organisation für eine organisationseigene Vorlage.",
+        "nameRequired": "Geben Sie einen Vorlagennamen ein.",
+        "cancel": "Abbrechen",
+        "create": "Vorlage erstellen",
+        "creating": "Wird erstellt…"
+      }
+    },
+    "templateEditor": {
+      "back": "Zurück",
+      "loadError": "Vorlage konnte nicht geladen werden",
+      "newVersion": "Neue Version",
+      "uploadPdf": "PDF hochladen",
+      "versions": "Versionen",
+      "noVersions": "Noch keine Versionen",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Entwurf",
+        "published": "Veröffentlicht"
+      },
+      "sourceType": {
+        "authored": "Verfasst",
+        "uploaded": "Hochgeladenes PDF"
+      },
+      "publish": "Veröffentlichen",
+      "body": "Inhalt",
+      "bodyAria": "Inhalt der Vertragsvorlage",
+      "preview": "Vorschau",
+      "edit": "Bearbeiten",
+      "saveDraft": "Entwurf speichern",
+      "saving": "Wird gespeichert…",
+      "emptyBody": "Fügen Sie Inhalt hinzu, bevor Sie speichern.",
+      "autoVariables": "Automatische Variablen",
+      "manualVariables": "Manuelle Variablen",
+      "noManualVariables": "Keine erkannt",
+      "archivedNotice": "Diese Vorlage ist archiviert. Es können keine neuen Versionen hinzugefügt werden.",
+      "saveError": "Entwurfsversion konnte nicht gespeichert werden",
+      "saveSuccess": "Entwurfsversion gespeichert",
+      "uploadError": "PDF konnte nicht hochgeladen werden",
+      "uploadSuccess": "PDF-Version hochgeladen",
+      "publishError": "Version konnte nicht veröffentlicht werden",
+      "publishSuccess": "Version veröffentlicht"
     }
   },
   "quotes": {

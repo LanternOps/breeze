@@ -296,6 +296,93 @@
       "errors": {
         "loadSubscriptions": "Impossible de charger les abonnements Pax8 de cette organisation."
       }
+    },
+    "tabs": {
+      "contracts": "Contrats",
+      "templates": "Modèles"
+    },
+    "templatesTab": {
+      "title": "Modèles de contrat",
+      "description": "Documents de contrat réutilisables à joindre aux devis acceptés.",
+      "newTemplate": "Nouveau modèle",
+      "includeArchived": "Afficher les archivés",
+      "allOrgs": "Toutes les org.",
+      "ownerOrg": "Organisation",
+      "noVersions": "Aucune version pour l’instant",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archiver",
+      "loadError": "Échec du chargement des modèles de contrat",
+      "createError": "Échec de la création du modèle",
+      "created": "Modèle créé",
+      "archiveError": "Échec de l’archivage du modèle",
+      "archiveSuccess": "Modèle archivé",
+      "columns": {
+        "name": "Nom",
+        "owner": "Propriétaire",
+        "status": "Statut",
+        "latestVersion": "Dernière version"
+      },
+      "status": {
+        "active": "Actif",
+        "archived": "Archivé"
+      },
+      "empty": {
+        "title": "Aucun modèle pour l’instant",
+        "description": "Créez votre premier modèle de contrat pour commencer."
+      },
+      "createDialog": {
+        "title": "Nouveau modèle de contrat",
+        "name": "Nom",
+        "namePlaceholder": "ex. Contrat-cadre de services",
+        "description": "Description",
+        "descriptionPlaceholder": "Résumé facultatif de ce modèle",
+        "scope": "Propriété",
+        "allOrganizations": "Toutes les organisations",
+        "partnerWide": "Modèle à l’échelle du partenaire",
+        "thisOrgOnly": "Cette organisation uniquement",
+        "organization": "Organisation",
+        "selectOrg": "Sélectionnez une organisation",
+        "orgRequired": "Sélectionnez une organisation pour un modèle appartenant à l’organisation.",
+        "nameRequired": "Saisissez un nom de modèle.",
+        "cancel": "Annuler",
+        "create": "Créer le modèle",
+        "creating": "Création…"
+      }
+    },
+    "templateEditor": {
+      "back": "Retour",
+      "loadError": "Échec du chargement du modèle",
+      "newVersion": "Nouvelle version",
+      "uploadPdf": "Importer un PDF",
+      "versions": "Versions",
+      "noVersions": "Aucune version pour l’instant",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Brouillon",
+        "published": "Publiée"
+      },
+      "sourceType": {
+        "authored": "Rédigée",
+        "uploaded": "PDF importé"
+      },
+      "publish": "Publier",
+      "body": "Corps",
+      "bodyAria": "Corps du modèle de contrat",
+      "preview": "Aperçu",
+      "edit": "Modifier",
+      "saveDraft": "Enregistrer le brouillon",
+      "saving": "Enregistrement…",
+      "emptyBody": "Ajoutez du contenu avant d’enregistrer.",
+      "autoVariables": "Variables automatiques",
+      "manualVariables": "Variables manuelles",
+      "noManualVariables": "Aucune détectée",
+      "archivedNotice": "Ce modèle est archivé. Aucune nouvelle version ne peut être ajoutée.",
+      "saveError": "Échec de l’enregistrement de la version brouillon",
+      "saveSuccess": "Version brouillon enregistrée",
+      "uploadError": "Échec de l’import du PDF",
+      "uploadSuccess": "Version PDF importée",
+      "publishError": "Échec de la publication de la version",
+      "publishSuccess": "Version publiée"
     }
   },
   "quotes": {

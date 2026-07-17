@@ -17,7 +17,9 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 43,
     'auth.json': 14,
     'backup.json': 51,
-    'billing.json': 38,
+    // +3: contract-template format strings + Portuguese cognate ("v{{number}} ·
+    // {{status}}", "v{{number}}", "Status") legitimately identical to English.
+    'billing.json': 41,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     'common.json': 90,
     'devices.json': 159,
@@ -41,7 +43,9 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 39,
     'auth.json': 14,
     'backup.json': 29,
-    'billing.json': 32,
+    // +2: contract-template format strings ("v{{number}} · {{status}}",
+    // "v{{number}}") that are legitimately identical to English in es-419.
+    'billing.json': 34,
     'common.json': 75,
     'devices.json': 115,
     'discovery.json': 17,
@@ -64,7 +68,10 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 58,
     'auth.json': 13,
     'backup.json': 58,
-    'billing.json': 38,
+    // +4: contract-template format strings + French cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "Description", "Versions") that are
+    // legitimately identical to English in fr-FR.
+    'billing.json': 42,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,
@@ -87,7 +94,10 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 46,
     'auth.json': 15,
     'backup.json': 62,
-    'billing.json': 26,
+    // +5: contract-template format strings + German cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "Name", "Status") that are legitimately
+    // identical to English in de-DE.
+    'billing.json': 31,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     'common.json': 91,
     'devices.json': 146,
