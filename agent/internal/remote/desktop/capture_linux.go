@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"sync"
@@ -47,7 +48,7 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 
 func mapResolveErr(err error) error {
 	switch {
-	case err == x11.ErrWaylandUnsupported:
+	case errors.Is(err, x11.ErrWaylandUnsupported):
 		return fmt.Errorf("%w: wayland session not supported", ErrNotSupported)
 	default:
 		return fmt.Errorf("%w: %v", ErrDisplayNotFound, err)
@@ -57,12 +58,11 @@ func mapResolveErr(err error) error {
 // Capture returns a full-screen frame as image.RGBA whose Pix is BGRX (see IsBGRA).
 func (c *linuxCapturer) Capture() (*image.RGBA, error) {
 	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-	if conn == nil {
+	defer c.mu.Unlock()
+	if c.conn == nil {
 		return nil, ErrNoActiveSession
 	}
-	pix, w, h, err := conn.CaptureBGRX()
+	pix, w, h, err := c.conn.CaptureBGRX()
 	if err != nil {
 		return nil, err
 	}
@@ -78,12 +78,11 @@ func (c *linuxCapturer) Capture() (*image.RGBA, error) {
 // CaptureRegion captures a specific region of the screen.
 func (c *linuxCapturer) CaptureRegion(x, y, width, height int) (*image.RGBA, error) {
 	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-	if conn == nil {
+	defer c.mu.Unlock()
+	if c.conn == nil {
 		return nil, ErrNoActiveSession
 	}
-	pix, err := conn.CaptureRegionBGRX(x, y, width, height)
+	pix, err := c.conn.CaptureRegionBGRX(x, y, width, height)
 	if err != nil {
 		return nil, err
 	}
