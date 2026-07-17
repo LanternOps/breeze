@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"time"
 
@@ -126,6 +127,16 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.CommandResult{
 			Status:     "failed",
 			Error:      err.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	// INTERIM (Phase 0): remote desktop capture is not implemented on Linux
+	// agents yet. Removed in Phase 1 when the X11 capturer lands.
+	if runtime.GOOS == "linux" {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "remote desktop is not yet supported on Linux agents",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
