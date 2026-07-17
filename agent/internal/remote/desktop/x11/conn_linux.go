@@ -5,6 +5,7 @@ package x11
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -127,7 +128,7 @@ func (c *Conn) initShm() {
 	// while other local users cannot read the framebuffer. Best-effort: if
 	// this fails (or ownerUID is unknown), shm.AttachChecked below fails
 	// cleanly and initShm falls back to the core-protocol capture path.
-	if c.ownerUID > 0 {
+	if c.ownerUID > 0 && c.ownerUID <= math.MaxUint32 {
 		var desc unix.SysvShmDesc
 		if _, serr := unix.SysvShmCtl(id, unix.IPC_STAT, &desc); serr == nil {
 			desc.Perm.Uid = uint32(c.ownerUID)
