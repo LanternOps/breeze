@@ -190,8 +190,18 @@ func (m *Manager) Apply(settings *Settings) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Snapshot install state BEFORE migrateFromLegacyName — on Linux (and
+	// old-name darwin/windows) it can delete the binary, and we must still
+	// finish uninstall cleanup exactly once for a legacy box upgrading with
+	// Assist disabled.
+	wasInstalled := m.isInstalled()
 	m.migrateFromLegacyName()
-	if m.needsSessionMigration() {
+	// Only run the one-time per-session migration when Assist is (or was)
+	// actually present. When the policy is off and nothing is installed,
+	// uninstallLocked() removes the sessions dir every tick — re-running the
+	// migration here would recreate it (and pkill stray helpers / rewrite
+	// autostart) in an endless migrate/uninstall thrash loop on every heartbeat.
+	if m.needsSessionMigration() && (settings.Enabled || wasInstalled) {
 		m.migrateToSessions()
 	}
 
