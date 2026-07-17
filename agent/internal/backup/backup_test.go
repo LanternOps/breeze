@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	pathpkg "path/filepath"
 	"strings"
 	"sync"
@@ -176,6 +177,127 @@ func TestRunBackupContextExternalCancel(t *testing.T) {
 	followUpCancel()
 	if _, err := mgr.RunBackupContext(followUpCtx, nil); err != nil && err.Error() == "backup already running" {
 		t.Fatal("jobRunning flag not cleared after cancelled run")
+	}
+}
+
+// TestRunBackupContext_StopPreservesRemotePrefixAndJournal exercises the
+// checkpoint journal through the full manager wiring (RunBackupContext
+// opens the real journal via GetStagingDir()+backupIdentity, not a
+// hand-built one): a stopped run must leave both the partial remote prefix
+// and the on-disk journal file in place.
+func TestRunBackupContext_StopPreservesRemotePrefixAndJournal(t *testing.T) {
+	backing := newMockProvider()
+	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
+	dir := t.TempDir()
+	createTempFile(t, dir, "a.txt", "one")
+	createTempFile(t, dir, "b.txt", "two")
+	stagingDir := t.TempDir()
+
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{dir}, StagingDir: stagingDir})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mgr.RunBackupContext(ctx, nil)
+		errCh <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the 2nd upload to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("backup did not unwind after cancel")
+	}
+
+	if len(backing.deleteCalls) != 0 {
+		t.Errorf("stop with an active journal must not clean up the partial remote prefix, deletes=%v", backing.deleteCalls)
+	}
+
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "backup-journal-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a checkpoint journal file to remain in the staging dir after a stopped run, entries=%v", entries)
+	}
+}
+
+// TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh proves
+// the full manager-level wiring for the stale-journal path: a journal older
+// than journalMaxAge is discarded, its remote prefix is best-effort cleaned
+// up, and the run proceeds fresh with a brand new snapshot ID.
+func TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh(t *testing.T) {
+	restoreMaxAge := setJournalMaxAgeForTest(time.Millisecond)
+	defer restoreMaxAge()
+
+	provider := newMockProvider()
+	stagingDir := t.TempDir()
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "data.txt", "hello")
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		StagingDir: stagingDir,
+	})
+
+	// Seed a journal for the exact identity RunBackupContext will compute,
+	// using a real (non-shrunk) maxAge so seeding it doesn't itself race the
+	// staleness check.
+	identity := backupIdentity(provider, []string{tmpDir})
+	staleJournal, _, err := openSnapshotJournal(stagingDir, identity, time.Hour)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := staleJournal.Record(SnapshotFile{SourcePath: "/gone.txt", Size: 1, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	staleSnapshotID := staleJournal.snapshotID
+	staleJournal.Abandon()
+
+	// Seed the "remote" with an object under the stale snapshot's prefix so
+	// cleanup has something observable to delete.
+	provider.files[path.Join(snapshotRootDir, staleSnapshotID, snapshotFilesDir, "orphan.gz")] = []byte("orphan")
+
+	time.Sleep(2 * time.Millisecond) // the journal is now older than the shrunk maxAge
+
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil {
+		t.Fatal("expected a completed snapshot")
+	}
+	if job.Snapshot.ID == staleSnapshotID {
+		t.Fatal("a stale journal must never resume the old snapshot ID")
+	}
+
+	found := false
+	for _, key := range provider.deleteCalls {
+		if strings.Contains(key, staleSnapshotID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the stale snapshot's remote prefix to be cleaned up, deletes=%v", provider.deleteCalls)
 	}
 }
 

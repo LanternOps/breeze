@@ -42,6 +42,13 @@ func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken st
 	return NewS3ProviderWithEndpoint(bucket, region, "", accessKeyID, secretAccessKey, sessionToken)
 }
 
+// BackupIdentity implements JournalIdentity. The endpoint is included
+// because a custom endpoint means an S3-compatible-but-different backend
+// (MinIO, Backblaze's S3 API, ...) even when bucket+region happen to match.
+func (s *S3Provider) BackupIdentity() string {
+	return fmt.Sprintf("s3|%s|%s|%s", s.endpoint, s.Region, s.Bucket)
+}
+
 // SetServerSideEncryption requires S3 server-side encryption on future uploads.
 func (s *S3Provider) SetServerSideEncryption(algorithm, kmsKeyID string) {
 	s.sseAlgorithm = algorithm

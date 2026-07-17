@@ -35,6 +35,11 @@ func NewGCSProvider(bucketName string, credentialsJSON []byte) (*GCSProvider, er
 	}, nil
 }
 
+// BackupIdentity implements JournalIdentity.
+func (g *GCSProvider) BackupIdentity() string {
+	return fmt.Sprintf("gcs|%s", g.bucketName)
+}
+
 // Upload sends a local file to Google Cloud Storage.
 func (g *GCSProvider) Upload(localPath, remotePath string) error {
 	return g.UploadContext(context.Background(), localPath, remotePath)

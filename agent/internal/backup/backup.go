@@ -367,7 +367,37 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		progressFn(0, len(files), 0, bytesTotal)
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn)
+	// Checkpoint journal: keyed by destination identity (provider kind +
+	// endpoint/bucket/path + the *configured* source paths — never the
+	// VSS-rewritten or system-state-staging paths in backupPaths, which are
+	// ephemeral per run and would defeat identity matching across runs).
+	// journalDir falls back to the OS temp dir when no staging dir is
+	// configured, same as every other staging fallback in this package.
+	journalDir := m.GetStagingDir()
+	if journalDir == "" {
+		journalDir = os.TempDir()
+	}
+	journal, resumedJournal, journalErr := openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+	if journalErr != nil {
+		// A journal is a best-effort checkpoint, never a correctness
+		// requirement: degrade to a journal-less run rather than failing
+		// the backup over it.
+		log.Printf("[backup] failed to open checkpoint journal, proceeding without resume support: %v", journalErr)
+		journal = nil
+	}
+	if journal != nil {
+		if staleID, ok := journal.StaleSnapshotID(); ok {
+			log.Printf("[backup] discarding checkpoint journal older than %s (snapshot %s), cleaning up its remote prefix",
+				journalMaxAge, staleID)
+			cleanupSnapshotPrefix(m.config.Provider, staleID)
+		}
+		if resumedJournal {
+			log.Printf("[backup] resuming interrupted backup: journal snapshot %s (%d bytes already uploaded)",
+				journal.snapshotID, journal.ResumedBytes())
+		}
+	}
+
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}

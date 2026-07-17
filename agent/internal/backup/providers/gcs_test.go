@@ -8,6 +8,21 @@ import (
 var _ BackupProvider = (*GCSProvider)(nil)
 var _ StreamUploader = (*GCSProvider)(nil)
 var _ MetadataReader = (*GCSProvider)(nil)
+var _ JournalIdentity = (*GCSProvider)(nil)
+
+func TestGCSProvider_BackupIdentity(t *testing.T) {
+	a, err := NewGCSProvider("bucket-a", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b, err := NewGCSProvider("bucket-b", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.BackupIdentity() == b.BackupIdentity() {
+		t.Fatal("different buckets must produce different identities")
+	}
+}
 
 func TestNewGCSProvider_EmptyBucket(t *testing.T) {
 	_, err := NewGCSProvider("", nil)

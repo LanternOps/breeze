@@ -158,9 +158,11 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 }
 
 // CreateSnapshotContext creates a new snapshot using the provided context.
-// It does not report progress; see createSnapshotWithProgress for that.
+// It does not report progress and does not checkpoint to a journal (no
+// manager/destination-identity context to key one by); see
+// createSnapshotWithProgress for both.
 func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
-	return createSnapshotWithProgress(ctx, provider, files, nil)
+	return createSnapshotWithProgress(ctx, provider, files, nil, nil)
 }
 
 // createSnapshotWithProgress creates a new snapshot using the provided
@@ -168,10 +170,40 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 // throttled to at most once per progressThrottle interval, except for a
 // final unconditional call after the last file so the server always learns
 // the true end state even if the throttle window swallowed the last delta.
-func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn) (*Snapshot, error) {
+//
+// journal, if non-nil, is this run's checkpoint (see journal.go):
+//   - Its snapshotID (fresh or resumed) becomes this snapshot's ID.
+//   - Each walked file matching a journal entry on (sourcePath, size,
+//     modTime) is treated as already uploaded — skipped, but still carried
+//     into this run's manifest — with filesDone/bytesDone pre-seeded from
+//     the matched set before the loop starts, so the very first progress
+//     emission reflects the resume instead of a slow trickle of
+//     skip-iterations.
+//   - Every freshly uploaded file is appended to the journal as it lands.
+//   - On a full success (manifest uploaded), the journal is completed
+//     (closed + removed) — the checkpoint is no longer needed. On every
+//     other exit — stopped, per-file exhaustion, manifest failure — the
+//     journal is merely abandoned (closed, left on disk): the partial
+//     remote prefix plus the journal together ARE the resume state for the
+//     next run, so cleanupSnapshotPrefix is skipped for all of them.
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Register the journal's fd cleanup before any other return path so
+	// every exit — including the validation errors just below — closes it.
+	// completed flips true only after a successful journal.Complete(); every
+	// other path falls through to Abandon (close, keep the file).
+	completed := false
+	if journal != nil {
+		defer func() {
+			if !completed {
+				journal.Abandon()
+			}
+		}()
+	}
+
 	if provider == nil {
 		return nil, errors.New("backup provider is required")
 	}
@@ -179,8 +211,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return nil, errors.New("no files provided for snapshot")
 	}
 
+	snapshotID := newSnapshotID()
+	if journal != nil {
+		snapshotID = journal.snapshotID
+	}
 	snapshot := &Snapshot{
-		ID:        newSnapshotID(),
+		ID:        snapshotID,
 		Timestamp: time.Now().UTC(),
 	}
 
@@ -206,10 +242,47 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
 	}
 
+	// Resume matching: build the full matched set up front (rather than
+	// deciding file-by-file inside the loop below) so filesDone/bytesDone
+	// can be pre-seeded with the resumed totals and reported in one jump
+	// before any real upload work happens.
+	resumedFiles := make(map[string]SnapshotFile)
+	if journal != nil {
+		for _, file := range files {
+			if entry, ok := journal.Lookup(file.sourcePath, file.size, file.modTime); ok {
+				resumedFiles[file.sourcePath] = entry
+				filesDone++
+				bytesDone += entry.Size
+			}
+		}
+		if len(resumedFiles) > 0 {
+			log.Printf("[backup] resuming snapshot %s: %d file(s) / %d bytes already uploaded in a prior run",
+				snapshot.ID, len(resumedFiles), bytesDone)
+			emitProgress(true)
+		}
+	}
+
+	// abortStopped is the single exit point for every errBackupStopped
+	// return. See the journal parameter doc above for why cleanup is
+	// conditional on journal == nil.
+	abortStopped := func() (*Snapshot, error) {
+		if journal == nil {
+			cleanupSnapshotPrefix(provider, snapshot.ID)
+		}
+		return nil, errBackupStopped
+	}
+
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
-			cleanupSnapshotPrefix(provider, snapshot.ID)
-			return nil, errBackupStopped
+			return abortStopped()
+		}
+		if entry, ok := resumedFiles[file.sourcePath]; ok {
+			// Already uploaded in a prior (interrupted) run with identical
+			// (size, modTime) — filesDone/bytesDone already reflect this
+			// file via the pre-loop seed above; do not double count.
+			snapshot.Files = append(snapshot.Files, entry)
+			snapshot.Size += entry.Size
+			continue
 		}
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
@@ -229,8 +302,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		if uploadErr != nil {
 			if errors.Is(uploadErr, errBackupStopped) {
-				cleanupSnapshotPrefix(provider, snapshot.ID)
-				return nil, errBackupStopped
+				return abortStopped()
 			}
 			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
 			errs = append(errs, err)
@@ -256,18 +328,25 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			log.Printf("[backup] checksum failed for %s: %v", file.sourcePath, sumErr)
 		}
 
-		snapshot.Files = append(snapshot.Files, SnapshotFile{
+		entry := SnapshotFile{
 			SourcePath: file.sourcePath,
 			BackupPath: backupPath,
 			Size:       file.size,
 			ModTime:    file.modTime,
 			Checksum:   checksum,
 			Mode:       uint32(file.mode.Perm()),
-		})
+		}
+		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += file.size
 		filesDone++
 		bytesDone += file.size
 		emitProgress(false)
+		if journal != nil {
+			// Record logs and swallows its own write failures — a dead
+			// journal degrades resume for next time, it never fails this
+			// backup, whose file upload already succeeded.
+			_ = journal.Record(entry)
+		}
 	}
 	// Unconditional final call: guarantees the server observes the true end
 	// state even if the last file(s) landed inside the throttle window and
@@ -279,8 +358,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	if err := ctx.Err(); err != nil {
-		cleanupSnapshotPrefix(provider, snapshot.ID)
-		return nil, errBackupStopped
+		return abortStopped()
 	}
 
 	manifestPath, manifestErr := writeSnapshotManifest(snapshot)
@@ -303,10 +381,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// A manifest-upload deadline expiry is fatal for the snapshot too
 			// (unlike a per-file data upload): without the manifest the
 			// snapshot isn't restorable, so there's nothing to keep going for.
-			cleanupSnapshotPrefix(provider, snapshot.ID)
-			return nil, errBackupStopped
+			return abortStopped()
 		}
 		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
+	}
+
+	if journal != nil {
+		if err := journal.Complete(); err != nil {
+			log.Printf("[backup] failed to remove completed checkpoint journal: %v", err)
+		}
+		completed = true
 	}
 
 	return snapshot, nil
@@ -533,6 +617,27 @@ func writeSnapshotManifest(snapshot *Snapshot) (string, error) {
 		return "", fmt.Errorf("failed to close snapshot manifest: %w", err)
 	}
 	return tempFile.Name(), nil
+}
+
+// backupIdentity returns the material used to derive a checkpoint journal's
+// identity (see journal.go) for a given provider + backup path set: enough
+// to distinguish two different destinations — so a journal from one
+// destination is never mistaken for another's after a reconfiguration —
+// without encoding credentials. Concrete providers optionally implement
+// providers.JournalIdentity to supply their own kind/endpoint/bucket
+// material; providers that don't (test fakes) fall back to a generic
+// per-Go-type identity, which is still stable within a single provider
+// instance and only risks a false-positive resume match across two
+// same-Go-type fake providers in a test — never in production, where every
+// real provider implements JournalIdentity.
+func backupIdentity(provider providers.BackupProvider, paths []string) string {
+	material := fmt.Sprintf("%T", provider)
+	if idp, ok := provider.(providers.JournalIdentity); ok {
+		material = idp.BackupIdentity()
+	}
+	sortedPaths := append([]string(nil), paths...)
+	sort.Strings(sortedPaths)
+	return material + "|" + strings.Join(sortedPaths, ",")
 }
 
 func newSnapshotID() string {

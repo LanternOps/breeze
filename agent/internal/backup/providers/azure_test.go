@@ -8,6 +8,29 @@ import (
 var _ BackupProvider = (*AzureProvider)(nil)
 var _ StreamUploader = (*AzureProvider)(nil)
 var _ MetadataReader = (*AzureProvider)(nil)
+var _ JournalIdentity = (*AzureProvider)(nil)
+
+func TestAzureProvider_BackupIdentity(t *testing.T) {
+	a, err := NewAzureProvider("account-a", "key", "container")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b, err := NewAzureProvider("account-a", "key", "container-b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.BackupIdentity() == b.BackupIdentity() {
+		t.Fatal("different containers must produce different identities")
+	}
+
+	same, err := NewAzureProvider("account-a", "different-key", "container")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.BackupIdentity() != same.BackupIdentity() {
+		t.Error("identity must not depend on the account key (credential material)")
+	}
+}
 
 func TestNewAzureProvider_EmptyAccountName(t *testing.T) {
 	_, err := NewAzureProvider("", "key", "container")

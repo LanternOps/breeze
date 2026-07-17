@@ -6,6 +6,21 @@ import (
 
 // Compile-time interface compliance check.
 var _ BackupProvider = (*B2Provider)(nil)
+var _ JournalIdentity = (*B2Provider)(nil)
+
+func TestB2Provider_BackupIdentity(t *testing.T) {
+	a, err := NewB2Provider("key-a", "app", "bucket-a")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b, err := NewB2Provider("key-a", "app", "bucket-b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.BackupIdentity() == b.BackupIdentity() {
+		t.Fatal("different buckets must produce different identities")
+	}
+}
 
 func TestNewB2Provider_EmptyKeyID(t *testing.T) {
 	_, err := NewB2Provider("", "appkey", "bucket")

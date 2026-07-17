@@ -41,6 +41,11 @@ func NewB2Provider(keyID, appKey, bucketName string) (*B2Provider, error) {
 	}, nil
 }
 
+// BackupIdentity implements JournalIdentity.
+func (p *B2Provider) BackupIdentity() string {
+	return fmt.Sprintf("b2|%s", p.bucketName)
+}
+
 // Upload sends a local file to Backblaze B2.
 func (p *B2Provider) Upload(localPath, remotePath string) error {
 	return p.UploadContext(context.Background(), localPath, remotePath)

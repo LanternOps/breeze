@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // mockProvider implements providers.BackupProvider for testing.
@@ -339,7 +341,7 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64) { got = append(got, bd) })
+		func(fd, ft int, bd, bt int64) { got = append(got, bd) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,6 +604,336 @@ func TestCreateSnapshot_PreservesFileMetadata(t *testing.T) {
 	}
 }
 
+// blockAfterNProvider wraps a mockProvider: the first n UploadContext calls
+// delegate straight to the backing provider (so their bytes actually land
+// and its uploadCalls/files/deleteCalls stay observable), and the (n+1)th
+// call blocks until ctx.Done(), signalling `started` once it begins
+// blocking so a test can cancel deterministically mid-run instead of racing
+// a real stall. Models "upload N of M files, then get interrupted."
+type blockAfterNProvider struct {
+	backing *mockProvider
+	n       int
+
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	once    sync.Once
+}
+
+func newBlockAfterNProvider(backing *mockProvider, n int) *blockAfterNProvider {
+	return &blockAfterNProvider{backing: backing, n: n, started: make(chan struct{})}
+}
+
+func (p *blockAfterNProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *blockAfterNProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.mu.Lock()
+	call := p.calls
+	p.calls++
+	p.mu.Unlock()
+
+	if call < p.n {
+		return p.backing.Upload(localPath, remotePath)
+	}
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *blockAfterNProvider) Download(remotePath, localPath string) error {
+	return p.backing.Download(remotePath, localPath)
+}
+func (p *blockAfterNProvider) List(prefix string) ([]string, error) { return p.backing.List(prefix) }
+func (p *blockAfterNProvider) Delete(remotePath string) error       { return p.backing.Delete(remotePath) }
+
+// TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix pins down
+// the OLD stop semantics for the journal==nil case (bare CreateSnapshot/
+// CreateSnapshotContext callers, which never pass a journal): a stopped run
+// still cleans up its partial remote prefix, exactly as before this task.
+func TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix(t *testing.T) {
+	backing := newMockProvider()
+	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 1},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil)
+		errCh <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the 2nd upload to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not unwind after cancel")
+	}
+
+	if len(backing.deleteCalls) == 0 {
+		t.Fatal("without a journal, a stopped run must still clean up its partial remote prefix (old semantics)")
+	}
+}
+
+// TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal
+// proves the NEW stop semantics: with an active journal, a stopped run
+// leaves the partial remote prefix AND the journal in place — together they
+// are the resume state for the next run.
+func TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal(t *testing.T) {
+	backing := newMockProvider()
+	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 1},
+	}
+
+	journalDir := t.TempDir()
+	journal, resumed, err := openSnapshotJournal(journalDir, "test-stop-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if resumed {
+		t.Fatal("a fresh journal should not resume")
+	}
+	journalPath := journal.path
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal)
+		errCh <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the 2nd upload to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not unwind after cancel")
+	}
+
+	if len(backing.deleteCalls) != 0 {
+		t.Fatalf("a journal-active stop must NOT clean up the partial remote prefix, but got deletes: %v", backing.deleteCalls)
+	}
+	if _, err := os.Stat(journalPath); err != nil {
+		t.Fatalf("expected the journal file to remain on disk after a stopped run, stat err = %v", err)
+	}
+
+	// Reopening resumes with the one file that succeeded before the stop.
+	j2, resumed2, err := openSnapshotJournal(journalDir, "test-stop-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	if !resumed2 {
+		t.Fatal("expected the abandoned journal to resume on reopen")
+	}
+	if _, ok := j2.Lookup(files[0].sourcePath, files[0].size, files[0].modTime); !ok {
+		t.Error("expected the file uploaded before stop to be recorded in the journal")
+	}
+	j2.Abandon()
+}
+
+// TestCreateSnapshotWithProgress_ResumeAfterInterruption is the resume
+// integration test: run 1 uploads 2 of 4 files before being interrupted
+// (journal retained); run 2 resumes from the same journal and must upload
+// exactly the 2 missing files, produce a manifest listing all 4, and reuse
+// run 1's snapshot ID.
+func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
+	backing := newMockProvider()
+	provider := newBlockAfterNProvider(backing, 2) // 1st 2 files succeed, 3rd blocks
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	files := []backupFile{
+		{sourcePath: createTempFile(t, tmpDir, "f1.txt", "one"), snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime},
+		{sourcePath: createTempFile(t, tmpDir, "f2.txt", "two"), snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
+		{sourcePath: createTempFile(t, tmpDir, "f3.txt", "three"), snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
+		{sourcePath: createTempFile(t, tmpDir, "f4.txt", "four!"), snapshotPath: "path_0/f4.txt", size: 5, modTime: modTime},
+	}
+
+	journalDir := t.TempDir()
+	identity := "test-resume-identity"
+	journal1, resumed1, err := openSnapshotJournal(journalDir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if resumed1 {
+		t.Fatal("run 1 should not resume (no prior journal)")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal1)
+		errCh <- err
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the 3rd upload to start")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped from run 1, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run 1 did not unwind after cancel")
+	}
+
+	if len(backing.uploadCalls) != 2 {
+		t.Fatalf("expected exactly 2 uploads to have landed before interruption, got %d: %v", len(backing.uploadCalls), backing.uploadCalls)
+	}
+
+	// Run 2: reopen the journal for the same identity/dir — must resume.
+	journal2, resumed2, err := openSnapshotJournal(journalDir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	if !resumed2 {
+		t.Fatal("run 2 should resume from run 1's journal")
+	}
+	if journal2.snapshotID != journal1.snapshotID {
+		t.Fatalf("resumed snapshot ID = %q, want %q (same as run 1)", journal2.snapshotID, journal1.snapshotID)
+	}
+
+	// A fresh provider standing in for "the same remote store, run 2's
+	// perspective" so its uploadCalls exactly capture what run 2 does.
+	// Seeded with what run 1 actually wrote so the resumed objects are
+	// still really there, mirroring the real (shared) remote destination.
+	recording := newMockProvider()
+	for k, v := range backing.files {
+		recording.files[k] = v
+	}
+
+	snapshot2, err := createSnapshotWithProgress(context.Background(), recording, files, nil, journal2)
+	if err != nil {
+		t.Fatalf("run 2 failed: %v", err)
+	}
+	if snapshot2.ID != journal1.snapshotID {
+		t.Fatalf("run 2 snapshot ID = %q, want %q (resumed)", snapshot2.ID, journal1.snapshotID)
+	}
+	if len(snapshot2.Files) != 4 {
+		t.Fatalf("expected all 4 files in the final manifest, got %d", len(snapshot2.Files))
+	}
+
+	// Exactly the 2 missing files were newly uploaded in run 2 (plus the
+	// manifest) — f1/f2 were resumed from the journal and skipped.
+	if len(recording.uploadCalls) != 3 {
+		t.Fatalf("expected exactly 3 new uploads in run 2 (2 missing files + manifest), got %d: %v",
+			len(recording.uploadCalls), recording.uploadCalls)
+	}
+	uploadedBases := map[string]bool{}
+	for _, c := range recording.uploadCalls {
+		uploadedBases[pathpkg.Base(c.localPath)] = true
+	}
+	if uploadedBases["f1.txt"] || uploadedBases["f2.txt"] {
+		t.Errorf("f1/f2 should have been resumed, not re-uploaded: %v", recording.uploadCalls)
+	}
+	if !uploadedBases["f3.txt"] || !uploadedBases["f4.txt"] {
+		t.Errorf("f3/f4 should have been uploaded in run 2: %v", recording.uploadCalls)
+	}
+
+	// Success: the journal is gone.
+	if _, err := os.Stat(journal1.path); !os.IsNotExist(err) {
+		t.Fatalf("expected the journal to be removed after run 2 completes successfully, stat err = %v", err)
+	}
+}
+
+// TestCreateSnapshotWithProgress_ChangedFileReuploadsAndSupersedes covers
+// the resume-match rule's negative case: a file present in the journal but
+// whose (size, modTime) changed since is treated as a miss — re-uploaded,
+// not skipped — and its new entry supersedes the old one.
+func TestCreateSnapshotWithProgress_ChangedFileReuploadsAndSupersedes(t *testing.T) {
+	provider := newMockProvider()
+	tmpDir := t.TempDir()
+	oldModTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newModTime := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-changed-file", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := journal.Record(SnapshotFile{
+		SourcePath: pathpkg.Join(tmpDir, "changed.txt"), Size: 3, ModTime: oldModTime, Checksum: "stale",
+	}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	// The actual file on disk now has a different size/modTime than what
+	// the journal recorded — simulating a file that changed between runs.
+	changedPath := createTempFile(t, tmpDir, "changed.txt", "new content")
+	files := []backupFile{
+		{sourcePath: changedPath, snapshotPath: "path_0/changed.txt", size: int64(len("new content")), modTime: newModTime},
+	}
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal)
+	if err != nil {
+		t.Fatalf("createSnapshotWithProgress failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	if snapshot.Files[0].Checksum == "stale" {
+		t.Error("changed file should have been re-uploaded (fresh checksum), not resumed from the stale journal entry")
+	}
+	if len(provider.uploadCalls) != 2 { // data file + manifest
+		t.Fatalf("expected the changed file to actually re-upload, got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
+	}
+}
+
+// TestCreateSnapshotWithProgress_JournalRecordFailureDoesNotFailBackup
+// proves that a journal write failure degrades to a journal-less checkpoint
+// for the rest of the run rather than failing the backup — the upload
+// itself already succeeded.
+func TestCreateSnapshotWithProgress_JournalRecordFailureDoesNotFailBackup(t *testing.T) {
+	provider := newMockProvider()
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+	}
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-broken-journal", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	// Simulate a mid-run disk/permission failure: close the underlying file
+	// out from under the journal so every subsequent Record fails to write.
+	if err := journal.file.Close(); err != nil {
+		t.Fatalf("test setup: failed to close journal file: %v", err)
+	}
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal)
+	if err != nil {
+		t.Fatalf("a broken journal must not fail the backup, got: %v", err)
+	}
+	if snapshot == nil || len(snapshot.Files) != 1 {
+		t.Fatalf("expected the file to still be backed up despite the journal failure, snapshot=%+v", snapshot)
+	}
+}
+
 func TestEnsureGzipExtension(t *testing.T) {
 	tests := []struct {
 		input string
@@ -683,6 +1015,35 @@ func TestWriteSnapshotManifest(t *testing.T) {
 	}
 	if decoded.Size != 100 {
 		t.Errorf("Size = %d, want 100", decoded.Size)
+	}
+}
+
+func TestBackupIdentity_DistinguishesDestinations(t *testing.T) {
+	providerA := &mockProvider{} // no JournalIdentity — generic per-type fallback
+	if got, want := backupIdentity(providerA, []string{"/data"}), "*backup.mockProvider|/data"; got != want {
+		t.Errorf("backupIdentity = %q, want %q", got, want)
+	}
+
+	// Different configured paths must yield a different identity.
+	idA := backupIdentity(providerA, []string{"/data"})
+	idB := backupIdentity(providerA, []string{"/other"})
+	if idA == idB {
+		t.Error("different paths must produce different identities")
+	}
+
+	// Path order must not matter (sorted before hashing/joining).
+	idSortedFirst := backupIdentity(providerA, []string{"/a", "/b"})
+	idSortedSecond := backupIdentity(providerA, []string{"/b", "/a"})
+	if idSortedFirst != idSortedSecond {
+		t.Error("path order should not affect identity")
+	}
+
+	// A provider implementing JournalIdentity uses its own material instead
+	// of the generic per-type fallback.
+	local := providers.NewLocalProvider("/tmp/dest-a")
+	otherLocal := providers.NewLocalProvider("/tmp/dest-b")
+	if backupIdentity(local, []string{"/data"}) == backupIdentity(otherLocal, []string{"/data"}) {
+		t.Error("two LocalProviders with different base paths must produce different identities")
 	}
 }
 
