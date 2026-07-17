@@ -75,6 +75,18 @@ describe('DocumentsTab — unattached executed documents', () => {
     await waitFor(() => expect(screen.getByTestId('contract-documents-empty')).toBeInTheDocument());
   });
 
+  it('surfaces an error (not an empty "no contracts") when the contract fetch fails', async () => {
+    contractsApi.listContracts.mockResolvedValue(resp({ error: 'boom' }, 500));
+    render(<DocumentsTab />);
+    const rows = await screen.findAllByTestId('contract-document-unattached-row');
+    fireEvent.click(within(rows[0]).getByTestId('contract-document-link-open'));
+
+    await screen.findByTestId('contract-document-link-dialog');
+    // The failure renders the link-error, never the misleading "No contracts" copy.
+    await screen.findByTestId('contract-document-link-error');
+    expect(screen.queryByText(/No contracts found/i)).not.toBeInTheDocument();
+  });
+
   it('links a document to a contract and reloads the list', async () => {
     render(<DocumentsTab />);
     const rows = await screen.findAllByTestId('contract-document-unattached-row');

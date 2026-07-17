@@ -74,10 +74,19 @@ function parseContractBlockContent(content: unknown): ContractBlockContent | nul
 /** Resolve every contract block's pinned version content. MUST be called OUTSIDE
  * any org-scoped transaction: runs under withSystemDbAccessContext because
  * partner-owned template rows are invisible to org-scoped RLS contexts (portal!).
- * Version content is immutable, so read-before-transaction is safe. */
+ * Version content is immutable, so read-before-transaction is safe.
+ *
+ * `includeFileData` (default false): an uploaded version's `file_data` bytea can
+ * be up to 10MB, and the common paths (quote view/send-gate/preview) never touch
+ * it — only the merge/stream/snapshot paths do. Leave it out of the SELECT by
+ * default so a plain quote view doesn't round-trip a multi-MB blob per contract
+ * block; pass true on the PDF-merge, contract-file-stream, and accept-snapshot
+ * paths that actually read the bytes. */
 export async function loadContractBlockRenderData(
-  blocks: Array<{ id: string; blockType: string; content: unknown }>
+  blocks: Array<{ id: string; blockType: string; content: unknown }>,
+  opts?: { includeFileData?: boolean }
 ): Promise<ContractBlockRenderData[]> {
+  const includeFileData = opts?.includeFileData ?? false;
   const contractBlocks = blocks
     .filter((b) => b.blockType === 'contract')
     .map((block) => ({ block, parsed: parseContractBlockContent(block.content) }))
@@ -94,8 +103,20 @@ export async function loadContractBlockRenderData(
   // no-ops onto an already-open store — see db/index.ts).
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
+      // Explicit column set (never the up-to-10MB file_data unless asked) — a
+      // quote view resolves N contract versions and must not drag their blobs.
+      const versionColumns = {
+        id: contractTemplateVersions.id,
+        templateId: contractTemplateVersions.templateId,
+        sourceType: contractTemplateVersions.sourceType,
+        bodyHtml: contractTemplateVersions.bodyHtml,
+        sha256: contractTemplateVersions.sha256,
+        declaredVariables: contractTemplateVersions.declaredVariables,
+        versionNumber: contractTemplateVersions.versionNumber,
+        ...(includeFileData ? { fileData: contractTemplateVersions.fileData } : {}),
+      };
       const versions = await db
-        .select()
+        .select(versionColumns)
         .from(contractTemplateVersions)
         .where(inArray(contractTemplateVersions.id, versionIds));
       const versionById = new Map(versions.map((v) => [v.id, v]));
@@ -118,13 +139,18 @@ export async function loadContractBlockRenderData(
           );
         }
         const template = templateById.get(version.templateId);
+        // fileData is only present on the row when includeFileData selected it.
+        const fileData =
+          includeFileData && version.sourceType === 'uploaded'
+            ? ((version as { fileData?: Buffer | null }).fileData ?? null)
+            : null;
         result.push({
           blockId: block.id,
           templateId: version.templateId,
           templateVersionId: version.id,
           sourceType: version.sourceType,
           bodyHtml: version.sourceType === 'authored' ? sanitizeRichTextHtml(version.bodyHtml ?? '') : null,
-          fileData: version.sourceType === 'uploaded' ? (version.fileData ?? null) : null,
+          fileData,
           versionSha256: version.sha256 ?? '',
           declaredVariables: (version.declaredVariables as ContractVariable[] | null) ?? [],
           templateName: template?.name ?? '',
@@ -250,7 +276,7 @@ function formatAddressLine(addr: BillToAddress | null | undefined): string {
 /** Resolve every AUTO_CONTRACT_VARIABLES entry from a quote row. Money is
  *  formatted via quotePdf's formatMoney (same helper the quote PDF's own
  *  summary uses) so a contract's totals never drift from the proposal's. */
-export function resolveAutoVariables(quote: QuoteRow, opts?: { effectiveDate?: string }): Record<string, string> {
+export function resolveAutoVariables(quote: QuoteRow, opts?: { effectiveDate?: string | Date }): Record<string, string> {
   const currency = quote.currencyCode ?? 'USD';
   const address = (quote.billToAddress as BillToAddress | null) ?? null;
   const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
@@ -268,6 +294,17 @@ export function resolveAutoVariables(quote: QuoteRow, opts?: { effectiveDate?: s
     'dates.effective': formatDate(opts?.effectiveDate ?? new Date()),
     'dates.expiry': formatDate(quote.expiryDate),
   };
+}
+
+/** The {{dates.effective}} value a DISPLAY render should use for a quote: for an
+ *  accepted/converted quote the effective date is pinned to the accept date (so
+ *  a post-acceptance view matches the executed snapshot instead of drifting to
+ *  the viewing date); an un-accepted quote defaults to "today". */
+function displayEffectiveDate(quote: QuoteRow): Date | undefined {
+  if ((quote.status === 'accepted' || quote.status === 'converted') && quote.acceptedAt) {
+    return quote.acceptedAt;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +399,7 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
   const renderData = await loadContractBlockRenderData(blocks);
   if (renderData.length === 0) return blocks;
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote);
+  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote) });
 
   return blocks.map((block) => {
     const data = byBlockId.get(block.id);
@@ -382,7 +419,7 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
     if (data.sourceType === 'authored') {
       const values = { ...autoValues, ...manualValues };
       const first = substituteVariables(data.bodyHtml ?? '', values);
-      renderedHtml = first.html;
+      let html = first.html;
       if (first.missing.length > 0) {
         // The send gate (findUnresolvedVariables, Task 12) is supposed to block
         // send while any declared variable is unresolved — this should be
@@ -395,8 +432,14 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
           missing: first.missing,
         });
         const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
-        renderedHtml = substituteVariables(renderedHtml, blanks).html;
+        html = substituteVariables(html, blanks).html;
       }
+      // Re-sanitize the FINAL substituted HTML before serving: a value
+      // substituted into an href (`<a href="{{link}}">`) is HTML-escaped but not
+      // scheme-checked, so a `javascript:` value would otherwise survive as a
+      // live hostile link on the public/portal/admin dangerouslySetInnerHTML
+      // paths. The write-time sanitize ran BEFORE the variable was in the attribute.
+      renderedHtml = sanitizeRichTextHtml(html);
     }
 
     const content: ContractClientBlockContent = {
@@ -440,11 +483,13 @@ export async function loadContractPdfInputs(
   const contractRenderData = new Map<string, ContractPdfBlockData>();
   const uploads: Array<{ afterMarker: string; data: Buffer }> = [];
 
-  const renderData = await loadContractBlockRenderData(blocks);
+  // includeFileData: this path appends uploaded contract PDFs into the merged
+  // document, so it needs the actual bytes (unlike the client view path).
+  const renderData = await loadContractBlockRenderData(blocks, { includeFileData: true });
   if (renderData.length === 0) return { contractRenderData, uploads };
 
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
-  const autoValues = resolveAutoVariables(quote);
+  const autoValues = resolveAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote) });
 
   for (const block of blocks) {
     const data = byBlockId.get(block.id);
@@ -474,7 +519,11 @@ export async function loadContractPdfInputs(
         const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
         html = substituteVariables(html, blanks).html;
       }
-      contractRenderData.set(block.id, { html, templateName: data.templateName });
+      // Re-sanitize the FINAL substituted HTML: same href-injection guard as the
+      // client render path — a `javascript:`/protocol-relative variable value
+      // substituted into an `<a href>` would otherwise reach the PDF renderer as
+      // a live link annotation. Write-time sanitize predates the substitution.
+      contractRenderData.set(block.id, { html: sanitizeRichTextHtml(html), templateName: data.templateName });
     } else {
       contractRenderData.set(block.id, { html: null, templateName: data.templateName });
       if (data.fileData) {

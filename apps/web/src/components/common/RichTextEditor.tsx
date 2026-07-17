@@ -16,6 +16,17 @@ export interface RichTextEditorProps {
   testId: string;
 }
 
+// Only http/https (or scheme-less relative) URLs are accepted — matching the API
+// sanitizer (richTextSanitize.ts). TipTap's `protocols` option only EXTENDS the
+// default allowlist (which includes mailto:/tel:/ftp:), so those would be
+// accepted here and then silently stripped server-side; a custom isAllowedUri is
+// the only way to actually reject them in the editor.
+function isHttpOrHttpsUri(uri: string): boolean {
+  const scheme = uri.trim().match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+  if (!scheme) return true; // relative URL — allowed (the sanitizer permits it)
+  return scheme === 'http' || scheme === 'https';
+}
+
 // The editor is deliberately constrained to the rich-text subset the API
 // sanitizer accepts: p, br, strong, em, u, h3, h4, ul, ol, li, a[href]. Anything
 // StarterKit would otherwise add (code, code blocks, blockquotes, strike,
@@ -41,6 +52,8 @@ function buildExtensions() {
       openOnClick: false,
       protocols: ['http', 'https'],
       autolink: false,
+      // Actually enforce the allowlist — protocols alone doesn't reject extras.
+      isAllowedUri: (uri) => isHttpOrHttpsUri(uri),
     }),
   ];
 }
@@ -84,6 +97,12 @@ function Toolbar({ editor }: { editor: Editor }) {
     const url = input.trim();
     if (url === '') {
       editor.chain().focus().extendMarkRange('link').unsetLink().run();
+      return;
+    }
+    // Reject anything the sanitizer would strip (mailto:/tel:/ftp:/javascript:…)
+    // with a clear message instead of silently dropping the link server-side.
+    if (!isHttpOrHttpsUri(url)) {
+      window.alert(t('richTextEditor.linkInvalid'));
       return;
     }
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();

@@ -390,6 +390,7 @@
         "contractLabel": "Contract",
         "selectContract": "Select a contract",
         "noContracts": "No contracts found for this organization.",
+        "loadContractsError": "Failed to load contracts. Please try again.",
         "cancel": "Cancel",
         "confirm": "Link",
         "linking": "Linking…"
@@ -414,6 +415,7 @@
         "uploaded": "Uploaded PDF"
       },
       "publish": "Publish",
+      "publishDirtyHint": "Save your draft before publishing",
       "body": "Body",
       "bodyAria": "Contract template body",
       "preview": "Preview",

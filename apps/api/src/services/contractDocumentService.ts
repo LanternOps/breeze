@@ -261,7 +261,7 @@ export class ContractDocumentServiceError extends Error {
     message: string,
     // Literal union (not number) so Hono's c.json(status) overloads accept it
     // directly — same idiom as ContractTemplateServiceError.
-    public status: 400 | 403 | 404 | 500,
+    public status: 400 | 403 | 404 | 409 | 500,
     public code: string,
   ) {
     super(message);
@@ -372,6 +372,17 @@ export async function linkContractDocument(
   contractId: string,
 ): Promise<ContractDocumentRow> {
   const doc = await getDocumentOr404(auth, id);
+
+  // Link-later is for UNATTACHED documents only. A document already filed under a
+  // contract must not be silently re-filed under a different billing contract —
+  // that would rewrite an executed legal record's linkage. Reject with 409.
+  if (doc.contractId !== null) {
+    throw new ContractDocumentServiceError(
+      'Contract document is already linked to a contract',
+      409,
+      'ALREADY_LINKED',
+    );
+  }
 
   const [contract] = await db
     .select({ id: contracts.id, orgId: contracts.orgId })

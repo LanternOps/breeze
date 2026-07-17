@@ -21,4 +21,10 @@ describe('sanitizeRichTextHtml', () => {
   it('strips inline styles and classes', () => {
     expect(sanitizeRichTextHtml('<p style="color:red" class="x">hi</p>')).toBe('<p>hi</p>');
   });
+  it('strips protocol-relative (//host) hrefs — no scheme allowlist bypass', () => {
+    // `//evil.example` navigates off-origin under the page's own scheme; it must
+    // not survive as an href, and must not receive the forced rel/target either.
+    expect(sanitizeRichTextHtml('<a href="//evil.example">x</a>')).toBe('<a>x</a>');
+    expect(sanitizeRichTextHtml('<a href="//evil.example/path?q=1">x</a>')).toBe('<a>x</a>');
+  });
 });

@@ -12,7 +12,12 @@ const ALLOWED_SCHEMES = ['http', 'https'];
 // href is still present when this transform sees it. Check the scheme
 // ourselves so we don't force rel/target onto a link we're about to strip.
 function hasAllowedScheme(href: string): boolean {
-  const scheme = href.trim().match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
+  const trimmed = href.trim();
+  // Protocol-relative (`//evil.example`) has no scheme but still navigates
+  // off-origin under the page's own scheme — treat it as disallowed (paired
+  // with allowProtocolRelative: false below, which strips the attribute).
+  if (trimmed.startsWith('//')) return false;
+  const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
   if (!scheme) return true; // no scheme (relative URL) — let allowedSchemes/naughtyHref decide
   return ALLOWED_SCHEMES.includes(scheme.toLowerCase());
 }
@@ -21,6 +26,10 @@ const OPTIONS: sanitizeHtml.IOptions = {
   allowedTags: [...RICH_TEXT_ALLOWED_TAGS],
   allowedAttributes: { a: ['href', 'rel', 'target'] },
   allowedSchemes: ALLOWED_SCHEMES,
+  // A `//host/path` href navigates off-origin under the page's scheme; reject it
+  // so a protocol-relative link can't smuggle a navigation past the http/https
+  // scheme allowlist (hasAllowedScheme also strips its rel/target above).
+  allowProtocolRelative: false,
   // Force safe rel/target on links that survive scheme filtering — but not on
   // an `<a>` whose href is disallowed (e.g. `javascript:`), which must come
   // out as a bare `<a>` with no attributes at all.

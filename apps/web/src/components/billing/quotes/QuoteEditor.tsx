@@ -817,22 +817,32 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // ---- cover page ----------------------------------------------------------
   // Local mirror of the persisted cover page, so the toggle/title/prepared-for
   // update instantly; resynced from the server after each save's refresh().
-  const [cover, setCover] = useState<CoverPage>(() => ({
-    enabled: quote.coverPage?.enabled ?? false,
-    showPreparedBy: quote.coverPage?.showPreparedBy ?? true,
-    ...(quote.coverPage?.title != null ? { title: quote.coverPage.title } : {}),
-    ...(quote.coverPage?.coverImageId != null ? { coverImageId: quote.coverPage.coverImageId } : {}),
-    ...(quote.coverPage?.preparedForName != null ? { preparedForName: quote.coverPage.preparedForName } : {}),
-  }));
+  const coverFromQuote = useCallback((cp: typeof quote.coverPage): CoverPage => ({
+    enabled: cp?.enabled ?? false,
+    showPreparedBy: cp?.showPreparedBy ?? true,
+    ...(cp?.title != null ? { title: cp.title } : {}),
+    ...(cp?.coverImageId != null ? { coverImageId: cp.coverImageId } : {}),
+    ...(cp?.preparedForName != null ? { preparedForName: cp.preparedForName } : {}),
+  }), []);
+  const [cover, setCover] = useState<CoverPage>(() => coverFromQuote(quote.coverPage));
+  // Guard the resync exactly like the ContractBlockEditor / heading / rich-text
+  // mirrors: only overwrite the local draft from the server when the user hasn't
+  // diverged (local === last-synced). Otherwise an unrelated save's refresh()
+  // would clobber un-blurred title/prepared-for keystrokes mid-edit.
+  const lastSyncedCover = useRef(JSON.stringify(coverFromQuote(quote.coverPage)));
   useEffect(() => {
-    setCover({
-      enabled: quote.coverPage?.enabled ?? false,
-      showPreparedBy: quote.coverPage?.showPreparedBy ?? true,
-      ...(quote.coverPage?.title != null ? { title: quote.coverPage.title } : {}),
-      ...(quote.coverPage?.coverImageId != null ? { coverImageId: quote.coverPage.coverImageId } : {}),
-      ...(quote.coverPage?.preparedForName != null ? { preparedForName: quote.coverPage.preparedForName } : {}),
-    });
-  }, [quote.coverPage]);
+    const next = coverFromQuote(quote.coverPage);
+    const nextStr = JSON.stringify(next);
+    // Capture the previously-synced value before mutating the ref so the
+    // comparison is deterministic regardless of when React runs the updater.
+    const previous = lastSyncedCover.current;
+    lastSyncedCover.current = nextStr;
+    setCover((cur) => (JSON.stringify(cur) === previous ? next : cur));
+  }, [quote.coverPage, coverFromQuote]);
+  // Always-current cover snapshot for async callbacks that must not capture a
+  // stale `cover` closure (uploadCoverImage's post-upload saveCover).
+  const coverRef = useRef(cover);
+  useEffect(() => { coverRef.current = cover; }, [cover]);
 
   // Persist a cover-page change. Drops empty title/preparedForName so a cleared
   // field round-trips as "unset" rather than an empty string, and always carries
@@ -865,9 +875,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         onUnauthorized: UNAUTHORIZED,
         parseSuccess: (d) => (d as { data: { imageId: string } }).data,
       });
-      saveCover({ ...cover, coverImageId: uploaded.imageId });
+      // Read the LATEST cover (ref, not the closure's `cover`) so a title typed
+      // during a slow upload isn't dropped by this post-upload save.
+      saveCover({ ...coverRef.current, coverImageId: uploaded.imageId });
     }, t('quotes.editor.errors.uploadImage'));
-  }, [quote.id, cover, saveCover, runScoped, t]);
+  }, [quote.id, saveCover, runScoped, t]);
 
   // ---- add block -----------------------------------------------------------
   const submitBlock = useCallback(async () => {

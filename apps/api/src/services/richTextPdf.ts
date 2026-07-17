@@ -201,22 +201,53 @@ function collectListItems(list: ElementNode, indent: 0 | 1, blocks: RichTextBloc
   }
 }
 
+// Inline tags that can legitimately appear at the document root when the HTML
+// wasn't produced by the TipTap editor (raw API/MCP contract bodies) — folded
+// into an implicit paragraph so the PDF matches the browser's HTML render
+// (which lays out stray root inline content as flowing text).
+const ROOT_INLINE_TAGS = new Set(['strong', 'em', 'u', 'a', 'br']);
+
 /** Parse sanitized rich-text subset HTML into an ordered block list. Pure /
  *  side-effect-free — safe to unit test without any PDF rendering. */
 export function parseRichText(html: string): RichTextBlock[] {
   if (!html || !html.trim()) return [];
   const nodes = tokenize(html);
   const blocks: RichTextBlock[] = [];
+
+  // Buffer stray root-level text / inline nodes and flush them as one implicit
+  // paragraph whenever a block-level element interrupts (or at the end). Without
+  // this, root inline content — reachable via the raw API/MCP, not the editor —
+  // was silently dropped from the PDF while still rendering in the HTML view.
+  let pendingInline: RichNode[] = [];
+  const flushInline = (): void => {
+    if (pendingInline.length === 0) return;
+    const runs = extractRuns(pendingInline, BASE_CTX);
+    pendingInline = [];
+    // Ignore whitespace-only buffers (newlines between block tags) — they must
+    // not manufacture empty paragraphs.
+    if (runs.some((r) => r.text.trim().length > 0)) {
+      blocks.push({ kind: 'p', indent: 0, runs });
+    }
+  };
+
   for (const node of nodes) {
-    if (node.type !== 'el') continue; // stray root-level text — sanitized input is always block-wrapped
+    if (node.type === 'text') {
+      pendingInline.push(node);
+      continue;
+    }
     if (node.tag === 'p' || node.tag === 'h3' || node.tag === 'h4') {
+      flushInline();
       blocks.push({ kind: node.tag, indent: 0, runs: extractRuns(node.children, BASE_CTX) });
     } else if (node.tag === 'ul' || node.tag === 'ol') {
+      flushInline();
       collectListItems(node, 0, blocks);
+    } else if (ROOT_INLINE_TAGS.has(node.tag)) {
+      pendingInline.push(node);
     }
     // Any other stray top-level tag is ignored — defensive only; the sanitizer
-    // guarantees only p/h3/h4/ul/ol survive at the document root.
+    // guarantees only the subset survives at the document root.
   }
+  flushInline();
   return blocks;
 }
 
@@ -272,7 +303,18 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
   let gapBefore = 0;
   for (const block of blocks) {
     const style = styleFor(block.kind);
-    const indent = (block.kind === 'li' ? BULLET_INDENT : 0) + block.indent * NESTED_INDENT;
+    // Ordered-list ordinals reach 2+ digits ("10.", "11.", …) which overflow the
+    // fixed 14pt bullet gutter and character-wrap, garbling clause numbering.
+    // Measure the actual prefix and widen the gutter to fit, shifting the text
+    // start so the ordinal and the item text never overlap.
+    const isLi = block.kind === 'li';
+    const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
+    let gutter = 0;
+    if (isLi) {
+      doc.font('Helvetica').fontSize(style.fontSize);
+      gutter = Math.max(BULLET_INDENT, Math.ceil(doc.widthOfString(prefix)) + 4);
+    }
+    const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
     const textX = opts.x + indent;
     const textWidth = opts.width - indent;
 
@@ -289,10 +331,12 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
     const brokePage = doc.y !== beforeDocY;
     y = brokePage ? reserved : reserved + gapBefore;
 
-    if (block.kind === 'li') {
-      const prefix = block.ordinal != null ? `${block.ordinal}.` : '•';
+    if (isLi) {
       doc.font('Helvetica').fontSize(style.fontSize).fillColor(TEXT_COLOR);
-      doc.text(prefix, textX - BULLET_INDENT, y, { width: BULLET_INDENT, continued: false });
+      // Draw the ordinal/bullet in its own measured gutter to the left of the
+      // text. lineBreak:false guarantees the prefix stays a single line even if
+      // a future font makes it marginally wider than the reserved gutter.
+      doc.text(prefix, textX - gutter, y, { width: gutter, continued: false, lineBreak: false });
     }
 
     const runs = block.runs.length ? block.runs : [{ text: '', bold: false, italic: false, underline: false }];
@@ -304,7 +348,11 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
       const textOptions: PDFKit.Mixins.TextOptions = {
         continued: !isLast,
         underline: run.underline || !!run.link,
-        ...(run.link ? { link: run.link } : {}),
+        // Always set link explicitly (null, not omitted): pdfkit inherits omitted
+        // options across `continued: true` runs, so a plain run following a link
+        // run would otherwise keep the previous run's URL and make ALL trailing
+        // text in the block a live link to it. `null` clears the inheritance.
+        link: run.link ?? null,
       };
       if (isFirst) {
         doc.text(run.text, textX, y, { ...textOptions, width: textWidth });

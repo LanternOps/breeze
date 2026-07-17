@@ -19,6 +19,7 @@ import {
   substituteVariables,
   findUnresolvedVariables,
   renderContractBlocksForClient,
+  loadContractPdfInputs,
   type ContractBlockRenderData,
   type QuoteRow,
 } from './contractTemplateRender';
@@ -309,6 +310,28 @@ describe('loadContractBlockRenderData', () => {
 
     await expect(loadContractBlockRenderData([contractBlock])).rejects.toThrow(/missing or mismatched/);
   });
+
+  it('omits an uploaded version fileData by default and returns it only when includeFileData is set', async () => {
+    const uploadedVersion = {
+      ...versionRow, id: 'ver-1', sourceType: 'uploaded' as const, bodyHtml: null,
+      fileData: Buffer.from('%PDF-1.4 stored bytes'),
+    };
+    const uploadedBlock = { id: 'block-1', blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-1' } };
+
+    // Default: file_data is left out of the projection, so the result carries null.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploadedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+    const [dflt] = await loadContractBlockRenderData([uploadedBlock]);
+    expect(dflt!.fileData).toBeNull();
+
+    // includeFileData: true → the stored bytes are returned for merge/stream/snapshot.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploadedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+    const [withData] = await loadContractBlockRenderData([uploadedBlock], { includeFileData: true });
+    expect(withData!.fileData).toEqual(uploadedVersion.fileData);
+  });
 });
 
 describe('renderContractBlocksForClient', () => {
@@ -411,6 +434,25 @@ describe('renderContractBlocksForClient', () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it('pins {{dates.effective}} to the accept date for an accepted quote (not the viewing date)', async () => {
+    const effectiveVersion = {
+      ...authoredVersionRow,
+      bodyHtml: '<p>Effective {{dates.effective}}</p>',
+      declaredVariables: [{ name: 'dates.effective', kind: 'auto' }],
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([effectiveVersion]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [contractBlockFixture({ variableValues: {} })],
+      fixtureQuote({ status: 'accepted', acceptedAt: new Date('2026-05-01T12:00:00Z') }),
+      () => '/unused',
+    );
+    const html = (block!.content as Record<string, unknown>).renderedHtml as string;
+    expect(html).toContain('May 01, 2026'); // the accept date, not "today"
+  });
+
   it('resolves an uploaded block to a null renderedHtml and a caller-built fileUrl', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectReturning([uploadedVersionRow]) as never)
@@ -446,6 +488,84 @@ describe('renderContractBlocksForClient', () => {
     const result = await renderContractBlocksForClient(blocks, fixtureQuote(), () => '/unused');
     expect(result).toEqual(blocks);
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('stored-XSS: substituted href re-sanitized at every served/PDF surface', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  // A template whose sanitized body embeds a variable INSIDE an href — this is a
+  // legal write-time shape (`{{link}}` is a scheme-less relative href, so the
+  // write-time sanitizer keeps it). The XSS lands only once a hostile value is
+  // substituted in, AFTER write-time sanitization — so the final substituted
+  // HTML must be re-sanitized before it reaches any served/PDF surface.
+  const hrefVersionRow = {
+    id: 'ver-x',
+    templateId: 'tmpl-1',
+    orgId: null,
+    partnerId: 'partner-1',
+    versionNumber: 1,
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>See <a href="{{link}}">the portal</a></p>',
+    fileData: null,
+    mime: null,
+    byteSize: null,
+    sha256: 'abc123',
+    declaredVariables: [{ name: 'link', kind: 'manual' }],
+    publishedAt: new Date('2026-07-01T00:00:00Z'),
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const templateRow = {
+    id: 'tmpl-1', orgId: null, partnerId: 'partner-1', name: 'MSA', description: null,
+    status: 'active', createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const hostileBlock = {
+    id: 'block-x',
+    blockType: 'contract',
+    content: { templateId: 'tmpl-1', templateVersionId: 'ver-x', variableValues: { link: 'javascript:alert(1)' } },
+  };
+
+  it('renderContractBlocksForClient strips a javascript: value substituted into an href', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([hrefVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient([hostileBlock], fixtureQuote(), () => '/unused');
+    const html = (block!.content as Record<string, unknown>).renderedHtml as string;
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('href="javascript');
+    // The link element survives but with no live href (bare <a>), text preserved.
+    expect(html).toContain('the portal');
+  });
+
+  it('loadContractPdfInputs strips a javascript: value substituted into an href', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([hrefVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const { contractRenderData } = await loadContractPdfInputs([hostileBlock], fixtureQuote());
+    const html = contractRenderData.get('block-x')!.html!;
+    expect(html).not.toContain('javascript:');
+    expect(html).toContain('the portal');
+  });
+
+  it('a protocol-relative //host value substituted into an href is stripped too', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([hrefVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [{ ...hostileBlock, content: { ...hostileBlock.content, variableValues: { link: '//evil.example' } } }],
+      fixtureQuote(),
+      () => '/unused',
+    );
+    const html = (block!.content as Record<string, unknown>).renderedHtml as string;
+    expect(html).not.toContain('//evil.example');
+    expect(html).toContain('the portal');
   });
 });
 

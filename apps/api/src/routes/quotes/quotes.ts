@@ -22,6 +22,7 @@ import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
 import { renderContractBlocksForClient, loadContractPdfInputs, loadContractBlockAuthoring } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
+import { PdfMergeError } from '../../services/pdfMerge';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -41,6 +42,10 @@ export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
   if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  // An unloadable/encrypted uploaded contract PDF surfaces as a 4xx (typed) here
+  // rather than an uncaught 500 — uploads are validated at write time, so this is
+  // the defense-in-depth backstop for a legacy row.
+  if (err instanceof PdfMergeError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 

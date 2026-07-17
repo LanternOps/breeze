@@ -390,6 +390,7 @@
         "contractLabel": "Vertrag",
         "selectContract": "Vertrag auswählen",
         "noContracts": "Keine Verträge für diese Organisation gefunden.",
+        "loadContractsError": "Verträge konnten nicht geladen werden. Bitte erneut versuchen.",
         "cancel": "Abbrechen",
         "confirm": "Verknüpfen",
         "linking": "Wird verknüpft…"
@@ -414,6 +415,7 @@
         "uploaded": "Hochgeladenes PDF"
       },
       "publish": "Veröffentlichen",
+      "publishDirtyHint": "Speichern Sie Ihren Entwurf vor dem Veröffentlichen",
       "body": "Inhalt",
       "bodyAria": "Inhalt der Vertragsvorlage",
       "preview": "Vorschau",

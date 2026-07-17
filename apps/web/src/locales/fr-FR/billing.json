@@ -390,6 +390,7 @@
         "contractLabel": "Contrat",
         "selectContract": "Sélectionner un contrat",
         "noContracts": "Aucun contrat trouvé pour cette organisation.",
+        "loadContractsError": "Échec du chargement des contrats. Veuillez réessayer.",
         "cancel": "Annuler",
         "confirm": "Lier",
         "linking": "Liaison…"
@@ -414,6 +415,7 @@
         "uploaded": "PDF importé"
       },
       "publish": "Publier",
+      "publishDirtyHint": "Enregistrez votre brouillon avant de publier",
       "body": "Corps",
       "bodyAria": "Corps du modèle de contrat",
       "preview": "Aperçu",

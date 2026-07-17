@@ -390,6 +390,7 @@
         "contractLabel": "Contrato",
         "selectContract": "Selecione um contrato",
         "noContracts": "Nenhum contrato encontrado para esta organização.",
+        "loadContractsError": "Falha ao carregar os contratos. Tente novamente.",
         "cancel": "Cancelar",
         "confirm": "Vincular",
         "linking": "Vinculando…"
@@ -414,6 +415,7 @@
         "uploaded": "PDF enviado"
       },
       "publish": "Publicar",
+      "publishDirtyHint": "Salve seu rascunho antes de publicar",
       "body": "Corpo",
       "bodyAria": "Corpo do modelo de contrato",
       "preview": "Pré-visualização",

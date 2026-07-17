@@ -280,6 +280,11 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, source.partnerId)))
       .limit(1);
     if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    // Re-validate carried contract blocks against the NEW org: an org-owned
+    // template from the source org is invalid for the target org (422), which
+    // also prevents cloning a block that would later mint a cross-org
+    // contract_documents → contract_templates FK. Partner-wide templates pass.
+    await assertContractBlocksValidForOrg(blocks, { orgId: targetOrgId, partnerId: source.partnerId });
   }
   const taxRate = orgChanged
     ? await resolveQuoteTaxRate(targetOrgId, source.partnerId)
@@ -638,7 +643,16 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // sets a fresh override explicitly.
     if (input.billToName === undefined) set.billToName = null;
     if (orgTaxRate !== undefined) set.taxRate = orgTaxRate;
+    // Re-validate carried contract blocks against the NEW org before moving the
+    // quote onto it: an org-owned template embedded under the old org is invalid
+    // (422) for the target org — carrying it would expose another org's private
+    // legal template and create a cross-org contract_documents → contract_templates
+    // FK that aborts GDPR erasure. Partner-wide templates (org_id NULL) pass.
+    const contractBlocks = await db.select({ blockType: quoteBlocks.blockType, content: quoteBlocks.content })
+      .from(quoteBlocks)
+      .where(and(eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract')));
     await db.transaction(async (tx) => {
+      await assertContractBlocksValidForOrg(contractBlocks, { orgId: targetOrgId, partnerId: q.partnerId }, tx);
       await tx.update(quotes).set(set).where(eq(quotes.id, id));
       // Move the denormalized org_id on every child row in the same transaction.
       await tx.update(quoteBlocks).set({ orgId: targetOrgId }).where(eq(quoteBlocks.quoteId, id));
@@ -678,18 +692,48 @@ export async function deleteDraftQuote(id: string, actor: QuoteActor) {
  * "not yours" — none of those distinctions are actionable without also
  * leaking the existence of another tenant's template.
  */
+/** Narrow a `contract` block's stored `content` to its template reference, or
+ *  null if the shape is unexpected (defensive — the block was validated on
+ *  write). Used by the org-change paths to re-validate carried contract blocks. */
+function parseContractBlockRef(content: unknown): { templateId: string; templateVersionId: string } | null {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return null;
+  const c = content as Record<string, unknown>;
+  if (typeof c.templateId !== 'string' || typeof c.templateVersionId !== 'string') return null;
+  return { templateId: c.templateId, templateVersionId: c.templateVersionId };
+}
+
+/** Re-validate every `contract` block on a quote against a (possibly new) target
+ *  org. Called from the clone-retarget and draft org-reassignment paths: an
+ *  org-owned template embedded under the SOURCE org is neither visible nor valid
+ *  under the TARGET org, and carrying it verbatim both exposes another org's
+ *  private legal template AND creates a cross-org contract_documents →
+ *  contract_templates FK that aborts GDPR org erasure. Partner-wide templates
+ *  (org_id NULL) stay valid because clone/reassign never crosses partners. */
+async function assertContractBlocksValidForOrg(
+  blocks: Array<{ blockType: string; content: unknown }>,
+  target: { orgId: string; partnerId: string },
+  dbc: Pick<typeof db, 'select'> = db,
+): Promise<void> {
+  for (const block of blocks) {
+    if (block.blockType !== 'contract') continue;
+    const ref = parseContractBlockRef(block.content);
+    if (ref) await assertContractBlockValid(ref, target, dbc);
+  }
+}
+
 async function assertContractBlockValid(
   content: { templateId: string; templateVersionId: string },
-  quote: { orgId: string; partnerId: string }
+  quote: { orgId: string; partnerId: string },
+  dbc: Pick<typeof db, 'select'> = db,
 ): Promise<void> {
-  const [version] = await db.select({
+  const [version] = await dbc.select({
     templateId: contractTemplateVersions.templateId,
     status: contractTemplateVersions.status,
   }).from(contractTemplateVersions).where(eq(contractTemplateVersions.id, content.templateVersionId)).limit(1);
   if (!version || version.templateId !== content.templateId || version.status !== 'published') {
     throw new QuoteServiceError('Contract template version is not published', 422, 'INVALID_CONTRACT_TEMPLATE');
   }
-  const [template] = await db.select({
+  const [template] = await dbc.select({
     status: contractTemplates.status,
     orgId: contractTemplates.orgId,
     partnerId: contractTemplates.partnerId,

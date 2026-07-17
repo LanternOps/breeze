@@ -112,6 +112,23 @@ describe('RichTextEditor', () => {
     expect(editable.querySelector('i')).toBeNull();
   });
 
+  it('rejects a non-http(s) link scheme (mailto:) with a validation alert and sets no link', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('mailto:evil@example.com');
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const onChange = vi.fn();
+    render(
+      <RichTextEditor value="<p>Hello</p>" onChange={onChange} ariaLabel="Proposal text" testId="rte-test" />,
+    );
+
+    fireEvent.click(screen.getByTestId('rte-link'));
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+    expect(promptSpy).toHaveBeenCalled();
+    // The disallowed scheme must never make it into emitted HTML.
+    const emitted = onChange.mock.calls.map((c) => c[0] as string).join('');
+    expect(emitted).not.toContain('mailto:');
+  });
+
   it('strips content outside the allowed subset (blockquote/code)', () => {
     render(
       <RichTextEditor

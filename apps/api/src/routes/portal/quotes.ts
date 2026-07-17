@@ -143,7 +143,7 @@ quoteRoutes.get('/quotes/:id/contract-file/:blockId', zValidator('param', blockF
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   const [block] = await db.select().from(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract'))).limit(1);
   if (!block) return c.json({ error: 'Contract file not found' }, 404);
-  const [renderData] = await loadContractBlockRenderData([block]);
+  const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
   if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found' }, 404);
   return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
 });
@@ -165,7 +165,7 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // any contract block is missing from this set.
     const blocks = await db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType, content: quoteBlocks.content })
       .from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
-    const contractRenderData = await loadContractBlockRenderData(blocks);
+    const contractRenderData = await loadContractBlockRenderData(blocks, { includeFileData: true });
     // Run in a system sub-context: acceptQuote now auto-issues the converted
     // invoice, which writes the partner-axis partner_invoice_sequences counter.
     // This portal context is org-scoped with NO partner access (auth.ts:

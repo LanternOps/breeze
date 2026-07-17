@@ -104,8 +104,17 @@ export default function DocumentsTab() {
     void (async () => {
       try {
         const res = await listContracts({ orgId: doc.orgId });
+        // Match the tab's load() handling: a 401 redirects, a non-OK response is
+        // surfaced as an error — never rendered as an (empty) "no contracts" list.
+        if (res.status === 401) return UNAUTHORIZED();
+        if (!res.ok) {
+          setLinkError(t('contracts.documentsTab.linkDialog.loadContractsError'));
+          return;
+        }
         const body = (await res.json().catch(() => null)) as { data?: ContractSummary[] } | null;
         setOrgContracts(body?.data ?? []);
+      } catch {
+        setLinkError(t('contracts.documentsTab.linkDialog.loadContractsError'));
       } finally {
         setContractsLoading(false);
       }
@@ -234,7 +243,9 @@ export default function DocumentsTab() {
                   <div className="h-5 w-5 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                 </div>
               ) : orgContracts.length === 0 ? (
-                <p className="text-sm text-muted-foreground">{t('contracts.documentsTab.linkDialog.noContracts')}</p>
+                // Suppress the "no contracts" copy when the fetch actually failed —
+                // the error is surfaced by the linkError block below instead.
+                linkError ? null : <p className="text-sm text-muted-foreground">{t('contracts.documentsTab.linkDialog.noContracts')}</p>
               ) : (
                 <select
                   id="link-contract"

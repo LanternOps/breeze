@@ -125,7 +125,7 @@ quoteLifecycleRoutes.get('/:id/contract-file/:blockId', scopes, readPerm, zValid
     const { blocks } = await getQuote(id, quoteActorFrom(c)); // org-access 404
     const block = blocks.find((b) => b.id === blockId && b.blockType === 'contract');
     if (!block) return c.json({ error: 'Contract file not found' }, 404);
-    const [renderData] = await loadContractBlockRenderData([block]);
+    const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
     if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) {
       return c.json({ error: 'Contract file not found' }, 404);
     }

@@ -18,6 +18,23 @@
 
 import { PDFDocument } from 'pdf-lib';
 
+/** A merge input that pdf-lib can't load (encrypted, truncated, or otherwise
+ *  corrupt). Uploads are validated at write time (contractTemplateService's
+ *  createUploadedVersion), so this is a defense-in-depth backstop — surfacing a
+ *  typed 4xx-mappable error instead of an uncaught pdf-lib throw that becomes a
+ *  raw 500 on the admin/portal quote PDF (and a silently-skipped send email). */
+export class PdfMergeError extends Error {
+  constructor(
+    message: string,
+    // Literal union so Hono's c.json(status) overloads accept it directly.
+    public status: 400 | 422 | 500 = 422,
+    public code = 'CONTRACT_PDF_UNREADABLE',
+  ) {
+    super(message);
+    this.name = 'PdfMergeError';
+  }
+}
+
 export interface UploadedContractPdf {
   /** The exact marker line quotePdf.ts drew for this block (contractUploadedMarker
    *  in quotePdf.ts) — unused for placement in v1 (see file header), kept so a
@@ -38,7 +55,17 @@ export async function mergeUploadedContractPdfs(
 
   const mainDoc = await PDFDocument.load(mainPdf);
   for (const upload of uploads) {
-    const uploadDoc = await PDFDocument.load(upload.data);
+    let uploadDoc: PDFDocument;
+    try {
+      uploadDoc = await PDFDocument.load(upload.data);
+    } catch (err) {
+      // Uploads are pre-validated at write time, so reaching here means a stored
+      // version's bytes are unreadable (encrypted/corrupt). Raise a typed error a
+      // route can map to a 4xx rather than letting the raw pdf-lib throw 500.
+      throw new PdfMergeError(
+        `An attached contract PDF could not be read: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const copiedPages = await mainDoc.copyPages(uploadDoc, uploadDoc.getPageIndices());
     for (const page of copiedPages) mainDoc.addPage(page);
   }

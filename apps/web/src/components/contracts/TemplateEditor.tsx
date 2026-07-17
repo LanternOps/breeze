@@ -50,6 +50,11 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   const [body, setBody] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The body value we last seeded from the server. `body !== lastLoaded` means the
+  // user has typed un-saved changes — used to guard the re-seed in load() and to
+  // block Publish (which would publish the OLD stored draft while silently
+  // destroying the typed buffer).
+  const lastLoaded = useRef('');
 
   const load = useCallback(async () => {
     try {
@@ -61,9 +66,18 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
       const payload = (await res.json().catch(() => null)) as { data: ContractTemplateDetail } | null;
       if (!payload) throw new Error(t('contracts.templateEditor.loadError'));
       setDetail(payload.data);
-      // Seed the editing buffer from the newest authored version's body.
+      // Seed the editing buffer from the newest authored version's body — but only
+      // when the user hasn't diverged from what we last loaded. publish()/upload()
+      // both call load(); an unconditional re-seed would irrecoverably wipe typed,
+      // un-saved contract text.
       const latestAuthored = payload.data.versions.find((v) => v.sourceType === 'authored' && v.bodyHtml);
-      setBody(latestAuthored?.bodyHtml ?? '');
+      const seed = latestAuthored?.bodyHtml ?? '';
+      // Capture the previously-loaded value BEFORE mutating the ref: the functional
+      // setState updater runs after this async continuation, so comparing against
+      // `lastLoaded.current` directly would read the already-updated `seed`.
+      const previouslyLoaded = lastLoaded.current;
+      lastLoaded.current = seed;
+      setBody((cur) => (cur === previouslyLoaded ? seed : cur));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('contracts.templateEditor.loadError'));
     } finally {
@@ -76,6 +90,9 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   }, [load]);
 
   const archived = detail?.status === 'archived';
+  // Un-saved edits in the body buffer. Publishing while dirty would publish the
+  // previously-stored draft, not what's on screen — block it and prompt a save.
+  const dirty = body !== lastLoaded.current;
   const variables = useMemo(() => detectVariables(body), [body]);
   const manualVariables = useMemo(() => variables.filter((v) => v.kind === 'manual'), [variables]);
 
@@ -261,7 +278,11 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
                     <button
                       type="button"
                       onClick={() => void publish(v.id)}
-                      disabled={busy}
+                      // Block publishing while the body buffer has un-saved edits:
+                      // publishing an existing draft would ship the OLD stored
+                      // content and the reload would wipe the typed buffer.
+                      disabled={busy || dirty}
+                      title={dirty ? t('contracts.templateEditor.publishDirtyHint') : undefined}
                       data-testid="template-version-publish"
                       className="mt-1 w-full rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                     >

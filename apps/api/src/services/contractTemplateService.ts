@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { PDFDocument, EncryptedPDFError } from 'pdf-lib';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type {
   ContractVariable,
@@ -344,6 +345,24 @@ export async function createUploadedVersion(
   }
   if (file.data.subarray(0, 5).toString('latin1') !== PDF_MAGIC) {
     throw new ContractTemplateServiceError('File is not a valid PDF', 400, 'INVALID_FILE');
+  }
+  // Magic bytes only prove the file STARTS like a PDF. An encrypted or otherwise
+  // pdf-lib-unloadable PDF passes that check but then throws EncryptedPDFError
+  // (or a parse error) later at merge/snapshot time — a permanent 500 on every
+  // quote PDF and a silently-skipped customer email. Reject it at upload instead,
+  // when a tech can still fix the file. pdf-lib refuses encrypted docs by default
+  // (no ignoreEncryption), which is exactly what we want.
+  try {
+    await PDFDocument.load(file.data);
+  } catch (err) {
+    // Detect encryption by class OR message: pdf-lib's EncryptedPDFError message
+    // always contains "encrypted", and a message check survives the ESM/CJS
+    // dual-package hazard that can make `instanceof` fail across module copies.
+    const isEncrypted = err instanceof EncryptedPDFError || (err instanceof Error && /encrypted/i.test(err.message));
+    if (isEncrypted) {
+      throw new ContractTemplateServiceError('Encrypted PDFs are not supported — upload an unencrypted PDF', 400, 'ENCRYPTED_FILE');
+    }
+    throw new ContractTemplateServiceError('File is not a readable PDF', 400, 'INVALID_FILE');
   }
 
   const versionNumber = await nextVersionNumber(templateId);

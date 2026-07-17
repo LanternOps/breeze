@@ -81,6 +81,22 @@ describe('TemplateEditor', () => {
     await waitFor(() => expect(api.publishTemplateVersion).toHaveBeenCalledWith('tpl-1', 'ver-draft'));
   });
 
+  it('blocks Publish while the body has un-saved edits and never destroys the typed text', async () => {
+    render(<TemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('contract-template-editor');
+
+    const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '<p>My unsaved contract text</p>' } });
+
+    const publishBtn = screen.getByTestId('template-version-publish');
+    expect(publishBtn).toBeDisabled();
+    // Attempting the click must not publish the OLD stored draft…
+    fireEvent.click(publishBtn);
+    expect(api.publishTemplateVersion).not.toHaveBeenCalled();
+    // …and the typed buffer is still intact (not clobbered by a reload re-seed).
+    expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe('<p>My unsaved contract text</p>');
+  });
+
   it('lists manual variables detected live in the body', async () => {
     render(<TemplateEditor templateId="tpl-1" />);
     await screen.findByTestId('contract-template-editor');

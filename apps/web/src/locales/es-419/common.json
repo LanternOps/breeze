@@ -77,7 +77,8 @@
     "bulletList": "Lista con viñetas",
     "orderedList": "Lista numerada",
     "link": "Enlace",
-    "linkPrompt": "Introduce una URL (http:// o https://)"
+    "linkPrompt": "Introduce una URL (http:// o https://)",
+    "linkInvalid": "Solo se permiten enlaces http:// y https://"
   },
   "actions": {
     "save": "Guardar",

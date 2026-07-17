@@ -102,6 +102,7 @@ describe('quoteService deposits', () => {
     // resolveQuoteTaxRate for the NEW org: 5% org rate, no partner default
     queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
     queueResult([{ defaultTaxRate: null }]);
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -131,6 +132,7 @@ describe('quoteService deposits', () => {
     // loadDraft
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2' }]); // membership check — NO resolveQuoteTaxRate selects follow
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -155,6 +157,7 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'org2' }]); // membership check
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -184,6 +187,48 @@ describe('quoteService deposits', () => {
     queueResult([]); // membership check finds no org2 row under p1
 
     await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor)).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
+  it('updateQuote rejects reassignment that would carry an org-owned contract block to the new org (422)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
+    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
+    // assertContractBlockValid inside the tx: version published, template OWNED BY org1 (invalid for org2)
+    queueResult([{ templateId: 'tpl-1', status: 'published' }]);
+    queueResult([{ status: 'active', orgId: 'org1', partnerId: 'p1' }]);
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor))
+      .rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+    // The header update must never have fired — the reassignment rolls back.
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls.every((call) => !(call[0] as { orgId?: string }).orgId || (call[0] as { orgId?: string }).orgId !== 'org2')).toBe(true);
+  });
+
+  it('updateQuote allows reassignment carrying a PARTNER-WIDE contract block (org_id NULL passes)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
+    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch
+    queueResult([{ templateId: 'tpl-1', status: 'published' }]); // version published
+    queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]); // PARTNER-WIDE — visible to every org of the partner
+    queueResult([]); // tx: quotes header update
+    queueResult([]); // tx: blocks org move
+    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: images org move
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org2' }]); // final re-select
+
+    const updated = await svc.updateQuote('q1', { orgId: 'org2' }, orgActor);
+    expect(updated.orgId).toBe('org2');
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2' });
   });
 
   it('updateQuote throws DEPOSIT_REQUIRES_ONE_TIME_LINES when the quote has no one-time visible lines', async () => {

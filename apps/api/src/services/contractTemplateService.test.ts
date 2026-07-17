@@ -1,6 +1,44 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import type { AuthContext } from '../middleware/auth';
+
+/** A genuinely loadable minimal PDF (pdf-lib can create these). Uploaded contract
+ *  PDFs are now validated with PDFDocument.load at write time, so the happy-path
+ *  fixtures must be real PDFs, not `%PDF-…%%EOF` stubs. */
+async function validPdfBytes(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.addPage([200, 200]);
+  return Buffer.from(await doc.save({ useObjectStreams: false }));
+}
+
+/** A minimal ENCRYPTED PDF. pdf-lib cannot CREATE encrypted PDFs, so we hand-build
+ *  the bytes: a valid object graph plus a trailer that references a /Standard
+ *  security-handler /Encrypt dictionary (V1/R2). pdf-lib detects the /Encrypt
+ *  trailer entry on load and refuses it (EncryptedPDFError) — exactly the
+ *  qpdf-encrypted-upload case. Provenance: constructed here rather than checked
+ *  in as a binary blob so the structure is auditable. */
+function encryptedPdfBytes(): Buffer {
+  const objs: Record<number, string> = {
+    1: '<< /Type /Catalog /Pages 2 0 R >>',
+    2: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    3: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>',
+    4: '<< /Filter /Standard /V 1 /R 2 /O <0123456789ABCDEF0123456789ABCDEF> /U <0123456789ABCDEF0123456789ABCDEF> /P -44 >>',
+  };
+  let body = '%PDF-1.4\n';
+  const offsets: Record<number, number> = {};
+  for (let i = 1; i <= 4; i++) {
+    offsets[i] = Buffer.byteLength(body, 'latin1');
+    body += `${i} 0 obj\n${objs[i]}\nendobj\n`;
+  }
+  const xrefStart = Buffer.byteLength(body, 'latin1');
+  let xref = 'xref\n0 5\n0000000000 65535 f \n';
+  for (let i = 1; i <= 4; i++) xref += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  body += xref;
+  body += 'trailer\n<< /Size 5 /Root 1 0 R /Encrypt 4 0 R /ID [<0123456789ABCDEF0123456789ABCDEF> <0123456789ABCDEF0123456789ABCDEF>] >>\n';
+  body += `startxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(body, 'latin1');
+}
 
 // Controllable Drizzle chain mock (same pattern as quoteService.test.ts /
 // invoiceService.test.ts): every builder method returns the same chain; a
@@ -274,7 +312,7 @@ describe('createUploadedVersion', () => {
     const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
     queueResult([ORG_TEMPLATE]);
     queueResult([{ maxVersion: null }]);
-    const pdf = Buffer.from('%PDF-1.7\n%%EOF');
+    const pdf = await validPdfBytes();
     queueResult([{ id: 'v1', versionNumber: 1, sourceType: 'uploaded' }]);
     const row = await svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' });
     expect(row.versionNumber).toBe(1);
@@ -283,6 +321,29 @@ describe('createUploadedVersion', () => {
       mime: 'application/pdf',
       byteSize: pdf.length,
     });
+  });
+
+  it('rejects an ENCRYPTED PDF (valid %PDF- magic, unloadable) with 400 ENCRYPTED_FILE', async () => {
+    const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
+    queueResult([ORG_TEMPLATE]);
+    const pdf = encryptedPdfBytes();
+    expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-'); // passes the magic-byte gate
+    await expect(
+      svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' })
+    ).rejects.toMatchObject({ status: 400, code: 'ENCRYPTED_FILE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a corrupt PDF that passes the magic-byte gate but is not loadable with 400 INVALID_FILE', async () => {
+    const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
+    queueResult([ORG_TEMPLATE]);
+    // Valid magic, then a malformed object pdf-lib's parser chokes on (its
+    // recovery parser tolerates trailing garbage, but not a broken object ref).
+    const pdf = Buffer.from('%PDF-1.7\n1 0 obj\n<< /Broken >>\n');
+    await expect(
+      svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' })
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_FILE' });
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('rejects an upload against an archived template', async () => {

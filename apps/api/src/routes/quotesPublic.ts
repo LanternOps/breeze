@@ -104,7 +104,7 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
     return b ?? null;
   }));
   if (!block) return c.json({ error: 'Contract file not found' }, 404);
-  const [renderData] = await loadContractBlockRenderData([block]);
+  const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
   if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found' }, 404);
   return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
 });
@@ -121,7 +121,7 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     const blocks = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType, content: quoteBlocks.content })
         .from(quoteBlocks).where(eq(quoteBlocks.quoteId, claims.quoteId)).orderBy(quoteBlocks.sortOrder)));
-    const contractRenderData = await loadContractBlockRenderData(blocks);
+    const contractRenderData = await loadContractBlockRenderData(blocks, { includeFileData: true });
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: claims.quoteId, signerName: body.signerName, signerEmail: body.signerEmail ?? null,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,

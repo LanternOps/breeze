@@ -200,6 +200,25 @@ export async function sendQuote(
     throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
   }
 
+  // The in-memory `quote` row was read (getQuote) BEFORE the freeze above, so its
+  // billTo*/sellerSnapshot columns are still the pre-freeze values (NULL on a
+  // draft). Overlay the just-frozen values so contract variable substitution
+  // ({{client.name}}/{{client.address}}/{{seller.name}}) and the PDF cover page
+  // render the same customer/seller identity the executed snapshot and every
+  // later render use — matching the admin PDF route's overlay
+  // (routes/quotes/quotes.ts). Without this the emailed legal contract renders
+  // those variables as empty strings and omits "PREPARED FOR" silently.
+  const sellerSnapshot = quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow);
+  const frozenQuote: QuoteRow = {
+    ...quote,
+    status: 'sent',
+    quoteNumber,
+    billToName,
+    billToAddress,
+    billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
+    sellerSnapshot,
+  };
+
   // Mint the public accept token (expiry = quote.expiryDate if future, else +30d).
   const { token } = await createQuoteAcceptToken({
     quoteId: id, orgId: quote.orgId, partnerId: quote.partnerId,
@@ -243,10 +262,10 @@ export async function sendQuote(
       // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
       // per authored contract block + any uploaded contract PDFs to append after
       // rendering, so the emailed attachment matches the on-demand download.
-      const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
+      const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
       const { renderQuotePdf } = await import('./quotePdf');
       const rawPdf = await renderQuotePdf(
-        { ...quote, status: 'sent', quoteNumber, sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow) },
+        frozenQuote,
         blocks, customerLines, loadImage, {
           partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
           footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',

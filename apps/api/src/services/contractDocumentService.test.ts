@@ -5,6 +5,11 @@ import { createHash } from 'node:crypto';
 // row shape (contract linkage, sha256 over the pdf, byteSize) without a DB. The
 // insert chain resolves .returning() to a synthetic id per call.
 const insertedValues: Array<Record<string, unknown>> = [];
+// Rows the SELECT/UPDATE-path calls should resolve to (used by the
+// linkContractDocument tests); createExecutedDocuments leaves this empty and
+// keeps its synthetic-insert-id behavior.
+const selectResults: unknown[][] = [];
+function queueResult(rows: unknown[]) { selectResults.push(rows); }
 
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
@@ -13,7 +18,13 @@ vi.mock('../db', () => {
     insertedValues.push(v);
     return chain;
   });
-  chain.returning = vi.fn(() => Promise.resolve([{ id: `doc-${insertedValues.length}` }]));
+  chain.returning = vi.fn(() =>
+    selectResults.length ? Promise.resolve(selectResults.shift()) : Promise.resolve([{ id: `doc-${insertedValues.length}` }]),
+  );
+  for (const m of ['select', 'from', 'where', 'limit', 'update', 'set']) chain[m] = vi.fn(() => chain);
+  // Awaiting the chain (a select's `.limit(1)`) shifts the next queued result.
+  (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(selectResults.shift() ?? []).then(resolve);
   return {
     db: chain,
     // contractTemplateRender (imported transitively) reads these at module load.
@@ -26,7 +37,10 @@ import {
   createExecutedDocuments,
   buildContractHashParts,
   assertContractRenderDataComplete,
+  linkContractDocument,
+  ContractDocumentServiceError,
 } from './contractDocumentService';
+import type { AuthContext } from '../middleware/auth';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { QuoteServiceError } from './quoteTypes';
 
@@ -154,5 +168,35 @@ describe('contractDocumentService.assertContractRenderDataComplete', () => {
 
   it('does not throw when there are no contract blocks', () => {
     expect(() => assertContractRenderDataComplete([{ id: 'b1', blockType: 'heading', content: {} }], undefined)).not.toThrow();
+  });
+});
+
+describe('contractDocumentService.linkContractDocument', () => {
+  beforeEach(() => { insertedValues.length = 0; selectResults.length = 0; vi.clearAllMocks(); });
+
+  const auth = { canAccessOrg: () => true } as unknown as AuthContext;
+
+  it('rejects re-linking a document that is already attached to a contract (409 ALREADY_LINKED)', async () => {
+    // getDocumentOr404 select → a doc already linked to contract-existing.
+    queueResult([{ id: 'doc1', orgId: 'org1', contractId: 'contract-existing', pdfData: Buffer.from('x'), mime: 'application/pdf', byteSize: 1, sha256: 's' }]);
+
+    await expect(linkContractDocument(auth, 'doc1', 'contract-new'))
+      .rejects.toMatchObject({ status: 409, code: 'ALREADY_LINKED' });
+    // The guard fires before any UPDATE — nothing was re-filed.
+    expect(insertedValues).toEqual([]);
+  });
+
+  it('links an unattached document (contract_id NULL) to a same-org contract', async () => {
+    queueResult([{ id: 'doc1', orgId: 'org1', contractId: null, pdfData: Buffer.from('x'), mime: 'application/pdf', byteSize: 1, sha256: 's' }]); // getDocumentOr404
+    queueResult([{ id: 'contract-new', orgId: 'org1' }]); // contract lookup (same org)
+    queueResult([{ id: 'doc1', orgId: 'org1', contractId: 'contract-new' }]); // update ... returning
+
+    const updated = await linkContractDocument(auth, 'doc1', 'contract-new');
+    expect(updated.contractId).toBe('contract-new');
+  });
+
+  it('surfaces a ContractDocumentServiceError type on the already-linked guard', async () => {
+    queueResult([{ id: 'doc1', orgId: 'org1', contractId: 'c', pdfData: Buffer.from('x'), mime: 'application/pdf', byteSize: 1, sha256: 's' }]);
+    await expect(linkContractDocument(auth, 'doc1', 'c2')).rejects.toBeInstanceOf(ContractDocumentServiceError);
   });
 });

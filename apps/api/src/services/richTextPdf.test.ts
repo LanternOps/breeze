@@ -25,6 +25,20 @@ describe('parseRichText', () => {
   it('is resilient to empty/whitespace input', () => {
     expect(parseRichText('')).toEqual([]);
   });
+  it('folds stray root-level inline content into an implicit paragraph (raw API/MCP bodies)', () => {
+    // Not producible by the TipTap editor, but a raw contract body can have bare
+    // inline content at the root — it must render, not vanish, to match the HTML.
+    const blocks = parseRichText('Plain lead <strong>bold</strong> and <a href="https://x.example">link</a>');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.kind).toBe('p');
+    expect(blocks[0]!.runs.map((r) => r.text).join('')).toBe('Plain lead bold and link');
+    expect(blocks[0]!.runs.some((r) => r.bold)).toBe(true);
+    expect(blocks[0]!.runs.some((r) => r.link === 'https://x.example')).toBe(true);
+  });
+  it('does not manufacture an empty paragraph from whitespace between block tags', () => {
+    // Whitespace text nodes between block elements must not become paragraphs.
+    expect(parseRichText('<p>a</p>\n  \n<p>b</p>').map((b) => b.kind)).toEqual(['p', 'p']);
+  });
 });
 
 describe('renderRichTextIntoPdf', () => {
@@ -59,6 +73,65 @@ describe('renderRichTextIntoPdf', () => {
     // Two blocks drawn: the gap between them must show up in the total advance —
     // i.e. the cursor moves by strictly more than 2x the bare per-line text height.
     expect(after - before).toBeGreaterThan(bareTextHeight * 2);
+  });
+
+  // Render into an UNCOMPRESSED pdfkit doc and return the raw bytes, so tests can
+  // inspect link annotations (/Subtype /Link) and text-show operators (TJ) that
+  // are otherwise flate-compressed away.
+  function renderToBuffer(html: string): Promise<Buffer> {
+    const doc = new PDFDocument({ size: 'A4', margin: 50, compress: false });
+    const chunks: Buffer[] = [];
+    const done = new Promise<Buffer>((resolve) => {
+      doc.on('data', (d: Buffer) => chunks.push(d));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    doc.y = 60;
+    const ensureRoom = (needed: number): number => {
+      if (doc.y > doc.page.height - doc.page.margins.bottom - needed) doc.addPage();
+      return doc.y;
+    };
+    renderRichTextIntoPdf(doc, html, { x: 50, width: 495, startY: doc.y, ensureRoom });
+    doc.end();
+    return done;
+  }
+
+  it('does not bleed a link onto text that follows it in the same block (pdfkit continued-option stickiness)', async () => {
+    // Regression: a run after a link run omitted the `link` option, so pdfkit's
+    // `continued: true` inheritance kept the previous URL and made the trailing
+    // text a second live link. Exactly ONE link annotation must exist.
+    const pdf = await renderToBuffer('<p>See <a href="https://x.example">terms</a> after</p>');
+    const s = pdf.toString('latin1');
+    expect((s.match(/\/Subtype \/Link/g) ?? []).length).toBe(1);
+    expect(s).toContain('/URI (https://x.example)');
+  });
+
+  it('renders a 2-digit ordered-list ordinal ("10.") as a single un-wrapped text run', async () => {
+    // Regression: "10." overflowed the fixed 14pt gutter and character-wrapped,
+    // splitting into two text shows ("10" then ".") at different y positions.
+    // The measured gutter must keep it a single TJ show. Hex 31302e === "10.".
+    const html = '<ol>' + Array.from({ length: 12 }, (_, i) => `<li>Item ${i + 1}</li>`).join('') + '</ol>';
+    const pdf = await renderToBuffer(html);
+    const s = pdf.toString('latin1');
+    expect(s).toContain('<31302e>'); // "10." shown as one run
+    expect(s).not.toContain('<3130> 0] TJ\nET\nBT'); // not split "10" / "." across lines
+  });
+
+  it('advances the cursor by one line per ordered-list item (no ordinal-driven wrapping)', () => {
+    // Each single-line <li> should advance the cursor by ~one line + spacing;
+    // 12 items must never balloon past a two-lines-per-item budget (which is what
+    // a wrapped ordinal would have caused if it leaked into the flow).
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica').fontSize(11);
+    const oneLine = doc.heightOfString('Item 10', { width: 480 });
+    doc.y = 60;
+    const html = '<ol>' + Array.from({ length: 12 }, (_, i) => `<li>Item ${i + 1}</li>`).join('') + '</ol>';
+    const after = renderRichTextIntoPdf(doc, html, {
+      x: 50, width: 495, startY: 60,
+      ensureRoom: (needed: number) => { if (doc.y > doc.page.height - doc.page.margins.bottom - needed) doc.addPage(); return doc.y; },
+    });
+    // 12 items, one line each (~oneLine) plus 8px spacing per item — comfortably
+    // under a two-line-per-item budget.
+    expect(after - 60).toBeLessThan(12 * (oneLine * 2 + 8));
   });
 
   it('page-breaks mid-content when blocks overflow the remaining page height', () => {

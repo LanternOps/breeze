@@ -562,4 +562,49 @@ describe('sendQuote contract-variable gate', () => {
     const result = await sendQuote('q1', actor);
     expect(result.quote.status).toBe('sent');
   });
+
+  it('overlays the just-frozen billTo/seller onto the quote before rendering the contract + PDF', async () => {
+    // Regression: the in-memory `quote` was read BEFORE the send-time freeze, so
+    // its billTo*/sellerSnapshot were still NULL (draft). Rendering the emailed
+    // contract/PDF from that stale row substituted {{client.name}}/{{seller.name}}
+    // to empty strings. sendQuote must overlay the frozen values first.
+    const autoOnlyVersion = {
+      ...versionRow,
+      bodyHtml: '<p>Prepared for {{client.name}} by {{seller.name}}</p>',
+      declaredVariables: [
+        { name: 'client.name', kind: 'auto' },
+        { name: 'seller.name', kind: 'auto' },
+      ],
+    };
+    const draftNullBillTo = { ...baseQuote, billToName: null, billToAddress: null, sellerSnapshot: null };
+
+    queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
+    queueResult([contractBlock({})]);        // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);                         // getQuote: no staged Pax8 order
+    queueResult([org]);                      // getQuote's own draft billTo org lookup
+    queueResult([autoOnlyVersion]);          // send gate: version
+    queueResult([templateRow]);              // send gate: template
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([org]);                      // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]);             // update ... returning (claimed)
+    queueResult([]);                         // portalBranding
+    queueResult([autoOnlyVersion]);          // loadContractPdfInputs: version
+    queueResult([templateRow]);              // loadContractPdfInputs: template
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    await sendQuote('q1', actor);
+
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, ...) — arg 0 is the quote object that was rendered.
+    const renderedQuote = capturedPdfArgs![0] as Record<string, unknown>;
+    expect(renderedQuote.billToName).toBe('Customer Co'); // frozen org name, not the stale NULL
+    expect((renderedQuote.sellerSnapshot as { name?: string } | null)?.name).toBe('Acme MSP'); // built from partnerRow, not NULL
+    // renderQuotePdf(..., contractRenderData) — the substituted contract HTML must
+    // carry the frozen customer/seller identity, not empty strings.
+    const contractRenderData = capturedPdfArgs![6] as Map<string, { html: string | null }>;
+    const html = contractRenderData.get('block-1')!.html!;
+    expect(html).toContain('Customer Co');
+    expect(html).toContain('Acme MSP');
+  });
 });

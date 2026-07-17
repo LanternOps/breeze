@@ -77,7 +77,8 @@
     "bulletList": "Liste à puces",
     "orderedList": "Liste numérotée",
     "link": "Lien",
-    "linkPrompt": "Saisissez une URL (http:// ou https://)"
+    "linkPrompt": "Saisissez une URL (http:// ou https://)",
+    "linkInvalid": "Seuls les liens http:// et https:// sont autorisés"
   },
   "actions": {
     "save": "Enregistrer",

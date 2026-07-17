@@ -390,6 +390,7 @@
         "contractLabel": "Contrato",
         "selectContract": "Selecciona un contrato",
         "noContracts": "No se encontraron contratos para esta organización.",
+        "loadContractsError": "No se pudieron cargar los contratos. Inténtalo de nuevo.",
         "cancel": "Cancelar",
         "confirm": "Vincular",
         "linking": "Vinculando…"
@@ -414,6 +415,7 @@
         "uploaded": "PDF subido"
       },
       "publish": "Publicar",
+      "publishDirtyHint": "Guarda tu borrador antes de publicar",
       "body": "Cuerpo",
       "bodyAria": "Cuerpo de la plantilla de contrato",
       "preview": "Vista previa",

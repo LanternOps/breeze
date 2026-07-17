@@ -77,7 +77,8 @@
     "bulletList": "Aufzählungsliste",
     "orderedList": "Nummerierte Liste",
     "link": "Link",
-    "linkPrompt": "Geben Sie eine URL ein (http:// oder https://)"
+    "linkPrompt": "Geben Sie eine URL ein (http:// oder https://)",
+    "linkInvalid": "Nur http://- und https://-Links sind zulässig"
   },
   "actions": {
     "save": "Speichern",

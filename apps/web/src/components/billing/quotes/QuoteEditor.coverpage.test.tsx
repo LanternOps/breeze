@@ -71,8 +71,9 @@ const updateQuoteMock = vi.mocked(updateQuote);
 const uploadMock = vi.mocked(uploadQuoteImage);
 
 async function renderEditor(d: QuoteDetailData = detail) {
-  render(<QuoteEditor detail={d} onChanged={vi.fn()} />);
+  const utils = render(<QuoteEditor detail={d} onChanged={vi.fn()} />);
   await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  return utils;
 }
 
 describe('QuoteEditor — cover page panel', () => {
@@ -113,6 +114,46 @@ describe('QuoteEditor — cover page panel', () => {
     await waitFor(() => expect(updateQuoteMock).toHaveBeenCalledWith('q-1', {
       coverPage: { enabled: true, showPreparedBy: true, title: 'Managed IT Proposal' },
     }));
+  });
+
+  it('preserves un-blurred title keystrokes when an unrelated refetch lands (guarded resync)', async () => {
+    updateQuoteMock.mockResolvedValue(okRes({}));
+    const withCover: QuoteDetailData = {
+      ...detail,
+      quote: { ...detail.quote, coverPage: { enabled: true, showPreparedBy: true, title: 'Original' } },
+    };
+    const { rerender } = await renderEditor(withCover);
+
+    const title = screen.getByTestId('quote-cover-page-title') as HTMLInputElement;
+    // User types but has NOT blurred yet (no save fired).
+    fireEvent.change(title, { target: { value: 'Half-typed draft' } });
+    expect(title.value).toBe('Half-typed draft');
+
+    // An unrelated save's refresh() re-passes a FRESH coverPage object (new
+    // identity, same persisted content) — the mirror must not clobber the edit.
+    rerender(<QuoteEditor detail={{
+      ...withCover,
+      quote: { ...withCover.quote, coverPage: { enabled: true, showPreparedBy: true, title: 'Original' } },
+    }} onChanged={vi.fn()} />);
+
+    expect((screen.getByTestId('quote-cover-page-title') as HTMLInputElement).value).toBe('Half-typed draft');
+  });
+
+  it('resyncs the title from the server when the value changed and the user has NOT diverged', async () => {
+    const withCover: QuoteDetailData = {
+      ...detail,
+      quote: { ...detail.quote, coverPage: { enabled: true, showPreparedBy: true, title: 'Original' } },
+    };
+    const { rerender } = await renderEditor(withCover);
+    expect((screen.getByTestId('quote-cover-page-title') as HTMLInputElement).value).toBe('Original');
+
+    // No local edits → a changed server value flows through.
+    rerender(<QuoteEditor detail={{
+      ...withCover,
+      quote: { ...withCover.quote, coverPage: { enabled: true, showPreparedBy: true, title: 'Server Updated' } },
+    }} onChanged={vi.fn()} />);
+
+    expect((screen.getByTestId('quote-cover-page-title') as HTMLInputElement).value).toBe('Server Updated');
   });
 
   it('uploading a cover image stores its imageId on the cover page', async () => {

@@ -77,7 +77,8 @@
     "bulletList": "Bulleted list",
     "orderedList": "Numbered list",
     "link": "Link",
-    "linkPrompt": "Enter a URL (http:// or https://)"
+    "linkPrompt": "Enter a URL (http:// or https://)",
+    "linkInvalid": "Only http:// and https:// links are allowed"
   },
   "actions": {
     "save": "Save",

@@ -77,7 +77,8 @@
     "bulletList": "Lista com marcadores",
     "orderedList": "Lista numerada",
     "link": "Link",
-    "linkPrompt": "Insira uma URL (http:// ou https://)"
+    "linkPrompt": "Insira uma URL (http:// ou https://)",
+    "linkInvalid": "Somente links http:// e https:// são permitidos"
   },
   "actions": {
     "save": "Salvar",
