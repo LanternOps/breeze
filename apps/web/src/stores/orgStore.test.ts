@@ -6,7 +6,7 @@ vi.mock('./auth', () => ({
 }));
 
 import { fetchWithAuth } from './auth';
-import { getCurrentOrganization, getCurrentSite, useOrgStore } from './orgStore';
+import { getCurrentOrganization, useOrgStore } from './orgStore';
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
@@ -29,7 +29,6 @@ describe('org store', () => {
     useOrgStore.setState({
       currentPartnerId: null,
       currentOrgId: null,
-      currentSiteId: null,
       partners: [],
       organizations: [],
       sites: [],
@@ -141,8 +140,8 @@ describe('org store', () => {
     expect(useOrgStore.getState().partners).toHaveLength(1);
   });
 
-  it('fetchSites populates helper-selected site', async () => {
-    useOrgStore.setState({ currentOrgId: 'org-1', currentSiteId: 'site-1' });
+  it('fetchSites populates the shared site cache for the selected org', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-1' });
 
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse({
@@ -161,7 +160,7 @@ describe('org store', () => {
     await useOrgStore.getState().fetchSites();
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1');
-    expect(getCurrentSite()?.id).toBe('site-1');
+    expect(useOrgStore.getState().sites.map((s) => s.id)).toEqual(['site-1']);
   });
 
   it('sets error when organization fetch fails', async () => {

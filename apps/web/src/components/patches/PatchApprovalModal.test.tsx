@@ -85,7 +85,6 @@ describe('PatchApprovalModal', () => {
         open
         patch={PATCH}
         ringId={null}
-        currentOrgId="org-1"
         onClose={() => {}}
       />
     );
@@ -110,7 +109,6 @@ describe('PatchApprovalModal', () => {
         open
         patch={PATCH}
         ringId={null}
-        currentOrgId={null}
         onClose={() => {}}
       />
     );
@@ -141,7 +139,6 @@ describe('PatchApprovalModal', () => {
         open
         patch={PATCH}
         ringId="ring-1"
-        currentOrgId={null}
         onClose={() => {}}
       />
     );

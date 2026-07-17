@@ -15,7 +15,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '../../lib/authScope';
-import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -551,7 +550,6 @@ export default function PatchesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('patchesPage.title')}</h1>
-          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/patches'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">{t('patchesPage.description')}</p>
         </div>
         <div className="flex items-center gap-3">
@@ -686,7 +684,6 @@ export default function PatchesPage() {
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
-        currentOrgId={currentOrgId}
         orgName={currentOrg?.name ?? null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         onClose={() => {

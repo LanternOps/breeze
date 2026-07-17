@@ -31,7 +31,6 @@ export interface Site {
 interface OrgState {
   currentPartnerId: string | null;
   currentOrgId: string | null;
-  currentSiteId: string | null;
   /**
    * True when the user has *explicitly* chosen the All-orgs scope via the
    * scope pill (currentOrgId is null on purpose), as opposed to the transient
@@ -56,9 +55,8 @@ interface OrgState {
   // Actions
   setPartner: (partnerId: string) => void;
   /** Pass a non-empty orgId to select that org; pass '' or null to clear the
-   * selection (currentOrgId → null, currentSiteId → null, allOrgs → true). */
+   * selection (currentOrgId → null, allOrgs → true). */
   setOrganization: (orgId: string | null) => void;
-  setSite: (siteId: string | null) => void;
   fetchPartners: () => Promise<void>;
   fetchOrganizations: () => Promise<void>;
   fetchSites: () => Promise<void>;
@@ -70,7 +68,6 @@ export const useOrgStore = create<OrgState>()(
     (set, get) => ({
       currentPartnerId: null,
       currentOrgId: null,
-      currentSiteId: null,
       allOrgs: false,
       lastOrgId: null,
       partners: [],
@@ -83,7 +80,6 @@ export const useOrgStore = create<OrgState>()(
         set({
           currentPartnerId: partnerId,
           currentOrgId: null,
-          currentSiteId: null,
           // Switching partner resets to the default scope so the new partner's
           // first org gets auto-selected rather than landing in All-orgs.
           allOrgs: false,
@@ -99,7 +95,6 @@ export const useOrgStore = create<OrgState>()(
         const resolved = orgId || null;
         set({
           currentOrgId: resolved,
-          currentSiteId: null,
           sites: [],
           allOrgs: !resolved,
           // Remember the concrete org so the "Current" pill can return to it.
@@ -107,10 +102,6 @@ export const useOrgStore = create<OrgState>()(
         });
         // Fetch sites only when an org is actually selected.
         if (resolved) get().fetchSites();
-      },
-
-      setSite: (siteId) => {
-        set({ currentSiteId: siteId });
       },
 
       fetchPartners: async () => {
@@ -184,7 +175,7 @@ export const useOrgStore = create<OrgState>()(
             // Cached org vanished with nothing to auto-select. Clear allOrgs too
             // so we don't persist a contradictory null (currentOrgId null while
             // allOrgs false would read as an explicit All-orgs choice elsewhere).
-            set({ currentOrgId: null, currentSiteId: null, sites: [], allOrgs: false });
+            set({ currentOrgId: null, sites: [], allOrgs: false });
           }
         } catch (error) {
           set({
@@ -231,7 +222,6 @@ export const useOrgStore = create<OrgState>()(
         set({
           currentPartnerId: null,
           currentOrgId: null,
-          currentSiteId: null,
           // Reset the persisted scope fields too, or a logout→login as a
           // different user inherits the prior user's All-orgs choice / stale
           // lastOrgId (both are persisted).
@@ -246,10 +236,13 @@ export const useOrgStore = create<OrgState>()(
     }),
     {
       name: 'breeze-org',
+      // currentSiteId is intentionally no longer part of this state: the global
+      // site selection was a silent no-op on almost every page (only Discovery
+      // honored it), so site filtering moved into the pages that support it.
+      // Dropping it from partialize also discards any stale persisted value.
       partialize: (state) => ({
         currentPartnerId: state.currentPartnerId,
         currentOrgId: state.currentOrgId,
-        currentSiteId: state.currentSiteId,
         allOrgs: state.allOrgs,
         lastOrgId: state.lastOrgId
       })
@@ -272,13 +265,6 @@ export function getCurrentOrganization(): Organization | null {
   const { currentOrgId, organizations } = useOrgStore.getState();
   if (!currentOrgId) return null;
   return organizations.find((org) => org.id === currentOrgId) || null;
-}
-
-// Helper to get current site details
-export function getCurrentSite(): Site | null {
-  const { currentSiteId, sites } = useOrgStore.getState();
-  if (!currentSiteId) return null;
-  return sites.find((site) => site.id === currentSiteId) || null;
 }
 
 // Helper to get current partner details

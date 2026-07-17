@@ -95,11 +95,17 @@ export default function AddDeviceModal({
 }: AddDeviceModalProps) {
   const { t } = useTranslation("devices");
   const userOS = detectUserOS();
-  const { currentOrgId, currentSiteId, sites } = useOrgStore();
+  const { currentOrgId, sites, fetchSites } = useOrgStore();
   const orgSites = useMemo(
     () => sites.filter((s) => s.orgId === currentOrgId),
     [sites, currentOrgId],
   );
+
+  // Sites are fetched lazily now that the org switcher no longer preloads
+  // them; make sure the site picker has data when the modal opens.
+  useEffect(() => {
+    if (isOpen && currentOrgId && sites.length === 0) void fetchSites();
+  }, [isOpen, currentOrgId, sites.length, fetchSites]);
 
   // Tab state
   const [activeTab, setActiveTab] = useState<"installer" | "cli">(
@@ -169,12 +175,10 @@ export default function AddDeviceModal({
   // Initialize site selection
   useEffect(() => {
     if (!isOpen) return;
-    if (currentSiteId && orgSites.some((s) => s.id === currentSiteId)) {
-      setSelectedSiteId(currentSiteId);
-    } else if (orgSites.length > 0) {
+    if (orgSites.length > 0) {
       setSelectedSiteId(orgSites[0].id);
     }
-  }, [isOpen, currentSiteId, orgSites]);
+  }, [isOpen, orgSites]);
 
   // Reset state when modal opens
   useEffect(() => {
