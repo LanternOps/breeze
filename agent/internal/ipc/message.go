@@ -22,9 +22,11 @@ const (
 	TypeTrayUpdate   = "tray_update"
 	TypeTrayAction   = "tray_action"
 
-	// PAM approval dialog
-	TypePamRequestDialog = "pam_request_dialog"
-	TypePamDialogResult  = "pam_dialog_result"
+	// PAM approval and consent dismissal
+	TypePamRequestDialog        = "pam_request_dialog"
+	TypePamDialogResult         = "pam_dialog_result"
+	TypePamDismissConsent       = "pam_dismiss_consent"
+	TypePamDismissConsentResult = "pam_dismiss_consent_result"
 
 	// Phase 4: Desktop + Clipboard
 	TypeDesktopStart  = "desktop_start"
@@ -129,7 +131,7 @@ const (
 // Scope constants identify the capabilities granted to a helper session.
 const (
 	ScopeAssist    = "assist"     // IPC scope granted to the assist helper
-	ScopePam       = "pam"        // IPC scope granted to the user helper for PAM dialogs
+	ScopePam       = "pam"        // IPC scope granted to the SYSTEM helper for PAM dialogs
 	ScopeConsentUI = "consent_ui" // narrow IPC scope: lets the assist helper receive remote-session consent prompt + active-session banner messages (UI only; NOT desktop/clipboard/notify)
 
 	// ScopeConsentUIFallback lets a user-role helper that advertised native
@@ -252,6 +254,20 @@ type PamDialogResult struct {
 	Approved        bool   `json:"approved"`
 	Reason          string `json:"reason,omitempty"`
 	DismissedByUser bool   `json:"dismissedByUser"`
+}
+
+// PamDismissConsentRequest asks the SYSTEM helper to dismiss consent.exe.
+// DeadlineUnixMs bounds input injection inside the target session and leaves
+// the broker time to receive the helper's correlated response.
+type PamDismissConsentRequest struct {
+	DeadlineUnixMs int64 `json:"deadlineUnixMs"`
+}
+
+// PamDismissConsentResult reports whether the helper dismissed consent.exe.
+type PamDismissConsentResult struct {
+	Success       bool   `json:"success"`
+	Reason        string `json:"reason"`
+	DetailMessage string `json:"detailMessage,omitempty"`
 }
 
 // TrayUpdate tells the user helper to update the system tray icon/menu.

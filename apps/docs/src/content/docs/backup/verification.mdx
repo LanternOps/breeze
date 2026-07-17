@@ -22,8 +22,12 @@ Go to **Operations > Backup > Verification** to access verification controls.
 
 | Type | Duration | What it checks | Impact |
 |------|----------|----------------|--------|
-| **Integrity check** | Fast (minutes) | Checksums, file counts, manifest consistency | None — no data is restored |
-| **Test restore** | Medium (10+ min) | Extracts the full snapshot to a temporary location and measures restore time | Low — uses temp space, no production impact |
+| **Integrity check** | Fast (minutes) | Downloaded object size and SHA-256 checksum compared against the manifest, plus file counts and manifest consistency | None — no data is restored |
+| **Test restore** | Medium (10+ min) | Extracts the full snapshot to a temporary location, verifies each object against the manifest, and measures restore time | Low — uses temp space, no production impact |
+
+<Aside type="note">
+  Both checks genuinely detect corruption — an object whose bytes or length no longer match the manifest fails verification (reported as **Failed** or **Partial** with the specific file listed), rather than passing on a presence check alone. Snapshots taken before checksums were recorded still verify via the size comparison.
+</Aside>
 
 ### Running a Verification
 

@@ -133,6 +133,10 @@ const NON_USER_AUTH_GUARD_NAMES = [
   'requireViewerToken',
   'consumeWsTicket',
   'consumeDesktopConnectCode',
+  // Partner reconstruction API: authenticated by a partner service-principal
+  // key (machine identity), never a user session, so there is no
+  // `permissions` context and `allowedSiteIds` never applies.
+  'requirePartnerApiScope',
   // The platform-admin gate, detected by the actual middleware name — NOT a
   // `users.isPlatformAdmin` column/context reference, which a route migrated to
   // plain user auth would keep, silently passing re-verification. The

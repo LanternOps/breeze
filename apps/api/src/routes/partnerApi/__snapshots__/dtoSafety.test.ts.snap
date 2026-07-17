@@ -1,0 +1,158 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for automations 1`] = `
+{
+  "actions": [
+    {
+      "type": "string",
+    },
+  ],
+  "conditions": "object",
+  "dependencies": [],
+  "description": "object",
+  "enabled": "boolean",
+  "id": "string",
+  "name": "string",
+  "notificationTargets": "object",
+  "onFailure": "string",
+  "orgId": "string",
+  "revision": "string",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "trigger": {
+    "type": "string",
+  },
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for backup-configurations 1`] = `
+{
+  "active": "boolean",
+  "completenessGaps": [
+    {
+      "code": "string",
+    },
+  ],
+  "compression": "boolean",
+  "default": "boolean",
+  "encryption": "boolean",
+  "exclusions": [],
+  "id": "string",
+  "kind": "string",
+  "name": "string",
+  "orgId": "string",
+  "provider": "string",
+  "retention": "object",
+  "revision": "string",
+  "schedule": "object",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "type": "string",
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for configuration-assignments 1`] = `
+{
+  "id": "string",
+  "level": "string",
+  "orgId": "string",
+  "osFilter": "object",
+  "policyId": "string",
+  "policyName": "string",
+  "priority": "number",
+  "revision": "string",
+  "roleFilter": "object",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "targetId": "string",
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for configuration-policies 1`] = `
+{
+  "description": "object",
+  "features": [
+    {
+      "id": "string",
+      "policyId": "object",
+      "settings": {
+        "schedule": "string",
+      },
+      "type": "string",
+    },
+  ],
+  "id": "string",
+  "name": "string",
+  "orgId": "string",
+  "revision": "string",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "status": "string",
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for custom-field-values 1`] = `
+{
+  "definitionId": "string",
+  "deviceId": "string",
+  "fieldKey": "string",
+  "id": "string",
+  "name": "string",
+  "orgId": "string",
+  "revision": "string",
+  "siteId": "object",
+  "sourceUpdatedAt": "string",
+  "target": {
+    "id": "string",
+    "type": "string",
+  },
+  "type": "string",
+  "value": "string",
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for custom-fields 1`] = `
+{
+  "defaultValue": "object",
+  "deviceTypes": "object",
+  "fieldKey": "string",
+  "id": "string",
+  "name": "string",
+  "options": "object",
+  "orgId": "string",
+  "required": "boolean",
+  "revision": "string",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "type": "string",
+}
+`;
+
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for scripts 1`] = `
+{
+  "category": "object",
+  "content": "string",
+  "description": "object",
+  "exitCodeSeverityMapping": "object",
+  "id": "string",
+  "language": "string",
+  "name": "string",
+  "orgId": "string",
+  "osTypes": [
+    "string",
+  ],
+  "parameters": "object",
+  "revision": "string",
+  "runAs": "string",
+  "siteId": "object",
+  "sourceScope": "string",
+  "sourceUpdatedAt": "string",
+  "timeoutSeconds": "number",
+  "version": "number",
+}
+`;

@@ -14,7 +14,6 @@ import (
 	"unsafe"
 
 	"github.com/0xrawsec/golang-etw/etw"
-	"golang.org/x/sys/windows"
 )
 
 // providerGUID is the Microsoft-Windows-LUA ETW provider (lives in
@@ -162,18 +161,22 @@ func (s *etwSession) Stop() {
 func decodeConsentRequest(raw []byte) (Event, bool) {
 	targetPath, commandLine := parseConsentPayload(raw)
 	if targetPath == "" {
+		log.Debug("etwlua: unable to parse consent request payload", "payloadBytes", len(raw))
 		return Event{}, false
 	}
 
-	user := resolveConsentUser()
+	user, sessionID, attributionSource := resolveRequesterSession()
 	if user == "" {
-		// No interactive console user to attribute the prompt to; the server
-		// requires a subject, so drop rather than post a half record.
+		log.Debug("etwlua: dropping consent request with unresolved subject",
+			"attributionSource", attributionSource,
+			"targetPath", targetPath,
+		)
 		return Event{}, false
 	}
 
 	ev := Event{
 		SubjectUsername:      user,
+		SubjectSessionID:     sessionID,
 		TargetExecutablePath: targetPath,
 		CommandLine:          commandLine,
 		ObservedAt:           time.Now().UTC(),
@@ -191,54 +194,6 @@ func decodeConsentRequest(raw []byte) (Event, bool) {
 	// schema accepts a NULL signer and a NULL thumbprint, and a thumbprint-pinned
 	// rule fails closed until the agent emits one.
 	return ev, true
-}
-
-// consentUser caches the active console-session user; resolving it is a
-// syscall we don't want to run per consent event, and the console user
-// rarely changes.
-var (
-	consentUserMu    sync.Mutex
-	consentUserCache string
-	consentUserAt    time.Time
-)
-
-// resolveConsentUser returns the active console session's user as
-// "DOMAIN\\user". A UAC consent prompt is, by construction, raised in the
-// interactive session, so the console user is the requester in the common
-// case. Empty if there is no interactive session or the lookup fails.
-func resolveConsentUser() string {
-	consentUserMu.Lock()
-	defer consentUserMu.Unlock()
-	if consentUserCache != "" && time.Since(consentUserAt) < 60*time.Second {
-		return consentUserCache
-	}
-	if u := lookupConsoleUser(); u != "" {
-		consentUserCache = u
-		consentUserAt = time.Now()
-		return u
-	}
-	return ""
-}
-
-func lookupConsoleUser() string {
-	sid := windows.WTSGetActiveConsoleSessionId()
-	if sid == 0xFFFFFFFF { // no active console session
-		return ""
-	}
-	var token windows.Token
-	if err := windows.WTSQueryUserToken(sid, &token); err != nil {
-		return ""
-	}
-	defer token.Close()
-	tokenUser, err := token.GetTokenUser()
-	if err != nil {
-		return ""
-	}
-	account, domain, _, err := tokenUser.User.Sid.LookupAccount("")
-	if err != nil {
-		return ""
-	}
-	return domain + `\` + account
 }
 
 // hashFile returns the SHA-256 of the file at path as hex.

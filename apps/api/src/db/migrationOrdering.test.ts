@@ -49,16 +49,25 @@ describe('migration ordering', () => {
     // forms like `DROP TABLE IF EXISTS` or `ALTER TABLE IF EXISTS` are
     // intentionally excluded — they're a no-op against an absent table.
     const patterns = [
-      /\bREFERENCES\s+(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
-      /\bALTER\s+TABLE\s+(?!IF\s+EXISTS\b)(?:ONLY\s+)?(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
-      /\bCREATE\s+POLICY\s+[^;]*?\bON\s+(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
-      /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[^;]*?\bON\s+(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
-      /\bCREATE\s+TRIGGER\s+[^;]*?\bON\s+(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bREFERENCES\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bALTER\s+TABLE\s+(?!IF\s+EXISTS\b)(?:ONLY\s+)?(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bCREATE\s+POLICY\s+[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bCREATE\s+TRIGGER\s+[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
     ];
     const refs: string[] = [];
     for (const pattern of patterns) refs.push(...collectMatches(stripped, pattern));
     return refs;
   }
+
+  it('ignores format placeholders while retaining static trigger targets', () => {
+    expect(extractReferencedTables(`
+      EXECUTE format('CREATE TRIGGER t AFTER UPDATE ON public.%I EXECUTE FUNCTION f()', name);
+    `)).toEqual([]);
+    expect(extractReferencedTables(`
+      CREATE TRIGGER t AFTER UPDATE ON public.real_table EXECUTE FUNCTION f();
+    `)).toContain('real_table');
+  });
 
   it('every referenced table is created in the same file or an earlier one', async () => {
     const files = (await readdir(migrationsDir))

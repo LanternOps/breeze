@@ -82,6 +82,39 @@ func TestDismissUnsupportedOnNonWindows(t *testing.T) {
 	}
 }
 
+func TestDismissCancellationResult(t *testing.T) {
+	if result, ok := dismissCancellationResult(context.Background()); ok {
+		t.Fatalf("live context returned cancellation result: %+v", result)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, ok := dismissCancellationResult(ctx)
+	if !ok {
+		t.Fatal("cancelled context did not return cancellation result")
+	}
+	if result.Success {
+		t.Fatal("cancelled dismissal should not succeed")
+	}
+	if result.Reason != "dismiss_cancelled" {
+		t.Fatalf("reason = %q, want dismiss_cancelled", result.Reason)
+	}
+	if result.DetailMessage == "" {
+		t.Fatal("cancelled dismissal should include detail")
+	}
+
+	result, ok = dismissPostInputCancellationResult(ctx)
+	if !ok {
+		t.Fatal("post-input cancellation did not return a cancellation result")
+	}
+	if result.Reason != "dismiss_cancelled" {
+		t.Fatalf("post-input reason = %q, want dismiss_cancelled", result.Reason)
+	}
+	if result.DetailMessage != "PAM consent dismissal cancelled after Escape while waiting for consent.exe to close: context canceled" {
+		t.Fatalf("post-input detail = %q", result.DetailMessage)
+	}
+}
+
 // TestRequestZeroValuesAreSafe sanity-checks that a zero-valued Request
 // doesn't make the stub panic. The Windows impl applies a default 8000ms
 // timeout when TimeoutMs<=0; the stub doesn't need to but must not crash.

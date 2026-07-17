@@ -576,6 +576,7 @@
       "account": "Account",
       "profile": "Profile",
       "apiKeys": "API Keys",
+      "partnerServicePrincipals": "Service Principals",
       "billingSupport": "Billing & support",
       "opening": "Opening…",
       "billing": "Billing",

@@ -11,7 +11,9 @@ import {
   real,
   index,
   uniqueIndex,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alertSeverityEnum } from './alerts';
@@ -81,6 +83,18 @@ export const configurationPolicies = pgTable('configuration_policies', {
   statusIdx: index('config_policies_status_idx').on(table.status),
 }));
 
+// Coarse per-organization material clocks for desired-configuration exports.
+// Child definition/value tables advance these clocks through database-owned
+// triggers so an incremental traversal cannot miss a nested change.
+export const partnerExportConfigurationOrgState = pgTable('partner_export_configuration_org_state', {
+  resource: varchar('resource', { length: 40 }).notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  updatedAt: timestamp('updated_at', { precision: 3 }).defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.resource, table.orgId] }),
+  orgIdIdx: index('partner_export_configuration_org_state_org_id_idx').on(table.orgId),
+}));
+
 export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
   id: uuid('id').primaryKey().defaultRandom(),
   configPolicyId: uuid('config_policy_id').notNull().references(() => configurationPolicies.id, { onDelete: 'cascade' }),
@@ -92,6 +106,9 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
 }, (table) => ({
   configPolicyIdIdx: index('config_feature_links_policy_id_idx').on(table.configPolicyId),
   featureTypeIdx: index('config_feature_links_feature_type_idx').on(table.featureType),
+  featurePolicyIdIdx: index('config_feature_links_feature_policy_id_idx')
+    .on(table.featurePolicyId)
+    .where(sql`${table.featurePolicyId} IS NOT NULL`),
   uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique').on(table.configPolicyId, table.featureType),
 }));
 

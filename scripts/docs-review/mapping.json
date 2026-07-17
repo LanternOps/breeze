@@ -912,6 +912,38 @@
       ]
     },
     {
+      "pattern": "apps/api/src/services/m365ControlPlane/**",
+      "docs": [
+        "features/identity-integrations.mdx",
+        "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/m365ControlPlane/runtimeConfig.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/m365CustomerGraphRead.ts",
+      "docs": [
+        "features/identity-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/m365ConsentCallback.ts",
+      "docs": [
+        "features/identity-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/m365-graph-read-executor/**",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/production.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/services/aiToolsGoogle.ts",
       "docs": [
         "features/identity-console.mdx",
@@ -1380,13 +1412,40 @@
     {
       "pattern": "apps/api/src/routes/pax8.ts",
       "docs": [
-        "features/integrations.mdx"
+        "features/distributor-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/pax8Orders.ts",
+      "docs": [
+        "features/distributor-integrations.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/pax8SyncService.ts",
       "docs": [
-        "features/integrations.mdx"
+        "features/distributor-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pax8Order*.ts",
+      "docs": [
+        "features/distributor-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteToPax8Order.ts",
+      "docs": [
+        "features/quotes.mdx",
+        "features/distributor-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsCatalog.ts",
+      "docs": [
+        "features/mcp-server.mdx",
+        "features/ai.mdx",
+        "features/distributor-integrations.mdx"
       ]
     },
     {
@@ -1580,7 +1639,27 @@
     {
       "pattern": "apps/api/src/services/quoteService.ts",
       "docs": [
+        "features/quotes.mdx",
         "features/product-catalog.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quotePdf.ts",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteEmail.ts",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/scripts/install/**",
+      "docs": [
+        "agents/installation.mdx",
+        "backup/overview.mdx"
       ]
     },
     {
