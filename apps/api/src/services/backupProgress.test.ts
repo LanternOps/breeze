@@ -81,7 +81,7 @@ describe('applyBackupProgress', () => {
     });
 
     expect(result).toEqual({ applied: true });
-    const updateCall = vi.mocked(db.update).mock.results[0].value;
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
     expect(updateCall.set).toHaveBeenCalledWith(
       expect.objectContaining({
         transferredSize: 1000,
@@ -146,7 +146,7 @@ describe('applyBackupProgress', () => {
       progress: { current: 1000, total: 0, filesDone: 2, filesTotal: 10 },
     });
 
-    const updateCall = vi.mocked(db.update).mock.results[0].value;
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
     const setArg = updateCall.set.mock.calls[0][0];
     expect(setArg).not.toHaveProperty('totalSize');
     expect(setArg.transferredSize).toBe(1000);
@@ -248,7 +248,7 @@ describe('applyBackupStartedAck', () => {
     const result = await applyBackupStartedAck({ jobId: 'job-1', deviceId: 'device-1' });
 
     expect(result).toBe(true);
-    const updateCall = vi.mocked(db.update).mock.results[0].value;
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
     expect(updateCall.set).toHaveBeenCalledWith(
       expect.objectContaining({ lastProgressAt: expect.any(Date), updatedAt: expect.any(Date) })
     );
