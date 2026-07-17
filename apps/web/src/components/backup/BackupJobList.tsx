@@ -68,6 +68,9 @@ type BackupJob = {
 const POLL_MS = 5000;
 // A running job with no progress update for this long is flagged as stalled.
 const STALL_MS = 2 * 60 * 1000;
+// Statuses a job can no longer leave — used to reconcile optimistic cancels
+// against a possibly-stale poll response.
+const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled'];
 
 type BackupJobDetails = BackupJobRaw & {
   deviceName?: string | null;
@@ -200,6 +203,11 @@ export default function BackupJobList() {
   const [speeds, setSpeeds] = useState<Record<string, number>>({});
   const speedSamplesRef = useRef<Map<string, { bytes: number; at: number }>>(new Map());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Jobs the user just cancelled (id -> timestamp). A poll GET already in flight
+  // when the cancel POST lands would otherwise revert the row to running; we keep
+  // the local terminal status until the server confirms a terminal status too.
+  // Entries expire after ~2 poll intervals as a safety net.
+  const recentlyCancelledRef = useRef<Map<string, number>>(new Map());
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -211,13 +219,29 @@ export default function BackupJobList() {
       }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
-      const nextJobs = (Array.isArray(data) ? data : []).map(mapJob);
-
-      // Derive transfer speed from the delta since the previous sample; fall
-      // back to the running average (transferred / elapsed) with no prior
-      // sample. Guarded so legacy jobs (null transferredSize) and zero/negative
-      // deltas never yield NaN/Infinity or a negative speed.
       const now = Date.now();
+
+      // Reconcile against recently-cancelled jobs before anything else so a stale
+      // poll can't resurrect a job the user just stopped, and expire old entries.
+      const cancelled = recentlyCancelledRef.current;
+      for (const [id, at] of cancelled) {
+        if (now - at > POLL_MS * 2) cancelled.delete(id);
+      }
+      const nextJobs = (Array.isArray(data) ? data : []).map(mapJob).map((job) => {
+        if (!cancelled.has(job.id)) return job;
+        if (TERMINAL_STATUSES.includes(job.status)) {
+          // Server agrees the job has ended — accept its truth and stop overriding.
+          cancelled.delete(job.id);
+          return job;
+        }
+        return { ...job, status: 'cancelled' as JobStatus };
+      });
+
+      // Derive transfer speed from the delta since the previous sample. The
+      // running-average fallback fires ONLY when there is no prior sample; once a
+      // sample exists, a zero/negative delta (a stalled job) yields no speed at
+      // all rather than a misleading average. A fresh nextSpeeds map each refresh
+      // means a stalled job's previously shown speed is cleared automatically.
       const nextSpeeds: Record<string, number> = {};
       const samples = speedSamplesRef.current;
       const seen = new Set<string>();
@@ -226,8 +250,11 @@ export default function BackupJobList() {
         seen.add(job.id);
         const prev = samples.get(job.id);
         let bps: number | undefined;
-        if (prev && now > prev.at && job.transferredSize > prev.bytes) {
-          bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
+        if (prev) {
+          if (now > prev.at && job.transferredSize > prev.bytes) {
+            bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
+          }
+          // prior sample but no forward progress -> stalled -> leave bps unset.
         } else if (job.startedAt) {
           const elapsedSec = (now - new Date(job.startedAt).getTime()) / 1000;
           if (elapsedSec > 0) bps = job.transferredSize / elapsedSec;
@@ -275,6 +302,9 @@ export default function BackupJobList() {
   }, [hasRunning, fetchJobs]);
 
   const handleCancel = useCallback(async (jobId: string) => {
+    // Mark as recently-cancelled up front so even a poll GET that was already in
+    // flight when this POST resolves gets reconciled to the terminal status.
+    recentlyCancelledRef.current.set(jobId, Date.now());
     try {
       setCancellingId(jobId);
       const response = await fetchWithAuth(`/backup/jobs/${jobId}/cancel`, {
@@ -290,6 +320,8 @@ export default function BackupJobList() {
         )
       );
     } catch (err) {
+      // The cancel failed — stop overriding the server's view of this job.
+      recentlyCancelledRef.current.delete(jobId);
       setError(err instanceof Error ? err.message : 'Failed to cancel job');
     } finally {
       setCancellingId(null);
@@ -347,7 +379,9 @@ export default function BackupJobList() {
     });
   }, [configFilter, jobs, query, statusFilter]);
 
-  if (loading) {
+  // Only take over the whole view on the initial load. Poll-triggered refreshes
+  // set `loading` too, but must not blank an already-rendered table.
+  if (loading && jobs.length === 0) {
     return (
       <div className="flex items-center justify-center py-16">
         <div className="text-center">

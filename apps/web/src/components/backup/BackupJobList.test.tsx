@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BackupJobList from './BackupJobList';
@@ -321,6 +321,123 @@ describe('BackupJobList', () => {
     expect(screen.getByText('Beta Server')).toBeTruthy();
     expect(container.textContent).not.toMatch(/NaN|Infinity/);
     expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
+  });
+
+  it('keeps the table rendered during a background poll refresh (no full-page spinner)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));
+
+    let call = 0;
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        call += 1;
+        if (call === 1) {
+          return makeJsonResponse({
+            data: [runningJob({ transferredSize: 1_000_000, totalSize: 10_000_000, fileCount: 2, totalFiles: 20 })],
+          });
+        }
+        // Poll refresh: leave the request in flight so `loading` stays true.
+        return new Promise<Response>(() => {});
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+    expect(screen.getByText('Beta Server')).toBeTruthy();
+
+    // Poll tick fires; the in-flight refresh keeps loading=true. The table must
+    // stay rendered rather than being replaced by the full-page spinner.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await flush();
+    });
+    expect(screen.getByText('Beta Server')).toBeTruthy();
+  });
+
+  it('shows no speed when a running job makes no progress between polls (stalled)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [runningJob({ transferredSize: 2_000_000, totalSize: 10_000_000, fileCount: 4, totalFiles: 20 })],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+    // First render uses the average-since-start fallback (no prior sample).
+    expect(screen.getByText(/\/s$/)).toBeTruthy();
+
+    // Second poll: identical byte count -> zero delta -> no speed shown.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await flush();
+    });
+    expect(screen.queryByText(/\/s$/)).toBeNull();
+  });
+
+  it('does not revert an optimistic cancel when a poll GET in flight reports running', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));
+
+    let listCall = 0;
+    let releasePoll: (() => void) | undefined;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        listCall += 1;
+        const running = {
+          data: [runningJob({ id: 'job-run', transferredSize: 1_000_000, totalSize: 10_000_000, fileCount: 2, totalFiles: 20 })],
+        };
+        if (listCall === 1) return makeJsonResponse(running);
+        // Poll GET: resolve only when released, and it still reports "running".
+        return new Promise<Response>((resolve) => {
+          releasePoll = () => resolve(makeJsonResponse(running));
+        });
+      }
+      if (url === '/backup/jobs/job-run/cancel') {
+        return makeJsonResponse({ id: 'job-run', status: 'cancelled' });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    // Poll GET goes in flight (pending) before the user cancels.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await flush();
+    });
+
+    // User stops the job — POST resolves, optimistic Cancelled shown.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Stop backup for Beta Server/i }));
+      await flush();
+    });
+    // Scope to the job row — "Cancelled"/"Running" also appear as filter options.
+    const rowAfterCancel = screen.getByText('Beta Server').closest('tr') as HTMLElement;
+    expect(within(rowAfterCancel).getByText('Cancelled')).toBeTruthy();
+
+    // The stale in-flight poll now resolves reporting "running"; it must not win.
+    await act(async () => {
+      releasePoll?.();
+      await flush();
+    });
+    const rowAfterPoll = screen.getByText('Beta Server').closest('tr') as HTMLElement;
+    expect(within(rowAfterPoll).getByText('Cancelled')).toBeTruthy();
+    expect(within(rowAfterPoll).queryByText('Running')).toBeNull();
   });
 
   it('labels the running-job action button "Stop"', async () => {
