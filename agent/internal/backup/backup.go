@@ -18,6 +18,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
+	"github.com/breeze-rmm/agent/internal/config"
 )
 
 const (
@@ -74,7 +75,14 @@ type BackupJob struct {
 	// when a run completes but is degraded — e.g. a partial system-state
 	// collection where some artifact classes failed — so a partial system_image
 	// backup doesn't silently present as a full, restorable capture.
-	Warning             string                           `json:"warning,omitempty"`
+	Warning string `json:"warning,omitempty"`
+	// ErrorCount is the number of per-file upload failures in a PARTIALLY
+	// successful run (some files uploaded, some skipped/stalled/exhausted).
+	// 0 on a clean run. Carried in the command result JSON so the server can
+	// persist it to the job's error_count column alongside the Warning text —
+	// without it a partial snapshot presents server-side as a green job with
+	// zero errors.
+	ErrorCount          int                              `json:"errorCount,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
 }
@@ -384,19 +392,26 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// endpoint/bucket/path + the *configured* source paths — never the
 	// VSS-rewritten or system-state-staging paths in backupPaths, which are
 	// ephemeral per run and would defeat identity matching across runs).
-	// journalDir falls back to the OS temp dir when no staging dir is
-	// configured, same as every other staging fallback in this package.
-	journalDir := m.GetStagingDir()
-	if journalDir == "" {
-		journalDir = os.TempDir()
-	}
-	journal, resumedJournal, journalErr := openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
-	if journalErr != nil {
-		// A journal is a best-effort checkpoint, never a correctness
-		// requirement: degrade to a journal-less run rather than failing
-		// the backup over it.
-		log.Printf("[backup] failed to open checkpoint journal, proceeding without resume support: %v", journalErr)
-		journal = nil
+	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
+	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
+	// (a deterministic root-owned filename there is a symlink/tamper surface;
+	// a forged journal can trigger remote snapshot cleanup or silent file
+	// skips). If no secure dir exists, the run simply doesn't journal: resume
+	// is an optimization, never worth a world-writable root-owned write.
+	var journal *snapshotJournal
+	var resumedJournal bool
+	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
+		log.Printf("[backup] no secure checkpoint journal directory available (only the world-writable temp dir); proceeding without resume support")
+	} else {
+		var journalErr error
+		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+		if journalErr != nil {
+			// A journal is a best-effort checkpoint, never a correctness
+			// requirement: degrade to a journal-less run rather than failing
+			// the backup over it.
+			log.Printf("[backup] failed to open checkpoint journal, proceeding without resume support: %v", journalErr)
+			journal = nil
+		}
 	}
 	if journal != nil {
 		if staleID, ok := journal.StaleSnapshotID(); ok {
@@ -449,9 +464,90 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		return job, combinedErr
 	}
 
+	// Per-file upload failures on a PARTIAL success (some files uploaded,
+	// some skipped/stalled/retry-exhausted): the job still completes — the
+	// snapshot is real and restorable for what it contains — but the
+	// failures must be visible server-side rather than silently swallowed
+	// (a green job that is an incomplete restore point). Fold them into
+	// Warning (which the server persists to the job's errorLog) and
+	// ErrorCount, appending after any earlier system-state warning.
+	if snapshot != nil && len(snapshot.UploadFailures) > 0 {
+		job.ErrorCount = len(snapshot.UploadFailures)
+		failureWarning := summarizeUploadFailures(snapshot.UploadFailures, len(files))
+		if job.Warning != "" {
+			job.Warning += "; " + failureWarning
+		} else {
+			job.Warning = failureWarning
+		}
+		log.Printf("[backup] %s", failureWarning)
+	}
+
 	job.Status = jobStatusCompleted
 	job.Error = errors.Join(scanErr, retentionErr)
 	return job, nil
+}
+
+// maxUploadFailureDetails caps how many individual per-file error messages
+// summarizeUploadFailures includes in a job Warning — the full list can be
+// thousands of entries, and the Warning lands in a DB text column and the UI.
+const maxUploadFailureDetails = 5
+
+// summarizeUploadFailures renders a partial-success run's per-file upload
+// failures as a human-readable Warning fragment:
+// "N of M files failed to upload: <first errors> (+K more)".
+func summarizeUploadFailures(failures []error, filesTotal int) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	details := make([]string, 0, maxUploadFailureDetails)
+	for i, err := range failures {
+		if i >= maxUploadFailureDetails {
+			break
+		}
+		details = append(details, err.Error())
+	}
+	summary := fmt.Sprintf("%d of %d files failed to upload: %s",
+		len(failures), filesTotal, strings.Join(details, "; "))
+	if len(failures) > maxUploadFailureDetails {
+		summary += fmt.Sprintf(" (+%d more)", len(failures)-maxUploadFailureDetails)
+	}
+	return summary
+}
+
+// journalHomeDirFn/journalDataDirFn are test seams over the secure journal
+// dir fallback chain (there is no way to make os.UserHomeDir AND the
+// compiled-in config data dir both unavailable from a test otherwise).
+var (
+	journalHomeDirFn = os.UserHomeDir
+	journalDataDirFn = config.GetDataDir
+)
+
+// resolveJournalDir returns the directory the checkpoint journal may live in
+// and whether journaling is allowed at all. Precedence mirrors the heartbeat
+// backup-result outbox's fallback chain (backupResultOutboxDir in
+// internal/heartbeat), minus its final temp-dir fallback:
+//
+//  1. An explicitly configured StagingDir — the operator chose it, use it
+//     as-is (openSnapshotJournal creates it 0700 if missing).
+//  2. The per-user ~/.breeze dir, then the agent's config data dir — both
+//     owned by the invoking user (root/SYSTEM for the helper), not
+//     world-writable.
+//  3. NOTHING (ok=false): if the only remaining option is os.TempDir(), the
+//     run must not journal at all. A deterministic root-owned filename in a
+//     world-writable directory is a symlink/tamper surface — a forged
+//     journal can trigger remote snapshot cleanup or silent file skips —
+//     and resume is an optimization, never worth that trade.
+func resolveJournalDir(stagingDir string) (dir string, ok bool) {
+	if strings.TrimSpace(stagingDir) != "" {
+		return stagingDir, true
+	}
+	if homeDir, err := journalHomeDirFn(); err == nil && strings.TrimSpace(homeDir) != "" {
+		return filepath.Join(homeDir, ".breeze", "backup-journal"), true
+	}
+	if dataDir := strings.TrimSpace(journalDataDirFn()); dataDir != "" {
+		return filepath.Join(dataDir, "backup-journal"), true
+	}
+	return "", false
 }
 
 type backupFile struct {

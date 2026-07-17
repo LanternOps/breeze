@@ -477,7 +477,7 @@ func TestPerFileUploadRetry_SucceedsOnSecondAttempt(t *testing.T) {
 }
 
 func TestPerFileUploadRetry_CancelDuringFirstAttempt_NoRetry(t *testing.T) {
-	// blockingUploadProvider (defined in backup_test.go) blocks its
+	// releasableUploadProvider (defined in backup_test.go) blocks its
 	// UploadContext call until ctx.Done(), signalling p.started once the
 	// call has begun so the test can cancel the job context mid-attempt.
 	p := newBlockingUploadProvider()
@@ -1276,4 +1276,126 @@ func (f *failingUploadProvider) List(prefix string) ([]string, error) {
 
 func (f *failingUploadProvider) Delete(remotePath string) error {
 	return f.backingProvider.Delete(remotePath)
+}
+
+// releasableUploadProvider blocks every UploadContext call until release is
+// closed (or the passed context is done), then succeeds immediately — used to
+// model a single very long in-flight upload.
+type releasableUploadProvider struct {
+	release chan struct{}
+}
+
+func (p *releasableUploadProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *releasableUploadProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *releasableUploadProvider) Download(remotePath, localPath string) error { return nil }
+func (p *releasableUploadProvider) List(prefix string) ([]string, error)        { return nil, nil }
+func (p *releasableUploadProvider) Delete(remotePath string) error              { return nil }
+
+// Regression test for the reaper-vs-long-upload deadlock: the upload loop
+// only emits progress after each COMPLETED file, so a single file whose
+// upload takes longer than the server's stale-progress window used to look
+// dead server-side and get killed mid-upload, forever. The keepalive
+// goroutine must re-emit the CURRENT counters WHILE an upload is still in
+// flight. Run with -race: the keepalive goroutine and the upload loop share
+// the progress counters.
+func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
+	restoreThrottle := setProgressThrottleForTest(0)
+	defer restoreThrottle()
+	restoreKeepalive := setProgressKeepaliveIntervalForTest(10 * time.Millisecond)
+	defer restoreKeepalive()
+
+	release := make(chan struct{})
+	provider := &releasableUploadProvider{release: release}
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "payload"), snapshotPath: "a", size: 7, modTime: time.Now()},
+	}
+
+	type emission struct {
+		filesDone, filesTotal int
+		bytesDone, bytesTotal int64
+	}
+	progressed := make(chan emission, 64)
+	done := make(chan error, 1)
+	go func() {
+		_, err := createSnapshotWithProgress(context.Background(), provider, files,
+			func(fd, ft int, bd, bt int64) {
+				select {
+				case progressed <- emission{fd, ft, bd, bt}:
+				default:
+				}
+			}, nil)
+		done <- err
+	}()
+
+	// A keepalive emission must arrive WHILE the (only) upload is blocked —
+	// i.e. before we release the provider — carrying the unchanged counters.
+	select {
+	case got := <-progressed:
+		if got.filesDone != 0 || got.bytesDone != 0 {
+			t.Fatalf("in-flight keepalive must report unchanged counters, got filesDone=%d bytesDone=%d", got.filesDone, got.bytesDone)
+		}
+		if got.filesTotal != 1 || got.bytesTotal != 7 {
+			t.Fatalf("keepalive must report the known totals, got filesTotal=%d bytesTotal=%d", got.filesTotal, got.bytesTotal)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no keepalive progress emission while the upload was in flight")
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("snapshot should complete after the upload is released: %v", err)
+	}
+}
+
+// Partial success must carry the per-file failures out on the snapshot (see
+// Snapshot.UploadFailures) instead of silently dropping them — they used to
+// be returned only when ZERO files uploaded.
+func TestCreateSnapshot_PartialFailureRecordsUploadFailures(t *testing.T) {
+	restore := setUploadRetryDelayForTest(0)
+	defer restore()
+
+	tmpDir := t.TempDir()
+	good := createTempFile(t, tmpDir, "good.txt", "good content")
+
+	failProvider := &failingUploadProvider{
+		backingProvider: newMockProvider(),
+		failOn:          -1, // never fail by call count; the bad source path fails on read
+	}
+	files := []backupFile{
+		{sourcePath: good, snapshotPath: "path_0/good.txt", size: 12, modTime: time.Now()},
+		{sourcePath: pathpkg.Join(tmpDir, "missing.txt"), snapshotPath: "path_0/missing.txt", size: 5, modTime: time.Now()},
+	}
+
+	snapshot, err := CreateSnapshot(failProvider, files)
+	if err != nil {
+		t.Fatalf("partial success must not return an error, got: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("snapshot should not be nil for partial success")
+	}
+	if len(snapshot.UploadFailures) != 1 {
+		t.Fatalf("expected 1 recorded upload failure, got %d: %v", len(snapshot.UploadFailures), snapshot.UploadFailures)
+	}
+	if !strings.Contains(snapshot.UploadFailures[0].Error(), "missing.txt") {
+		t.Fatalf("upload failure should name the failed file, got: %v", snapshot.UploadFailures[0])
+	}
+	// The manifest must never carry the in-memory failure list.
+	data, marshalErr := json.Marshal(snapshot)
+	if marshalErr != nil {
+		t.Fatalf("marshal snapshot: %v", marshalErr)
+	}
+	if strings.Contains(string(data), `"UploadFailures":`) || strings.Contains(string(data), `"uploadFailures":`) {
+		t.Fatalf("UploadFailures must not serialize into the manifest: %s", data)
+	}
 }

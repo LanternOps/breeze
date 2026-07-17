@@ -41,6 +41,12 @@ import {
   tryParseBackupResultPayload,
 } from './backupProgress';
 
+// applyBackupProgress now UUID-gates commandId before any DB access, so test
+// commandIds must be real UUIDs (the job rows they resolve to can keep the
+// readable 'job-1' ids — only the commandId itself is gated).
+const JOB_UUID = '2c9e6679-7425-40de-944b-e07fc1f90ae7';
+const NOT_FOUND_UUID = '3d0f7780-8536-41ef-a55c-f18fd2fa1bf8';
+
 function selectChain(rows: unknown[]) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'innerJoin', 'where', 'limit']) {
@@ -76,7 +82,7 @@ describe('applyBackupProgress', () => {
 
     const result = await applyBackupProgress({
       agentId: 'agent-1',
-      commandId: 'job-1',
+      commandId: JOB_UUID,
       progress: { phase: 'uploading', current: 1000, total: 5000, filesDone: 2, filesTotal: 10 },
     });
 
@@ -104,7 +110,7 @@ describe('applyBackupProgress', () => {
 
     const result = await applyBackupProgress({
       agentId: 'agent-evil',
-      commandId: 'job-1',
+      commandId: JOB_UUID,
       progress: { current: 100, total: 200 },
     });
 
@@ -122,7 +128,7 @@ describe('applyBackupProgress', () => {
 
     const result = await applyBackupProgress({
       agentId: 'agent-1',
-      commandId: 'job-1',
+      commandId: JOB_UUID,
       progress: { current: 100, total: 200 },
     });
 
@@ -142,7 +148,7 @@ describe('applyBackupProgress', () => {
 
     await applyBackupProgress({
       agentId: 'agent-1',
-      commandId: 'job-1',
+      commandId: JOB_UUID,
       progress: { current: 1000, total: 0, filesDone: 2, filesTotal: 10 },
     });
 
@@ -157,17 +163,30 @@ describe('applyBackupProgress', () => {
 
     const result = await applyBackupProgress({
       agentId: 'agent-1',
-      commandId: 'nonexistent',
+      commandId: NOT_FOUND_UUID,
       progress: { current: 100 },
     });
 
     expect(result).toEqual({ applied: false, reason: 'not-found' });
   });
 
+  it('drops a non-UUID commandId before any DB access (restore progress / garbage ids)', async () => {
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: 'not-a-uuid',
+      progress: { current: 100, total: 200 },
+    });
+
+    expect(result).toEqual({ applied: false, reason: 'invalid-command-id' });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
+  });
+
   it('drops an invalid progress payload without throwing', async () => {
     const result = await applyBackupProgress({
       agentId: 'agent-1',
-      commandId: 'job-1',
+      commandId: JOB_UUID,
       progress: { current: 'not-a-number' as unknown as number },
     });
 

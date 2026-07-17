@@ -15,6 +15,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -55,6 +56,14 @@ type Snapshot struct {
 	Timestamp time.Time      `json:"timestamp"`
 	Files     []SnapshotFile `json:"files"`
 	Size      int64          `json:"size"`
+	// UploadFailures records this run's per-file upload failures (skipped,
+	// stalled, or retry-exhausted files) when the snapshot still partially
+	// succeeded. In-memory only — `json:"-"` keeps it out of both the uploaded
+	// manifest and the wire command result. RunBackupContext folds it into the
+	// job's Warning/ErrorCount so a partial snapshot never presents server-side
+	// as a green job with zero errors (an incomplete restore point that looks
+	// complete).
+	UploadFailures []error `json:"-"`
 }
 
 // SnapshotFile captures metadata for a backed up file.
@@ -138,6 +147,26 @@ func setProgressThrottleForTest(d time.Duration) (restore func()) {
 	old := progressThrottle
 	progressThrottle = d
 	return func() { progressThrottle = old }
+}
+
+// progressKeepaliveInterval is how often the keepalive goroutine in
+// createSnapshotWithProgress re-emits the CURRENT progress counters while a
+// run with a non-nil callback is in flight. The upload loop only emits after
+// each COMPLETED file, so a single file whose upload (or 30s retry backoff)
+// takes longer than the server's stale-progress reaper window would look
+// dead server-side and get killed mid-upload — then resume from byte 0 next
+// run and get killed again, never completing. The keepalive keeps
+// last_progress_at fresh with unchanged counters instead.
+var progressKeepaliveInterval = 30 * time.Second
+
+// setProgressKeepaliveIntervalForTest overrides progressKeepaliveInterval so
+// tests can observe a keepalive emission without waiting out the real 30s.
+// Call the returned restore func (typically via defer) to put the real value
+// back.
+func setProgressKeepaliveIntervalForTest(d time.Duration) (restore func()) {
+	old := progressKeepaliveInterval
+	progressKeepaliveInterval = d
+	return func() { progressKeepaliveInterval = old }
 }
 
 // uploadMinThroughputBps is the deadline floor: assume >=64 KiB/s or declare
@@ -257,6 +286,13 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		bytesTotal += file.size
 	}
 	filesTotal := len(files)
+
+	// filesDone/bytesDone/lastProgressAt are shared between the upload loop
+	// (which mutates the counters) and the keepalive goroutine below (which
+	// re-emits them) — every access goes through progressMu. onProgress itself
+	// is invoked WITH the mutex held, so emissions are strictly serialized and
+	// the reported counters can never appear to go backwards.
+	var progressMu sync.Mutex
 	var filesDone int
 	var bytesDone int64
 	lastProgressAt := time.Now()
@@ -264,11 +300,48 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if onProgress == nil {
 			return
 		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		if !force && time.Since(lastProgressAt) < progressThrottle {
 			return
 		}
 		lastProgressAt = time.Now()
 		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
+	}
+	markDone := func(fileCount int, byteCount int64) {
+		progressMu.Lock()
+		filesDone += fileCount
+		bytesDone += byteCount
+		progressMu.Unlock()
+	}
+
+	// Keepalive: while a single large upload (or the per-file retry backoff)
+	// is in flight, the loop emits nothing — but the server-side stale reaper
+	// treats a silent running job as dead and cancels it. Re-emit the current
+	// counters every progressKeepaliveInterval so a long in-flight upload
+	// keeps the job's last_progress_at fresh. The goroutine is joined on
+	// every return path (defer) so no emission can fire after this function
+	// returns.
+	if onProgress != nil {
+		keepaliveTicker := time.NewTicker(progressKeepaliveInterval)
+		keepaliveStop := make(chan struct{})
+		keepaliveDone := make(chan struct{})
+		go func() {
+			defer close(keepaliveDone)
+			for {
+				select {
+				case <-keepaliveStop:
+					return
+				case <-keepaliveTicker.C:
+					emitProgress(false)
+				}
+			}
+		}()
+		defer func() {
+			keepaliveTicker.Stop()
+			close(keepaliveStop)
+			<-keepaliveDone
+		}()
 	}
 
 	// Resume matching: build the full matched set up front (rather than
@@ -277,16 +350,17 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// before any real upload work happens.
 	resumedFiles := make(map[string]SnapshotFile)
 	if journal != nil {
+		var resumedBytes int64
 		for _, file := range files {
 			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
 				resumedFiles[journalLookupKey(file)] = entry
-				filesDone++
-				bytesDone += entry.Size
+				resumedBytes += entry.Size
 			}
 		}
 		if len(resumedFiles) > 0 {
+			markDone(len(resumedFiles), resumedBytes)
 			log.Printf("[backup] resuming snapshot %s: %d file(s) / %d bytes already uploaded in a prior run",
-				snapshot.ID, len(resumedFiles), bytesDone)
+				snapshot.ID, len(resumedFiles), resumedBytes)
 			emitProgress(true)
 		}
 	}
@@ -368,8 +442,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += file.size
-		filesDone++
-		bytesDone += file.size
+		markDone(1, file.size)
 		emitProgress(false)
 		if journal != nil {
 			// Record logs and swallows its own write failures — a dead
@@ -386,6 +459,12 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	if len(snapshot.Files) == 0 {
 		return nil, errors.Join(errs...)
 	}
+	// Partial success: some files uploaded, some failed. Carry the per-file
+	// failures on the snapshot (in-memory only, see UploadFailures) so the
+	// manager can surface them as a job Warning/ErrorCount instead of
+	// silently dropping them here (they used to be returned only when ZERO
+	// files uploaded).
+	snapshot.UploadFailures = errs
 
 	if err := ctx.Err(); err != nil {
 		return abortStopped()

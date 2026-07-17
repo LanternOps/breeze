@@ -46,6 +46,7 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
+import { UUID_REGEX } from '../utils/uuid';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
@@ -57,7 +58,6 @@ declare module 'hono' {
 }
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
 const MAX_DESKTOP_SESSION_ID_BYTES = 128;
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -2292,7 +2292,15 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 progress: progressMessage.progress,
               });
               if (!applied.applied) {
-                console.warn(
+                // agent-mismatch is a real anomaly (an agent pinging another
+                // device's job) and stays at warn. Everything else is routine
+                // traffic — restore progress reuses this WS type with a
+                // commandId that matches no backup job (not-found), a garbage
+                // or non-UUID commandId is dropped pre-DB
+                // (invalid-command-id), and terminal-status is a benign
+                // completion race — so those drop quietly at debug.
+                const dropLog = applied.reason === 'agent-mismatch' ? console.warn : console.debug;
+                dropLog(
                   `[AgentWs] Dropping backup_progress for ${progressMessage.commandId} from agent ${agentId}: reason=${applied.reason}`
                 );
               }

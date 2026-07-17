@@ -750,3 +750,158 @@ func TestRunBackup_SecondSnapshotIncludesUnmodifiedFiles(t *testing.T) {
 		t.Error("second backup: files backed up = 0, want non-zero")
 	}
 }
+
+// failSubstringUploadProvider fails every upload whose localPath contains
+// failSubstring (persistently — across the per-file retry too) and delegates
+// everything else to the backing mock provider.
+type failSubstringUploadProvider struct {
+	*mockProvider
+	failSubstring string
+}
+
+func (p *failSubstringUploadProvider) Upload(localPath, remotePath string) error {
+	if strings.Contains(localPath, p.failSubstring) {
+		return errors.New("simulated persistent upload failure")
+	}
+	return p.mockProvider.Upload(localPath, remotePath)
+}
+
+// A partial-success run (some files uploaded, some retry-exhausted) must
+// complete WITH a visible Warning + ErrorCount — never as a green job with
+// zero errors that is silently an incomplete restore point.
+func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
+	restore := setUploadRetryDelayForTest(0)
+	defer restore()
+
+	dir := t.TempDir()
+	createTempFile(t, dir, "good.txt", "good content")
+	createTempFile(t, dir, "bad-file.txt", "doomed content")
+
+	provider := &failSubstringUploadProvider{mockProvider: newMockProvider(), failSubstring: "bad-file"}
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{dir},
+		StagingDir: t.TempDir(),
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("partial success must not fail the run, got: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("expected completed status, got %q", job.Status)
+	}
+	if job.ErrorCount != 1 {
+		t.Fatalf("expected ErrorCount=1, got %d", job.ErrorCount)
+	}
+	if !strings.Contains(job.Warning, "1 of 2 files failed to upload") {
+		t.Fatalf("Warning must carry the failed/total counts, got: %q", job.Warning)
+	}
+	if !strings.Contains(job.Warning, "bad-file.txt") {
+		t.Fatalf("Warning must name the failed file, got: %q", job.Warning)
+	}
+	if job.FilesBackedUp != 1 {
+		t.Fatalf("expected 1 file backed up, got %d", job.FilesBackedUp)
+	}
+}
+
+func TestSummarizeUploadFailures(t *testing.T) {
+	if got := summarizeUploadFailures(nil, 10); got != "" {
+		t.Fatalf("no failures must summarize to empty, got %q", got)
+	}
+
+	two := []error{errors.New("first boom"), errors.New("second boom")}
+	got := summarizeUploadFailures(two, 5)
+	if !strings.Contains(got, "2 of 5 files failed to upload") ||
+		!strings.Contains(got, "first boom") || !strings.Contains(got, "second boom") {
+		t.Fatalf("unexpected summary: %q", got)
+	}
+	if strings.Contains(got, "more)") {
+		t.Fatalf("no overflow suffix expected for 2 failures: %q", got)
+	}
+
+	var many []error
+	for i := 0; i < 8; i++ {
+		many = append(many, fmt.Errorf("boom %d", i))
+	}
+	got = summarizeUploadFailures(many, 20)
+	if !strings.Contains(got, "8 of 20 files failed to upload") {
+		t.Fatalf("unexpected summary: %q", got)
+	}
+	if !strings.Contains(got, "(+3 more)") {
+		t.Fatalf("expected overflow suffix for 8 failures with 5 details, got: %q", got)
+	}
+	if strings.Contains(got, "boom 5") {
+		t.Fatalf("details must be capped at 5, got: %q", got)
+	}
+}
+
+func TestResolveJournalDir_ExplicitStagingDirWins(t *testing.T) {
+	dir, ok := resolveJournalDir("/opt/breeze/staging")
+	if !ok || dir != "/opt/breeze/staging" {
+		t.Fatalf("explicit staging dir must be used as-is, got (%q, %v)", dir, ok)
+	}
+}
+
+func TestResolveJournalDir_FallsBackToHomeThenDataDir(t *testing.T) {
+	restoreHome, restoreData := journalHomeDirFn, journalDataDirFn
+	defer func() { journalHomeDirFn, journalDataDirFn = restoreHome, restoreData }()
+
+	journalHomeDirFn = func() (string, error) { return "/home/breeze", nil }
+	journalDataDirFn = func() string { return "/var/lib/breeze" }
+	dir, ok := resolveJournalDir("")
+	if !ok || dir != pathpkg.Join("/home/breeze", ".breeze", "backup-journal") {
+		t.Fatalf("expected home-based journal dir, got (%q, %v)", dir, ok)
+	}
+
+	journalHomeDirFn = func() (string, error) { return "", errors.New("no home") }
+	dir, ok = resolveJournalDir("")
+	if !ok || dir != pathpkg.Join("/var/lib/breeze", "backup-journal") {
+		t.Fatalf("expected data-dir journal dir, got (%q, %v)", dir, ok)
+	}
+}
+
+// When neither an explicit staging dir, a home dir, nor a config data dir is
+// available, journaling must be DISABLED — never fall back to the
+// world-writable os.TempDir() (symlink/tamper surface for the root/SYSTEM
+// helper).
+func TestResolveJournalDir_TempDirOnlyDisablesJournaling(t *testing.T) {
+	restoreHome, restoreData := journalHomeDirFn, journalDataDirFn
+	defer func() { journalHomeDirFn, journalDataDirFn = restoreHome, restoreData }()
+	journalHomeDirFn = func() (string, error) { return "", errors.New("no home") }
+	journalDataDirFn = func() string { return "" }
+
+	dir, ok := resolveJournalDir("")
+	if ok || dir != "" {
+		t.Fatalf("temp-dir-only environment must disable journaling, got (%q, %v)", dir, ok)
+	}
+}
+
+// Manager-level: with no secure journal location the run must still complete
+// (resume is an optimization) and must not create a journal file in the OS
+// temp dir.
+func TestRunBackupContext_NoSecureJournalDir_RunsWithoutJournal(t *testing.T) {
+	restoreHome, restoreData := journalHomeDirFn, journalDataDirFn
+	defer func() { journalHomeDirFn, journalDataDirFn = restoreHome, restoreData }()
+	journalHomeDirFn = func() (string, error) { return "", errors.New("no home") }
+	journalDataDirFn = func() string { return "" }
+
+	dir := t.TempDir()
+	createTempFile(t, dir, "a.txt", "content")
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{dir}})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("journal-less run must still succeed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("expected completed, got %q", job.Status)
+	}
+
+	journalPath := pathpkg.Join(os.TempDir(), journalFileName(backupIdentity(provider, []string{dir})))
+	if _, statErr := os.Lstat(journalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("no journal file may be written to the world-writable temp dir, found %s (err=%v)", journalPath, statErr)
+	}
+}

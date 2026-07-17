@@ -425,6 +425,12 @@ export async function applyBackupCommandResultToJob(params: {
       // backup UI — redact secrets before persisting to errorLog.
       updateData.errorLog = redactSecretsFromOutput(result.warning);
     }
+    if (result.errorCount !== undefined) {
+      // Partial success: the agent uploaded some files but N failed — record
+      // the count so the job list doesn't render a green job with 0 errors
+      // over an incomplete restore point.
+      updateData.errorCount = result.errorCount;
+    }
   } else {
     updateData.status = 'failed';
     updateData.errorLog = redactSecretsFromOutput(result.error ?? result.warning ?? 'Unknown error');

@@ -546,5 +546,48 @@ describe('backup result persistence', () => {
     expect(setArg.errorLog).toContain('[PRIVATE_KEY_REDACTED]');
     expect(setArg.errorLog).not.toContain('BEGIN RSA PRIVATE KEY');
   });
+
+  it('persists warning + errorCount for a partially-successful completed run', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        filesBackedUp: 8,
+        warning: '2 of 10 files failed to upload: upload stalled; disk read error',
+        errorCount: 2,
+      },
+    });
+
+    expect(outcome.applied).toBe(true);
+    const setArg = updateChain.set.mock.calls[0][0] as {
+      status: string;
+      errorLog: string;
+      errorCount: number;
+    };
+    expect(setArg.status).toBe('completed');
+    expect(setArg.errorCount).toBe(2);
+    expect(setArg.errorLog).toContain('2 of 10 files failed to upload');
+  });
+
+  it('does not write errorCount when the agent result carries none', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('errorCount');
+  });
 });
 

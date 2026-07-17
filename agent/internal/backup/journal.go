@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -89,10 +90,13 @@ func journalFileName(identity string) string {
 }
 
 // openSnapshotJournal opens (or creates) the checkpoint journal for the
-// given destination identity in dir (falling back to os.TempDir() if dir is
-// empty). It returns (journal, true, nil) when an existing, valid,
-// non-stale (createdAt within maxAge) journal was found and loaded — the
-// journal's snapshotID and entries are those of the interrupted run.
+// given destination identity in dir. dir is required (there is deliberately
+// NO os.TempDir() fallback — see resolveJournalDir: a deterministic
+// root-owned filename in a world-writable dir is a symlink/tamper surface)
+// and is created 0700 if missing. It returns (journal, true, nil) when an
+// existing, valid, non-stale (createdAt within maxAge) journal was found and
+// loaded — the journal's snapshotID and entries are those of the
+// interrupted run.
 //
 // Otherwise it returns a fresh journal (new snapshot ID, no entries,
 // resumed=false), covering three cases: no journal file yet (normal first
@@ -106,9 +110,26 @@ func journalFileName(identity string) string {
 // journal-less run — never as a reason to fail the backup.
 func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJournal, bool, error) {
 	if dir == "" {
-		dir = os.TempDir()
+		return nil, false, errors.New("backup journal directory is required")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, fmt.Errorf("failed to create backup journal directory: %w", err)
 	}
 	path := filepath.Join(dir, journalFileName(identity))
+
+	// Refuse to trust anything at the journal path that isn't a regular file
+	// (symlink, directory, device node, ...). The helper runs as root/SYSTEM:
+	// following a planted symlink would let an attacker feed us a forged
+	// journal (triggering remote snapshot cleanup or silent file skips) or
+	// make us write through the link. Delete it and start fresh; if it can't
+	// be deleted, don't journal at all.
+	if fi, lstatErr := os.Lstat(path); lstatErr == nil && !fi.Mode().IsRegular() {
+		slog.Warn("backup journal path is not a regular file, discarding",
+			"path", path, "mode", fi.Mode().String())
+		if rmErr := os.Remove(path); rmErr != nil {
+			return nil, false, fmt.Errorf("failed to remove non-regular backup journal path: %w", rmErr)
+		}
+	}
 
 	header, entries, readErr := readJournal(path)
 	if readErr == nil {

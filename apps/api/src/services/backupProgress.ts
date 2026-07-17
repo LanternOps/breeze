@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, devices } from '../db/schema';
+import { UUID_REGEX } from '../utils/uuid';
 import { refreshDispatchedExpectation } from './agentWorkExpectation';
 
 /**
@@ -28,7 +29,10 @@ export type BackupProgressPayload = z.infer<typeof backupProgressPayloadSchema>;
 
 export type ApplyBackupProgressResult =
   | { applied: true }
-  | { applied: false; reason: 'invalid-payload' | 'not-found' | 'agent-mismatch' | 'terminal-status' };
+  | {
+      applied: false;
+      reason: 'invalid-command-id' | 'invalid-payload' | 'not-found' | 'agent-mismatch' | 'terminal-status';
+    };
 
 /**
  * Apply an in-flight `backup_progress` WS message from the agent to the
@@ -45,6 +49,14 @@ export async function applyBackupProgress(params: {
   commandId: string;
   progress: unknown;
 }): Promise<ApplyBackupProgressResult> {
+  // Cheap pre-DB gate: backup_jobs.id is uuid-typed, so a non-UUID commandId
+  // would raise Postgres 22P02 through the handler — and restore progress
+  // (same WS message type, unthrottled per-file) plus any garbage commandId
+  // must be droppable without spending a query.
+  if (!UUID_REGEX.test(params.commandId)) {
+    return { applied: false, reason: 'invalid-command-id' };
+  }
+
   const parsed = backupProgressPayloadSchema.safeParse(params.progress);
   if (!parsed.success) {
     return { applied: false, reason: 'invalid-payload' };

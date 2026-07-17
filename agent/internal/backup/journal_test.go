@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -375,16 +376,93 @@ func TestSnapshotJournal_NilSafe(t *testing.T) {
 	j.Abandon() // must not panic
 }
 
-func TestOpenSnapshotJournal_EmptyDirFallsBackToTempDir(t *testing.T) {
-	j, _, err := openSnapshotJournal("", "test-identity-empty-dir", journalMaxAge)
+// The old behavior — empty dir falls back to os.TempDir() — was removed
+// deliberately: a deterministic root-owned filename in a world-writable dir
+// is a symlink/tamper surface. Empty dir is now an error and callers
+// (resolveJournalDir) decide the secure location or disable journaling.
+func TestOpenSnapshotJournal_EmptyDirRejected(t *testing.T) {
+	j, resumed, err := openSnapshotJournal("", "test-identity", journalMaxAge)
+	if err == nil || j != nil || resumed {
+		t.Fatalf("empty dir must be rejected (no os.TempDir fallback), got (%v, %v, %v)", j, resumed, err)
+	}
+}
+
+func TestOpenSnapshotJournal_CreatesMissingDir0700(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "journal-dir")
+	j, resumed, err := openSnapshotJournal(dir, "test-identity", journalMaxAge)
 	if err != nil {
 		t.Fatalf("openSnapshotJournal failed: %v", err)
 	}
-	defer func() {
-		j.Abandon()
-		os.Remove(j.path)
-	}()
-	if !strings.HasPrefix(j.path, os.TempDir()) {
-		t.Errorf("expected journal path under os.TempDir(), got %q", j.path)
+	defer j.Abandon()
+	if resumed {
+		t.Fatal("fresh journal must not report resumed")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("journal dir was not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("journal dir is not a directory")
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("journal dir must be 0700, got %o", perm)
+		}
+	}
+}
+
+// A symlink (or anything else that is not a regular file) planted at the
+// deterministic journal path must never be read or resumed from — the
+// helper runs as root/SYSTEM, so following it would let an attacker feed a
+// forged journal (remote snapshot cleanup, silent file skips). It is
+// deleted and replaced with a fresh journal.
+func TestOpenSnapshotJournal_RefusesSymlinkJournal(t *testing.T) {
+	dir := t.TempDir()
+	identity := "test-identity"
+
+	// Build a VALID journal at an attacker-controlled location...
+	attackerDir := t.TempDir()
+	attackerPath := filepath.Join(attackerDir, "forged.jsonl")
+	forged, _, err := createFreshJournal(attackerPath, identity)
+	if err != nil {
+		t.Fatalf("createFreshJournal failed: %v", err)
+	}
+	if err := forged.Record(SnapshotFile{SourcePath: "/etc/forged.txt", Size: 4, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	forgedSnapshotID := forged.snapshotID
+	forged.Abandon()
+
+	// ...and symlink the real journal path at it.
+	journalPath := filepath.Join(dir, journalFileName(identity))
+	if err := os.Symlink(attackerPath, journalPath); err != nil {
+		t.Skipf("cannot create symlinks on this platform: %v", err)
+	}
+
+	j, resumed, err := openSnapshotJournal(dir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	defer j.Abandon()
+	if resumed {
+		t.Fatal("a symlinked journal must never be resumed from")
+	}
+	if j.snapshotID == forgedSnapshotID {
+		t.Fatal("fresh journal must not adopt the forged journal's snapshot ID")
+	}
+	if _, ok := j.Lookup("/etc/forged.txt", 4, time.Now()); ok {
+		t.Fatal("forged entries must not be loaded")
+	}
+	// The symlink itself must be gone — replaced by a regular file.
+	fi, lstatErr := os.Lstat(journalPath)
+	if lstatErr != nil {
+		t.Fatalf("journal path missing after open: %v", lstatErr)
+	}
+	if !fi.Mode().IsRegular() {
+		t.Fatalf("journal path must now be a regular file, got mode %v", fi.Mode())
+	}
+	// The attacker's file must be untouched (we removed the link, not the target).
+	if _, err := os.Stat(attackerPath); err != nil {
+		t.Fatalf("symlink target must not be deleted: %v", err)
 	}
 }
