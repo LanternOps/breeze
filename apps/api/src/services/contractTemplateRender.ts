@@ -23,7 +23,7 @@ import type { ContractVariable } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractTemplates, contractTemplateVersions, quotes } from '../db/schema';
 import { sanitizeRichTextHtml } from './richTextSanitize';
-import { formatMoney, formatDate } from './quotePdf';
+import { formatMoney, formatDate, contractUploadedMarker, type ContractPdfBlockData } from './quotePdf';
 import type { SellerSnapshot, BillToAddress } from './sellerSnapshot';
 import { ContractTemplateServiceError } from './contractTemplateService';
 
@@ -313,4 +313,79 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
     };
     return { ...block, content };
   });
+}
+
+// ---------------------------------------------------------------------------
+// PDF-only inputs (Task 14: quotePdf.ts's cover page + contract block render,
+// and pdfMerge.ts's uploaded-PDF append step)
+// ---------------------------------------------------------------------------
+
+/** Build the two PDF-only inputs a `contract` block needs at PDF-render time:
+ *  the `contractRenderData` Map renderQuotePdf consumes to draw an authored
+ *  block's substituted HTML (or an uploaded block's one-line marker), and the
+ *  upload list the route hands to pdfMerge.ts's mergeUploadedContractPdfs.
+ *
+ *  Deliberately a SEPARATE function from renderContractBlocksForClient rather
+ *  than a shared helper the two call into — they return different shapes for
+ *  different consumers (a client JSON block-content array vs. a renderer Map +
+ *  upload list) and would gain nothing from forcing a common return type. The
+ *  substitution logic itself (auto+manual variable merge, defensive blank-fill
+ *  on an unreachable-but-still-defended unresolved variable) is intentionally
+ *  duplicated in lockstep with that function — see its own comment for why the
+ *  blank-fill exists.
+ *
+ *  Calls loadContractBlockRenderData internally (same system-context read, same
+ *  "call me outside any org-scoped transaction" contract as every other
+ *  function in this file that touches it). */
+export async function loadContractPdfInputs(
+  blocks: Array<{ id: string; blockType: string; content: unknown }>,
+  quote: QuoteRow
+): Promise<{ contractRenderData: Map<string, ContractPdfBlockData>; uploads: Array<{ afterMarker: string; data: Buffer }> }> {
+  const contractRenderData = new Map<string, ContractPdfBlockData>();
+  const uploads: Array<{ afterMarker: string; data: Buffer }> = [];
+
+  const renderData = await loadContractBlockRenderData(blocks);
+  if (renderData.length === 0) return { contractRenderData, uploads };
+
+  const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
+  const autoValues = resolveAutoVariables(quote);
+
+  for (const block of blocks) {
+    const data = byBlockId.get(block.id);
+    if (!data) continue;
+
+    if (data.sourceType === 'authored') {
+      const raw =
+        block.content && typeof block.content === 'object' && !Array.isArray(block.content)
+          ? (block.content as Record<string, unknown>)
+          : {};
+      const manualValues =
+        raw.variableValues && typeof raw.variableValues === 'object' && !Array.isArray(raw.variableValues)
+          ? (raw.variableValues as Record<string, string>)
+          : {};
+      const values = { ...autoValues, ...manualValues };
+      const first = substituteVariables(data.bodyHtml ?? '', values);
+      let html = first.html;
+      if (first.missing.length > 0) {
+        // Same defensive blank-fill as renderContractBlocksForClient above — the
+        // send gate (findUnresolvedVariables) should make this unreachable, but
+        // a raw {{token}} must never reach a rendered PDF either.
+        console.error('[contractTemplateRender] unresolved variable(s) at PDF render time', {
+          blockId: block.id,
+          quoteId: quote.id,
+          missing: first.missing,
+        });
+        const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
+        html = substituteVariables(html, blanks).html;
+      }
+      contractRenderData.set(block.id, { html, templateName: data.templateName });
+    } else {
+      contractRenderData.set(block.id, { html: null, templateName: data.templateName });
+      if (data.fileData) {
+        uploads.push({ afterMarker: contractUploadedMarker(data.templateName), data: data.fileData });
+      }
+    }
+  }
+
+  return { contractRenderData, uploads };
 }

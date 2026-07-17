@@ -13,7 +13,7 @@ import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
-import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables } from './contractTemplateRender';
+import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -240,13 +240,19 @@ export async function sendQuote(
       // applies its own visibility rules internally. Internal-only line names
       // + prices must never reach the customer's inbox.
       const customerLines = toCustomerLines(lines.filter((l) => l.customerVisible));
+      // Same pre-fetch as the admin/portal PDF routes (Task 14): substituted HTML
+      // per authored contract block + any uploaded contract PDFs to append after
+      // rendering, so the emailed attachment matches the on-demand download.
+      const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
       const { renderQuotePdf } = await import('./quotePdf');
-      const pdf = await renderQuotePdf(
+      const rawPdf = await renderQuotePdf(
         { ...quote, status: 'sent', quoteNumber, sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow) },
         blocks, customerLines, loadImage, {
           partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
           footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-        });
+        }, undefined, contractRenderData);
+      const { mergeUploadedContractPdfs } = await import('./pdfMerge');
+      const pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
       const template = buildQuoteTemplate({
         quoteNumber, partnerName: partnerName ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,

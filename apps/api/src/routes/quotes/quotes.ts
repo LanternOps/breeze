@@ -20,7 +20,7 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
-import { renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 export const quoteCrudRoutes = new Hono();
@@ -186,16 +186,25 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       return img?.data ? { data: img.data } : null;
     };
 
+    // Pre-fetch the same render data Task 13's client editor/preview path uses
+    // (system-context read of pinned template versions) and shape it for the
+    // renderer: substituted HTML per authored contract block, plus any uploaded
+    // contract PDFs to append after rendering (pdfkit can't draw an existing
+    // PDF's pages — see pdfMerge.ts).
+    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
+
     const { renderQuotePdf } = await import('../../services/quotePdf');
-    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage);
+    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData);
+    const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
+    const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
 
     const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
-    return new Response(new Uint8Array(pdf), {
+    return new Response(new Uint8Array(finalPdf), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `inline; filename="${filename}"`,
-        'Content-Length': String(pdf.length),
+        'Content-Length': String(finalPdf.length),
       },
     });
   } catch (err) { return handleServiceError(c, err); }

@@ -14,7 +14,7 @@ import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from 
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
-import { loadContractBlockRenderData, renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { loadContractBlockRenderData, renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
@@ -98,6 +98,12 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   ));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   const loadImage = async (imageId: string) => { const img = await readQuoteImage(imageId, id); return img ? { data: img.data } : null; };
+  // Pre-fetch the same render data Task 13's portal detail route uses
+  // (system-context read of pinned template versions) and shape it for the
+  // renderer: substituted HTML per authored contract block, plus any uploaded
+  // contract PDFs to append after rendering (pdfkit can't draw an existing
+  // PDF's pages — see pdfMerge.ts).
+  const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
   const { renderQuotePdf } = await import('../../services/quotePdf');
   // Legacy/draft docs have no frozen snapshot; synthesize from the live partner so
   // the From block still renders (issued docs use the frozen column).
@@ -110,9 +116,11 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, {
     partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-  });
+  }, undefined, contractRenderData);
+  const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
+  const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
   const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
-  return new Response(new Uint8Array(pdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(pdf.length) } });
+  return new Response(new Uint8Array(finalPdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(finalPdf.length) } });
 });
 
 // GET /quotes/:id/images/:imageId

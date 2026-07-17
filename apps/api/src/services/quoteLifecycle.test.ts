@@ -551,6 +551,12 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([org]);                     // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]);            // update ... returning (claimed)
     queueResult([]);                        // portalBranding
+    // Task 14: the emailed-PDF attachment pre-fetches contract render data via
+    // loadContractPdfInputs, which calls loadContractBlockRenderData a SECOND
+    // time (the first call above was the send-time variable gate) — same
+    // version + template selects, since the read is a plain (uncached) DB call.
+    queueResult([versionRow]);              // loadContractPdfInputs: version select
+    queueResult([templateRow]);             // loadContractPdfInputs: template select
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
 
     const result = await sendQuote('q1', actor);

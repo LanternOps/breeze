@@ -33,6 +33,11 @@ vi.mock('../../services/quoteTypes', () => ({
 // pass-through so every other GET /:id test (no contract blocks) is unaffected.
 vi.mock('../../services/contractTemplateRender', () => ({
   renderContractBlocksForClient: vi.fn(async (blocks: unknown[]) => blocks),
+  // Task 14: the PDF route's pre-fetch for contract-block render data + uploaded
+  // PDFs. Default empty (no contract blocks) so every other GET /:id/pdf test is
+  // unaffected; mergeUploadedContractPdfs is real (pdf-lib) but a no-op on an
+  // empty uploads array, so the mocked '%PDF-1.4 test' buffer passes through.
+  loadContractPdfInputs: vi.fn(async () => ({ contractRenderData: new Map(), uploads: [] })),
 }));
 
 // Mock the PDF renderer — the route is what we exercise here, not pdfkit. The

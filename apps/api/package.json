@@ -74,6 +74,7 @@
     "nodemailer": "^9.0.3",
     "oidc-provider": "^9",
     "otplib": "^13.4.1",
+    "pdf-lib": "^1.17.1",
     "pdfkit": "^0.19.1",
     "pg": "^8.22.0",
     "postgres": "^3.4.9",
