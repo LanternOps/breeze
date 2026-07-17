@@ -133,6 +133,44 @@ export async function consumeDispatchedExpectation(
 }
 
 /**
+ * Refresh (extend) the TTL of a previously-recorded dispatched expectation,
+ * without consuming it. Used by non-terminal signals (progress pings,
+ * async started-acks) so a long-running job's dispatch expectation doesn't
+ * expire before the real terminal result arrives. No-ops (returns `false`)
+ * if the expectation key doesn't currently exist — it does NOT create one,
+ * mirroring "iff it exists" semantics. Best-effort: a Redis outage here just
+ * means the original TTL keeps counting down, which is the same fail-closed
+ * direction as before this helper existed.
+ */
+export async function refreshDispatchedExpectation(
+  kind: AgentWorkExpectationKind,
+  deviceId: string,
+  key: string,
+): Promise<boolean> {
+  try {
+    const redis = getRedis();
+    if (!redis) {
+      console.warn(
+        `[AgentWorkExpectation] Redis unavailable refreshing ${kind} expectation ` +
+        `(device=${deviceId}, key=${key})`,
+      );
+      return false;
+    }
+    const result = await redis.pexpire(
+      dispatchedKey(kind, deviceId, key),
+      DISPATCHED_EXPECTATION_TTL_SECONDS * 1000,
+    );
+    return result === 1;
+  } catch (err) {
+    console.error(
+      `[AgentWorkExpectation] Failed to refresh ${kind} expectation (device=${deviceId}, key=${key}):`,
+      err,
+    );
+    return false;
+  }
+}
+
+/**
  * Claim a derived (non-dispatched) unit of work consume-once. Returns
  * `{ ok: true }` only on the first claim for this (kind, device, key); replays
  * return `{ ok: false }`. Fail-closed on Redis unavailable/error. Uses
