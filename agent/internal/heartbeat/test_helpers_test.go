@@ -28,7 +28,7 @@ func getUnexportedField(t *testing.T, target any, name string) any {
 	t.Helper()
 
 	v := reflect.ValueOf(target)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
+	if v.Kind() != reflect.Pointer || v.IsNil() {
 		t.Fatalf("target must be a non-nil pointer, got %T", target)
 	}
 
@@ -44,7 +44,7 @@ func setUnexportedField(t *testing.T, target any, name string, value any) {
 	t.Helper()
 
 	v := reflect.ValueOf(target)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
+	if v.Kind() != reflect.Pointer || v.IsNil() {
 		t.Fatalf("target must be a non-nil pointer, got %T", target)
 	}
 
