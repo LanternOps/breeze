@@ -204,8 +204,7 @@
       "newProfile": "Neues Profil"
     },
     "allOrgs": {
-      "description": "Die Netzwerkerkennung ist auf eine einzelne Organisation, einen einzelnen Standort und einen einzelnen Agenten beschränkt. Wählen Sie im Bereichsumschalter eine Organisation aus, um deren erkannte Assets, Profile, Scan-Jobs und Topologie anzuzeigen.",
-      "title": "Wählen Sie eine Organisation aus, um die Netzwerkerkennung anzuzeigen"
+      "description": "Die Netzwerkerkennung ist auf eine einzelne Organisation, einen einzelnen Standort und einen einzelnen Agenten beschränkt. Wählen Sie im Bereichsumschalter eine Organisation aus, um deren erkannte Assets, Profile, Scan-Jobs und Topologie anzuzeigen."
     },
     "confirmDeleteProfile": "Profil „{{name}}“ löschen? Dadurch werden auch alle zugehörigen Scanaufträge entfernt.",
     "description": "Konfigurieren Sie Erkennungsprofile, überwachen Sie Scans und verwalten Sie Netzwerk-Assets.",

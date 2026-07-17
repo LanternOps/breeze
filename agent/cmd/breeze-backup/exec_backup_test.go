@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,6 +252,34 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 	}
 }
 
+// defaultVSS's OS decision must be asserted on EVERY platform, not just
+// Windows: the internal/backup package (and this VSS-by-default flip) is
+// excluded from the Windows CI job, so a `runtime.GOOS == "windows"`-based
+// expectation is vacuously true on the Linux runners that actually run these
+// tests. Passing goos explicitly makes windows→true testable everywhere.
+func TestDefaultVSS(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		systemImage bool
+		want        bool
+	}{
+		{"windows file backup defaults VSS on", "windows", false, true},
+		{"windows system_image defaults VSS off", "windows", true, false},
+		{"linux file backup defaults VSS off", "linux", false, false},
+		{"linux system_image defaults VSS off", "linux", true, false},
+		{"darwin file backup defaults VSS off", "darwin", false, false},
+		{"darwin system_image defaults VSS off", "darwin", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultVSS(tt.goos, tt.systemImage); got != tt.want {
+				t.Fatalf("defaultVSS(%q, %v) = %v, want %v", tt.goos, tt.systemImage, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestManagerFromBackupRunPayload(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -261,6 +291,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantBasePath    string   // for local
 		wantPaths       []string // expected manager paths
 		wantSystemImage bool     // expected SystemStateEnabled
+		wantVSS         bool     // expected VSSEnabled
 	}{
 		{
 			name:    "empty payload falls back to agent.yaml manager",
@@ -283,6 +314,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider: "s3",
 			wantBucket:   "my-bucket",
 			wantPaths:    []string{"/etc", "/home/user"},
+			wantVSS:      runtime.GOOS == "windows",
 		},
 		{
 			name:         "local provider with path",
@@ -290,6 +322,42 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider: "local",
 			wantBasePath: filepath.Clean("/var/backups"),
 			wantPaths:    []string{"/data"},
+			wantVSS:      runtime.GOOS == "windows",
+		},
+		{
+			name:         "vss:true forces VSS on for file backups regardless of OS",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"vss":true}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      true,
+		},
+		{
+			name:         "vss:false forces VSS off for file backups regardless of OS",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"vss":false}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      false,
+		},
+		{
+			// system_image mode manages its own consistency (system state
+			// collection), so an absent vss field must not default it on even on
+			// Windows.
+			name:            "system_image mode without vss override defaults to VSS off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantSystemImage: true,
+			wantVSS:         false,
+		},
+		{
+			name:            "vss:true overrides system_image mode's default-off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true,"vss":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantSystemImage: true,
+			wantVSS:         true,
 		},
 		{
 			name:    "unsupported provider errors",
@@ -316,6 +384,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider:    "s3",
 			wantBucket:      "my-bucket",
 			wantSystemImage: true,
+			wantVSS:         false,
 		},
 	}
 
@@ -359,6 +428,10 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 
 			if got := mgr.GetSystemStateEnabled(); got != tt.wantSystemImage {
 				t.Fatalf("SystemStateEnabled = %v, want %v", got, tt.wantSystemImage)
+			}
+
+			if got := mgr.GetVSSEnabled(); got != tt.wantVSS {
+				t.Fatalf("VSSEnabled = %v, want %v", got, tt.wantVSS)
 			}
 
 			provider := mgr.GetProvider()
@@ -442,5 +515,80 @@ func TestParseBackupRunExcludes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// blockingRunProvider mirrors backup_test.go's blockingUploadProvider
+// (package backup, unreachable from here): it signals once upload has
+// started, then blocks until the context passed to UploadContext is done.
+type blockingRunProvider struct {
+	once    sync.Once
+	started chan struct{}
+}
+
+func newBlockingRunProvider() *blockingRunProvider {
+	return &blockingRunProvider{started: make(chan struct{})}
+}
+
+func (p *blockingRunProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *blockingRunProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *blockingRunProvider) Download(remotePath, localPath string) error { return nil }
+func (p *blockingRunProvider) List(prefix string) ([]string, error)        { return []string{}, nil }
+func (p *blockingRunProvider) Delete(remotePath string) error              { return nil }
+
+// TestBackupStopCancelsPayloadDispatchedBackupRun proves the fix for the bug
+// this task addresses: executeCommand's "backup_run" case builds (or, as
+// here, is handed) an ephemeral BackupManager that never goes through
+// mgr.Stop() — only backup_stop's commandCanceller.cancelAll() can reach it.
+// Before RunBackupContext/commandCanceller.track wiring, cancelAll had
+// nothing tracked for this command and the run kept going.
+func TestBackupStopCancelsPayloadDispatchedBackupRun(t *testing.T) {
+	provider := newBlockingRunProvider()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, Paths: []string{dir}})
+	commandCanceller := newActiveCommandCanceller()
+
+	req := backupipc.BackupCommandRequest{
+		CommandID:   "run-1",
+		CommandType: "backup_run",
+	}
+
+	resultCh := make(chan backupipc.BackupCommandResult, 1)
+	go func() {
+		resultCh <- executeCommand(req, mgr, nil, nil, commandCanceller)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backup upload to start")
+	}
+
+	if !commandCanceller.cancelAll() {
+		t.Fatal("cancelAll should report an active command was cancelled")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Success {
+			t.Fatalf("expected backup_run to fail after backup_stop cancelled it, got success: %+v", result)
+		}
+		if result.Stderr != "backup stopped" {
+			t.Fatalf("stderr = %q, want %q", result.Stderr, "backup stopped")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("backup_run did not unwind after backup_stop cancelled it")
 	}
 }

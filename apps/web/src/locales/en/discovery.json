@@ -204,8 +204,7 @@
       "newProfile": "New Profile"
     },
     "allOrgs": {
-      "description": "Network discovery is scoped to a single organization, site, and agent. Choose an organization in the scope switcher to view its discovered assets, profiles, scan jobs, and topology.",
-      "title": "Select an organization to view network discovery"
+      "description": "Network discovery is scoped to a single organization, site, and agent. Choose an organization in the scope switcher to view its discovered assets, profiles, scan jobs, and topology."
     },
     "confirmDeleteProfile": "Delete profile \"{{name}}\"? This will also remove all associated scan jobs.",
     "description": "Configure discovery profiles, monitor scans, and manage network assets.",

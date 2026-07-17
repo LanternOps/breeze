@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -36,6 +40,13 @@ type S3Provider struct {
 // NewS3Provider creates a new S3Provider.
 func NewS3Provider(bucket, region, accessKeyID, secretAccessKey, sessionToken string) *S3Provider {
 	return NewS3ProviderWithEndpoint(bucket, region, "", accessKeyID, secretAccessKey, sessionToken)
+}
+
+// BackupIdentity implements JournalIdentity. The endpoint is included
+// because a custom endpoint means an S3-compatible-but-different backend
+// (MinIO, Backblaze's S3 API, ...) even when bucket+region happen to match.
+func (s *S3Provider) BackupIdentity() string {
+	return fmt.Sprintf("s3|%s|%s|%s", s.endpoint, s.Region, s.Bucket)
 }
 
 // SetServerSideEncryption requires S3 server-side encryption on future uploads.
@@ -231,8 +242,22 @@ func (s *S3Provider) getClient() (*s3.Client, error) {
 		return s.client, nil
 	}
 
+	// Defensive transport timeouts: without these, the AWS SDK's HTTP client
+	// has no dial/TLS/header deadline and a stalled network peer wedges the
+	// request forever. The mid-body stall (a peer that accepts the request
+	// but never finishes reading/writing the body) is NOT covered here — that
+	// case is handled by the per-file upload deadline in snapshot.go.
+	httpClient := awshttp.NewBuildableClient().
+		WithDialerOptions(func(d *net.Dialer) { d.Timeout = 30 * time.Second }).
+		WithTransportOptions(func(tr *http.Transport) {
+			tr.TLSHandshakeTimeout = 30 * time.Second
+			tr.ResponseHeaderTimeout = 2 * time.Minute
+			tr.ExpectContinueTimeout = 10 * time.Second
+		})
+
 	options := []func(*awscfg.LoadOptions) error{
 		awscfg.WithRegion(s.Region),
+		awscfg.WithHTTPClient(httpClient),
 	}
 	if s.endpoint != "" {
 		options = append(options, awscfg.WithEndpointResolverWithOptions(

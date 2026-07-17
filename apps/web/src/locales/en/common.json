@@ -67,6 +67,19 @@
     "dashboard": "Dashboard",
     "profileSettings": "Profile Settings"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formatting",
+    "bold": "Bold",
+    "italic": "Italic",
+    "underline": "Underline",
+    "heading3": "Heading",
+    "heading4": "Subheading",
+    "bulletList": "Bulleted list",
+    "orderedList": "Numbered list",
+    "link": "Link",
+    "linkPrompt": "Enter a URL (http:// or https://)",
+    "linkInvalid": "Only http:// and https:// links are allowed"
+  },
   "actions": {
     "save": "Save",
     "cancel": "Cancel",
@@ -502,21 +515,12 @@
     "breadcrumb": "Breadcrumb",
     "redirectingToLogin": "Redirecting to login…",
     "scope": {
-      "shared": "Shared across all organizations",
-      "allOrganizations": "All organizations"
+      "catalogLine": "Catalog — same for every organization",
+      "fleetLine": "Showing all organizations · {{count}}",
+      "orgRequiredLine": "This page shows one organization at a time — choose one to continue."
     },
     "org": {
-      "allSites": "All Sites",
-      "deviceCount": "{{count}} devices",
-      "deviceCount_one": "{{count}} device",
-      "deviceCount_other": "{{count}} devices",
-      "scopeLabel": "Organization scope",
-      "current": "Current",
-      "allOrgs": "All orgs",
-      "currentTitle": "Show data for the selected organization only",
-      "allTitle": "Show data across every accessible organization",
-      "allOrganizations": "All Organizations",
-      "globalTitle": "This page shows all organizations",
+      "allOrganizations": "All organizations",
       "selectTitle": "Select Organization (Cmd+O)",
       "switching": "Switching…",
       "organizations": "Organizations",
@@ -530,9 +534,13 @@
       "toast": {
         "showingAll": "Showing all organizations",
         "showing": "Showing {{name}}",
-        "switched": "Switched to {{name}}",
-        "showingAllSites": "Showing all sites"
-      }
+        "switched": "Switched to {{name}}"
+      },
+      "fleetView": "Fleet view · {{count}} organizations",
+      "noSelection": "Select organization",
+      "searchOrganizations": "Search organizations…",
+      "noMatches": "No organizations match",
+      "legacyFilterNotice": "Organization filtering now follows the header selector."
     },
     "header": {
       "menu": "Menu",
@@ -623,6 +631,16 @@
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
       "closeMenu": "Close menu"
+    },
+    "orgRequired": {
+      "title": "Select an organization",
+      "description": "This page shows one organization at a time.",
+      "moreHint": "Looking for another organization? Use the switcher above (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Couldn't load your organizations",
+      "description": "Something went wrong loading your organization list. Check your connection and try again.",
+      "retry": "Retry"
     }
   },
   "longTail": {
@@ -1563,7 +1581,7 @@
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
         "disableAllActiveMonitoring": "Disable all active monitoring for this asset",
-        "needsOrgSelection": "Network monitoring assets are scoped to a single organization. Switch the scope in the top bar from <0>All orgs</0> to a specific organization to view its monitoring assets.",
+        "needsOrgSelection": "Network monitoring assets are scoped to a single organization.",
         "loadingAssets": "Loading monitoring assets...",
         "showingAllDiscoveredAssets": "Showing all discovered assets",
         "showingMonitoredAssets": "Showing monitored assets",
@@ -1715,7 +1733,7 @@
         "loading": "Loading incidents...",
         "tryAgain": "Try again",
         "title": "Incidents",
-        "description": "Tracked incidents and EDR findings across your organization.",
+        "description": "Tracked incidents and EDR findings across your organizations.",
         "filters": {
           "tracked": "Tracked",
           "findings": "Findings"

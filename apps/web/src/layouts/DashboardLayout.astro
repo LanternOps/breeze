@@ -2,6 +2,7 @@
 import Layout from './Layout.astro';
 import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
+import ContextScopeLine from '../components/layout/ContextScopeLine';
 import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
@@ -44,6 +45,9 @@ const accentClass = getAccentClass(currentPath);
       <Header client:load transition:persist />
       <main class="flex-1 overflow-y-auto p-4 md:p-6">
         {accentClass && <div class={`h-0.5 -mt-4 md:-mt-6 -mx-4 md:-mx-6 mb-4 md:mb-6 ${accentClass}`} aria-hidden="true" />}
+        {/* Registry-driven page-scope statement — mounted here so every page
+            gets it and none can forget it (see routeScope.ts). */}
+        <ContextScopeLine client:load />
         <slot />
       </main>
     </div>

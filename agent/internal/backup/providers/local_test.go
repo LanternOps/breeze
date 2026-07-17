@@ -26,6 +26,17 @@ func TestNewLocalProvider_CleansPath(t *testing.T) {
 	}
 }
 
+func TestLocalProvider_BackupIdentity(t *testing.T) {
+	a := NewLocalProvider("/tmp/backups-a")
+	b := NewLocalProvider("/tmp/backups-b")
+	if a.BackupIdentity() == b.BackupIdentity() {
+		t.Fatal("different base paths must produce different identities")
+	}
+	if a.BackupIdentity() != NewLocalProvider("/tmp/backups-a").BackupIdentity() {
+		t.Error("identity must be stable for the same base path")
+	}
+}
+
 func TestLocalProvider_UploadAndDownload_PlainFile(t *testing.T) {
 	baseDir := t.TempDir()
 	p := NewLocalProvider(baseDir)

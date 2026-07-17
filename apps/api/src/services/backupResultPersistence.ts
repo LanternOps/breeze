@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, like, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
   backupJobs,
@@ -7,7 +7,10 @@ import {
   backupPolicies,
   configPolicyBackupSettings,
   backupConfigs,
+  IN_FLIGHT_BACKUP_JOB_STATUSES,
+  STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
+import { captureException } from './sentry';
 import { backupChains } from '../db/schema/applicationBackup';
 import {
   applyGfsTagsToSnapshot,
@@ -22,7 +25,6 @@ import {
 import { resolveBackupProtectionForDevice } from './featureConfigResolver';
 import { redactSecretsFromOutput } from './secretRedaction';
 
-export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
 type SnapshotProtectionSettings = {
@@ -424,6 +426,28 @@ export async function applyBackupCommandResultToJob(params: {
       // #2434: warning/error are agent-supplied free text surfaced in the
       // backup UI — redact secrets before persisting to errorLog.
       updateData.errorLog = redactSecretsFromOutput(result.warning);
+    } else {
+      // FIX 7: clear any prior error_log so a job that ultimately SUCCEEDED
+      // doesn't keep showing a leftover error — in particular the stale-reaper
+      // failure note when this completion is flipping a reaped job back to
+      // completed (see the widened status guard below).
+      updateData.errorLog = null;
+    }
+    if (result.errorCount !== undefined) {
+      // Partial success: the agent uploaded some files but N failed — record
+      // the count so the job list doesn't render a green job with 0 errors
+      // over an incomplete restore point.
+      updateData.errorCount = result.errorCount;
+    }
+    if (result.referencedBytes !== undefined) {
+      // Incremental dedup: bytes referenced from a prior snapshot instead of
+      // re-uploaded this run. Only write when the agent reports it — a
+      // legacy agent omits the field entirely, and the column must stay NULL
+      // rather than being coerced to 0.
+      updateData.referencedSize = result.referencedBytes;
+    }
+    if (result.referencedFiles !== undefined) {
+      updateData.referencedFiles = result.referencedFiles;
     }
   } else {
     updateData.status = 'failed';
@@ -437,15 +461,29 @@ export async function applyBackupCommandResultToJob(params: {
     updateData.snapshotId = providerSnapshotId;
   }
 
+  // FIX 7: a genuinely-successful backup whose result lands AFTER the stale
+  // reaper already flagged the job `failed` must still be recorded — otherwise
+  // the real, restorable snapshot sitting in the bucket is stranded with no
+  // backup_snapshots row and the run is permanently mislabelled a failure. A
+  // completed result may therefore flip a job that is still in-flight OR one the
+  // reaper failed (its error_log carries STALE_BACKUP_REAP_MARKER). A user
+  // `cancelled` job and a genuine, non-reaper agent `failed` are NOT resurrected
+  // (they carry no marker / a different status).
+  const isCompletedResult = resultStatus === 'completed';
+  const statusGuard = isCompletedResult
+    ? or(
+        inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES),
+        and(
+          eq(backupJobs.status, 'failed'),
+          like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)
+        )
+      )
+    : inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES);
+
   const [updatedJob] = await db
     .update(backupJobs)
     .set(updateData)
-    .where(
-      and(
-        eq(backupJobs.id, jobId),
-        inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES)
-      )
-    )
+    .where(and(eq(backupJobs.id, jobId), statusGuard))
     .returning({
       id: backupJobs.id,
       configId: backupJobs.configId,
@@ -454,6 +492,19 @@ export async function applyBackupCommandResultToJob(params: {
     });
 
   if (!updatedJob) {
+    if (isCompletedResult && providerSnapshotId) {
+      // A late terminal-success we could NOT record: the job was user-cancelled,
+      // already terminal by other means, or genuinely failed without the reaper
+      // marker. The snapshot exists in storage but now has no backup_snapshots
+      // row — surface it loudly so it is recoverable rather than silently
+      // orphaned (FIX 7 fallback for the non-flippable cases).
+      const orphanMsg =
+        `[BackupPersistence] Dropped a late completed backup result for job ${jobId} ` +
+        `(device ${deviceId}): snapshot ${providerSnapshotId} may be orphaned in storage ` +
+        `with no backup_snapshots row (job was not in-flight and not reaper-failed).`;
+      console.error(orphanMsg);
+      captureException(new Error(orphanMsg));
+    }
     return {
       applied: false,
       snapshotDbId: null,

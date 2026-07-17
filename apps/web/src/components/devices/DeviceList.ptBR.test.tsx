@@ -6,7 +6,14 @@ import DeviceList, { type Device } from './DeviceList';
 import { QuickAddChips } from './QuickAddChips';
 
 vi.mock('../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
+}));
+// Fleet view so the fleet-only Organization column stays available to these
+// suites (see DeviceList isColumnAvailable).
+vi.mock('@/stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null; allOrgs: boolean }) => unknown) =>
+    selector({ currentOrgId: null, allOrgs: true }),
 }));
 vi.mock('../remote/ConnectDesktopButton', () => ({
   default: () => null,

@@ -271,23 +271,18 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('ticket-row-tk-risk')).toBeInTheDocument();
   });
 
-  it('org filter adds orgId; clearing back to all removes it', async () => {
+  it('renders no page-local org filter — org scoping belongs to the header switcher', async () => {
     mockListApi([healthy]);
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
-    // Wait for the org options to load before selecting one.
-    await screen.findByRole('option', { name: 'Globex' });
+    // Wait for the filter-options effect to settle (categories rendered).
+    await screen.findByRole('option', { name: 'Hardware' });
 
-    fireEvent.change(screen.getByTestId('tickets-filter-org'), { target: { value: 'org-2' } });
-    await waitFor(() => {
-      expect(ticketFetchUrls().at(-1)).toContain('orgId=org-2');
-    });
-
-    fireEvent.change(screen.getByTestId('tickets-filter-org'), { target: { value: '' } });
-    await waitFor(() => {
-      expect(ticketFetchUrls().at(-1)).not.toContain('orgId=');
-    });
+    expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
+    // No list requests carry a page-chosen orgId (the header's context is
+    // injected by fetchWithAuth, not by this page).
+    expect(ticketFetchUrls().every((u) => !u.includes('orgId='))).toBe(true);
   });
 
   it('hides the assignee select when the users request fails', async () => {
@@ -296,9 +291,8 @@ describe('TicketsPage', () => {
 
     await screen.findByTestId('ticket-row-tk-healthy');
     // Other selects load their options; assignee stays hidden.
-    await screen.findByRole('option', { name: 'Globex' });
+    await screen.findByRole('option', { name: 'Hardware' });
     expect(screen.queryByTestId('tickets-filter-assignee')).toBeNull();
-    expect(screen.getByTestId('tickets-filter-org')).toBeInTheDocument();
   });
 
   it('shows the assignee select when users load, disabled on assignee tabs', async () => {
@@ -631,37 +625,16 @@ describe('TicketsPage', () => {
       expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
     });
 
-    it('partner scope with one org returned: org filter hidden; with two orgs: visible', async () => {
-      // First: one org returned
-      fetchMock.mockImplementation(async (input) => {
-        const url = String(input);
-        if (url === '/tickets/stats') return makeJsonResponse(STATS);
-        if (url.startsWith('/tickets?')) return makeJsonResponse({ data: [healthy] });
-        if (url.startsWith('/orgs/organizations')) return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme Corp' }] });
-        if (url === '/ticket-categories') return makeJsonResponse(CATEGORIES);
-        if (url === '/users') return makeJsonResponse(USERS);
-        return makeJsonResponse({ error: 'unexpected' }, false, 404);
-      });
-
-      const { unmount } = render(<TicketsPage />);
-      await screen.findByTestId('ticket-row-tk-healthy');
-      // Options load asynchronously — wait for categories to confirm effect settled.
-      await screen.findByRole('option', { name: 'Hardware' });
-
-      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
-      unmount();
-
-      vi.clearAllMocks();
-      capturedWorkbenchProps.length = 0;
-
-      // Second: two orgs returned
+    it('partner scope: no /orgs/organizations fetch and no org filter (header owns org scoping)', async () => {
       mockListApi([healthy]);
       render(<TicketsPage />);
 
       await screen.findByTestId('ticket-row-tk-healthy');
-      await screen.findByRole('option', { name: 'Globex' });
+      await screen.findByRole('option', { name: 'Hardware' });
 
-      expect(screen.getByTestId('tickets-filter-org')).toBeInTheDocument();
+      const allFetchUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(allFetchUrls.every((u) => !u.includes('/orgs/organizations'))).toBe(true);
+      expect(screen.queryByTestId('tickets-filter-org')).toBeNull();
     });
   });
 

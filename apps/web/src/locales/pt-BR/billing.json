@@ -107,6 +107,22 @@
         "title": "Excluir contrato em rascunho",
         "message": "Isso exclui permanentemente o contrato em rascunho. Esta ação não pode ser desfeita.",
         "confirm": "Excluir rascunho"
+      },
+      "documents": {
+        "title": "Documentos executados",
+        "columns": {
+          "template": "Modelo",
+          "signer": "Signatário",
+          "signedAt": "Assinado",
+          "quote": "Orçamento"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Ainda não há documentos executados.",
+        "loadError": "Não foi possível carregar os documentos executados.",
+        "downloadError": "Não foi possível baixar o PDF.",
+        "download": "Baixar PDF",
+        "preparing": "Preparando…",
+        "viewQuote": "Ver orçamento"
       }
     },
     "contractEditor": {
@@ -227,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Todos os status",
-        "allOrganizations": "Todas as organizações",
         "searchPlaceholder": "Pesquisar nome ou org.",
         "searchAria": "Pesquisar contratos"
       },
@@ -296,6 +311,132 @@
       "errors": {
         "loadSubscriptions": "Não foi possível carregar assinaturas Pax8 para esta organização."
       }
+    },
+    "tabs": {
+      "contracts": "Contratos",
+      "templates": "Modelos",
+      "documents": "Documentos"
+    },
+    "templatesTab": {
+      "title": "Modelos de contrato",
+      "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
+      "newTemplate": "Novo modelo",
+      "includeArchived": "Mostrar arquivados",
+      "allOrgs": "Todas as orgs",
+      "ownerOrg": "Organização",
+      "noVersions": "Ainda sem versões",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Arquivar",
+      "loadError": "Falha ao carregar os modelos de contrato",
+      "createError": "Falha ao criar o modelo",
+      "created": "Modelo criado",
+      "archiveError": "Falha ao arquivar o modelo",
+      "archiveSuccess": "Modelo arquivado",
+      "columns": {
+        "name": "Nome",
+        "owner": "Proprietário",
+        "status": "Status",
+        "latestVersion": "Última versão"
+      },
+      "status": {
+        "active": "Ativo",
+        "archived": "Arquivado"
+      },
+      "empty": {
+        "title": "Ainda não há modelos",
+        "description": "Crie seu primeiro modelo de contrato para começar."
+      },
+      "createDialog": {
+        "title": "Novo modelo de contrato",
+        "name": "Nome",
+        "namePlaceholder": "ex. Contrato mestre de serviços",
+        "description": "Descrição",
+        "descriptionPlaceholder": "Resumo opcional deste modelo",
+        "scope": "Propriedade",
+        "allOrganizations": "Todas as organizações",
+        "partnerWide": "Modelo para todo o parceiro",
+        "thisOrgOnly": "Apenas esta organização",
+        "organization": "Organização",
+        "selectOrg": "Selecione uma organização",
+        "orgRequired": "Selecione uma organização para um modelo de propriedade da organização.",
+        "nameRequired": "Informe um nome de modelo.",
+        "cancel": "Cancelar",
+        "create": "Criar modelo",
+        "creating": "Criando…"
+      }
+    },
+    "documentsTab": {
+      "title": "Documentos",
+      "description": "Documentos de contrato executados ainda não vinculados a um contrato.",
+      "empty": {
+        "title": "Nenhum documento não vinculado",
+        "description": "Os documentos executados aparecem aqui até serem vinculados a um contrato."
+      },
+      "loadError": "Não foi possível carregar os documentos.",
+      "columns": {
+        "template": "Modelo",
+        "signer": "Signatário",
+        "signedAt": "Assinado",
+        "quote": "Orçamento",
+        "organization": "Organização"
+      },
+      "download": "Baixar PDF",
+      "preparing": "Preparando…",
+      "viewQuote": "Ver orçamento",
+      "linkAction": "Vincular a um contrato",
+      "linkDialog": {
+        "title": "Vincular a um contrato",
+        "contractLabel": "Contrato",
+        "selectContract": "Selecione um contrato",
+        "noContracts": "Nenhum contrato encontrado para esta organização.",
+        "loadContractsError": "Falha ao carregar os contratos. Tente novamente.",
+        "cancel": "Cancelar",
+        "confirm": "Vincular",
+        "linking": "Vinculando…"
+      },
+      "linkSuccess": "Documento vinculado ao contrato.",
+      "linkError": "Não foi possível vincular o documento a esse contrato."
+    },
+    "templateEditor": {
+      "back": "Voltar",
+      "loadError": "Falha ao carregar o modelo",
+      "newVersion": "Nova versão",
+      "newVersionConfirm": {
+        "title": "Descartar alterações não salvas?",
+        "message": "Iniciar uma nova versão limpará o editor. Suas alterações não salvas neste rascunho serão perdidas.",
+        "confirm": "Iniciar nova versão"
+      },
+      "uploadPdf": "Enviar PDF",
+      "versions": "Versões",
+      "noVersions": "Ainda sem versões",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Rascunho",
+        "published": "Publicada"
+      },
+      "sourceType": {
+        "authored": "Redigida",
+        "uploaded": "PDF enviado"
+      },
+      "publish": "Publicar",
+      "publishDirtyHint": "Salve seu rascunho antes de publicar",
+      "body": "Corpo",
+      "bodyAria": "Corpo do modelo de contrato",
+      "preview": "Pré-visualização",
+      "edit": "Editar",
+      "saveDraft": "Salvar rascunho",
+      "saving": "Salvando…",
+      "emptyBody": "Adicione algum conteúdo antes de salvar.",
+      "autoVariables": "Variáveis automáticas",
+      "manualVariables": "Variáveis manuais",
+      "noManualVariables": "Nenhuma detectada",
+      "archivedNotice": "Este modelo está arquivado. Novas versões não podem ser adicionadas.",
+      "saveError": "Falha ao salvar a versão de rascunho",
+      "saveSuccess": "Versão de rascunho salva",
+      "uploadError": "Falha ao enviar o PDF",
+      "uploadSuccess": "Versão PDF enviada",
+      "publishError": "Falha ao publicar a versão",
+      "publishSuccess": "Versão publicada"
     }
   },
   "quotes": {
@@ -362,7 +503,8 @@
         "heading": "Título",
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
-        "richText": "Texto rico"
+        "richText": "Texto rico",
+        "contract": "Contrato"
       },
       "catalog": {
         "addSome": "Adicione alguns no Catálogo de Produtos",
@@ -433,7 +575,10 @@
         "updateDeposit": "Não foi possível atualizar o depósito.",
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
-        "uploadImage": "Não foi possível enviar a imagem."
+        "uploadImage": "Não foi possível enviar a imagem.",
+        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
+        "addContractSection": "Não foi possível adicionar a seção de contrato",
+        "saveCoverPage": "Não foi possível salvar a página de capa"
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -494,7 +639,8 @@
         "lineRemoved": "Linha removida",
         "savedToCatalog": "Salvo no catálogo",
         "sectionAdded": "Seção adicionada",
-        "sectionRemoved": "Seção removida"
+        "sectionRemoved": "Seção removida",
+        "contractSectionAdded": "Seção de contrato adicionada"
       },
       "symbols": {
         "check": "✓",
@@ -530,6 +676,39 @@
       "units": {
         "perMonth": "/mês",
         "perYear": "/ano"
+      },
+      "contract": {
+        "templateLabel": "Modelo de contrato",
+        "templatePlaceholder": "Selecione um modelo…",
+        "noTemplates": "Ainda não há modelos de contrato. Crie um em Contratos → Modelos.",
+        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de anexar.",
+        "pinnedVersion": "Fixado na v{{version}}",
+        "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
+        "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
+        "manualVariablesTitle": "Preencha para esta proposta",
+        "labelFieldLabel": "Rótulo da seção",
+        "labelPlaceholder": "Rótulo opcional (por exemplo, Contrato mestre de serviços)",
+        "variableRequired": "Insira um valor",
+        "variableUnresolved": "Esta variável ainda não foi resolvida",
+        "untitledTemplate": "Contrato",
+        "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
+        "updateToVersion": "Atualizar para v{{version}}",
+        "saveVariables": "Salvar variáveis",
+        "unresolvedWarning": "Variáveis não resolvidas (bloquearão o envio): {{names}}"
+      },
+      "coverPage": {
+        "title": "Página de capa",
+        "enable": "Mostrar uma página de capa",
+        "summaryOn": "Exibida como a primeira página da proposta.",
+        "summaryOff": "Sem página de capa — a proposta começa com seu conteúdo.",
+        "titleLabel": "Título da capa",
+        "titlePlaceholder": "por exemplo, Proposta de serviços de TI gerenciados",
+        "preparedForLabel": "Preparado para",
+        "preparedForPlaceholder": "Substituir o nome do cliente",
+        "showPreparedBy": "Mostrar “preparado por” (sua empresa)",
+        "imageLabel": "Imagem de capa",
+        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "removeImage": "Remover imagem"
       }
     },
     "actions": {
@@ -560,10 +739,30 @@
       "savingHint": "Salvando alterações… O envio será liberado quando tudo estiver salvo.",
       "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Anexar o PDF da proposta",
+        "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
         "message": "Enviaremos esta proposta por e-mail para {{orgName}} e a marcaremos como Enviada — {{amount}} devidos na aceitação. Não é possível desfazer esta ação.",
         "messageLabel": "Adicionar uma mensagem pessoal (opcional)",
         "messagePlaceholder": "Inclua uma breve nota — ela aparece no e-mail, acima do link de aceitação.",
-        "title": "Enviar esta proposta?"
+        "paymentEnabled": "O pagamento on-line está ativado — o cliente pode pagar com cartão após aceitar.",
+        "paymentNoteNoStripe": "O pagamento on-line não será oferecido após a aceitação. Conecte o Stripe em Configurações → Integrações para ativá-lo.",
+        "paymentWarningDeposit": "Esta proposta pede um depósito, mas os clientes ainda não podem pagar on-line — conecte o Stripe em Configurações → Integrações para cobrar o depósito na aceitação.",
+        "signaturePreviewLabel": "Assinatura (definida em Configurações → Marca):",
+        "subjectLabel": "Assunto",
+        "subjectPlaceholder": "Proposta {{number}} da sua empresa",
+        "subjectPlaceholderNoNumber": "Proposta da sua empresa",
+        "title": "Enviar esta proposta?",
+        "toLabel": "Para",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Use no máximo {{max}} endereços."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",
+        "noEmailService": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — o e-mail não está configurado neste servidor.",
+        "pdfRenderFailed": "Proposta marcada como Enviada, mas o PDF não pôde ser gerado, portanto nenhum e-mail foi entregue. Verifique os arquivos de contrato anexados e envie novamente.",
+        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço ou compartilhe o link de aceitação manualmente."
       },
       "sendError": "Não foi possível enviar a proposta.",
       "sendProposal": "Enviar proposta",
@@ -644,6 +843,12 @@
     },
     "document": {
       "additionalItems": "Itens adicionais",
+      "contract": {
+        "download": "Baixar contrato",
+        "previewTitle": "Documento do contrato {{name}}",
+        "unavailable": "Arquivo do contrato indisponível",
+        "versionFooter": "{{name}} — versão {{version}}"
+      },
       "draft": "Rascunho",
       "empty": "Esta proposta ainda não tem conteúdo.",
       "imageUnavailable": "Imagem indisponível",
@@ -735,9 +940,7 @@
         "loadSites": "Falha ao carregar sites."
       },
       "filters": {
-        "allOrganizations": "Todas as organizações",
         "allStatuses": "Todos os status",
-        "organizationAria": "Filtrar por organização",
         "searchAria": "Buscar cotações",
         "searchPlaceholder": "Buscar número ou organização",
         "statusAria": "Filtrar por status"
@@ -1138,11 +1341,9 @@
       "loadSites": "Falha ao carregar sites."
     },
     "filters": {
-      "allOrganizations": "Todas as organizações",
       "allStatuses": "Todos os status",
       "issuedFrom": "Emitida a partir de",
       "issuedTo": "Emitida até",
-      "organizationAria": "Filtrar por organização",
       "searchAria": "Buscar faturas",
       "searchPlaceholder": "Buscar número ou organização",
       "statusAria": "Filtrar por status"

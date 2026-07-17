@@ -74,6 +74,10 @@ export default function AlertsPage() {
   // null (global route); this just makes the page refetch instead of showing
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  // Fleet (All-organizations) view — the list shows an Organization column so
+  // cross-org rows stay legible (mirrors the Devices list).
+  const isFleetView = !currentOrgId && allOrgs;
   const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
   const fetchAlerts = useCallback(async () => {
@@ -534,6 +538,7 @@ export default function AlertsPage() {
           onBulkAction={handleBulkAction}
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
+          showOrgColumn={isFleetView}
         />
       )}
 

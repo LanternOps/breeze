@@ -76,7 +76,10 @@
     "noM365Customer": "No M365 customer",
     "dismiss": "Dismiss"
   },
-  "aiContextBadge": { "context": "Context", "dashboard": "Dashboard" },
+  "aiContextBadge": {
+    "context": "Context",
+    "dashboard": "Dashboard"
+  },
   "aiCostIndicator": {
     "messageCount": "{{count}} msgs",
     "messageCount_one": "{{count}} msg",
@@ -196,7 +199,9 @@
       "save": "Failed to save policy",
       "load": "Failed to load the org policy."
     },
-    "messages": { "saved": "Policy saved" },
+    "messages": {
+      "saved": "Policy saved"
+    },
     "organizations": "Organizations",
     "title": "Org policy",
     "description": "Everything this client org's Excel assistant is allowed to do.",
@@ -327,7 +332,7 @@
   },
   "templatesTab": {
     "allApps": "All apps",
-    "allOrgs": "All orgs",
+    "allOrgs": "Partner-wide",
     "org": "Org",
     "errors": {
       "delete": "Failed to delete template",
@@ -402,7 +407,9 @@
     "newConversation": "New Conversation",
     "limit": "Up to 5 concurrent conversations"
   },
-  "workspaceTab": { "approvalPending": "Approval pending" },
+  "workspaceTab": {
+    "approvalPending": "Approval pending"
+  },
   "workspaceTabBar": {
     "newTabShortcut": "New tab (Cmd+Shift+N)",
     "new": "New"

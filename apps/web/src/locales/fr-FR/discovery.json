@@ -204,8 +204,7 @@
       "newProfile": "Nouveau profil"
     },
     "allOrgs": {
-      "description": "La découverte du réseau est regroupée sur une seule organisation, site et agent. Choisissez une organisation dans le commutateur de scope pour visualiser ses actifs découverts, ses profils, ses tâches de balayage et sa topologie.",
-      "title": "Sélectionnez une organisation pour consulter la découverte du réseau"
+      "description": "La découverte du réseau est regroupée sur une seule organisation, site et agent. Choisissez une organisation dans le commutateur de scope pour visualiser ses actifs découverts, ses profils, ses tâches de balayage et sa topologie."
     },
     "confirmDeleteProfile": "Supprimer le profil « {{name}} » ? Cela supprimera également tous les travaux de scan associés.",
     "description": "Configurez les profils de découverte, surveillez les analyses et gérez les actifs réseau.",

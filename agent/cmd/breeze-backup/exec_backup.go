@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -77,6 +78,18 @@ type backupRunProviderConfig struct {
 	Path      string `json:"path"` // local provider destination
 }
 
+// defaultVSS decides whether VSS shadow-copy defaults on for a backup_run,
+// given the target OS and whether this is a system_image run. VSS is a
+// Windows-only feature; it stays off for system_image mode, which manages its
+// own consistency via system-state collection. Extracted as a pure function of
+// goos so the OS decision is table-testable on EVERY platform — the
+// internal/backup package (and this command's VSS-by-default flip) is excluded
+// from the Windows CI job, so a runtime.GOOS-only assertion would be vacuous on
+// the Linux runners that actually run these tests.
+func defaultVSS(goos string, systemImage bool) bool {
+	return goos == "windows" && !systemImage
+}
+
 // managerFromBackupRunPayload builds a BackupManager from the backup_run command
 // payload's provider + providerConfig + paths. Returns (nil,nil) when the payload
 // carries no provider config so the caller falls back to the agent.yaml manager.
@@ -89,12 +102,28 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
 		SystemImage    bool                     `json:"systemImage"`
+		// Vss lets the server force VSS on/off for this run. Not currently sent
+		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
+		// absent the agent defaults it itself below.
+		Vss *bool `json:"vss,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("invalid backup_run payload: %w", err)
 	}
 	if p.ProviderConfig == nil || p.Provider == "" {
 		return nil, nil
+	}
+	// vssEnabled defaults to on for server-dispatched Windows file backups so
+	// locked files (open documents, DB files) aren't silently skipped — VSS
+	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
+	// without it), so this can't newly break Linux/macOS or Windows hosts
+	// without VSS. system_image mode manages its own consistency via system
+	// state collection, so it stays off there unless the payload overrides it.
+	// The server can force it either way via the optional `vss` field (not
+	// currently sent by apps/api/src/jobs/backupWorker.ts).
+	vssEnabled := defaultVSS(runtime.GOOS, p.SystemImage)
+	if p.Vss != nil {
+		vssEnabled = *p.Vss
 	}
 	var provider providers.BackupProvider
 	switch p.Provider {
@@ -120,6 +149,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		return backup.NewBackupManager(backup.BackupConfig{
 			Provider:           provider,
 			SystemStateEnabled: true,
+			VSSEnabled:         vssEnabled,
 		}), nil
 	}
 	if len(p.Paths) == 0 {
@@ -133,9 +163,10 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
 	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider:  provider,
-		Paths:     p.Paths,
-		Retention: 0,
+		Provider:   provider,
+		Paths:      p.Paths,
+		Retention:  0,
+		VSSEnabled: vssEnabled,
 	}), nil
 }
 

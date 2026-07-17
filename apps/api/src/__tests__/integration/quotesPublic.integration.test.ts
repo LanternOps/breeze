@@ -55,8 +55,8 @@ describe('public quote token path', () => {
     expect(qRow!.status).toBe('converted'); // the live status differs from the at-accept status
     const blocks = await withSystemDbAccessContext(() => db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, created.id)));
     const lines = await withSystemDbAccessContext(() => db.select().from(quoteLines).where(eq(quoteLines.quoteId, created.id)));
-    expect(computeQuoteSha256(qRow as any, blocks as any, lines as any)).toBe(acc!.quoteSha256);
+    expect(computeQuoteSha256(qRow as any, blocks as any, lines as any, [])).toBe(acc!.quoteSha256);
     const tampered = lines.map((l) => ({ ...l, unitPrice: '1.00', lineTotal: '1.00' }));
-    expect(computeQuoteSha256(qRow as any, blocks as any, tampered as any)).not.toBe(acc!.quoteSha256);
+    expect(computeQuoteSha256(qRow as any, blocks as any, tampered as any, [])).not.toBe(acc!.quoteSha256);
   });
 });

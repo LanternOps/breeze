@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 // Mock fetchWithAuth — InvoicesPage calls it directly (no listInvoices wrapper).
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>

@@ -12,7 +12,9 @@ import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
 import { readQuoteImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
-import { toCustomerLines } from '../services/quoteService';
+import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../services/quoteService';
+import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
+import { ContractTemplateServiceError } from '../services/contractTemplateService';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
 import { createQuotePayLink } from '../services/quotePay';
@@ -33,6 +35,7 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 export const quotesPublicRoutes = new Hono();
 const tokenParam = z.object({ token: z.string().min(10) });
 const tokenImageParam = z.object({ token: z.string().min(10), imageId: z.string().guid() });
+const tokenBlockParam = z.object({ token: z.string().min(10), blockId: z.string().guid() });
 
 // Resolve + verify the token, returning the scoped claims or null.
 async function resolve(c: { req: { valid: (k: 'param') => { token: string } } }) {
@@ -45,24 +48,35 @@ async function resolve(c: { req: { valid: (k: 'param') => { token: string } } })
 
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. Customer-visible content only.
 quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => {
+  const { token } = c.req.valid('param');
   const claims = await resolve(c);
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
-  const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
-    if (!quote || quote.status === 'draft') return null;
-    const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder);
-    const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-    const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-    const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
-    await markQuoteViewed(quote.id, quote.orgId);
-    // Derive the amount accept actually invoices (one-time only) so the prospect
-    // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
-    // plus the deposit due + per-category subtotals for the summary panel.
-    const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
-    return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
-  }));
-  if (!data) return c.json({ error: 'Quote not found' }, 404);
-  return c.json({ data });
+  try {
+    const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+      if (!quote || quote.status === 'draft') return null;
+      const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
+      const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
+      const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+      // Cosmetic view-stamping only — must never fail the render. Mirrors the
+      // authenticated counterpart at portal/quotes.ts:48.
+      try { await markQuoteViewed(quote.id, quote.orgId); } catch (err) { console.error('[quotesPublic] quote markViewed failed', { id: quote.id, err }); }
+      // Derive the amount accept actually invoices (one-time only) so the prospect
+      // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
+      // plus the deposit due + per-category subtotals for the summary panel.
+      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+      // Resolves every `contract` block's pinned template version (system context)
+      // and replaces its raw authoring content with the token-gated render contract.
+      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
+      return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+    }));
+    if (!data) return c.json({ error: 'Quote not found' }, 404);
+    return c.json({ data });
+  } catch (err) {
+    if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // GET /:token/images/:imageId
@@ -78,15 +92,43 @@ quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImage
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
 });
 
+// GET /:token/contract-file/:blockId — uploaded contract PDF bytes, mirroring
+// the /:token/images/:imageId asset route. Same token-gated, system-scope read as
+// the image route: no auth header, quote_id resolved from the signature-verified
+// token, eq(quoteBlocks.quoteId, quote.id) closes the cross-quote blockId case.
+quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tokenBlockParam), async (c) => {
+  const claims = await resolve(c); const { blockId } = c.req.valid('param');
+  if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  const block = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+    if (!quote) return null;
+    const [b] = await db.select().from(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quote.id), eq(quoteBlocks.blockType, 'contract'))).limit(1);
+    return b ?? null;
+  }));
+  if (!block) return c.json({ error: 'Contract file not found' }, 404);
+  const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
+  if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found' }, 404);
+  return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
+});
+
 // POST /:token/accept — typed signature. System-scope write, token-resolved.
 quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zValidator('json', acceptQuoteSchema), async (c) => {
   const claims = await resolve(c); const body = c.req.valid('json');
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   try {
+    // Pre-fetch the contract-block render data BEFORE the accept transaction —
+    // symmetry with the portal path. loadContractBlockRenderData resolves the
+    // pinned template versions under a system context; acceptQuote's guard
+    // hard-fails if any contract block on the quote is missing from this set.
+    const blocks = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ id: quoteBlocks.id, blockType: quoteBlocks.blockType, content: quoteBlocks.content })
+        .from(quoteBlocks).where(eq(quoteBlocks.quoteId, claims.quoteId)).orderBy(quoteBlocks.sortOrder)));
+    const contractRenderData = await loadContractBlockRenderData(blocks, { includeFileData: true });
     const res = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptQuote({
       quoteId: claims.quoteId, signerName: body.signerName, signerEmail: body.signerEmail ?? null,
       ipAddress: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
       acceptanceTokenJti: claims.jti, actorUserId: null,
+      contractRenderData,
     })));
     // Post-commit (atom-2): consume the single-use token so the link can't be replayed.
     // A failed revoke leaves the accept link replayable (security-relevant) → capture.
@@ -118,7 +160,12 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
       }
     }
     return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
-  } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
+  } catch (err) {
+    if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    // loadContractBlockRenderData throws this for a missing/mismatched pinned version.
+    if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // POST /:token/decline

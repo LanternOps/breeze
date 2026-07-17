@@ -42,6 +42,11 @@ func NewAzureProvider(accountName, accountKey, containerName string) (*AzureProv
 	}, nil
 }
 
+// BackupIdentity implements JournalIdentity.
+func (a *AzureProvider) BackupIdentity() string {
+	return fmt.Sprintf("azure|%s|%s", a.accountName, a.containerName)
+}
+
 // Upload sends a local file to Azure Blob Storage.
 func (a *AzureProvider) Upload(localPath, remotePath string) error {
 	return a.UploadContext(context.Background(), localPath, remotePath)

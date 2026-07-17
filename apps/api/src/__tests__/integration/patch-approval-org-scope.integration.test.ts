@@ -230,4 +230,73 @@ describe('patch_approvals: org-scoped callers see partner approvals', () => {
     expect(needsPatches[0]!.approvedMissing).toBe(1);
     expect(needsPatches[0]!.unapprovedMissing).toBe(0);
   });
+
+  /**
+   * All-orgs view (issue #2597): a partner-scoped caller sends GET /patches with
+   * NO orgId. The approval read must resolve the caller's OWN token partner and
+   * surface partner-wide (ring_id NULL) approvals. Before the fix this path
+   * skipped patch_approvals entirely (the read was gated on query.orgId), so
+   * every patch showed 'pending' on reload even though the approval row existed.
+   */
+  runDb('GET /patches (no orgId) surfaces partner-wide approval for a partner-scoped caller', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const patchId = await seedPatch();
+
+    await withSystemDbAccessContext(() =>
+      db.insert(patchApprovals).values({
+        partnerId: env.partner.id,
+        patchId,
+        ringId: null,
+        status: 'approved',
+      })
+    );
+
+    const app = buildPatchesApp();
+    // No orgId — the "All orgs" view. limit=200 matches the web client and keeps
+    // the freshly-seeded (newest, desc createdAt) patch on the first page.
+    const res = await app.request('/patches?limit=200', {
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const patch = (body.data as Array<{ id: string; approvalStatus: string }>).find(p => p.id === patchId);
+    expect(patch).toBeDefined();
+    // BEFORE fix: 'pending' (no orgId → approval read skipped).
+    // AFTER fix: 'approved' (resolved from the caller's token partner).
+    expect(patch!.approvalStatus).toBe('approved');
+  });
+
+  /**
+   * Cross-partner isolation for the no-orgId all-orgs view. The read uses a
+   * system-context (RLS-bypassing) escape, so the app-layer
+   * `eq(patchApprovals.partnerId, ...)` filter is the ONLY thing enforcing
+   * tenant isolation on this path — this proves partner A's approval never
+   * leaks into partner B's all-orgs view.
+   */
+  runDb("GET /patches (no orgId) does not leak one partner's approval to another partner", async () => {
+    const partnerA = await setupTestEnvironment({ scope: 'partner' });
+    const partnerB = await setupTestEnvironment({ scope: 'partner' });
+    const patchId = await seedPatch();
+
+    // Only partner A approves the (global-catalog) patch, partner-wide.
+    await withSystemDbAccessContext(() =>
+      db.insert(patchApprovals).values({
+        partnerId: partnerA.partner.id,
+        patchId,
+        ringId: null,
+        status: 'approved',
+      })
+    );
+
+    const app = buildPatchesApp();
+    // Partner B sees the same catalog patch, but with NO approval of their own.
+    const res = await app.request('/patches?limit=200', {
+      headers: { Authorization: `Bearer ${partnerB.token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const patch = (body.data as Array<{ id: string; approvalStatus: string }>).find(p => p.id === patchId);
+    expect(patch).toBeDefined();
+    expect(patch!.approvalStatus).toBe('pending');
+  });
 });

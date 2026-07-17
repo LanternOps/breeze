@@ -16,6 +16,7 @@ import {
   Webhook,
   X,
 } from "lucide-react";
+import { getJwtClaims } from "../../lib/authScope";
 import { fetchWithAuth, resolveApiOrigin } from "../../stores/auth";
 import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -243,7 +244,13 @@ export default function HuntressIntegration() {
   );
 
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const isPartnerView = !currentOrgId;
+  // Token-capability gate (two-layer context model): the partner configuration
+  // UI is shown to any partner-scope token, regardless of which org is selected
+  // in the header. currentOrgId is only used to (re)load data for the working
+  // context — it must never gate which UI renders (the header selection is
+  // transient and null during pre-hydration).
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerAdmin = jwtScope === "partner" && !!jwtPartnerId;
 
   const hasCredentialInput =
     apiKey.trim().length > 0 || apiSecret.trim().length > 0;
@@ -372,7 +379,7 @@ export default function HuntressIntegration() {
   }, []);
 
   const fetchMappings = useCallback(async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     const [mappingRes, orgRes] = await Promise.all([
       fetchWithAuth("/huntress/organizations"),
       fetchWithAuth("/orgs/organizations"),
@@ -401,7 +408,7 @@ export default function HuntressIntegration() {
         ? (orgJson as { data: Organization[] }).data
         : [],
     );
-  }, [isPartnerView]);
+  }, [isPartnerAdmin]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -433,10 +440,10 @@ export default function HuntressIntegration() {
 
   useEffect(() => {
     void load();
-  }, [load, currentOrgId, isPartnerView]);
+  }, [load, currentOrgId, isPartnerAdmin]);
 
   const handleSave = async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     setSaveState({ status: "saving" });
     try {
       if (credentialPairError) {
@@ -490,7 +497,7 @@ export default function HuntressIntegration() {
   };
 
   const handleSync = async () => {
-    if (!isPartnerView) return;
+    if (!isPartnerAdmin) return;
     // updatedAt is bumped by every status write, so "row changed since we started"
     // detects this run's terminal write regardless of whether the best-effort
     // 'running' write landed and without waiting on lastSyncAt (success-only).
@@ -691,7 +698,7 @@ export default function HuntressIntegration() {
           <span>{statusError}</span>
         </div>
       )}
-      {!isPartnerView && !integration && (
+      {!isPartnerAdmin && !integration && (
         <div className="rounded-xl border bg-card p-8 text-center shadow-xs">
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
             <Unplug className="h-5 w-5" />
@@ -700,21 +707,20 @@ export default function HuntressIntegration() {
             {t("huntressIntegration.huntressIsntConnectedYet")}
           </h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            {t("huntressIntegration.huntressIsConfiguredOnceAtThePartnerLevel")}{" "}
-            <span className="font-medium text-foreground">
-              {t("huntressIntegration.allOrgs")}
-            </span>{" "}
-            {t("huntressIntegration.toAddTheAPIKeyAndSecret")}
+            {/* Org-scope audience only (partner admins always see the config
+                form) — so the actionable path is their MSP admin, not a scope
+                switch they can't perform. */}
+            {t("huntressIntegration.askAdminToConnect")}
           </p>
         </div>
       )}
-      {!isPartnerView && integration && !mappedForOrg && (
+      {!isPartnerAdmin && integration && !mappedForOrg && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           {t("huntressIntegration.thisBreezeOrganizationIsNotMappedToA")}
         </div>
       )}
 
-      {isPartnerView && (
+      {isPartnerAdmin && (
         <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -909,7 +915,7 @@ export default function HuntressIntegration() {
         </div>
       )}
 
-      {isPartnerView && integration && (
+      {isPartnerAdmin && integration && (
         <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -1088,7 +1094,7 @@ export default function HuntressIntegration() {
         </div>
       )}
 
-      {isPartnerView && integration && (
+      {isPartnerAdmin && integration && (
         <div className="rounded-xl border bg-card p-6 shadow-xs">
           <div className="flex items-start justify-between gap-4">
             <div>

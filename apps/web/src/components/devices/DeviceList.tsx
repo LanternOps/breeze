@@ -81,6 +81,7 @@ import {
   type LinkedProfileCollapsePreference,
 } from "@/lib/appearance";
 import { groupLinkedDevices } from "./linkedDevices";
+import { useOrgStore } from "@/stores/orgStore";
 import DecommissionedHiddenHint from "./DecommissionedHiddenHint";
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
@@ -941,10 +942,16 @@ export default function DeviceList({
     selectablePageDevices.every((d) => selectedIds.has(d.id));
   const someSelected = selectablePageDevices.some((d) => selectedIds.has(d.id));
 
+  // Fleet (All-organizations) view: only then does the Organization column
+  // carry information — in single-org scope it would repeat the header's org
+  // on every row, so it disappears from the table and the column picker.
+  const isFleetView = useOrgStore((s) => !s.currentOrgId && s.allOrgs);
+
   // The Class/Type columns belong to the network arm (#1322); hide them
   // entirely when the feature flag is off so the list is the agent-only view.
   const isColumnAvailable = (id: ColumnId) =>
-    networkDevicesEnabled || !NETWORK_ONLY_COLUMNS.has(id);
+    (networkDevicesEnabled || !NETWORK_ONLY_COLUMNS.has(id)) &&
+    (id !== "organization" || isFleetView);
 
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.

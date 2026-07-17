@@ -173,7 +173,7 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -1186,5 +1186,111 @@ describe('patch routes', () => {
     expect(sqlPayload.values).toContain(PARTNER_ID);
     expect(typeof sqlPayload.values[5]).toBe('string');
     expect(sqlPayload.values.some((v) => v instanceof Date)).toBe(false);
+  });
+
+  it('surfaces partner-wide approval statuses in the all-orgs view with no orgId (issue #2597)', async () => {
+    // Reproduces the bug: a partner user in the "All orgs" view approves a patch
+    // (partner-wide, ring_id NULL). The write persists, but GET /patches sends no
+    // ?orgId, so the read previously gated the approval lookup on query.orgId and
+    // returned every patch as 'pending' on reload. The fix reads approvals for the
+    // caller's own token partner when no orgId is supplied.
+    mockAuthState.scope = 'partner';
+    mockAuthState.orgId = null;
+    mockAuthState.partnerId = PARTNER_ID;
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    let approvalWhere: unknown;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([
+        {
+          id: PATCH_ID,
+          title: 'Windows Cumulative Update',
+          description: null,
+          source: 'microsoft',
+          severity: 'critical',
+          category: 'system',
+          osTypes: ['windows'],
+          inferredOs: null,
+          releaseDate: null,
+          requiresReboot: false,
+          downloadSizeMb: null,
+          createdAt: new Date('2026-02-07T00:00:00.000Z')
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation((cond: unknown) => {
+            approvalWhere = cond;
+            return Promise.resolve([{ patchId: PATCH_ID, status: 'approved' }]);
+          })
+        })
+      } as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    // Before the fix this was 'pending' because the approval read was skipped.
+    expect(body.data[0].approvalStatus).toBe('approved');
+    // The partner-axis read runs through the system-context escape (patch_approvals
+    // is invisible in a partner request context otherwise).
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+    // The filter must bind the caller's OWN token partner to the partnerId COLUMN
+    // — not merely appear somewhere in the WHERE. The mocked eq/and yield
+    // { op:'and', conditions: [{ op:'eq', left, right }] }.
+    expect(approvalWhere).toEqual({
+      op: 'and',
+      conditions: [{ op: 'eq', left: 'patchApprovals.partnerId', right: PARTNER_ID }]
+    });
+  });
+
+  it('does not read partner-wide approvals for an org-scoped caller with no orgId', async () => {
+    // Tenant-isolation guard for the #2597 fix: an org-scoped token can carry a
+    // partnerId, but patch_approvals is partner-axis. With no ?orgId the approval
+    // read must be skipped entirely (org users manage nothing at partner scope),
+    // so the patch stays 'pending' and patch_approvals is never queried.
+    mockAuthState.scope = 'organization';
+    mockAuthState.orgId = ACCESSIBLE_ORG_ID;
+    mockAuthState.partnerId = PARTNER_ID;
+    mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListResult([
+        {
+          id: PATCH_ID,
+          title: 'Windows Cumulative Update',
+          description: null,
+          source: 'microsoft',
+          severity: 'critical',
+          category: 'system',
+          osTypes: ['windows'],
+          inferredOs: null,
+          releaseDate: null,
+          requiresReboot: false,
+          downloadSizeMb: null,
+          createdAt: new Date('2026-02-07T00:00:00.000Z')
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 1 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].approvalStatus).toBe('pending');
+    // The contract: the partner-axis approvals read must NOT fire for an
+    // org-scoped caller. Assert the system-context escape was never entered
+    // (states the isolation guarantee directly, rather than counting selects).
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

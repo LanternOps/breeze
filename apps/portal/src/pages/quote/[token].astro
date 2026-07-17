@@ -1,5 +1,5 @@
 ---
-import AuthLayout from '../../layouts/AuthLayout.astro';
+import PublicDocumentLayout from '../../layouts/PublicDocumentLayout.astro';
 import PublicQuoteView from '../../components/portal/PublicQuoteView';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -13,8 +13,10 @@ const response = await portalApi.getPublicQuote(token!, buildServerApiConfig(Ast
 // for the generic 401, which would otherwise read "Session expired").
 const initial = response.data?.data ?? null;
 const error = response.statusCode === 401 ? undefined : response.error;
+const partnerName = initial?.branding?.partnerName;
+const title = partnerName ? `Proposal — ${partnerName}` : 'Proposal';
 ---
 
-<AuthLayout title="Proposal">
+<PublicDocumentLayout title={title}>
   <PublicQuoteView token={token!} initial={initial} error={error} client:load />
-</AuthLayout>
+</PublicDocumentLayout>

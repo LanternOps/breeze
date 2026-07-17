@@ -3688,6 +3688,36 @@ Refined the review-round C1 handling — missing *required* artifacts now fails 
 - Genuinely optional classes (certs, iis, firewall, …) still complete with a surfaced warning — an MSP doesn't lose an otherwise-good backup over a non-critical step.
 - Tests: `TestMissingRequired` (policy table); partial-warning test switched to optional classes (certs/iis); required-failure → hard-fail is covered by the collection-error consumption test.
 
+## Incremental Backups + Reliability Controls — live E2E — 2026-07-17
+
+**Branch:** `ToddHebebrand/backup-work` (de9e6285b + fixes below)
+**Rig:** breeze-wt-toddhebebrand-backup-testing stack (fresh seed), isolated non-root agent on this Mac (`~/breeze-backup-e2e-rig`, HOME-overridden so `~/.breeze/backup-journal` is writable), local-provider destination, profile→config-policy→org assignment created through the web UI via Playwright.
+**Tested by:** Claude
+**Result:** PASS after 2 fixes (both committed with this entry)
+
+### Verified working
+- Profile → policy Backup tab (new destination inline create) → org assignment → device shows "Policy assigned"; Run backup now dispatches.
+- Full backup #1: 14 files/14.35 MB uploaded, objects + manifest in dest, job row + restore point + expiry in UI.
+- Incremental #2/#3: snapshot prefix physically contains only changed files; mtime-only touch correctly *referenced* via sha256 tiebreak; `baseSnapshotId` set; restore/verify read through references.
+- Savings UI: "13.9 MB protected — 79.0 B uploaded" (`backup-job-savings`) on the /backup jobs list after the fix below.
+- Live progress: jobs list shows "44% · 18/24 files · 60.8 MB/s" with Stop button during a 3.5 GB run.
+- Stop: after fix below, `backup_stop` → `{"stopped":true}`, upload halts immediately, no manifest written, partial prefix + journal preserved.
+- Resume: next run reused the interrupted snapshot prefix (journal), re-uploaded only the interrupted file, completed with 34/35 referenced.
+- Pure-reference snapshot (unchanged source): completes with ref=12/12, zero upload.
+- Integrity check (idle): passed 35/35 across referenced prefixes. Test restore: correct partial + per-file failures + temp cleanup when the rig disk filled (env artifact, not a bug).
+- Agent auto-update host-mismatch guard refused a cross-host download URL (dev rig).
+
+### Bugs found + fixed in this branch
+1. **Incremental savings dropped on the Redis path** — `agentWs.ts` `enqueueBackupResults` payload hand-copied fields and omitted `referencedFiles`/`referencedBytes`/`errorCount`; `ProcessResultsResult` + strict `backupProcessResultSchema` also lacked them. Only the no-Redis inline fallback preserved them, so every real deployment persisted NULL savings. Fixed in all three layers + `queueSchemas.test.ts` regression block.
+2. **backup_stop was a no-op on policy-managed devices** — helper `executeCommand` nil-mgr fallback returned "backup not configured on this device" before reaching the canceller, so server-dispatched runs could never be stopped (3/3 live repros: cancelled jobs kept uploading and wrote their manifests). Fixed by routing `backup_stop` through `commandCanceller.cancelAll()` in the nil-mgr switch + 2 tests in `main_test.go`.
+
+### Observations (not fixed)
+- Restore point "Expires" shows +7d under Standard (30d) retention — GFS `daily:7` bucket wins over `retentionDays`; adjudicate whether intended.
+- Integrity Check button targets the latest job even while it's running → helper result has no snapshotId → verification row fails "malformed". Should target last *completed* snapshot or disable mid-run.
+- `backup_stop` during helper spawn returns "backup helper is already being spawned" (stop lost); benign for the reaper (retries) but a UI stop click in that window is dropped.
+- Rebuilding `bin/breeze-backup` under a running agent → "auth rejected: binary hash mismatch" until agent restart (hash pinning working as designed; dev-loop gotcha).
+- Device "Updating" badge persists while a failed auto-update retries every heartbeat; recovers once update stops failing.
+
 ## PAM approval dialog on the secure desktop — 2026-07-16
 
 **Branch:** `ToddHebebrand/PAM-Testing-2`

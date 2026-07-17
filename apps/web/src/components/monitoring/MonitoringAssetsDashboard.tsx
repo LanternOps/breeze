@@ -11,9 +11,12 @@ import {
   X,
   XCircle
 } from 'lucide-react';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
+import { OrgRequiredState } from '../shared/OrgRequiredState';
+import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
@@ -125,8 +128,11 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   // Monitoring assets are scoped to a single org; the API returns 400
   // ("orgId is required when partner has multiple organizations") for a
-  // multi-org partner with no orgId. Prompt for one org instead of erroring.
-  const needsOrgSelection = !currentOrgId;
+  // multi-org partner with no orgId. Resolve the full context so the render
+  // gate can tell fleet view / zero-org (prompt for one org) from a load
+  // failure (retry) and the transient pre-hydration frame (spinner) — never
+  // collapsing a failure into a confident "no assets" empty state.
+  const scope = useOrgScope();
   const [assets, setAssets] = useState<MonitoringAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -141,8 +147,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   const [actionError, setActionError] = useState<string>();
 
   const fetchAssets = useCallback(async () => {
-    // Don't fire a per-org request with no org — it 400s. The render shows a
-    // "pick an organization" prompt in this state.
+    // Don't fire a per-org request with no org — it 400s. The render gate above
+    // shows the right non-org state (prompt / retry / spinner) in this case, so
+    // bailing here must NOT leave a confident empty asset list behind.
     if (!currentOrgId) {
       setAssets([]);
       setError(undefined);
@@ -363,19 +370,21 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
     );
   };
 
-  if (needsOrgSelection) {
+  if (scope.status === 'error') {
+    return <OrgLoadFailedState error={scope.error} />;
+  }
+
+  if (scope.scope === 'all' || scope.status === 'empty') {
     return (
-      <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-        <Trans
-          t={t}
-          i18nKey="longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection"
-          components={[<span className="font-medium text-foreground" />]}
-        />
-      </div>
+      <OrgRequiredState
+        description={t('longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection')}
+      />
     );
   }
 
-  if (loading && assets.length === 0) {
+  // scope.status === 'loading' (context still resolving) falls through to the
+  // spinner below alongside the normal per-org loading frame.
+  if (scope.status === 'loading' || (loading && assets.length === 0)) {
     return (
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">

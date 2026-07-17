@@ -44,6 +44,11 @@ func NewLocalProvider(basePath string) *LocalProvider {
 	}
 }
 
+// BackupIdentity implements JournalIdentity.
+func (p *LocalProvider) BackupIdentity() string {
+	return "local|" + p.BasePath
+}
+
 // Upload copies a file into the local backup store.
 func (p *LocalProvider) Upload(localPath, remotePath string) error {
 	return p.UploadContext(context.Background(), localPath, remotePath)

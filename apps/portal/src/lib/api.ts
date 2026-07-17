@@ -406,6 +406,27 @@ export interface QuoteSummary {
   total: string;
 }
 
+/** Server-serialized shape of a `contract` quote block's `content`, once the
+ *  API has resolved the pinned template version and substituted its variables
+ *  (apps/api's contractTemplateRender.ts — renderContractBlocksForClient /
+ *  ContractClientBlockContent). Every portal/public quote route builds `content`
+ *  from that exact function; only the authenticated admin quote editor (a
+ *  different app, apps/web) additionally attaches the raw `authoring` fields
+ *  (templateId/templateVersionId/variableValues) via a SEPARATE admin-only
+ *  code path (attachContractAuthoring) that the portal never calls. `authoring`
+ *  is typed `never` here so a portal component that tried to read it would be
+ *  a compile error, not just something the runtime field-by-field narrowing
+ *  below happens to skip. */
+export interface QuoteContractBlockContent {
+  label?: string;
+  templateName: string;
+  versionNumber: number;
+  sourceType: 'authored' | 'uploaded';
+  renderedHtml: string | null;
+  fileUrl: string | null;
+  authoring?: never;
+}
+
 export interface QuoteBlock {
   id: string;
   blockType: string;
@@ -449,16 +470,18 @@ export interface QuoteHeader extends QuoteSummary {
   termsAndConditions?: string | null;
 }
 
-export interface QuoteDetail {
-  quote: QuoteHeader;
-  blocks: QuoteBlock[];
-  lines: QuoteLine[];
-}
-
 export interface QuoteBranding {
   partnerName: string;
   logoUrl: string | null;
   primaryColor: string | null;
+}
+
+export interface QuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+  /** Optional for API responses that predate the branding field. */
+  branding?: QuoteBranding;
 }
 
 export interface PublicQuoteDetail {

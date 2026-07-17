@@ -49,3 +49,26 @@ describe('backupCommandResultSchema — system_image manifest', () => {
     ).toThrow();
   });
 });
+
+describe('backupCommandResultSchema — incremental-backup referenced stats', () => {
+  it('accepts referencedBytes + referencedFiles from an agent that deduped files', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      filesBackedUp: 3,
+      bytesBackedUp: 1_000,
+      referencedBytes: 50_000,
+      referencedFiles: 17,
+    });
+    expect(parsed.referencedBytes).toBe(50_000);
+    expect(parsed.referencedFiles).toBe(17);
+  });
+
+  it('leaves referencedBytes/referencedFiles undefined for an old-agent result that omits them', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      filesBackedUp: 5,
+    });
+    expect(parsed.referencedBytes).toBeUndefined();
+    expect(parsed.referencedFiles).toBeUndefined();
+  });
+});

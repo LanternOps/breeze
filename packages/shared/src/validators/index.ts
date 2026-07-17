@@ -22,6 +22,7 @@ export * from './invoices';
 export * from './contracts';
 export * from './mlFeedback';
 export * from './quotes';
+export * from './contractTemplates';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './softwareDetection';

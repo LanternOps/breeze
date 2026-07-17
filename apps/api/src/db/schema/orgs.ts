@@ -26,6 +26,8 @@ export const partners = pgTable('partners', {
   settings: jsonb('settings').default({}),
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),
+  // Plain-text signature appended to outbound customer emails (quote sends).
+  emailSignature: text('email_signature'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),

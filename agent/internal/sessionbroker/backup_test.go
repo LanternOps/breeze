@@ -1,7 +1,10 @@
 package sessionbroker
 
 import (
+	"encoding/json"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -9,8 +12,8 @@ import (
 
 func TestSetClearBackupSession(t *testing.T) {
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	s := &Session{SessionID: "backup-test"}
@@ -38,8 +41,8 @@ func TestSetClearBackupSession(t *testing.T) {
 
 func TestStopBackupHelper_NilBroker(t *testing.T) {
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 	// Should not panic when backup is nil
 	b.StopBackupHelper()
@@ -47,12 +50,79 @@ func TestStopBackupHelper_NilBroker(t *testing.T) {
 
 func TestForwardBackupCommand_NotConnected(t *testing.T) {
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
-	_, err := b.ForwardBackupCommand("cmd-1", "backup_run", nil, 5e9)
+	_, err := b.ForwardBackupCommand("cmd-1", "backup_run", nil, 5e9, false)
 	if err == nil {
 		t.Fatal("expected error when backup helper not connected")
+	}
+}
+
+// TestForwardBackupCommand_ThreadsAsyncFlag proves the async parameter reaches
+// the helper on the wire as BackupCommandRequest.Async, and that the sync
+// (false) path is unaffected — the field must default off so an old server
+// (whose forwarder never passes true) round-trips a byte-identical request.
+func TestForwardBackupCommand_ThreadsAsyncFlag(t *testing.T) {
+	tests := []struct {
+		name  string
+		async bool
+	}{
+		{"async true", true},
+		{"async false (compat default)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serverConn, clientConn := net.Pipe()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
+
+			brokerSideConn := ipc.NewConn(serverConn)
+			helperSideConn := ipc.NewConn(clientConn)
+
+			s := &Session{
+				SessionID: "backup-async-test",
+				conn:      brokerSideConn,
+				pending:   make(map[string]pendingResponse),
+				done:      make(chan struct{}),
+			}
+			go s.RecvLoop(func(*Session, *ipc.Envelope) {})
+
+			b := &Broker{
+				sessions:   make(map[string]*Session),
+				byIdentity: make(map[string][]*Session),
+			}
+			b.SetBackupSession(s)
+
+			reqCh := make(chan backupipc.BackupCommandRequest, 1)
+			go func() {
+				env, err := helperSideConn.Recv()
+				if err != nil {
+					return
+				}
+				var req backupipc.BackupCommandRequest
+				if jsonErr := json.Unmarshal(env.Payload, &req); jsonErr != nil {
+					return
+				}
+				reqCh <- req
+				result := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true}
+				_ = helperSideConn.SendTyped(env.ID, backupipc.TypeBackupResult, result)
+			}()
+
+			if _, err := b.ForwardBackupCommand("cmd-async-1", "backup_run", nil, 5*time.Second, tt.async); err != nil {
+				t.Fatalf("ForwardBackupCommand error: %v", err)
+			}
+
+			select {
+			case req := <-reqCh:
+				if req.Async != tt.async {
+					t.Fatalf("got Async=%v, want %v", req.Async, tt.async)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for helper to receive request")
+			}
+		})
 	}
 }
 
@@ -93,8 +163,8 @@ func TestBackupBinaryName(t *testing.T) {
 
 func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   make(map[string][]*Session),
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	// Pre-set a backup session

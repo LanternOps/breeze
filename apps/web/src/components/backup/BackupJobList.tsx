@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -13,9 +13,15 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
+
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
 
@@ -31,7 +37,12 @@ type BackupJobRaw = {
   completedAt?: string | null;
   createdAt: string;
   totalSize?: number | null;
+  transferredSize?: number | null;
+  referencedSize?: number | null;
+  referencedFiles?: number | null;
   fileCount?: number | null;
+  totalFiles?: number | null;
+  lastProgressAt?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
   policyId?: string | null;
@@ -52,7 +63,22 @@ type BackupJob = {
   size: string;
   errorCount: number;
   errorSummary: string;
+  // Live-progress fields (running rows). null when the agent never reported
+  // progress (legacy agent) — the UI falls back to an indeterminate bar.
+  transferredSize: number | null;
+  totalSizeBytes: number | null;
+  fileCount: number | null;
+  totalFiles: number | null;
+  lastProgressAt: string | null;
 };
+
+// Poll the jobs list while any job is running so progress/speed stay live.
+const POLL_MS = 5000;
+// A running job with no progress update for this long is flagged as stalled.
+const STALL_MS = 2 * 60 * 1000;
+// Statuses a job can no longer leave — used to reconcile optimistic cancels
+// against a possibly-stale poll response.
+const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled'];
 
 type BackupJobDetails = BackupJobRaw & {
   deviceName?: string | null;
@@ -151,6 +177,11 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     completedAt: raw.completedAt ?? null,
     duration: formatDuration(raw.startedAt, raw.completedAt),
     size: raw.totalSize ? formatBytes(raw.totalSize) : '--',
+    transferredSize: raw.transferredSize ?? null,
+    totalSizeBytes: raw.totalSize ?? null,
+    fileCount: raw.fileCount ?? null,
+    totalFiles: raw.totalFiles ?? null,
+    lastProgressAt: raw.lastProgressAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorSummary: raw.errorLog
       ? raw.errorLog.length > 60
@@ -174,6 +205,17 @@ export default function BackupJobList() {
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [loadingDetailsId, setLoadingDetailsId] = useState<string | null>(null);
   const [jobDetails, setJobDetails] = useState<Record<string, BackupJobDetails>>({});
+  // Transfer speed (bytes/sec) per running job, derived from consecutive poll
+  // samples. Samples persist across renders in a ref; the derived speed lives in
+  // state so the row re-renders when it changes.
+  const [speeds, setSpeeds] = useState<Record<string, number>>({});
+  const speedSamplesRef = useRef<Map<string, { bytes: number; at: number }>>(new Map());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Jobs the user just cancelled (id -> timestamp). A poll GET already in flight
+  // when the cancel POST lands would otherwise revert the row to running; we keep
+  // the local terminal status until the server confirms a terminal status too.
+  // Entries expire after ~2 poll intervals as a safety net.
+  const recentlyCancelledRef = useRef<Map<string, number>>(new Map());
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -185,8 +227,58 @@ export default function BackupJobList() {
       }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
-      const nextJobs = Array.isArray(data) ? data : [];
-      setJobs(nextJobs.map(mapJob));
+      const now = Date.now();
+
+      // Reconcile against recently-cancelled jobs before anything else so a stale
+      // poll can't resurrect a job the user just stopped, and expire old entries.
+      const cancelled = recentlyCancelledRef.current;
+      for (const [id, at] of cancelled) {
+        if (now - at > POLL_MS * 2) cancelled.delete(id);
+      }
+      const nextJobs = (Array.isArray(data) ? data : []).map(mapJob).map((job) => {
+        if (!cancelled.has(job.id)) return job;
+        if (TERMINAL_STATUSES.includes(job.status)) {
+          // Server agrees the job has ended — accept its truth and stop overriding.
+          cancelled.delete(job.id);
+          return job;
+        }
+        return { ...job, status: 'cancelled' as JobStatus };
+      });
+
+      // Derive transfer speed from the delta since the previous sample. The
+      // running-average fallback fires ONLY when there is no prior sample; once a
+      // sample exists, a zero/negative delta (a stalled job) yields no speed at
+      // all rather than a misleading average. A fresh nextSpeeds map each refresh
+      // means a stalled job's previously shown speed is cleared automatically.
+      const nextSpeeds: Record<string, number> = {};
+      const samples = speedSamplesRef.current;
+      const seen = new Set<string>();
+      for (const job of nextJobs) {
+        if (job.status !== 'running' || job.transferredSize == null) continue;
+        seen.add(job.id);
+        const prev = samples.get(job.id);
+        let bps: number | undefined;
+        if (prev) {
+          if (now > prev.at && job.transferredSize > prev.bytes) {
+            bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
+          }
+          // prior sample but no forward progress -> stalled -> leave bps unset.
+        } else if (job.startedAt) {
+          const elapsedSec = (now - new Date(job.startedAt).getTime()) / 1000;
+          if (elapsedSec > 0) bps = job.transferredSize / elapsedSec;
+        }
+        if (bps != null && Number.isFinite(bps) && bps > 0) {
+          nextSpeeds[job.id] = bps;
+        }
+        samples.set(job.id, { bytes: job.transferredSize, at: now });
+      }
+      // Drop samples for jobs no longer running so the map can't grow unbounded.
+      for (const id of samples.keys()) {
+        if (!seen.has(id)) samples.delete(id);
+      }
+
+      setSpeeds(nextSpeeds);
+      setJobs(nextJobs);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -198,23 +290,58 @@ export default function BackupJobList() {
     fetchJobs();
   }, [fetchJobs]);
 
-  const handleCancel = useCallback(async (jobId: string) => {
-    try {
-      setCancellingId(jobId);
-      const response = await fetchWithAuth(`/backup/jobs/${jobId}/cancel`, {
-        method: 'POST'
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? 'Failed to cancel job');
+  // Poll while any job is running so live progress and speed keep updating.
+  const hasRunning = useMemo(() => jobs.some((job) => job.status === 'running'), [jobs]);
+  useEffect(() => {
+    if (hasRunning && !pollRef.current) {
+      pollRef.current = setInterval(() => {
+        void fetchJobs();
+      }, POLL_MS);
+    } else if (!hasRunning && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
+    };
+  }, [hasRunning, fetchJobs]);
+
+  const handleCancel = useCallback(async (jobId: string) => {
+    // Mark as recently-cancelled up front so even a poll GET that was already in
+    // flight when this POST resolves gets reconciled to the terminal status.
+    recentlyCancelledRef.current.set(jobId, Date.now());
+    setCancellingId(jobId);
+    try {
+      // runAction surfaces every failure (including HTTP-200 {success:false})
+      // and returns the parsed success body. The cancel route additionally
+      // returns HTTP 200 with a `warning` field when the job was marked
+      // cancelled but the stop signal could NOT be delivered to the agent — a
+      // partial success runAction treats as success, so we inspect the body and
+      // surface the warning ourselves. Without this the user sees a clean
+      // "Cancelled" row while the device may still be uploading.
+      const result = await runAction<{ warning?: string } | null>({
+        request: () => fetchWithAuth(`/backup/jobs/${jobId}/cancel`, { method: 'POST' }),
+        errorFallback: 'Failed to cancel job',
+        onUnauthorized: UNAUTHORIZED,
+      });
       setJobs((prev) =>
         prev.map((job) =>
           job.id === jobId ? { ...job, status: 'cancelled' as JobStatus } : job
         )
       );
+      const warning = result && typeof result === 'object' ? result.warning : undefined;
+      if (typeof warning === 'string' && warning.length > 0) {
+        showToast({ message: warning, type: 'warning' });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to cancel job');
+      // The cancel failed — stop overriding the server's view of this job.
+      // runAction already toasted non-401 ActionErrors; handleActionError toasts
+      // network failures and lets the auth redirect handle 401s.
+      recentlyCancelledRef.current.delete(jobId);
+      handleActionError(err, 'Failed to cancel job');
     } finally {
       setCancellingId(null);
     }
@@ -271,7 +398,9 @@ export default function BackupJobList() {
     });
   }, [configFilter, jobs, query, statusFilter]);
 
-  if (loading) {
+  // Only take over the whole view on the initial load. Poll-triggered refreshes
+  // set `loading` too, but must not blank an already-rendered table.
+  if (loading && jobs.length === 0) {
     return (
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
@@ -382,6 +511,19 @@ export default function BackupJobList() {
                 const status = statusConfig[job.status] ?? statusConfig.queued;
                 const StatusIcon = status.icon;
                 const isCancellable = job.status === 'running' || job.status === 'queued';
+                const isRunning = job.status === 'running';
+                // Percent only when totals are known; otherwise indeterminate.
+                const hasTotal = isRunning && (job.totalSizeBytes ?? 0) > 0;
+                const percent = hasTotal
+                  ? Math.min(100, ((job.transferredSize ?? 0) / (job.totalSizeBytes as number)) * 100)
+                  : null;
+                const speedBps = isRunning ? speeds[job.id] : undefined;
+                const showFiles = isRunning && job.fileCount != null && job.totalFiles != null;
+                const stalledMs = isRunning && job.lastProgressAt
+                  ? Date.now() - new Date(job.lastProgressAt).getTime()
+                  : 0;
+                const isStalled = isRunning && !!job.lastProgressAt && stalledMs > STALL_MS;
+                const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
                 const details = jobDetails[job.id];
                 const isExpanded = expandedJobId === job.id;
                 const isLoadingDetails = loadingDetailsId === job.id;
@@ -392,21 +534,65 @@ export default function BackupJobList() {
                       <td className="px-4 py-3 text-muted-foreground">{job.configName}</td>
                       <td className="px-4 py-3 capitalize text-muted-foreground">{job.type}</td>
                       <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
-                            status.className
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
+                              status.className
+                            )}
+                          >
+                            <StatusIcon
+                              className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
+                            />
+                            {status.label}
+                          </span>
+                          {isStalled && (
+                            <span
+                              data-testid="backup-job-stalled"
+                              title={t('backupJobList.stalledTooltip', { minutes: stalledMinutes })}
+                              className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-xs font-medium text-warning"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              {t('backupJobList.stalled')}
+                            </span>
                           )}
-                        >
-                          <StatusIcon
-                            className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
-                          />
-                          {status.label}
-                        </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{formatTime(job.startedAt)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{job.duration}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{job.size}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {isRunning ? (
+                          <div className="min-w-[140px] space-y-1">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={cn(
+                                  'h-full rounded-full bg-primary',
+                                  percent == null && 'w-1/3 animate-pulse'
+                                )}
+                                style={percent == null ? undefined : { width: `${percent}%` }}
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                              {percent != null && (
+                                <span>{`${formatNumber(percent, { maximumFractionDigits: 0 })}%`}</span>
+                              )}
+                              {showFiles && (
+                                <span>
+                                  {t('backupJobList.filesProgress', {
+                                    done: job.fileCount,
+                                    total: job.totalFiles,
+                                  })}
+                                </span>
+                              )}
+                              {speedBps != null && (
+                                <span>{t('backupJobList.speedValue', { value: formatBytes(speedBps) })}</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          job.size
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {job.errorCount > 0 ? (
                           <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
@@ -424,7 +610,7 @@ export default function BackupJobList() {
                               type="button"
                               onClick={() => handleCancel(job.id)}
                               disabled={cancellingId === job.id}
-                              aria-label={`Cancel backup for ${job.deviceName}`}
+                              aria-label={`Stop backup for ${job.deviceName}`}
                               className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
                             >
                               {cancellingId === job.id ? (
@@ -432,7 +618,7 @@ export default function BackupJobList() {
                               ) : (
                                 <PauseCircle className="h-3.5 w-3.5" />
                               )}
-                              {t('backupJobList.cancel')} </button>
+                              {t('backupJobList.stop')} </button>
                           )}
                           <button
                             type="button"
@@ -480,6 +666,17 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
+                          {job.status === 'completed' && details.referencedSize != null && (
+                            <p
+                              data-testid="backup-job-savings"
+                              className="mt-4 text-xs text-muted-foreground"
+                            >
+                              {t('backupJobList.savings', {
+                                protected: formatBytes(details.totalSize ?? 0),
+                                uploaded: formatBytes(Math.max(0, (details.totalSize ?? 0) - details.referencedSize)),
+                              })}
+                            </p>
+                          )}
                           <div className="mt-4">
                             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                             <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">

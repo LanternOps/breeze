@@ -15,6 +15,7 @@ export interface EmailAttachment {
 
 export interface SendEmailParams {
   to: string | string[];
+  cc?: string | string[];
   subject: string;
   html: string;
   text?: string;
@@ -189,8 +190,23 @@ export class EmailService {
     });
   }
 
+  /**
+   * The default sender with a custom display name — keeps the envelope address
+   * (so SPF/DKIM alignment is untouched) while showing e.g.
+   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
+   * The display name is stripped of header-breaking characters; falls back to
+   * the plain default sender when nothing usable survives.
+   */
+  fromWithDisplayName(displayName: string): string {
+    const match = this.defaultFrom.match(/<([^<>\s]+@[^<>\s]+)>/);
+    const address = (match?.[1] ?? this.defaultFrom).trim();
+    const safe = displayName.replace(/[\r\n"<>\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!safe || !address.includes('@')) return this.defaultFrom;
+    return `"${safe}" <${address}>`;
+  }
+
   async sendEmail(params: SendEmailParams): Promise<void> {
-    const { to, subject, html, text, from, replyTo, headers, attachments } = params;
+    const { to, cc, subject, html, text, from, replyTo, headers, attachments } = params;
     const sender = from ?? this.defaultFrom;
 
     if (this.provider === 'resend') {
@@ -201,6 +217,7 @@ export class EmailService {
       const { error } = await this.resend.emails.send({
         from: sender,
         to,
+        cc,
         subject,
         html,
         text,
@@ -251,6 +268,7 @@ export class EmailService {
     await this.smtpTransport.sendMail({
       from: sender,
       to,
+      cc,
       subject,
       html,
       text,
@@ -595,6 +613,7 @@ async function sendViaMailgun(
 ): Promise<void> {
   const authToken = Buffer.from(`api:${config.apiKey}`).toString('base64');
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
+  const ccs = params.cc ? (Array.isArray(params.cc) ? params.cc : [params.cc]) : [];
   const replyTos = params.replyTo
     ? (Array.isArray(params.replyTo) ? params.replyTo : [params.replyTo])
     : [];
@@ -608,6 +627,7 @@ async function sendViaMailgun(
     body.set('from', params.from);
     body.set('subject', params.subject);
     for (const recipient of recipients) body.append('to', recipient);
+    for (const cc of ccs) body.append('cc', cc);
     if (params.text) body.set('text', params.text);
     body.set('html', params.html);
     for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
@@ -633,6 +653,7 @@ async function sendViaMailgun(
     body.set('from', params.from);
     body.set('subject', params.subject);
     for (const recipient of recipients) body.append('to', recipient);
+    for (const cc of ccs) body.append('cc', cc);
     if (params.text) body.set('text', params.text);
     body.set('html', params.html);
     for (const replyTo of replyTos) body.append('h:Reply-To', replyTo);
@@ -860,6 +881,8 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     heading: `Invoice ${number}`,
     body,
     footer: supportFooter(params.supportEmail, 'Questions about this invoice? Contact'),
+    // Customer-facing: the brand line shows the MSP the invoice is from, not the platform.
+    brandName: params.partnerName,
   });
 
   const support = getSupportEmail(params.supportEmail);

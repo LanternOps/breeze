@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HuntressIntegration from "./HuntressIntegration";
 import { fetchWithAuth } from "../../stores/auth";
+import { getJwtClaims } from "../../lib/authScope";
 import { useOrgStore } from "../../stores/orgStore";
 
 vi.mock("../../stores/auth", () => ({
@@ -17,7 +18,25 @@ vi.mock("../../stores/auth", () => ({
   resolveApiOrigin: vi.fn(() => "https://us.2breeze.app"),
 }));
 
+vi.mock("../../lib/authScope", () => ({
+  getJwtClaims: vi.fn(),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const getJwtClaimsMock = vi.mocked(getJwtClaims);
+
+// Token-capability claims: the partner config UI is gated on the JWT scope,
+// NOT on the org selected in the header (two-layer context model).
+const partnerClaims = {
+  scope: "partner" as const,
+  orgId: null,
+  partnerId: "partner-1",
+};
+const orgClaims = {
+  scope: "organization" as const,
+  orgId: "00000000-0000-4000-8000-000000000001",
+  partnerId: "partner-1",
+};
 
 function makeResponse(
   payload: unknown,
@@ -138,6 +157,9 @@ function mockPartnerLoad(
 describe("HuntressIntegration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Partner-scope token with an org selected in the header — the partner
+    // config UI must render regardless of the selected org.
+    getJwtClaimsMock.mockReturnValue(partnerClaims);
     useOrgStore.setState({
       currentOrgId: "00000000-0000-4000-8000-000000000001",
     });
@@ -170,7 +192,31 @@ describe("HuntressIntegration", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations");
   });
 
+  it("still renders the partner connection and mapping UI when a partner admin has an org selected", async () => {
+    // currentOrgId stays set (default beforeEach): the header context must not
+    // gate the partner config UI — the JWT capability does.
+    mockPartnerLoad({
+      integration: existingIntegration,
+      mappings: [discoveredHuntressOrg],
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Partner connection")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Organization mapping")).toBeInTheDocument();
+    expect(screen.getByText("Acme Huntress")).toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith("/huntress/organizations");
+    expect(fetchWithAuthMock).toHaveBeenCalledWith("/orgs/organizations");
+    // The org-scope-only "not connected" empty state never shows for partners.
+    expect(
+      screen.queryByText("Huntress isn't connected yet"),
+    ).not.toBeInTheDocument();
+  });
+
   it("loads Huntress resources when scoped to a current organization", async () => {
+    getJwtClaimsMock.mockReturnValue(orgClaims);
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (url === "/huntress/integration")
         return makeResponse({ data: existingIntegration, mapped: true });
@@ -359,6 +405,7 @@ describe("HuntressIntegration", () => {
   });
 
   it("warns when live status fails to load instead of rendering an all-clear", async () => {
+    getJwtClaimsMock.mockReturnValue(orgClaims);
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (url === "/huntress/integration")
         return makeResponse({ data: existingIntegration });
@@ -455,10 +502,10 @@ describe("HuntressIntegration", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not surface the partner webhook URL or Generate button in organization scope", async () => {
-    // currentOrgId is set (org scope) by the default beforeEach. The webhook
-    // endpoint + secret are partner-level and must not leak into a customer-org
-    // context (guarded by isPartnerView).
+  it("does not surface the partner webhook URL or Generate button for an org-scope token", async () => {
+    // Org-scope JWT: the webhook endpoint + secret are partner-level and must
+    // not leak into a customer-org context (guarded by isPartnerAdmin).
+    getJwtClaimsMock.mockReturnValue(orgClaims);
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (url === "/huntress/integration")
         return makeResponse({ data: existingIntegration, mapped: true });
@@ -483,6 +530,35 @@ describe("HuntressIntegration", () => {
     expect(
       screen.queryByText(/huntress\/webhook\?integrationId=/),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("Partner connection")).not.toBeInTheDocument();
+    expect(screen.queryByText("Organization mapping")).not.toBeInTheDocument();
+  });
+
+  it("keeps the read-only org view for an org-scope token even while no org is selected (pre-hydration)", async () => {
+    // The old `!currentOrgId` gate misfired here and flashed the partner config
+    // UI at org users during the transient pre-hydration null.
+    getJwtClaimsMock.mockReturnValue(orgClaims);
+    useOrgStore.setState({ currentOrgId: null });
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (url === "/huntress/integration")
+        return makeResponse({ data: existingIntegration, mapped: true });
+      if (url === "/huntress/status")
+        return makeResponse({ ...emptyStatus, mapped: true });
+      if (url === "/huntress/incidents?limit=5")
+        return makeResponse({ data: [] });
+      return makeResponse({}, false, 404);
+    });
+
+    render(<HuntressIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Sync status")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Partner connection")).not.toBeInTheDocument();
+    expect(screen.queryByText("Organization mapping")).not.toBeInTheDocument();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+      "/huntress/organizations",
+    );
   });
 
   it("generates a webhook secret, fills the input, and shows a copy-once notice that is submitted on save", async () => {

@@ -203,12 +203,15 @@
     "email": "E-mail",
     "phone": "Téléphone",
     "website": "Site web",
+    "emailSignature": "Signature d'e-mail",
+    "emailSignatureDescription": "Ajoutée à la fin des e-mails de proposition envoyés à vos clients.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "John Smith",
       "email": "contact@example.com",
       "phone": "+1 (555) 123-4567",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Cordialement,\nL'équipe Acme MSP"
     },
     "countries": {
       "select": "— Pays sélectionné —",
@@ -516,7 +519,7 @@
     },
     "loading": "Chargement des clés d’inscription...",
     "title": "Clés d’inscription",
-    "description": "Créez et gérez les clés d’inscription des agents. Utilisez-les avec <code>breeze-agent enroll &lt;key&gt;</code>",
+    "description": "Créez et gérez les clés d’inscription des agents. Utilisez-les avec breeze-agent enroll <key>",
     "createKey": "Créer une clé",
     "saveNow": "Enregistrez cette clé d’inscription dès maintenant. Il ne sera plus diffusé.",
     "copied": "Copié",
@@ -541,6 +544,8 @@
     "selectSite": "Sélectionnez un site…",
     "siteHelp": "Les appareils inscrits avec cette clé sont affectés à ce site.",
     "noSitesForOrg": "Cette organisation n’a pas encore de site.",
+    "sitesLoadFailed": "Impossible de charger les sites de cette organisation.",
+    "retrySites": "Réessayer",
     "createASite": "Créer un site",
     "maxUsage": "Utilisation maximale (optionnelle)",
     "unlimited": "Illimité",
@@ -1289,7 +1294,10 @@
     "adminOnly": "Réservé à l’administration",
     "cancel": "Annuler",
     "creating": "Création…",
-    "createKey": "Créer une clé"
+    "createKey": "Créer une clé",
+    "organization": "Organisation",
+    "selectOrganization": "Sélectionnez une organisation…",
+    "organizationRequired": "Choisissez l’organisation à laquelle appartient cette clé"
   },
   "apiKeyList": {
     "aPIKeys": "API Clés",
@@ -2291,7 +2299,7 @@
     "loadFailed": "Impossible de charger les formulaires d’admission.",
     "emptyState": "Pas encore de formulaires d’admission. Créez-en un pour collecter des informations structurées sur les nouveaux tickets.",
     "allOrgsTooltip": "Formulaire à l’échelle des partenaires — disponible pour chaque organisation",
-    "allOrgsBadge": "Toutes les organisations",
+    "allOrgsBadge": "À l’échelle du partenaire",
     "limitedOrgsTooltip": "Formulaire à l’échelle des partenaires limité à des organisations spécifiques",
     "orgCount_one": "{{count}} organisation",
     "orgCount_other": "{{count}} organisations",
@@ -2469,52 +2477,160 @@
     }
   },
   "pax8": {
-    "title": "Abonnements Pax8", "description": "Vérifiez les quantités facturables, préparez les changements et envoyez les commandes Pax8.",
-    "actions": { "newOrder": "Nouvelle commande", "retry": "Réessayer" }, "states": { "loadingProduct": "Chargement des exigences du produit…" },
-    "products": { "emptyReason": "Associez des produits actifs du catalogue à Pax8 avant de commander." },
+    "title": "Abonnements Pax8",
+    "description": "Vérifiez les quantités facturables, préparez les changements et envoyez les commandes Pax8.",
+    "actions": {
+      "newOrder": "Nouvelle commande",
+      "retry": "Réessayer"
+    },
+    "states": {
+      "loadingProduct": "Chargement des exigences du produit…"
+    },
+    "products": {
+      "emptyReason": "Associez des produits actifs du catalogue à Pax8 avant de commander."
+    },
     "enums": {
-      "orderStatus": { "draft": "Brouillon", "awaitingDetails": "En attente de détails", "ready": "Prête", "submitting": "Envoi en cours", "completed": "Terminée", "partiallyFailed": "Échec partiel", "failed": "Échec", "cancelled": "Annulée" },
-      "lineAction": { "newSubscription": "Nouvel abonnement", "changeQuantity": "Modifier la quantité", "cancel": "Résilier l’abonnement" },
-      "submitState": { "pending": "En attente", "inFlight": "En cours", "succeeded": "Réussie", "failed": "Échec", "needsReconcile": "Rapprochement requis" },
-      "billingTerm": { "monthly": "Mensuelle", "annual": "Annuelle", "twoYear": "2 ans", "threeYear": "3 ans", "oneTime": "Paiement unique", "trial": "Essai", "activation": "Mise en service" }
+      "orderStatus": {
+        "draft": "Brouillon",
+        "awaitingDetails": "En attente de détails",
+        "ready": "Prête",
+        "submitting": "Envoi en cours",
+        "completed": "Terminée",
+        "partiallyFailed": "Échec partiel",
+        "failed": "Échec",
+        "cancelled": "Annulée"
+      },
+      "lineAction": {
+        "newSubscription": "Nouvel abonnement",
+        "changeQuantity": "Modifier la quantité",
+        "cancel": "Résilier l’abonnement"
+      },
+      "submitState": {
+        "pending": "En attente",
+        "inFlight": "En cours",
+        "succeeded": "Réussie",
+        "failed": "Échec",
+        "needsReconcile": "Rapprochement requis"
+      },
+      "billingTerm": {
+        "monthly": "Mensuelle",
+        "annual": "Annuelle",
+        "twoYear": "2 ans",
+        "threeYear": "3 ans",
+        "oneTime": "Paiement unique",
+        "trial": "Essai",
+        "activation": "Mise en service"
+      }
     },
     "mapping": {
-      "title": "Association de l’entreprise", "company": "Entreprise Pax8", "choose": "Choisir une entreprise", "map": "Associer l’entreprise",
-      "empty": "Associez cette organisation à son entreprise Pax8 avant de commander.", "noIntegration": "Connectez et synchronisez d’abord Pax8 dans les intégrations partenaire.",
-      "unknownStatus": "État non communiqué", "activeRequired": "L’entreprise Pax8 associée doit être active et avoir des contacts principaux Administration, Facturation et Technique."
+      "title": "Association de l’entreprise",
+      "company": "Entreprise Pax8",
+      "choose": "Choisir une entreprise",
+      "map": "Associer l’entreprise",
+      "empty": "Associez cette organisation à son entreprise Pax8 avant de commander.",
+      "noIntegration": "Connectez et synchronisez d’abord Pax8 dans les intégrations partenaire.",
+      "unknownStatus": "État non communiqué",
+      "activeRequired": "L’entreprise Pax8 associée doit être active et avoir des contacts principaux Administration, Facturation et Technique."
     },
     "subscriptions": {
-      "title": "Registre des abonnements", "description": "Les quantités Breeze font foi pour la facturation. Les valeurs Pax8 sont les dernières observations.",
-      "empty": "Aucun abonnement Pax8 observé pour cette organisation.", "product": "Produit", "breeze": "Quantité Breeze", "pax8": "Valeur Pax8",
-      "status": "État", "observed": "Dernière observation", "actions": "Opérations", "unknownProduct": "Produit inconnu", "unknownStatus": "Inconnu",
-      "neverObserved": "Jamais", "notLinked": "Non lié", "notReported": "Non communiqué", "drift": "Écart",
-      "targetQuantity": "Quantité cible pour {{product}}", "stageChange": "Préparer le changement", "cancel": "Résilier",
+      "title": "Registre des abonnements",
+      "description": "Les quantités Breeze font foi pour la facturation. Les valeurs Pax8 sont les dernières observations.",
+      "empty": "Aucun abonnement Pax8 observé pour cette organisation.",
+      "product": "Produit",
+      "breeze": "Quantité Breeze",
+      "pax8": "Valeur Pax8",
+      "status": "État",
+      "observed": "Dernière observation",
+      "actions": "Opérations",
+      "unknownProduct": "Produit inconnu",
+      "unknownStatus": "Inconnu",
+      "neverObserved": "Jamais",
+      "notLinked": "Non lié",
+      "notReported": "Non communiqué",
+      "drift": "Écart",
+      "targetQuantity": "Quantité cible pour {{product}}",
+      "stageChange": "Préparer le changement",
+      "cancel": "Résilier",
       "actionUnavailable": "Liez cet abonnement à une ligne de contrat manuelle avant de le modifier.",
       "commitmentUnavailable": "L’engagement actif ne peut pas être identifié de façon sûre. Actualisez les données Pax8.",
-      "increaseBlocked": "Cet engagement n’autorise pas l’augmentation de quantité.", "decreaseBlocked": "Cet engagement n’autorise pas la réduction de quantité.",
-      "cancelBlocked": "Cet engagement n’autorise pas la résiliation anticipée.", "confirmCancel": "Préparer la résiliation de {{product}} ?",
-      "feeWarning": "Pax8 signale des frais de résiliation anticipée.", "confirm": "Préparer la résiliation", "keep": "Conserver l’abonnement"
+      "increaseBlocked": "Cet engagement n’autorise pas l’augmentation de quantité.",
+      "decreaseBlocked": "Cet engagement n’autorise pas la réduction de quantité.",
+      "cancelBlocked": "Cet engagement n’autorise pas la résiliation anticipée.",
+      "confirmCancel": "Préparer la résiliation de {{product}} ?",
+      "feeWarning": "Pax8 signale des frais de résiliation anticipée.",
+      "confirm": "Préparer la résiliation",
+      "keep": "Conserver l’abonnement"
     },
-    "orders": { "title": "Commandes", "description": "Travail préparé et historique des commandes de cette organisation.", "empty": "Aucune commande Pax8.", "quoteOrder": "Commande issue d’un devis", "directOrder": "Commande directe" },
+    "orders": {
+      "title": "Commandes",
+      "description": "Travail préparé et historique des commandes de cette organisation.",
+      "empty": "Aucune commande Pax8.",
+      "quoteOrder": "Commande issue d’un devis",
+      "directOrder": "Commande directe"
+    },
     "order": {
-      "title": "Préparer la commande", "back": "Retour à Pax8", "quoteSource": "Préparée depuis un devis accepté", "directSource": "Commande directe de l’organisation",
-      "addProduct": "Ajouter un produit", "product": "Produit", "chooseProduct": "Choisir un produit associé", "billingTerm": "Période de facturation", "quantity": "Quantité",
-      "commitment": "Engagement", "noCommitmentSelected": "Aucun engagement sélectionné", "addToOrder": "Ajouter à la commande",
-      "item": "Élément", "action": "Opération", "state": "État", "actions": "Opérations", "empty": "Cette commande ne contient encore aucune ligne.", "unknownItem": "Élément inconnu",
-      "editDetails": "Modifier les détails", "remove": "Supprimer la ligne", "editProvisioning": "Détails de provisionnement", "saveDetails": "Enregistrer", "cancelEdit": "Annuler",
-      "reviewSubmit": "Prévalider et envoyer", "reconcile": "Rapprocher", "completed": "Commande terminée"
+      "title": "Préparer la commande",
+      "back": "Retour à Pax8",
+      "quoteSource": "Préparée depuis un devis accepté",
+      "directSource": "Commande directe de l’organisation",
+      "addProduct": "Ajouter un produit",
+      "product": "Produit",
+      "chooseProduct": "Choisir un produit associé",
+      "billingTerm": "Période de facturation",
+      "quantity": "Quantité",
+      "commitment": "Engagement",
+      "noCommitmentSelected": "Aucun engagement sélectionné",
+      "addToOrder": "Ajouter à la commande",
+      "item": "Élément",
+      "action": "Opération",
+      "state": "État",
+      "actions": "Opérations",
+      "empty": "Cette commande ne contient encore aucune ligne.",
+      "unknownItem": "Élément inconnu",
+      "editDetails": "Modifier les détails",
+      "remove": "Supprimer la ligne",
+      "editProvisioning": "Détails de provisionnement",
+      "saveDetails": "Enregistrer",
+      "cancelEdit": "Annuler",
+      "reviewSubmit": "Prévalider et envoyer",
+      "reconcile": "Rapprocher",
+      "completed": "Commande terminée"
     },
-    "provisioning": { "optional": "Facultatif", "none": "Ce produit ne fournit aucun champ de provisionnement.", "unsupported": "Pax8 a renvoyé un type de champ non pris en charge.", "clear": "Effacer {{field}}", "clearButton": "Effacer" },
+    "provisioning": {
+      "optional": "Facultatif",
+      "none": "Ce produit ne fournit aucun champ de provisionnement.",
+      "unsupported": "Pax8 a renvoyé un type de champ non pris en charge.",
+      "clear": "Effacer {{field}}",
+      "clearButton": "Effacer"
+    },
     "toasts": {
-      "companyMapped": "Entreprise Pax8 associée", "draftReady": "Brouillon Pax8 prêt", "changeStaged": "Changement de quantité préparé", "cancelStaged": "Résiliation préparée",
-      "lineAdded": "Produit ajouté à la commande", "lineUpdated": "Détails de provisionnement enregistrés", "lineRemoved": "Ligne de commande supprimée",
-      "preflightPassed": "Prévalidation Pax8 réussie", "submitted": "Commande Pax8 envoyée", "submitNeedsAttention": "Certains éléments nécessitent une intervention", "reconciled": "Commande Pax8 rapprochée"
+      "companyMapped": "Entreprise Pax8 associée",
+      "draftReady": "Brouillon Pax8 prêt",
+      "changeStaged": "Changement de quantité préparé",
+      "cancelStaged": "Résiliation préparée",
+      "lineAdded": "Produit ajouté à la commande",
+      "lineUpdated": "Détails de provisionnement enregistrés",
+      "lineRemoved": "Ligne de commande supprimée",
+      "preflightPassed": "Prévalidation Pax8 réussie",
+      "submitted": "Commande Pax8 envoyée",
+      "submitNeedsAttention": "Certains éléments nécessitent une intervention",
+      "reconciled": "Commande Pax8 rapprochée"
     },
     "errors": {
-      "load": "Impossible de charger les données Pax8.", "loadOrder": "Impossible de charger la commande Pax8.", "foreignOrder": "Cette commande Pax8 appartient à une autre organisation.", "loadProduct": "Impossible de charger les exigences du produit.",
-      "mapCompany": "Impossible d’associer l’entreprise Pax8.", "createDraft": "Impossible de créer le brouillon Pax8.", "stageChange": "Impossible de préparer le changement de quantité.",
-      "stageCancel": "Impossible de préparer la résiliation.", "addLine": "Impossible d’ajouter le produit.", "updateLine": "Impossible d’enregistrer les détails de provisionnement.",
-      "removeLine": "Impossible de supprimer la ligne de commande.", "preflight": "La prévalidation Pax8 a échoué.", "submit": "Impossible d’envoyer la commande Pax8.", "reconcile": "Impossible de rapprocher la commande Pax8."
+      "load": "Impossible de charger les données Pax8.",
+      "loadOrder": "Impossible de charger la commande Pax8.",
+      "foreignOrder": "Cette commande Pax8 appartient à une autre organisation.",
+      "loadProduct": "Impossible de charger les exigences du produit.",
+      "mapCompany": "Impossible d’associer l’entreprise Pax8.",
+      "createDraft": "Impossible de créer le brouillon Pax8.",
+      "stageChange": "Impossible de préparer le changement de quantité.",
+      "stageCancel": "Impossible de préparer la résiliation.",
+      "addLine": "Impossible d’ajouter le produit.",
+      "updateLine": "Impossible d’enregistrer les détails de provisionnement.",
+      "removeLine": "Impossible de supprimer la ligne de commande.",
+      "preflight": "La prévalidation Pax8 a échoué.",
+      "submit": "Impossible d’envoyer la commande Pax8.",
+      "reconcile": "Impossible de rapprocher la commande Pax8."
     }
   },
   "orgTicketSettingsEditor": {

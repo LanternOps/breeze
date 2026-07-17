@@ -203,12 +203,15 @@
     "email": "Email",
     "phone": "Phone",
     "website": "Website",
+    "emailSignature": "Email Signature",
+    "emailSignatureDescription": "Appended to proposal emails sent to your customers.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "John Smith",
       "email": "contact@example.com",
       "phone": "+1 (555) 123-4567",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Best regards,\nThe Acme MSP team"
     },
     "countries": {
       "select": "— Select country —",
@@ -516,7 +519,7 @@
     },
     "loading": "Loading enrollment keys...",
     "title": "Enrollment Keys",
-    "description": "Create and manage keys for agent enrollment. Use these keys with <code>breeze-agent enroll &lt;key&gt;</code>",
+    "description": "Create and manage keys for agent enrollment. Use these keys with breeze-agent enroll <key>",
     "createKey": "Create Key",
     "saveNow": "Save this enrollment key now. It will not be shown again.",
     "copied": "Copied",
@@ -541,6 +544,8 @@
     "selectSite": "Select a site…",
     "siteHelp": "Devices enrolled with this key are assigned to this site.",
     "noSitesForOrg": "This organization has no sites yet.",
+    "sitesLoadFailed": "Couldn't load sites for this organization.",
+    "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
     "unlimited": "Unlimited",
@@ -1289,7 +1294,10 @@
     "adminOnly": "Admin only",
     "cancel": "Cancel",
     "creating": "Creating...",
-    "createKey": "Create Key"
+    "createKey": "Create Key",
+    "organization": "Organization",
+    "selectOrganization": "Select an organization…",
+    "organizationRequired": "Pick the organization this key belongs to"
   },
   "apiKeyList": {
     "aPIKeys": "API Keys",
@@ -2344,7 +2352,7 @@
     "loadFailed": "Failed to load intake forms.",
     "emptyState": "No intake forms yet. Create one to collect structured details on new tickets.",
     "allOrgsTooltip": "Partner-wide form — available to every organization",
-    "allOrgsBadge": "All orgs",
+    "allOrgsBadge": "Partner-wide",
     "limitedOrgsTooltip": "Partner-wide form limited to specific organizations",
     "orgCount_one": "{{count}} org",
     "orgCount_other": "{{count}} orgs",
@@ -2524,55 +2532,158 @@
   "pax8": {
     "title": "Pax8 subscriptions",
     "description": "Review billable quantities, stage changes, and submit Pax8 orders.",
-    "actions": { "newOrder": "New order", "retry": "Try again" },
-    "states": { "loadingProduct": "Loading product requirements…" },
-    "products": { "emptyReason": "Map active catalog products to Pax8 before ordering." },
+    "actions": {
+      "newOrder": "New order",
+      "retry": "Try again"
+    },
+    "states": {
+      "loadingProduct": "Loading product requirements…"
+    },
+    "products": {
+      "emptyReason": "Map active catalog products to Pax8 before ordering."
+    },
     "enums": {
-      "orderStatus": { "draft": "Draft", "awaitingDetails": "Awaiting details", "ready": "Ready", "submitting": "Submitting", "completed": "Completed", "partiallyFailed": "Partially failed", "failed": "Failed", "cancelled": "Cancelled" },
-      "lineAction": { "newSubscription": "New subscription", "changeQuantity": "Change quantity", "cancel": "Cancel subscription" },
-      "submitState": { "pending": "Pending", "inFlight": "In progress", "succeeded": "Succeeded", "failed": "Failed", "needsReconcile": "Needs reconciliation" },
-      "billingTerm": { "monthly": "Monthly", "annual": "Annual", "twoYear": "2-year", "threeYear": "3-year", "oneTime": "One-time", "trial": "Trial", "activation": "Activation" }
+      "orderStatus": {
+        "draft": "Draft",
+        "awaitingDetails": "Awaiting details",
+        "ready": "Ready",
+        "submitting": "Submitting",
+        "completed": "Completed",
+        "partiallyFailed": "Partially failed",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "lineAction": {
+        "newSubscription": "New subscription",
+        "changeQuantity": "Change quantity",
+        "cancel": "Cancel subscription"
+      },
+      "submitState": {
+        "pending": "Pending",
+        "inFlight": "In progress",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "needsReconcile": "Needs reconciliation"
+      },
+      "billingTerm": {
+        "monthly": "Monthly",
+        "annual": "Annual",
+        "twoYear": "2-year",
+        "threeYear": "3-year",
+        "oneTime": "One-time",
+        "trial": "Trial",
+        "activation": "Activation"
+      }
     },
     "mapping": {
-      "title": "Company mapping", "company": "Pax8 company", "choose": "Choose a company", "map": "Map company",
-      "empty": "Map this organization to its Pax8 company before ordering.", "noIntegration": "Connect and sync Pax8 in partner integrations first.",
-      "unknownStatus": "Status not reported", "activeRequired": "The mapped Pax8 company must be Active with primary Admin, Billing, and Technical contacts before an order can be staged."
+      "title": "Company mapping",
+      "company": "Pax8 company",
+      "choose": "Choose a company",
+      "map": "Map company",
+      "empty": "Map this organization to its Pax8 company before ordering.",
+      "noIntegration": "Connect and sync Pax8 in partner integrations first.",
+      "unknownStatus": "Status not reported",
+      "activeRequired": "The mapped Pax8 company must be Active with primary Admin, Billing, and Technical contacts before an order can be staged."
     },
     "subscriptions": {
-      "title": "Subscription ledger", "description": "Breeze quantities are authoritative for billing. Pax8 values are last-known observations.",
-      "empty": "No Pax8 subscriptions have been observed for this organization.", "product": "Product", "breeze": "Breeze quantity", "pax8": "Pax8 reported",
-      "status": "Status", "observed": "Last observed", "actions": "Actions", "unknownProduct": "Unknown product", "unknownStatus": "Unknown",
-      "neverObserved": "Never", "notLinked": "Not linked", "notReported": "Not reported", "drift": "Drift",
-      "targetQuantity": "Target quantity for {{product}}", "stageChange": "Stage change", "cancel": "Cancel",
+      "title": "Subscription ledger",
+      "description": "Breeze quantities are authoritative for billing. Pax8 values are last-known observations.",
+      "empty": "No Pax8 subscriptions have been observed for this organization.",
+      "product": "Product",
+      "breeze": "Breeze quantity",
+      "pax8": "Pax8 reported",
+      "status": "Status",
+      "observed": "Last observed",
+      "actions": "Actions",
+      "unknownProduct": "Unknown product",
+      "unknownStatus": "Unknown",
+      "neverObserved": "Never",
+      "notLinked": "Not linked",
+      "notReported": "Not reported",
+      "drift": "Drift",
+      "targetQuantity": "Target quantity for {{product}}",
+      "stageChange": "Stage change",
+      "cancel": "Cancel",
       "actionUnavailable": "Link this subscription to a manual contract line before changing it.",
       "commitmentUnavailable": "The active commitment cannot be identified safely. Refresh Pax8 data before ordering.",
-      "increaseBlocked": "This commitment does not allow quantity increases.", "decreaseBlocked": "This commitment does not allow quantity decreases.",
-      "cancelBlocked": "This commitment does not allow early cancellation.", "confirmCancel": "Stage cancellation for {{product}}?",
-      "feeWarning": "Pax8 reports that an early-cancellation fee applies.", "confirm": "Stage cancellation", "keep": "Keep subscription"
+      "increaseBlocked": "This commitment does not allow quantity increases.",
+      "decreaseBlocked": "This commitment does not allow quantity decreases.",
+      "cancelBlocked": "This commitment does not allow early cancellation.",
+      "confirmCancel": "Stage cancellation for {{product}}?",
+      "feeWarning": "Pax8 reports that an early-cancellation fee applies.",
+      "confirm": "Stage cancellation",
+      "keep": "Keep subscription"
     },
     "orders": {
-      "title": "Orders", "description": "Open staged work and order history for this organization.", "empty": "No Pax8 orders yet.",
-      "quoteOrder": "Quote fulfillment order", "directOrder": "Direct order"
+      "title": "Orders",
+      "description": "Open staged work and order history for this organization.",
+      "empty": "No Pax8 orders yet.",
+      "quoteOrder": "Quote fulfillment order",
+      "directOrder": "Direct order"
     },
     "order": {
-      "title": "Order builder", "back": "Back to Pax8", "quoteSource": "Staged from an accepted quote", "directSource": "Direct organization order",
-      "addProduct": "Add product", "product": "Product", "chooseProduct": "Choose a mapped product", "billingTerm": "Billing term", "quantity": "Quantity",
-      "commitment": "Commitment", "noCommitmentSelected": "No commitment selected", "addToOrder": "Add to order",
-      "item": "Item", "action": "Action", "state": "State", "actions": "Actions", "empty": "This order has no lines yet.", "unknownItem": "Unknown item",
-      "editDetails": "Edit details", "remove": "Remove line", "editProvisioning": "Provisioning details", "saveDetails": "Save details", "cancelEdit": "Cancel",
-      "reviewSubmit": "Preflight and submit", "reconcile": "Reconcile", "completed": "Order completed"
+      "title": "Order builder",
+      "back": "Back to Pax8",
+      "quoteSource": "Staged from an accepted quote",
+      "directSource": "Direct organization order",
+      "addProduct": "Add product",
+      "product": "Product",
+      "chooseProduct": "Choose a mapped product",
+      "billingTerm": "Billing term",
+      "quantity": "Quantity",
+      "commitment": "Commitment",
+      "noCommitmentSelected": "No commitment selected",
+      "addToOrder": "Add to order",
+      "item": "Item",
+      "action": "Action",
+      "state": "State",
+      "actions": "Actions",
+      "empty": "This order has no lines yet.",
+      "unknownItem": "Unknown item",
+      "editDetails": "Edit details",
+      "remove": "Remove line",
+      "editProvisioning": "Provisioning details",
+      "saveDetails": "Save details",
+      "cancelEdit": "Cancel",
+      "reviewSubmit": "Preflight and submit",
+      "reconcile": "Reconcile",
+      "completed": "Order completed"
     },
-    "provisioning": { "optional": "Optional", "none": "This product reports no provisioning fields.", "unsupported": "Pax8 returned an unsupported field type.", "clear": "Clear {{field}}", "clearButton": "Clear" },
+    "provisioning": {
+      "optional": "Optional",
+      "none": "This product reports no provisioning fields.",
+      "unsupported": "Pax8 returned an unsupported field type.",
+      "clear": "Clear {{field}}",
+      "clearButton": "Clear"
+    },
     "toasts": {
-      "companyMapped": "Pax8 company mapped", "draftReady": "Pax8 draft ready", "changeStaged": "Quantity change staged", "cancelStaged": "Cancellation staged",
-      "lineAdded": "Product added to the order", "lineUpdated": "Provisioning details saved", "lineRemoved": "Order line removed",
-      "preflightPassed": "Pax8 preflight passed", "submitted": "Pax8 order submitted", "submitNeedsAttention": "Pax8 order finished with items that need attention", "reconciled": "Pax8 order reconciled"
+      "companyMapped": "Pax8 company mapped",
+      "draftReady": "Pax8 draft ready",
+      "changeStaged": "Quantity change staged",
+      "cancelStaged": "Cancellation staged",
+      "lineAdded": "Product added to the order",
+      "lineUpdated": "Provisioning details saved",
+      "lineRemoved": "Order line removed",
+      "preflightPassed": "Pax8 preflight passed",
+      "submitted": "Pax8 order submitted",
+      "submitNeedsAttention": "Pax8 order finished with items that need attention",
+      "reconciled": "Pax8 order reconciled"
     },
     "errors": {
-      "load": "Pax8 data could not be loaded.", "loadOrder": "The Pax8 order could not be loaded.", "foreignOrder": "This Pax8 order belongs to another organization.", "loadProduct": "Product requirements could not be loaded.",
-      "mapCompany": "The Pax8 company could not be mapped.", "createDraft": "The Pax8 draft could not be created.", "stageChange": "The quantity change could not be staged.",
-      "stageCancel": "The cancellation could not be staged.", "addLine": "The product could not be added.", "updateLine": "Provisioning details could not be saved.",
-      "removeLine": "The order line could not be removed.", "preflight": "Pax8 preflight failed.", "submit": "The Pax8 order could not be submitted.", "reconcile": "The Pax8 order could not be reconciled."
+      "load": "Pax8 data could not be loaded.",
+      "loadOrder": "The Pax8 order could not be loaded.",
+      "foreignOrder": "This Pax8 order belongs to another organization.",
+      "loadProduct": "Product requirements could not be loaded.",
+      "mapCompany": "The Pax8 company could not be mapped.",
+      "createDraft": "The Pax8 draft could not be created.",
+      "stageChange": "The quantity change could not be staged.",
+      "stageCancel": "The cancellation could not be staged.",
+      "addLine": "The product could not be added.",
+      "updateLine": "Provisioning details could not be saved.",
+      "removeLine": "The order line could not be removed.",
+      "preflight": "Pax8 preflight failed.",
+      "submit": "The Pax8 order could not be submitted.",
+      "reconcile": "The Pax8 order could not be reconciled."
     }
   },
   "orgTicketSettingsEditor": {

@@ -6,7 +6,7 @@
 // lines (no blockId) fall into a trailing default pricing table — same as the
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
-import type { QuoteBlock, QuoteLine } from '@/lib/api';
+import type { QuoteBlock, QuoteContractBlockContent, QuoteLine } from '@/lib/api';
 
 export function money(value: string | number, currencyCode: string): string {
   const n = Number(value);
@@ -27,32 +27,6 @@ function lineTax(lineTotal: string | number, taxable: boolean | undefined, rate:
   const cents = Math.round(Number(lineTotal) * 100);
   if (!Number.isFinite(cents)) return null;
   return Math.round(cents * rate) / 100;
-}
-
-// rich_text blocks store author HTML. The portal has no HTML sanitizer
-// dependency, and rendering untrusted HTML on the *unauthenticated* public page
-// would be an XSS sink, so we strip all tags to plain text (matching the PDF's
-// stripHtml + the web detail view, which also renders rich_text as text) and
-// preserve line breaks with whitespace-pre-wrap. This is the safe sanitization.
-function stripHtml(html: string): string {
-  // Output is rendered as a React text node (auto-escaped), so this is display
-  // cleanup. Strip tags to a fixpoint so a split tag can't survive one pass, and
-  // decode `&amp;` LAST so it can't re-introduce an entity a later rule re-decodes.
-  let out = html
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n');
-  let prev: string;
-  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
-  return out
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&amp;/gi, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 const RECURRENCE_GROUPS: ReadonlyArray<{ key: string; label: string; suffix: string }> = [
@@ -146,6 +120,7 @@ export function QuoteBlocks({
   lines,
   currency,
   imageUrl,
+  buildUrl,
   taxRate = 0,
   showTax = false,
 }: {
@@ -154,6 +129,13 @@ export function QuoteBlocks({
   currency: string;
   // Builds the (authed or token-scoped) URL to fetch a quote image by id.
   imageUrl: (imageId: string) => string;
+  // Resolves a server-returned relative route (e.g. a contract block's
+  // `fileUrl`, already the full `/portal/quotes/:id/contract-file/:blockId` or
+  // `/quotes/public/:token/contract-file/:blockId` path) into a fetchable URL —
+  // `buildPortalApiUrl` in both callers. Unlike `imageUrl`, the route itself
+  // (not just an id) comes from the API, since a contract block's fileUrl is
+  // part of the serialization contract.
+  buildUrl: (path: string) => string;
   /** Quote tax rate as a fraction (e.g. 0.085); used for the per-line Tax column. */
   taxRate?: number;
   /** Whether the quote carries tax — shows the per-line Tax column when true. */
@@ -178,16 +160,19 @@ export function QuoteBlocks({
     }
 
     if (block.blockType === 'rich_text') {
-      const text = stripHtml(String(content.html ?? ''));
-      if (!text) return null;
+      // The API sanitizes every rich_text block's content.html on both write and
+      // read serialization (richTextSanitize.ts's fixed p/br/strong/em/u/h3/h4/
+      // ul/ol/li/a allowlist) before it ever reaches this component — including
+      // on the unauthenticated public quote link — so rendering it here is safe.
+      const html = String(content.html ?? '');
+      if (!html.trim()) return null;
       return (
-        <p
+        <div
           key={block.id}
-          className="whitespace-pre-wrap text-sm leading-relaxed text-foreground"
+          className="quote-rich-text text-sm leading-relaxed text-foreground"
           data-testid={`quote-block-${block.id}`}
-        >
-          {text}
-        </p>
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       );
     }
 
@@ -209,6 +194,47 @@ export function QuoteBlocks({
           )}
           {caption && <figcaption className="mt-2 text-xs text-muted-foreground">{caption}</figcaption>}
         </figure>
+      );
+    }
+
+    if (block.blockType === 'contract') {
+      // Typed as QuoteContractBlockContent (never `authoring`) for documentation —
+      // still narrowed field-by-field below rather than trusted outright, since a
+      // TS type doesn't validate the JSON actually on the wire. `Record<string,
+      // unknown>` doesn't structurally overlap with the (mostly-required) typed
+      // shape, so route through `unknown` — the same escape hatch this
+      // component already leans on for `content` itself.
+      const c = content as unknown as QuoteContractBlockContent;
+      const label = typeof c.label === 'string' ? c.label : '';
+      const templateName = typeof c.templateName === 'string' ? c.templateName : 'Contract';
+      const versionNumber = Number(c.versionNumber ?? 0);
+      const sourceType = c.sourceType === 'uploaded' ? 'uploaded' : 'authored';
+      const renderedHtml = typeof c.renderedHtml === 'string' ? c.renderedHtml : null;
+      const fileUrl = typeof c.fileUrl === 'string' ? c.fileUrl : null;
+      return (
+        <div key={block.id} className="space-y-3 rounded-lg border bg-card p-4 sm:p-5" data-testid="contract-block">
+          {label && <h3 className="text-base font-semibold text-foreground">{label}</h3>}
+          {sourceType === 'authored' ? (
+            renderedHtml ? (
+              // Server-substituted HTML from an authored contract template — same
+              // sanitizer output + HTML-escaped substitution path as rich_text
+              // blocks (see the rich_text case above), safe to render as-is.
+              <div className="quote-rich-text text-sm leading-relaxed text-foreground" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+            ) : (
+              <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Contract content unavailable</div>
+            )
+          ) : fileUrl ? (
+            <div className="space-y-2">
+              <iframe src={buildUrl(fileUrl)} title={templateName} className="h-[32rem] w-full rounded-lg border" />
+              <a href={buildUrl(fileUrl)} target="_blank" rel="noreferrer" data-testid="contract-block-download" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline">
+                Download contract
+              </a>
+            </div>
+          ) : (
+            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Contract file unavailable</div>
+          )}
+          <p className="text-xs text-muted-foreground">{templateName} — v{versionNumber}</p>
+        </div>
       );
     }
 

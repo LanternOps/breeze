@@ -5,6 +5,7 @@ import QuotesPage from './QuotesPage';
 import { fetchWithAuth } from '../../../stores/auth';
 
 vi.mock('../../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>

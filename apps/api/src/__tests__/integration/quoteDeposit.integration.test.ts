@@ -205,7 +205,7 @@ describe('quote deposits: accept → deposit → balance (breeze_app, real DB)',
     );
     // Sanity: recomputing the hash from the (unchanged) persisted quote/lines
     // reproduces the exact hash stored at accept time.
-    const recomputedHash = computeQuoteSha256(quoteAfterAccept as any, blocksForHash as any, linesForHash as any);
+    const recomputedHash = computeQuoteSha256(quoteAfterAccept as any, blocksForHash as any, linesForHash as any, []);
     expect(recomputedHash).toBe(acceptance!.quoteSha256);
 
     // Now strip the deposit terms and hash again — must differ.
@@ -213,6 +213,7 @@ describe('quote deposits: accept → deposit → balance (breeze_app, real DB)',
       { ...(quoteAfterAccept as any), depositType: 'none', depositPercent: null, depositAmount: null },
       blocksForHash as any,
       linesForHash as any,
+      [],
     );
     expect(strippedHash).not.toBe(acceptance!.quoteSha256);
   });

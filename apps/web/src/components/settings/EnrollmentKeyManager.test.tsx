@@ -100,7 +100,7 @@ function makeRow(overrides: Partial<Row> = {}): Row {
 }
 
 /** Route all fetches; returns the recorded call list (with parsed body) for assertions. */
-function routeFetch(list: Row[]) {
+function routeFetch(list: Row[], sites: StoreSite[] = []) {
   const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
   fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
     const url = String(rawUrl ?? '');
@@ -121,6 +121,11 @@ function routeFetch(list: Row[]) {
       return Promise.resolve(
         jsonRes({ data: list, pagination: { page: 1, limit: 50, total: list.length } }),
       );
+    }
+    // The create form always fetches its site list for the selected org (the
+    // org switcher no longer preloads a shared site cache).
+    if (url.startsWith('/orgs/sites?')) {
+      return Promise.resolve(jsonRes({ data: sites }));
     }
     return Promise.resolve(jsonRes({ data: [], pagination: { page: 1, limit: 50, total: 0 } }));
   });
@@ -206,11 +211,12 @@ describe('EnrollmentKeyManager — create form site selector', () => {
   it('submits the selected siteId (and orgId) in the create POST body', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
-      currentSiteId: null,
       organizations: [makeOrg('org-1', 'Org One'), makeOrg('org-2', 'Org Two')],
-      sites: [makeSite({ id: 'site-a', name: 'Site A' }), makeSite({ id: 'site-b', name: 'Site B' })],
     });
-    const calls = routeFetch([]);
+    const calls = routeFetch([], [
+      makeSite({ id: 'site-a', name: 'Site A' }),
+      makeSite({ id: 'site-b', name: 'Site B' }),
+    ]);
     render(<EnrollmentKeyManager />);
     await screen.findByText(EMPTY);
 
@@ -220,6 +226,9 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     });
 
     // Pick a specific site — proves the selection flows into the request body.
+    // The site list loads async (fetched per selected org): the select exists
+    // in a disabled/placeholder state during the load, so wait for the option.
+    await screen.findByRole('option', { name: 'Site B' });
     fireEvent.change(screen.getByTestId('enrollment-key-site-select'), {
       target: { value: 'site-b' },
     });
@@ -239,9 +248,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
   it('blocks submit and hides the site dropdown when the org has no sites', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
-      currentSiteId: null,
       organizations: [makeOrg('org-1', 'Org One')],
-      sites: [],
     });
     routeFetch([]);
     render(<EnrollmentKeyManager />);
@@ -253,10 +260,11 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       target: { value: 'CI key' },
     });
 
+    // The amber "no sites yet" guidance replaces the dropdown once the async
+    // site load resolves empty.
+    expect(await screen.findByText('This organization has no sites yet.')).toBeTruthy();
     const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
-    // The amber "no sites yet" guidance replaces the dropdown.
-    expect(screen.getByText('This organization has no sites yet.')).toBeTruthy();
     expect(screen.queryByTestId('enrollment-key-site-select')).toBeNull();
   });
 
@@ -265,9 +273,8 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     seedOrgState({
       currentOrgId: 'org-1',
       organizations: [makeOrg('org-1', 'Org One')],
-      sites: [makeSite({ id: 'site-a' })],
     });
-    routeFetch([]);
+    routeFetch([], [makeSite({ id: 'site-a' })]);
     const { unmount } = render(<EnrollmentKeyManager />);
     await screen.findByText(EMPTY);
     fireEvent.click(screen.getByText('Create Key'));
@@ -278,9 +285,8 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     seedOrgState({
       currentOrgId: 'org-1',
       organizations: [makeOrg('org-1', 'Org One'), makeOrg('org-2', 'Org Two')],
-      sites: [makeSite({ id: 'site-a' })],
     });
-    routeFetch([]);
+    routeFetch([], [makeSite({ id: 'site-a' })]);
     render(<EnrollmentKeyManager />);
     await screen.findByText(EMPTY);
     fireEvent.click(screen.getByText('Create Key'));

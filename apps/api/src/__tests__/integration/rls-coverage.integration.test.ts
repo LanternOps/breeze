@@ -393,6 +393,25 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-linkable; converted in 2026-07-13-backup-profiles. CHECK
   // config_policy_backup_settings_one_owner_chk enforces exactly one axis.
   'config_policy_backup_settings',
+  // contract_templates (spec 2026-07-16, epic #2135): a contract template is
+  // org-scoped (org_id set, partner_id NULL) OR partner-wide (partner_id set,
+  // org_id NULL — "all orgs"). Created dual-axis from day one in
+  // 2026-07-16-contract-documents.sql, mirroring software_policies. The org_id
+  // column means org-tenant auto-discovery already asserts the
+  // breeze_has_org_access branch; this entry asserts the
+  // breeze_has_partner_access (partner-wide) branch. CHECK
+  // contract_templates_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: contractTemplatesPartnerRls.integration.test.ts.
+  'contract_templates',
+  // contract_template_versions (spec 2026-07-16): same dual-axis shape as its
+  // parent contract_templates, but the owner axes are DENORMALIZED onto the
+  // version row rather than reached via an EXISTS join to the template (FK
+  // children get NO RLS coverage for free) — the app layer disallows changing
+  // a template's owner once versions exist, so the denorm cannot drift. CHECK
+  // contract_template_versions_one_owner_chk enforces exactly one axis.
+  // Functional cross-partner forge proof:
+  // contractTemplatesPartnerRls.integration.test.ts.
+  'contract_template_versions',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their

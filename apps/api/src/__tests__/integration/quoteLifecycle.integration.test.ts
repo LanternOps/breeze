@@ -1,5 +1,10 @@
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Fire-and-forget event bus (markQuoteViewed emits quote.viewed on first view) —
+// mocked like emitInvoiceEvent in the invoice integration suites so the test
+// never touches a real BullMQ queue.
+vi.mock('../../services/quoteEvents', () => ({ emitQuoteEvent: vi.fn().mockResolvedValue(undefined) }));
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { quotes } from '../../db/schema/quotes';
@@ -79,6 +84,11 @@ describe('quote lifecycle', () => {
     await markQuoteViewed(created.id, org.id); // idempotent
     const [v2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
     expect(v2!.firstViewedAt).toEqual(firstViewed);
+    // quote.viewed fires on the FIRST view only — the second (idempotent) view
+    // must not re-notify.
+    const { emitQuoteEvent } = await import('../../services/quoteEvents');
+    expect(vi.mocked(emitQuoteEvent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(emitQuoteEvent)).toHaveBeenCalledWith({ type: 'quote.viewed', quoteId: created.id, orgId: org.id, partnerId: partner.id });
   });
 
   runDb('declineQuoteByActor sets declined + reason', async () => {
