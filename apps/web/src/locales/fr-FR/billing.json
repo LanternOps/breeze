@@ -107,6 +107,22 @@
         "title": "Supprimer le contrat brouillon",
         "message": "Cette action supprime définitivement le contrat brouillon. Elle est irréversible.",
         "confirm": "Supprimer le brouillon"
+      },
+      "documents": {
+        "title": "Documents exécutés",
+        "columns": {
+          "template": "Modèle",
+          "signer": "Signataire",
+          "signedAt": "Signé",
+          "quote": "Devis"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Aucun document exécuté pour le moment.",
+        "loadError": "Impossible de charger les documents exécutés.",
+        "downloadError": "Impossible de télécharger le PDF.",
+        "download": "Télécharger le PDF",
+        "preparing": "Préparation…",
+        "viewQuote": "Voir le devis"
       }
     },
     "contractEditor": {
@@ -299,7 +315,8 @@
     },
     "tabs": {
       "contracts": "Contrats",
-      "templates": "Modèles"
+      "templates": "Modèles",
+      "documents": "Documents"
     },
     "templatesTab": {
       "title": "Modèles de contrat",
@@ -348,6 +365,37 @@
         "create": "Créer le modèle",
         "creating": "Création…"
       }
+    },
+    "documentsTab": {
+      "title": "Documents",
+      "description": "Documents de contrat exécutés non encore liés à un contrat.",
+      "empty": {
+        "title": "Aucun document non lié",
+        "description": "Les documents exécutés apparaissent ici jusqu'à ce qu'ils soient liés à un contrat."
+      },
+      "loadError": "Impossible de charger les documents.",
+      "columns": {
+        "template": "Modèle",
+        "signer": "Signataire",
+        "signedAt": "Signé",
+        "quote": "Devis",
+        "organization": "Organisation"
+      },
+      "download": "Télécharger le PDF",
+      "preparing": "Préparation…",
+      "viewQuote": "Voir le devis",
+      "linkAction": "Lier à un contrat",
+      "linkDialog": {
+        "title": "Lier à un contrat",
+        "contractLabel": "Contrat",
+        "selectContract": "Sélectionner un contrat",
+        "noContracts": "Aucun contrat trouvé pour cette organisation.",
+        "cancel": "Annuler",
+        "confirm": "Lier",
+        "linking": "Liaison…"
+      },
+      "linkSuccess": "Document lié au contrat.",
+      "linkError": "Impossible de lier le document à ce contrat."
     },
     "templateEditor": {
       "back": "Retour",

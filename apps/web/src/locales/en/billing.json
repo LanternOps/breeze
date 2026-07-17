@@ -107,6 +107,22 @@
         "title": "Delete draft contract",
         "message": "This permanently deletes the draft contract. This cannot be undone.",
         "confirm": "Delete draft"
+      },
+      "documents": {
+        "title": "Executed documents",
+        "columns": {
+          "template": "Template",
+          "signer": "Signer",
+          "signedAt": "Signed",
+          "quote": "Quote"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "No executed documents yet.",
+        "loadError": "Could not load executed documents.",
+        "downloadError": "Could not download the PDF.",
+        "download": "Download PDF",
+        "preparing": "Preparing…",
+        "viewQuote": "View quote"
       }
     },
     "contractEditor": {
@@ -299,7 +315,8 @@
     },
     "tabs": {
       "contracts": "Contracts",
-      "templates": "Templates"
+      "templates": "Templates",
+      "documents": "Documents"
     },
     "templatesTab": {
       "title": "Contract templates",
@@ -348,6 +365,37 @@
         "create": "Create template",
         "creating": "Creating…"
       }
+    },
+    "documentsTab": {
+      "title": "Documents",
+      "description": "Executed contract documents not yet linked to a contract.",
+      "empty": {
+        "title": "No unattached documents",
+        "description": "Executed documents appear here until they're linked to a contract."
+      },
+      "loadError": "Could not load documents.",
+      "columns": {
+        "template": "Template",
+        "signer": "Signer",
+        "signedAt": "Signed",
+        "quote": "Quote",
+        "organization": "Organization"
+      },
+      "download": "Download PDF",
+      "preparing": "Preparing…",
+      "viewQuote": "View quote",
+      "linkAction": "Link to contract",
+      "linkDialog": {
+        "title": "Link to a contract",
+        "contractLabel": "Contract",
+        "selectContract": "Select a contract",
+        "noContracts": "No contracts found for this organization.",
+        "cancel": "Cancel",
+        "confirm": "Link",
+        "linking": "Linking…"
+      },
+      "linkSuccess": "Document linked to contract.",
+      "linkError": "Could not link the document to that contract."
     },
     "templateEditor": {
       "back": "Back",

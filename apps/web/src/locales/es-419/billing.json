@@ -107,6 +107,22 @@
         "title": "Eliminar borrador de contrato",
         "message": "Esto elimina permanentemente el borrador del contrato. Esto no se puede deshacer.",
         "confirm": "Eliminar borrador"
+      },
+      "documents": {
+        "title": "Documentos ejecutados",
+        "columns": {
+          "template": "Plantilla",
+          "signer": "Firmante",
+          "signedAt": "Firmado",
+          "quote": "Cotización"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Aún no hay documentos ejecutados.",
+        "loadError": "No se pudieron cargar los documentos ejecutados.",
+        "downloadError": "No se pudo descargar el PDF.",
+        "download": "Descargar PDF",
+        "preparing": "Preparando…",
+        "viewQuote": "Ver cotización"
       }
     },
     "contractEditor": {
@@ -299,7 +315,8 @@
     },
     "tabs": {
       "contracts": "Contratos",
-      "templates": "Plantillas"
+      "templates": "Plantillas",
+      "documents": "Documentos"
     },
     "templatesTab": {
       "title": "Plantillas de contrato",
@@ -348,6 +365,37 @@
         "create": "Crear plantilla",
         "creating": "Creando…"
       }
+    },
+    "documentsTab": {
+      "title": "Documentos",
+      "description": "Documentos de contrato ejecutados que aún no están vinculados a un contrato.",
+      "empty": {
+        "title": "No hay documentos sin vincular",
+        "description": "Los documentos ejecutados aparecen aquí hasta que se vinculan a un contrato."
+      },
+      "loadError": "No se pudieron cargar los documentos.",
+      "columns": {
+        "template": "Plantilla",
+        "signer": "Firmante",
+        "signedAt": "Firmado",
+        "quote": "Cotización",
+        "organization": "Organización"
+      },
+      "download": "Descargar PDF",
+      "preparing": "Preparando…",
+      "viewQuote": "Ver cotización",
+      "linkAction": "Vincular a un contrato",
+      "linkDialog": {
+        "title": "Vincular a un contrato",
+        "contractLabel": "Contrato",
+        "selectContract": "Selecciona un contrato",
+        "noContracts": "No se encontraron contratos para esta organización.",
+        "cancel": "Cancelar",
+        "confirm": "Vincular",
+        "linking": "Vinculando…"
+      },
+      "linkSuccess": "Documento vinculado al contrato.",
+      "linkError": "No se pudo vincular el documento a ese contrato."
     },
     "templateEditor": {
       "back": "Volver",

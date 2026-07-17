@@ -107,6 +107,22 @@
         "title": "Vertragsentwurf löschen",
         "message": "Dadurch wird der Vertragsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         "confirm": "Entwurf löschen"
+      },
+      "documents": {
+        "title": "Ausgeführte Dokumente",
+        "columns": {
+          "template": "Vorlage",
+          "signer": "Unterzeichner",
+          "signedAt": "Unterschrieben",
+          "quote": "Angebot"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Noch keine ausgeführten Dokumente.",
+        "loadError": "Ausgeführte Dokumente konnten nicht geladen werden.",
+        "downloadError": "PDF konnte nicht heruntergeladen werden.",
+        "download": "PDF herunterladen",
+        "preparing": "Wird vorbereitet…",
+        "viewQuote": "Angebot ansehen"
       }
     },
     "contractEditor": {
@@ -299,7 +315,8 @@
     },
     "tabs": {
       "contracts": "Verträge",
-      "templates": "Vorlagen"
+      "templates": "Vorlagen",
+      "documents": "Dokumente"
     },
     "templatesTab": {
       "title": "Vertragsvorlagen",
@@ -348,6 +365,37 @@
         "create": "Vorlage erstellen",
         "creating": "Wird erstellt…"
       }
+    },
+    "documentsTab": {
+      "title": "Dokumente",
+      "description": "Ausgeführte Vertragsdokumente, die noch keinem Vertrag zugeordnet sind.",
+      "empty": {
+        "title": "Keine nicht zugeordneten Dokumente",
+        "description": "Ausgeführte Dokumente erscheinen hier, bis sie einem Vertrag zugeordnet werden."
+      },
+      "loadError": "Dokumente konnten nicht geladen werden.",
+      "columns": {
+        "template": "Vorlage",
+        "signer": "Unterzeichner",
+        "signedAt": "Unterschrieben",
+        "quote": "Angebot",
+        "organization": "Organisation"
+      },
+      "download": "PDF herunterladen",
+      "preparing": "Wird vorbereitet…",
+      "viewQuote": "Angebot ansehen",
+      "linkAction": "Mit Vertrag verknüpfen",
+      "linkDialog": {
+        "title": "Mit einem Vertrag verknüpfen",
+        "contractLabel": "Vertrag",
+        "selectContract": "Vertrag auswählen",
+        "noContracts": "Keine Verträge für diese Organisation gefunden.",
+        "cancel": "Abbrechen",
+        "confirm": "Verknüpfen",
+        "linking": "Wird verknüpft…"
+      },
+      "linkSuccess": "Dokument mit Vertrag verknüpft.",
+      "linkError": "Dokument konnte nicht mit diesem Vertrag verknüpft werden."
     },
     "templateEditor": {
       "back": "Zurück",

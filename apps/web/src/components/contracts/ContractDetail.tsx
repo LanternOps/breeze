@@ -17,6 +17,7 @@ import {
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
+import ContractDocumentsSection from './ContractDocumentsSection';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -290,6 +291,9 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               </tbody>
             </table>
           </div>
+
+          {/* Executed documents (Task 15's accept-time snapshots) */}
+          <ContractDocumentsSection contractId={contract.id} />
         </div>
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}

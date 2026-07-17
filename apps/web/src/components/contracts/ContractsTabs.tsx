@@ -3,16 +3,19 @@ import '@/lib/i18n';
 import { useHashState } from '@/lib/useHashState';
 import { ContractsList } from './ContractsList';
 import TemplatesTab from './TemplatesTab';
+import DocumentsTab from './DocumentsTab';
 
-// Two-tab landing shell for the contracts area: the recurring-contracts list and
-// the contract-template library. Only one child mounts at a time so each owns
-// the URL hash exclusively — the Contracts tab lets ContractsList manage its own
-// `#orgId=…&status=…` filter fragment; the Templates tab parks on `#tab=templates`
-// (CLAUDE.md: hash for transient UI state, never query params).
-type Tab = 'contracts' | 'templates';
+// Three-tab landing shell for the contracts area: the recurring-contracts
+// list, the contract-template library, and unattached executed documents
+// (Task 18). Only one child mounts at a time so each owns the URL hash
+// exclusively — the Contracts tab lets ContractsList manage its own
+// `#orgId=…&status=…` filter fragment; Templates/Documents park on their own
+// `#tab=…` fragment (CLAUDE.md: hash for transient UI state, never query params).
+type Tab = 'contracts' | 'templates' | 'documents';
 
 function parseTab(hash: string): Tab | undefined {
-  return new URLSearchParams(hash).get('tab') === 'templates' ? 'templates' : undefined;
+  const tab = new URLSearchParams(hash).get('tab');
+  return tab === 'templates' || tab === 'documents' ? tab : undefined;
 }
 
 export default function ContractsTabs() {
@@ -21,9 +24,9 @@ export default function ContractsTabs() {
 
   const select = (next: Tab) => {
     setTab(next);
-    // Templates parks on a dedicated fragment; switching back to Contracts hands
-    // the hash back to ContractsList by clearing it.
-    window.location.hash = next === 'templates' ? 'tab=templates' : '';
+    // Templates/Documents park on a dedicated fragment; switching back to
+    // Contracts hands the hash back to ContractsList by clearing it.
+    window.location.hash = next === 'contracts' ? '' : `tab=${next}`;
   };
 
   const tabClass = (active: boolean) =>
@@ -56,8 +59,18 @@ export default function ContractsTabs() {
         >
           {t('contracts.tabs.templates')}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'documents'}
+          onClick={() => select('documents')}
+          data-testid="contracts-tab-documents"
+          className={tabClass(tab === 'documents')}
+        >
+          {t('contracts.tabs.documents')}
+        </button>
       </div>
-      {tab === 'templates' ? <TemplatesTab /> : <ContractsList />}
+      {tab === 'templates' ? <TemplatesTab /> : tab === 'documents' ? <DocumentsTab /> : <ContractsList />}
     </div>
   );
 }

@@ -20,8 +20,11 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
+import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { contractDocuments } from '../db/schema/contractDocuments';
+import { contractDocuments, contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
+import { contracts } from '../db/schema/contracts';
+import { quotes, quoteAcceptances } from '../db/schema/quotes';
 import { QuoteServiceError } from './quoteTypes';
 import type { HashableContractPart } from './quoteContentHash';
 import {
@@ -32,6 +35,7 @@ import {
 } from './contractTemplateRender';
 import { renderRichTextIntoPdf } from './richTextPdf';
 import { formatDate } from './quotePdf';
+import type { AuthContext } from '../middleware/auth';
 
 // Only the three fields this service reads off a quote_blocks row — the caller
 // passes the full Drizzle rows, which satisfy this structurally.
@@ -244,4 +248,149 @@ export async function createExecutedDocuments(
     insertedIds.push(row!.id);
   }
   return insertedIds;
+}
+
+// ---------------------------------------------------------------------------
+// Task 18: API surfaces for executed documents — list (per-contract or
+// unattached), stream the raw PDF, and link a previously-unattached document
+// to a contract after the fact.
+// ---------------------------------------------------------------------------
+
+export class ContractDocumentServiceError extends Error {
+  constructor(
+    message: string,
+    // Literal union (not number) so Hono's c.json(status) overloads accept it
+    // directly — same idiom as ContractTemplateServiceError.
+    public status: 400 | 403 | 404 | 500,
+    public code: string,
+  ) {
+    super(message);
+    this.name = 'ContractDocumentServiceError';
+  }
+}
+
+export type ContractDocumentRow = typeof contractDocuments.$inferSelect;
+
+/** A `GET /contract-documents` list row: the raw document plus the joined
+ *  display fields the web layer needs (template name/version, signer, quote
+ *  number) so it never has to round-trip pdf_data or make N follow-up calls. */
+export interface ContractDocumentListRow {
+  id: string;
+  orgId: string;
+  contractId: string | null;
+  quoteId: string | null;
+  templateId: string;
+  templateVersionId: string;
+  templateName: string;
+  templateVersionNumber: number;
+  signerName: string | null;
+  signedAt: Date | null;
+  quoteNumber: string | null;
+  byteSize: number;
+  sha256: string;
+  createdAt: Date;
+}
+
+/** List documents visible to `auth`, optionally narrowed to one contract or
+ *  to unattached-only (contract_id IS NULL). `contractId` takes priority over
+ *  `unattached` if both are somehow passed — the caller's org-access
+ *  condition (Shape-1 direct org_id) is ANDed in regardless, so a contractId
+ *  belonging to an org outside the caller's access simply yields an empty
+ *  list rather than leaking rows via app-layer filtering alone (RLS agrees). */
+export async function listContractDocuments(
+  auth: AuthContext,
+  opts: { contractId?: string; unattached?: boolean } = {},
+): Promise<ContractDocumentListRow[]> {
+  const conditions: SQL[] = [];
+  const accessCond = auth.orgCondition(contractDocuments.orgId);
+  if (accessCond) conditions.push(accessCond);
+  if (opts.contractId) {
+    conditions.push(eq(contractDocuments.contractId, opts.contractId));
+  } else if (opts.unattached) {
+    conditions.push(isNull(contractDocuments.contractId));
+  }
+
+  return db
+    .select({
+      id: contractDocuments.id,
+      orgId: contractDocuments.orgId,
+      contractId: contractDocuments.contractId,
+      quoteId: contractDocuments.quoteId,
+      templateId: contractDocuments.templateId,
+      templateVersionId: contractDocuments.templateVersionId,
+      templateName: contractTemplates.name,
+      templateVersionNumber: contractTemplateVersions.versionNumber,
+      signerName: quoteAcceptances.signerName,
+      signedAt: quoteAcceptances.signedAt,
+      quoteNumber: quotes.quoteNumber,
+      byteSize: contractDocuments.byteSize,
+      sha256: contractDocuments.sha256,
+      createdAt: contractDocuments.createdAt,
+    })
+    .from(contractDocuments)
+    .innerJoin(contractTemplates, eq(contractDocuments.templateId, contractTemplates.id))
+    .innerJoin(contractTemplateVersions, eq(contractDocuments.templateVersionId, contractTemplateVersions.id))
+    .leftJoin(quoteAcceptances, eq(contractDocuments.quoteAcceptanceId, quoteAcceptances.id))
+    .leftJoin(quotes, eq(contractDocuments.quoteId, quotes.id))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(contractDocuments.createdAt));
+}
+
+/** Fetch-by-id + org-access gate, shared by the pdf-stream and link paths. */
+async function getDocumentOr404(auth: AuthContext, id: string): Promise<ContractDocumentRow> {
+  const [row] = await db.select().from(contractDocuments).where(eq(contractDocuments.id, id)).limit(1);
+  if (!row) throw new ContractDocumentServiceError('Contract document not found', 404, 'DOCUMENT_NOT_FOUND');
+  if (!auth.canAccessOrg(row.orgId)) {
+    throw new ContractDocumentServiceError('Organization access denied', 403, 'ORG_DENIED');
+  }
+  return row;
+}
+
+/** The raw bytes + metadata for `GET /contract-documents/:id/pdf`. */
+export async function getContractDocumentPdf(
+  auth: AuthContext,
+  id: string,
+): Promise<{ pdfData: Buffer; mime: string; byteSize: number; sha256: string }> {
+  const doc = await getDocumentOr404(auth, id);
+  return { pdfData: doc.pdfData, mime: doc.mime, byteSize: doc.byteSize, sha256: doc.sha256 };
+}
+
+/**
+ * Link-later: attach a previously-unattached document (contract_id NULL — the
+ * common case for a quote accepted before its billing contract existed, or a
+ * contract created after the fact) to a contract. The target contract MUST
+ * belong to the SAME org as the document — a document is an org-owned legal
+ * record and never crosses org boundaries, even when the caller's token can
+ * access both orgs. Mismatch and not-found collapse to the same 404
+ * message/code (sibling idiom: groups.ts / alerts/rules.ts "not found or
+ * belongs to a different organization") so the response never signals
+ * whether a same-ID contract exists in another tenant.
+ */
+export async function linkContractDocument(
+  auth: AuthContext,
+  id: string,
+  contractId: string,
+): Promise<ContractDocumentRow> {
+  const doc = await getDocumentOr404(auth, id);
+
+  const [contract] = await db
+    .select({ id: contracts.id, orgId: contracts.orgId })
+    .from(contracts)
+    .where(eq(contracts.id, contractId))
+    .limit(1);
+  if (!contract || contract.orgId !== doc.orgId) {
+    throw new ContractDocumentServiceError(
+      'Contract not found or belongs to a different organization',
+      404,
+      'CONTRACT_NOT_FOUND',
+    );
+  }
+
+  const [updated] = await db
+    .update(contractDocuments)
+    .set({ contractId })
+    .where(eq(contractDocuments.id, id))
+    .returning();
+  if (!updated) throw new ContractDocumentServiceError('Failed to link contract document', 500, 'DOCUMENT_LINK_FAILED');
+  return updated;
 }
