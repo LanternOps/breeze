@@ -112,3 +112,92 @@ export async function applyBackupProgress(params: {
 
   return { applied: true };
 }
+
+// --- Task 7: non-terminal `command_result` guards -------------------------
+//
+// An async backup_run agent (capability `backup_run_async`) reports two
+// non-terminal signals through the normal command_result channel instead of
+// (or in addition to) backup_progress: an immediate "started" ack, and — on
+// old agents only — a false "timed out" result emitted by
+// forwardToBackupHelper at exactly 10 minutes while the helper is still
+// uploading. Both MUST be detected and handled BEFORE
+// consumeDispatchedExpectation runs, because that consume is one-shot: using
+// it up on a non-terminal signal would cause the real terminal result to be
+// dropped later as a "replay".
+
+/**
+ * Tolerantly parse an agent command_result's structured payload. The agent
+ * always sends this as a JSON *string* in `result.result` (or `result.stdout`
+ * as a fallback), never a pre-parsed object. Returns `undefined` on missing
+ * input or a parse failure rather than throwing.
+ */
+export function tryParseBackupResultPayload(resultResult: unknown, resultStdout: unknown): unknown {
+  const raw = resultResult ?? resultStdout;
+  if (typeof raw !== 'string') {
+    return raw;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when a parsed command_result payload is the async backup_run's
+ * immediate "started" acknowledgement (`{"started": true}`), as opposed to a
+ * terminal completion/failure payload.
+ */
+export function isBackupStartedAck(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    (payload as Record<string, unknown>).started === true
+  );
+}
+
+/**
+ * True when a non-completed command_result is the legacy (pre-async-capable)
+ * agent's false "command timed out" result — `forwardToBackupHelper` in
+ * `sessionbroker/session.go` emits this at exactly 10 minutes while the
+ * upload helper is still running. Treating this as a real failure falsely
+ * fails every backup over 10 minutes; the Task 8 reaper now owns deciding
+ * when a silent job is actually dead.
+ */
+export function isLegacyBackupTimeoutResult(params: {
+  status: string;
+  error?: string | null;
+  stderr?: string | null;
+}): boolean {
+  if (params.status === 'completed') {
+    return false;
+  }
+  const message = params.error ?? params.stderr ?? '';
+  return /command timed out/i.test(message);
+}
+
+/**
+ * Apply the async started-ack as a progress ping: bumps lastProgressAt (and
+ * refreshes the dispatch expectation TTL) on the job without touching status
+ * or consuming the one-shot dispatch expectation. Mirrors applyBackupProgress
+ * but doesn't require a `progress` payload (a plain started-ack carries none).
+ */
+export async function applyBackupStartedAck(params: {
+  jobId: string;
+  deviceId: string;
+}): Promise<boolean> {
+  const now = new Date();
+  const updated = await db
+    .update(backupJobs)
+    .set({ lastProgressAt: now, updatedAt: now })
+    .where(and(eq(backupJobs.id, params.jobId), inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES)))
+    .returning({ id: backupJobs.id });
+
+  if (updated.length === 0) {
+    return false;
+  }
+
+  await refreshDispatchedExpectation('backup', params.deviceId, params.jobId);
+  return true;
+}

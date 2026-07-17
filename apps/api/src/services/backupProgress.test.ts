@@ -33,7 +33,13 @@ vi.mock('./agentWorkExpectation', () => ({
 }));
 
 import { db } from '../db';
-import { applyBackupProgress } from './backupProgress';
+import {
+  applyBackupProgress,
+  applyBackupStartedAck,
+  isBackupStartedAck,
+  isLegacyBackupTimeoutResult,
+  tryParseBackupResultPayload,
+} from './backupProgress';
 
 function selectChain(rows: unknown[]) {
   const chain: Record<string, any> = {};
@@ -167,5 +173,94 @@ describe('applyBackupProgress', () => {
 
     expect(result).toEqual({ applied: false, reason: 'invalid-payload' });
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('tryParseBackupResultPayload', () => {
+  it('parses a JSON string in result.result', () => {
+    expect(tryParseBackupResultPayload('{"started":true}', undefined)).toEqual({ started: true });
+  });
+
+  it('falls back to result.stdout when result.result is absent', () => {
+    expect(tryParseBackupResultPayload(undefined, '{"started":true}')).toEqual({ started: true });
+  });
+
+  it('returns undefined (no throw) on malformed JSON', () => {
+    expect(tryParseBackupResultPayload('not-json{', undefined)).toBeUndefined();
+  });
+
+  it('passes through a non-string payload unchanged', () => {
+    expect(tryParseBackupResultPayload({ started: true }, undefined)).toEqual({ started: true });
+  });
+});
+
+describe('isBackupStartedAck', () => {
+  it('recognizes a plain started-ack payload', () => {
+    expect(isBackupStartedAck({ started: true })).toBe(true);
+  });
+
+  it('rejects a terminal completion payload', () => {
+    expect(isBackupStartedAck({ snapshotId: 'snap-1', filesBackedUp: 10 })).toBe(false);
+  });
+
+  it('rejects non-object payloads', () => {
+    expect(isBackupStartedAck(undefined)).toBe(false);
+    expect(isBackupStartedAck('started')).toBe(false);
+    expect(isBackupStartedAck(null)).toBe(false);
+  });
+});
+
+describe('isLegacyBackupTimeoutResult', () => {
+  it('recognizes the legacy 10-minute forwardToBackupHelper timeout', () => {
+    expect(
+      isLegacyBackupTimeoutResult({ status: 'failed', error: 'command timed out after 10m0s' })
+    ).toBe(true);
+  });
+
+  it('checks stderr when error is absent', () => {
+    expect(
+      isLegacyBackupTimeoutResult({ status: 'timeout', stderr: 'Command timed out' })
+    ).toBe(true);
+  });
+
+  it('does not match a completed result', () => {
+    expect(
+      isLegacyBackupTimeoutResult({ status: 'completed', error: 'command timed out' })
+    ).toBe(false);
+  });
+
+  it('does not match a genuine (non-timeout) failure', () => {
+    expect(
+      isLegacyBackupTimeoutResult({ status: 'failed', error: 'disk full' })
+    ).toBe(false);
+  });
+});
+
+describe('applyBackupStartedAck', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    refreshDispatchedExpectationMock.mockResolvedValue(true);
+  });
+
+  it('sets lastProgressAt/updatedAt on an in-flight job and refreshes the expectation', async () => {
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+
+    const result = await applyBackupStartedAck({ jobId: 'job-1', deviceId: 'device-1' });
+
+    expect(result).toBe(true);
+    const updateCall = vi.mocked(db.update).mock.results[0].value;
+    expect(updateCall.set).toHaveBeenCalledWith(
+      expect.objectContaining({ lastProgressAt: expect.any(Date), updatedAt: expect.any(Date) })
+    );
+    expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
+  });
+
+  it('does not refresh the expectation when the job is no longer in flight', async () => {
+    vi.mocked(db.update).mockReturnValue(updateChain([]) as any);
+
+    const result = await applyBackupStartedAck({ jobId: 'job-1', deviceId: 'device-1' });
+
+    expect(result).toBe(false);
+    expect(refreshDispatchedExpectationMock).not.toHaveBeenCalled();
   });
 });

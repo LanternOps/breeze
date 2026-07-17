@@ -23,7 +23,13 @@ import {
   resolveVaultForResult,
 } from '../services/vaultSyncPersistence';
 import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
-import { applyBackupProgress } from '../services/backupProgress';
+import {
+  applyBackupProgress,
+  applyBackupStartedAck,
+  isBackupStartedAck,
+  isLegacyBackupTimeoutResult,
+  tryParseBackupResultPayload,
+} from '../services/backupProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
@@ -42,7 +48,7 @@ import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
-export const AGENT_WS_CAPABILITIES = ['terminal_output_base64'] as const;
+export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -1340,6 +1346,35 @@ export async function processOrphanedCommandResult(
       console.warn(`[AgentWs] Rejecting backup result for job ${backupJob.id} from unexpected agent ${agentId}`);
       return;
     }
+
+    // Both guards below MUST run before consumeDispatchedExpectation: it is
+    // one-shot, and consuming it for a non-terminal signal would cause the
+    // real terminal result to be dropped later as a "replay".
+
+    // Started-ack guard: an async-capable agent (backup_run_async) reports an
+    // immediate `{"started":true}` result right after dispatch, well before
+    // the backup completes. Treat it as a progress ping, not a terminal
+    // result.
+    const startedAckPayload = tryParseBackupResultPayload(result.result, result.stdout);
+    if (isBackupStartedAck(startedAckPayload)) {
+      await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
+      console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
+      return;
+    }
+
+    // Legacy timed-out guard: old agents' forwardToBackupHelper
+    // (sessionbroker/session.go) emits a "command timed out" result at
+    // exactly 10 minutes while the upload helper is still running. This
+    // falsely fails every backup over 10 minutes today; the Task 8 reaper now
+    // owns deciding when a silent job is actually dead.
+    if (isLegacyBackupTimeoutResult({ status: result.status, error: result.error, stderr: result.stderr })) {
+      console.warn(
+        `[AgentWs] Ignoring legacy 10-minute timed-out result for backup job ${backupJob.id} from agent ${agentId}: ` +
+        `agent may still be uploading; the stale-backup reaper owns deciding when this job is actually dead.`
+      );
+      return;
+    }
+
     // Integrity gate (F6): accept a backup completion only if it corresponds to a
     // dispatch we recorded and hasn't already been consumed. This blocks a
     // compromised agent that preemptively reports `completed` with fabricated
