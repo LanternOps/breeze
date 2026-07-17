@@ -589,5 +589,48 @@ describe('backup result persistence', () => {
     const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
     expect(setArg).not.toHaveProperty('errorCount');
   });
+
+  it('persists referencedSize + referencedFiles for an incremental run that deduped files', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        filesBackedUp: 3,
+        bytesBackedUp: 1_000,
+        referencedBytes: 50_000,
+        referencedFiles: 17,
+      },
+    });
+
+    expect(outcome.applied).toBe(true);
+    const setArg = updateChain.set.mock.calls[0][0] as {
+      referencedSize: number;
+      referencedFiles: number;
+    };
+    expect(setArg.referencedSize).toBe(50_000);
+    expect(setArg.referencedFiles).toBe(17);
+  });
+
+  it('does not write referencedSize/referencedFiles when the agent result carries neither (old agent)', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('referencedSize');
+    expect(setArg).not.toHaveProperty('referencedFiles');
+  });
 });
 

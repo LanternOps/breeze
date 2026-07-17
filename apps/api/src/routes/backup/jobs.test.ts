@@ -279,6 +279,54 @@ describe('backup jobs routes', () => {
     expect(job.lastProgressAt).toBeNull();
   });
 
+  it('exposes referencedSize/referencedFiles for an incremental job that deduped files', async () => {
+    permissionsState = undefined;
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({
+          id: 'job-incremental',
+          status: 'completed',
+          referencedSize: 50_000,
+          referencedFiles: 17,
+        }),
+        deviceName: 'Incremental Device',
+        deviceHostname: 'incremental-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock.mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [job] = (await res.json()).data;
+    expect(job).toMatchObject({
+      id: 'job-incremental',
+      referencedSize: 50_000,
+      referencedFiles: 17,
+    });
+  });
+
+  it('returns null referencedSize/referencedFiles for a job that never deduped (legacy agent or full backup)', async () => {
+    permissionsState = undefined;
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({ id: 'job-full', status: 'completed' }),
+        deviceName: 'Full Device',
+        deviceHostname: 'full-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock.mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [job] = (await res.json()).data;
+    expect(job.referencedSize).toBeNull();
+    expect(job.referencedFiles).toBeNull();
+  });
+
   it('denies reading a job whose device site is out of scope', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock.mockReturnValueOnce(makeSelectChain([
@@ -629,6 +677,8 @@ function makeJob(overrides: Record<string, unknown> = {}) {
     fileCount: null,
     totalFiles: null,
     lastProgressAt: null,
+    referencedSize: null,
+    referencedFiles: null,
     errorCount: null,
     errorLog: null,
     createdAt: new Date('2026-04-01T00:00:00Z'),

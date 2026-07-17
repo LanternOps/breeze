@@ -199,6 +199,11 @@ export const backupJobs = pgTable(
     // means the agent never reported progress (legacy agent).
     lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
     totalFiles: integer('total_files'),
+    // Incremental-backup dedup stats: files/bytes referenced from a prior
+    // snapshot instead of re-transferred this run. NULL = agent didn't report
+    // dedup (legacy agent, or nothing was referenced).
+    referencedSize: bigint('referenced_size', { mode: 'number' }),
+    referencedFiles: integer('referenced_files'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

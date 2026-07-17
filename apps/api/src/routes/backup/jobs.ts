@@ -665,6 +665,8 @@ function toJobResponse(row: typeof backupJobs.$inferSelect) {
     fileCount: row.fileCount ?? null,
     totalFiles: row.totalFiles ?? null,
     lastProgressAt: row.lastProgressAt?.toISOString() ?? null,
+    referencedSize: row.referencedSize ?? null,
+    referencedFiles: row.referencedFiles ?? null,
     errorCount: row.errorCount ?? null,
     errorLog: row.errorLog ?? null,
   };

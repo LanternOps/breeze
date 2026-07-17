@@ -47,6 +47,13 @@ export const backupCommandResultSchema = z.object({
   // stalled / retry-exhausted. Persisted to backup_jobs.error_count so a
   // partial snapshot never shows as a green job with zero errors.
   errorCount: z.number().int().nonnegative().optional(),
+  // Incremental-backup dedup stats (agent-side reference decision engine):
+  // files/bytes referenced from a prior snapshot instead of re-uploaded this
+  // run. Omitted (not zero) by legacy agents and by full backups that
+  // referenced nothing — persistence must only write the columns when these
+  // are defined (see applyBackupCommandResultToJob).
+  referencedBytes: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
+  referencedFiles: z.number().int().nonnegative().optional(),
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: backupSystemStateManifestResultSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),

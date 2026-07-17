@@ -431,6 +431,16 @@ export async function applyBackupCommandResultToJob(params: {
       // over an incomplete restore point.
       updateData.errorCount = result.errorCount;
     }
+    if (result.referencedBytes !== undefined) {
+      // Incremental dedup: bytes referenced from a prior snapshot instead of
+      // re-uploaded this run. Only write when the agent reports it — a
+      // legacy agent omits the field entirely, and the column must stay NULL
+      // rather than being coerced to 0.
+      updateData.referencedSize = result.referencedBytes;
+    }
+    if (result.referencedFiles !== undefined) {
+      updateData.referencedFiles = result.referencedFiles;
+    }
   } else {
     updateData.status = 'failed';
     updateData.errorLog = redactSecretsFromOutput(result.error ?? result.warning ?? 'Unknown error');
