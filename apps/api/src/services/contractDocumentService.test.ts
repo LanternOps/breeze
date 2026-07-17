@@ -103,6 +103,35 @@ describe('contractDocumentService.createExecutedDocuments', () => {
     expect(row.sha256).toBe(createHash('sha256').update(pdf).digest('hex'));
   });
 
+  it('re-sanitizes the executed snapshot: a javascript: href variable value never lands in rendered_html or the PDF', async () => {
+    // A body with a variable inside an href — a legal write-time shape ({{link}} is
+    // a scheme-less relative href). The hostile scheme arrives only via substitution,
+    // AFTER write-time sanitization, so the executed snapshot must re-sanitize.
+    const hrefRenderData = authoredRenderData({
+      bodyHtml: '<p>See <a href="{{link}}">the portal</a></p>',
+    });
+    const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: 'javascript:alert(1)' } } };
+
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE);
+    const row = insertedValues[0]!;
+
+    // Stored rendered_html carries no live javascript: link.
+    expect(String(row.renderedHtml)).not.toContain('javascript:');
+    expect(String(row.renderedHtml)).toContain('the portal');
+    // The generated PDF has no javascript: URI annotation either.
+    const pdf = row.pdfData as Buffer;
+    expect(pdf.toString('latin1')).not.toContain('javascript:');
+  });
+
+  it('re-sanitizes a protocol-relative //host href variable value in the executed snapshot', async () => {
+    const hrefRenderData = authoredRenderData({ bodyHtml: '<p>See <a href="{{link}}">the portal</a></p>' });
+    const hostileBlock = { id: 'cb1', blockType: 'contract', content: { variableValues: { link: '//evil.example' } } };
+    await createExecutedDocuments(makeQuote(), 'acc1', ['contractA'], [hrefRenderData], [hostileBlock], EFFECTIVE);
+    const row = insertedValues[0]!;
+    expect(String(row.renderedHtml)).not.toContain('//evil.example');
+    expect((row.pdfData as Buffer).toString('latin1')).not.toContain('//evil.example');
+  });
+
   it('uploaded block stores the file bytes verbatim as the pdf with rendered_html null', async () => {
     const fileData = Buffer.from('%PDF-1.4 uploaded contract bytes');
     await createExecutedDocuments(

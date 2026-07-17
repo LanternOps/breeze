@@ -16,6 +16,7 @@ import { QuoteServiceError } from '../../services/quoteTypes';
 import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
+import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
@@ -64,6 +65,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
 // GET /quotes/:id/pdf
 quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
+  try {
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
   const blocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
@@ -121,6 +123,12 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
   const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
   return new Response(new Uint8Array(finalPdf), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Content-Length': String(finalPdf.length) } });
+  } catch (err) {
+    // A legacy encrypted/corrupt uploaded contract PDF surfaces as a typed 4xx here
+    // (matching the admin route's handleServiceError) instead of an uncaught 500.
+    if (err instanceof PdfMergeError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // GET /quotes/:id/images/:imageId

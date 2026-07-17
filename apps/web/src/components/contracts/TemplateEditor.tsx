@@ -56,7 +56,7 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   // destroying the typed buffer).
   const lastLoaded = useRef('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { force?: boolean }) => {
     try {
       setLoading(true);
       setError(undefined);
@@ -69,7 +69,11 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
       // Seed the editing buffer from the newest authored version's body — but only
       // when the user hasn't diverged from what we last loaded. publish()/upload()
       // both call load(); an unconditional re-seed would irrecoverably wipe typed,
-      // un-saved contract text.
+      // un-saved contract text. `force` (used right after a successful saveDraft)
+      // re-seeds unconditionally: the server-stored (sanitizer-normalized) body is
+      // now the source of truth, and re-seeding to it clears `dirty` — otherwise the
+      // TipTap buffer (which emits rel="…nofollow") never string-equals the stored
+      // rel="noopener noreferrer" and Publish stays permanently disabled.
       const latestAuthored = payload.data.versions.find((v) => v.sourceType === 'authored' && v.bodyHtml);
       const seed = latestAuthored?.bodyHtml ?? '';
       // Capture the previously-loaded value BEFORE mutating the ref: the functional
@@ -77,7 +81,7 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
       // `lastLoaded.current` directly would read the already-updated `seed`.
       const previouslyLoaded = lastLoaded.current;
       lastLoaded.current = seed;
-      setBody((cur) => (cur === previouslyLoaded ? seed : cur));
+      setBody((cur) => (opts?.force || cur === previouslyLoaded ? seed : cur));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('contracts.templateEditor.loadError'));
     } finally {
@@ -115,7 +119,9 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
         successMessage: t('contracts.templateEditor.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
-      await load();
+      // Force-reseed from the server-normalized body just saved so `dirty` clears
+      // (the TipTap buffer's rel="…nofollow" never string-equals the stored form).
+      await load({ force: true });
     } catch (err) {
       handleActionError(err, t('contracts.templateEditor.saveError'));
     } finally {

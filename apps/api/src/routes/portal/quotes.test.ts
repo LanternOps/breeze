@@ -35,7 +35,16 @@ vi.mock('../../services/quotePdf', async (importOriginal) => {
   return { ...actual, renderQuotePdf: renderQuotePdfMock };
 });
 
+// Spy on the dynamically-imported merge helper; keep the REAL PdfMergeError so the
+// route's `instanceof PdfMergeError` mapping resolves against the same class.
+const { mergeMock } = vi.hoisted(() => ({ mergeMock: vi.fn() }));
+vi.mock('../../services/pdfMerge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/pdfMerge')>();
+  return { ...actual, mergeUploadedContractPdfs: mergeMock };
+});
+
 import { quoteRoutes as portalQuoteRoutes } from './quotes';
+import { PdfMergeError } from '../../services/pdfMerge';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const QUOTE_ID = '11111111-1111-1111-1111-111111111111';
@@ -215,6 +224,27 @@ describe('portal quotes /:id/pdf', () => {
     vi.clearAllMocks();
     dbResults.length = 0;
     renderQuotePdfMock.mockResolvedValue(Buffer.from('%PDF-test'));
+    // Default: pass the main PDF through unchanged (no uploaded contract merge).
+    mergeMock.mockImplementation(async (pdf: Buffer) => pdf);
+  });
+
+  it('maps a PdfMergeError from the merge helper to a typed 4xx, not a 500', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, sellerSnapshot: null, terms: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT', billingCompanyName: null, billingEmail: null, billingPhone: null, billingWebsite: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null, invoiceFooter: null, currencyCode: 'USD' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
+    // A legacy encrypted/corrupt uploaded contract PDF surfaces here.
+    mergeMock.mockRejectedValueOnce(new PdfMergeError('An attached contract PDF could not be read'));
+
+    const res = await app().request(`/quotes/${QUOTE_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('CONTRACT_PDF_UNREADABLE');
   });
 
   it('sanitizes a legacy dirty rich_text block before handing blocks to the PDF renderer', async () => {

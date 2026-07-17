@@ -97,6 +97,34 @@ describe('TemplateEditor', () => {
     expect((screen.getByTestId('template-body-editor') as HTMLTextAreaElement).value).toBe('<p>My unsaved contract text</p>');
   });
 
+  it('clears dirty and re-enables Publish after saving a link-bearing body (rel-attr normalization)', async () => {
+    // TipTap emits rel="noopener noreferrer nofollow"; the sanitizer stores
+    // rel="noopener noreferrer". A raw string compare would keep `dirty` true
+    // forever after a save on any link body, permanently disabling Publish and
+    // minting duplicate versions on retry.
+    const normalizedLinkBody = '<p><a href="https://ex.com" rel="noopener noreferrer">L</a></p>';
+    const tiptapLinkBody = '<p><a href="https://ex.com" rel="noopener noreferrer nofollow">L</a></p>';
+    const linkVersion = { ...draftVersion, bodyHtml: normalizedLinkBody };
+    api.getContractTemplate.mockResolvedValue(resp({ data: activeTemplate({ versions: [linkVersion] }) }));
+    api.createTemplateVersion.mockResolvedValue(resp({ data: { ...linkVersion, id: 'ver-2', versionNumber: 2 } }));
+
+    render(<TemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('contract-template-editor');
+
+    // Seeded from the server-normalized body → not dirty → Publish enabled.
+    expect(screen.getByTestId('template-version-publish')).not.toBeDisabled();
+
+    // TipTap re-emits the same link WITH nofollow → dirty → Publish disabled.
+    const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: tiptapLinkBody } });
+    expect(screen.getByTestId('template-version-publish')).toBeDisabled();
+
+    // Save draft → force-reseed from the stored body clears dirty.
+    fireEvent.click(screen.getByTestId('template-save-draft-btn'));
+    await waitFor(() => expect(api.createTemplateVersion).toHaveBeenCalledWith('tpl-1', { bodyHtml: tiptapLinkBody }));
+    await waitFor(() => expect(screen.getByTestId('template-version-publish')).not.toBeDisabled());
+  });
+
   it('lists manual variables detected live in the body', async () => {
     render(<TemplateEditor templateId="tpl-1" />);
     await screen.findByTestId('contract-template-editor');

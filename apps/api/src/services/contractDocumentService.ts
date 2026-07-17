@@ -34,6 +34,7 @@ import {
   type QuoteRow,
 } from './contractTemplateRender';
 import { renderRichTextIntoPdf } from './richTextPdf';
+import { sanitizeRichTextHtml } from './richTextSanitize';
 import { formatDate } from './quotePdf';
 import type { AuthContext } from '../middleware/auth';
 
@@ -225,6 +226,13 @@ export async function createExecutedDocuments(
         });
         html = substituteVariables(html, Object.fromEntries(first.missing.map((n) => [n, '']))).html;
       }
+      // Re-sanitize the FINAL substituted HTML before it becomes the executed legal
+      // record: a variable value substituted into an href (`<a href="{{link}}">`)
+      // is HTML-escaped but not scheme-checked, so a `javascript:`/protocol-relative
+      // value would otherwise land in the stored rendered_html AND the generated PDF
+      // as a live /URI annotation. Write-time sanitize predates the substitution
+      // (same defense as the serving-point render paths).
+      html = sanitizeRichTextHtml(html);
       renderedHtml = html;
       pdf = await renderAuthoredContractPdf(data.templateName, html, quote, effectiveDate);
     }
