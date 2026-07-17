@@ -129,6 +129,12 @@ func (m *BackupManager) GetSystemStateEnabled() bool {
 	return m.config.SystemStateEnabled
 }
 
+// GetVSSEnabled reports whether this manager creates a VSS shadow copy
+// before a file-mode backup (Windows only; see BackupConfig.VSSEnabled).
+func (m *BackupManager) GetVSSEnabled() bool {
+	return m.config.VSSEnabled
+}
+
 // Stop cancels an in-flight backup job and waits for it to unwind. It reports
 // whether a job was actually running (false = nothing to stop).
 func (m *BackupManager) Stop() bool {
