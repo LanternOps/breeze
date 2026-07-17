@@ -223,6 +223,62 @@ describe('backup jobs routes', () => {
     }));
   });
 
+  it('exposes live-progress fields (transferredSize, totalFiles, lastProgressAt) in the job response', async () => {
+    permissionsState = undefined;
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({
+          id: 'job-running',
+          status: 'running',
+          startedAt: new Date('2026-04-01T00:00:00Z'),
+          totalSize: 10_000_000,
+          transferredSize: 4_000_000,
+          fileCount: 8,
+          totalFiles: 20,
+          lastProgressAt: new Date('2026-04-01T00:01:30Z'),
+        }),
+        deviceName: 'Running Device',
+        deviceHostname: 'running-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock.mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [job] = (await res.json()).data;
+    expect(job).toMatchObject({
+      id: 'job-running',
+      totalSize: 10_000_000,
+      transferredSize: 4_000_000,
+      fileCount: 8,
+      totalFiles: 20,
+      lastProgressAt: '2026-04-01T00:01:30.000Z',
+    });
+  });
+
+  it('returns null live-progress fields for a legacy job that never reported progress', async () => {
+    permissionsState = undefined;
+    const jobsChain = makeSelectChain([
+      {
+        job: makeJob({ id: 'job-legacy', status: 'running' }),
+        deviceName: 'Legacy Device',
+        deviceHostname: 'legacy-host',
+        configName: 'Primary Backup',
+      },
+    ]);
+    selectMock.mockReturnValueOnce(jobsChain);
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [job] = (await res.json()).data;
+    expect(job.transferredSize).toBeNull();
+    expect(job.totalFiles).toBeNull();
+    expect(job.lastProgressAt).toBeNull();
+  });
+
   it('denies reading a job whose device site is out of scope', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock.mockReturnValueOnce(makeSelectChain([
@@ -571,6 +627,8 @@ function makeJob(overrides: Record<string, unknown> = {}) {
     totalSize: null,
     transferredSize: null,
     fileCount: null,
+    totalFiles: null,
+    lastProgressAt: null,
     errorCount: null,
     errorLog: null,
     createdAt: new Date('2026-04-01T00:00:00Z'),

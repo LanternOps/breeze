@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,7 +31,10 @@ type BackupJobRaw = {
   completedAt?: string | null;
   createdAt: string;
   totalSize?: number | null;
+  transferredSize?: number | null;
   fileCount?: number | null;
+  totalFiles?: number | null;
+  lastProgressAt?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
   policyId?: string | null;
@@ -52,7 +55,19 @@ type BackupJob = {
   size: string;
   errorCount: number;
   errorSummary: string;
+  // Live-progress fields (running rows). null when the agent never reported
+  // progress (legacy agent) — the UI falls back to an indeterminate bar.
+  transferredSize: number | null;
+  totalSizeBytes: number | null;
+  fileCount: number | null;
+  totalFiles: number | null;
+  lastProgressAt: string | null;
 };
+
+// Poll the jobs list while any job is running so progress/speed stay live.
+const POLL_MS = 5000;
+// A running job with no progress update for this long is flagged as stalled.
+const STALL_MS = 2 * 60 * 1000;
 
 type BackupJobDetails = BackupJobRaw & {
   deviceName?: string | null;
@@ -151,6 +166,11 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     completedAt: raw.completedAt ?? null,
     duration: formatDuration(raw.startedAt, raw.completedAt),
     size: raw.totalSize ? formatBytes(raw.totalSize) : '--',
+    transferredSize: raw.transferredSize ?? null,
+    totalSizeBytes: raw.totalSize ?? null,
+    fileCount: raw.fileCount ?? null,
+    totalFiles: raw.totalFiles ?? null,
+    lastProgressAt: raw.lastProgressAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorSummary: raw.errorLog
       ? raw.errorLog.length > 60
@@ -174,6 +194,12 @@ export default function BackupJobList() {
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [loadingDetailsId, setLoadingDetailsId] = useState<string | null>(null);
   const [jobDetails, setJobDetails] = useState<Record<string, BackupJobDetails>>({});
+  // Transfer speed (bytes/sec) per running job, derived from consecutive poll
+  // samples. Samples persist across renders in a ref; the derived speed lives in
+  // state so the row re-renders when it changes.
+  const [speeds, setSpeeds] = useState<Record<string, number>>({});
+  const speedSamplesRef = useRef<Map<string, { bytes: number; at: number }>>(new Map());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -185,8 +211,39 @@ export default function BackupJobList() {
       }
       const payload = await response.json();
       const data = payload?.data ?? payload ?? [];
-      const nextJobs = Array.isArray(data) ? data : [];
-      setJobs(nextJobs.map(mapJob));
+      const nextJobs = (Array.isArray(data) ? data : []).map(mapJob);
+
+      // Derive transfer speed from the delta since the previous sample; fall
+      // back to the running average (transferred / elapsed) with no prior
+      // sample. Guarded so legacy jobs (null transferredSize) and zero/negative
+      // deltas never yield NaN/Infinity or a negative speed.
+      const now = Date.now();
+      const nextSpeeds: Record<string, number> = {};
+      const samples = speedSamplesRef.current;
+      const seen = new Set<string>();
+      for (const job of nextJobs) {
+        if (job.status !== 'running' || job.transferredSize == null) continue;
+        seen.add(job.id);
+        const prev = samples.get(job.id);
+        let bps: number | undefined;
+        if (prev && now > prev.at && job.transferredSize > prev.bytes) {
+          bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
+        } else if (job.startedAt) {
+          const elapsedSec = (now - new Date(job.startedAt).getTime()) / 1000;
+          if (elapsedSec > 0) bps = job.transferredSize / elapsedSec;
+        }
+        if (bps != null && Number.isFinite(bps) && bps > 0) {
+          nextSpeeds[job.id] = bps;
+        }
+        samples.set(job.id, { bytes: job.transferredSize, at: now });
+      }
+      // Drop samples for jobs no longer running so the map can't grow unbounded.
+      for (const id of samples.keys()) {
+        if (!seen.has(id)) samples.delete(id);
+      }
+
+      setSpeeds(nextSpeeds);
+      setJobs(nextJobs);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -197,6 +254,25 @@ export default function BackupJobList() {
   useEffect(() => {
     fetchJobs();
   }, [fetchJobs]);
+
+  // Poll while any job is running so live progress and speed keep updating.
+  const hasRunning = useMemo(() => jobs.some((job) => job.status === 'running'), [jobs]);
+  useEffect(() => {
+    if (hasRunning && !pollRef.current) {
+      pollRef.current = setInterval(() => {
+        void fetchJobs();
+      }, POLL_MS);
+    } else if (!hasRunning && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [hasRunning, fetchJobs]);
 
   const handleCancel = useCallback(async (jobId: string) => {
     try {
@@ -382,6 +458,19 @@ export default function BackupJobList() {
                 const status = statusConfig[job.status] ?? statusConfig.queued;
                 const StatusIcon = status.icon;
                 const isCancellable = job.status === 'running' || job.status === 'queued';
+                const isRunning = job.status === 'running';
+                // Percent only when totals are known; otherwise indeterminate.
+                const hasTotal = isRunning && (job.totalSizeBytes ?? 0) > 0;
+                const percent = hasTotal
+                  ? Math.min(100, ((job.transferredSize ?? 0) / (job.totalSizeBytes as number)) * 100)
+                  : null;
+                const speedBps = isRunning ? speeds[job.id] : undefined;
+                const showFiles = isRunning && job.fileCount != null && job.totalFiles != null;
+                const stalledMs = isRunning && job.lastProgressAt
+                  ? Date.now() - new Date(job.lastProgressAt).getTime()
+                  : 0;
+                const isStalled = isRunning && !!job.lastProgressAt && stalledMs > STALL_MS;
+                const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
                 const details = jobDetails[job.id];
                 const isExpanded = expandedJobId === job.id;
                 const isLoadingDetails = loadingDetailsId === job.id;
@@ -392,21 +481,65 @@ export default function BackupJobList() {
                       <td className="px-4 py-3 text-muted-foreground">{job.configName}</td>
                       <td className="px-4 py-3 capitalize text-muted-foreground">{job.type}</td>
                       <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
-                            status.className
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium',
+                              status.className
+                            )}
+                          >
+                            <StatusIcon
+                              className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
+                            />
+                            {status.label}
+                          </span>
+                          {isStalled && (
+                            <span
+                              data-testid="backup-job-stalled"
+                              title={t('backupJobList.stalledTooltip', { minutes: stalledMinutes })}
+                              className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-xs font-medium text-warning"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              {t('backupJobList.stalled')}
+                            </span>
                           )}
-                        >
-                          <StatusIcon
-                            className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
-                          />
-                          {status.label}
-                        </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{formatTime(job.startedAt)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{job.duration}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{job.size}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {isRunning ? (
+                          <div className="min-w-[140px] space-y-1">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={cn(
+                                  'h-full rounded-full bg-primary',
+                                  percent == null && 'w-1/3 animate-pulse'
+                                )}
+                                style={percent == null ? undefined : { width: `${percent}%` }}
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                              {percent != null && (
+                                <span>{`${formatNumber(percent, { maximumFractionDigits: 0 })}%`}</span>
+                              )}
+                              {showFiles && (
+                                <span>
+                                  {t('backupJobList.filesProgress', {
+                                    done: job.fileCount,
+                                    total: job.totalFiles,
+                                  })}
+                                </span>
+                              )}
+                              {speedBps != null && (
+                                <span>{t('backupJobList.speedValue', { value: formatBytes(speedBps) })}</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          job.size
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {job.errorCount > 0 ? (
                           <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
@@ -424,7 +557,7 @@ export default function BackupJobList() {
                               type="button"
                               onClick={() => handleCancel(job.id)}
                               disabled={cancellingId === job.id}
-                              aria-label={`Cancel backup for ${job.deviceName}`}
+                              aria-label={`Stop backup for ${job.deviceName}`}
                               className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
                             >
                               {cancellingId === job.id ? (
@@ -432,7 +565,7 @@ export default function BackupJobList() {
                               ) : (
                                 <PauseCircle className="h-3.5 w-3.5" />
                               )}
-                              {t('backupJobList.cancel')} </button>
+                              {t('backupJobList.stop')} </button>
                           )}
                           <button
                             type="button"
