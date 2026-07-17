@@ -194,6 +194,11 @@ export const backupJobs = pgTable(
     snapshotId: varchar('snapshot_id', { length: 200 }),
     vssMetadata: jsonb('vss_metadata'),
     backupType: backupTypeEnum('backup_type').default('file'),
+    // Live-progress columns (stall detection + UI progress/speed). Set on
+    // every backup_progress WS message and on the async started-ack; NULL
+    // means the agent never reported progress (legacy agent).
+    lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
+    totalFiles: integer('total_files'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
