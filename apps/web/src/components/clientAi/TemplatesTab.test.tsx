@@ -76,13 +76,13 @@ describe('TemplatesTab', () => {
     vi.clearAllMocks();
   });
 
-  it('renders scope badges: All orgs for partner-wide, org name for org-scoped', async () => {
+  it('renders scope badges: Partner-wide for partner-owned, org name for org-scoped', async () => {
     mockApi();
     render(<TemplatesTab />);
     await waitFor(() =>
       expect(screen.getByTestId(`ai-office-template-row-${TEMPLATE_ID}`)).toBeInTheDocument()
     );
-    expect(screen.getByTestId('ai-office-template-scope-partner').textContent).toBe('All orgs');
+    expect(screen.getByTestId('ai-office-template-scope-partner').textContent).toBe('Partner-wide');
     expect(screen.getByTestId('ai-office-template-scope-org').textContent).toBe('Contoso Accounting');
   });
 

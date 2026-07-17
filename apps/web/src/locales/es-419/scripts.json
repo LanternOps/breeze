@@ -214,7 +214,7 @@
     },
     "empty": "No se encontraron automatizaciones. Intente ajustar su búsqueda o filtros.",
     "partnerWideTitle": "Automatización en todo el socio: se aplica a todas las organizaciones",
-    "allOrgs": "Todas las organizaciones",
+    "allOrgs": "En todo el socio",
     "never": "Nunca",
     "actions": {
       "viewHistory": "Ver historial",
@@ -579,7 +579,7 @@
     },
     "empty": "No se encontraron políticas. Intente ajustar su búsqueda o filtros.",
     "partnerWideTitle": "Política en todo el socio: evalúa los dispositivos en cada organización",
-    "allOrgs": "Todas las organizaciones",
+    "allOrgs": "En todo el socio",
     "ruleCount": "regla {{count}}",
     "moreTargets": "+{{count}} más",
     "actions": {

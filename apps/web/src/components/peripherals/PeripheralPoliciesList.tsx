@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, RefreshCw, Globe } from "lucide-react";
+import { Layers, Plus, RefreshCw, Globe } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import PeripheralPolicyForm from "./PeripheralPolicyForm";
 import { useTranslation } from "react-i18next";
@@ -214,7 +214,7 @@ export default function PeripheralPoliciesList() {
                             title={t("peripheralPoliciesList.partnerWideTitle")}
                             data-testid="peripheral-policy-partner-wide-badge"
                           >
-                            <Globe className="h-3 w-3" />
+                            <Layers className="h-3 w-3" />
                             {t("peripheralPoliciesList.allOrgs")}
                           </span>
                         )}

@@ -214,7 +214,7 @@
     },
     "empty": "Nenhuma automação encontrada. Tente ajustar a busca ou os filtros.",
     "partnerWideTitle": "Automação em todo o parceiro — aplica-se a todas as organizações",
-    "allOrgs": "Todas as orgs.",
+    "allOrgs": "Todo o parceiro",
     "never": "Nunca",
     "actions": {
       "viewHistory": "Ver histórico",
@@ -579,7 +579,7 @@
     },
     "empty": "Nenhuma política encontrada. Tente ajustar a busca ou os filtros.",
     "partnerWideTitle": "Política em todo o parceiro — avalia dispositivos em todas as organizações",
-    "allOrgs": "Todas as orgs.",
+    "allOrgs": "Todo o parceiro",
     "ruleCount": "{{count}} regra",
     "moreTargets": " +{{count}} adicionais",
     "actions": {

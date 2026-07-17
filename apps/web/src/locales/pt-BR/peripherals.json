@@ -1,7 +1,10 @@
 {
   "peripheralPage": {
     "title": "Controle de periféricos",
-    "tabs": { "policies": "Políticas", "activity": "Log de atividades" }
+    "tabs": {
+      "policies": "Políticas",
+      "activity": "Log de atividades"
+    }
   },
   "peripheralActivityLog": {
     "errors": {
@@ -59,7 +62,7 @@
       "created": "Criada"
     },
     "partnerWideTitle": "Política de todo o parceiro — aplicada aos dispositivos de todas as organizações",
-    "allOrgs": "Todas as organizações"
+    "allOrgs": "Todo o parceiro"
   },
   "peripheralPolicyForm": {
     "errors": {

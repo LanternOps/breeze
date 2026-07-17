@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Layers } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   ticketFormFieldsSchema,
@@ -6,7 +7,6 @@ import {
   type TicketFormField,
   type TicketFormFieldType
 } from '@breeze/shared';
-import { Globe } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -907,7 +907,7 @@ export default function TicketFormsCard() {
                           title={t('ticketFormsCard.allOrgsTooltip')}
                           data-testid={`ticket-form-all-orgs-${form.id}`}
                         >
-                          <Globe className="h-3 w-3" />
+                          <Layers className="h-3 w-3" />
                           {t('ticketFormsCard.allOrgsBadge')}
                         </span>
                       ) : (
@@ -916,7 +916,7 @@ export default function TicketFormsCard() {
                           title={t('ticketFormsCard.limitedOrgsTooltip')}
                           data-testid={`ticket-form-org-count-${form.id}`}
                         >
-                          <Globe className="h-3 w-3" />
+                          <Layers className="h-3 w-3" />
                           {t('ticketFormsCard.orgCount', { count: form.visibleOrgIds.length })}
                         </span>
                       ))}

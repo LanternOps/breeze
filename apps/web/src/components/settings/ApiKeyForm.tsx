@@ -31,6 +31,8 @@ export type ApiKeyFormValues = {
   expiresAt: string | null;
   rateLimit: number | null;
   scopes: string[];
+  /** Target org, set by the in-form selector when no org context is active. */
+  orgId?: string;
 };
 
 type ApiKeyFormProps = {
@@ -42,6 +44,9 @@ type ApiKeyFormProps = {
   description?: string;
   initialValues?: Partial<ApiKeyFormValues>;
   isAdmin?: boolean;
+  /** When set, the form requires picking a target org (fleet view: no org
+   * context to inherit — keys are org-scoped objects). */
+  organizations?: Array<{ id: string; name: string }>;
 };
 
 type CreatedKeyModalProps = {
@@ -170,7 +175,8 @@ export default function ApiKeyForm({
   title = 'Create API Key',
   description = 'Create a new API key with specific permissions.',
   initialValues,
-  isAdmin = false
+  isAdmin = false,
+  organizations
 }: ApiKeyFormProps) {
   const { t } = useTranslation('settings');
   const [name, setName] = useState(initialValues?.name ?? '');
@@ -180,7 +186,9 @@ export default function ApiKeyForm({
     initialValues?.rateLimit?.toString() ?? ''
   );
   const [scopes, setScopes] = useState<string[]>(initialValues?.scopes ?? []);
+  const [orgId, setOrgId] = useState(initialValues?.orgId ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const needsOrgPick = !!organizations && organizations.length > 0;
 
   const handleScopeToggle = (scopeId: string) => {
     setScopes(prev =>
@@ -218,6 +226,10 @@ export default function ApiKeyForm({
       newErrors.scopes = 'At least one scope is required';
     }
 
+    if (needsOrgPick && !orgId) {
+      newErrors.orgId = t('apiKeyForm.organizationRequired');
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -231,7 +243,8 @@ export default function ApiKeyForm({
       name: name.trim(),
       expiresAt: neverExpires ? null : expiresAt || null,
       rateLimit: rateLimit ? Number(rateLimit) : null,
-      scopes
+      scopes,
+      ...(needsOrgPick ? { orgId } : {})
     });
   };
 
@@ -264,6 +277,33 @@ export default function ApiKeyForm({
             />
             {errors.name && <p className="text-xs text-destructive">{errors.name}</p>}
           </div>
+
+          {/* Target organization — API keys are org-scoped; in fleet view there
+              is no org context to inherit, so the form asks instead of failing
+              after submit. */}
+          {needsOrgPick && (
+            <div className="space-y-2">
+              <label htmlFor="api-key-org" className="text-sm font-medium">
+                {t('apiKeyForm.organization')}<span className="text-destructive">*</span>
+              </label>
+              <select
+                id="api-key-org"
+                data-testid="api-key-org-select"
+                value={orgId}
+                onChange={e => setOrgId(e.target.value)}
+                className={cn(
+                  'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
+                  errors.orgId && 'border-destructive focus:ring-destructive'
+                )}
+              >
+                <option value="" disabled>{t('apiKeyForm.selectOrganization')}</option>
+                {organizations!.map(o => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
+              {errors.orgId && <p className="text-xs text-destructive">{errors.orgId}</p>}
+            </div>
+          )}
 
           {/* Expiration */}
           <div className="space-y-2">

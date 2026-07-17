@@ -1249,7 +1249,7 @@
     "empty": "Pas encore de politiques. Créez-en un pour commencer.",
     "badges": {
       "partnerWideTitle": "Politique à l’échelle des partenaires — analyse les appareils dans chaque organisation",
-      "allOrgs": "Toutes les organisations"
+      "allOrgs": "À l’échelle du partenaire"
     },
     "deleteDialog": {
       "title": "Supprimer la politique d’analyse",

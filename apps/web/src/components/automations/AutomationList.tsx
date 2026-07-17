@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
+  Layers,
   Search,
   ChevronLeft,
   ChevronRight,
@@ -16,9 +17,7 @@ import {
   CheckCircle,
   XCircle,
   AlertTriangle,
-  Globe,
-  MoreHorizontal
-} from 'lucide-react';
+  MoreHorizontal} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type TriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
@@ -248,7 +247,7 @@ export default function AutomationList({
                               title={t('automationList.partnerWideTitle')}
                               data-testid="automation-partner-wide-badge"
                             >
-                              <Globe className="h-3 w-3" />
+                              <Layers className="h-3 w-3" />
                               {t('automationList.allOrgs')}
                             </span>
                           )}

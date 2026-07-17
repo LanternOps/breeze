@@ -204,8 +204,7 @@
       "newProfile": "Novo perfil"
     },
     "allOrgs": {
-      "description": "A descoberta de rede é limitada a uma única organização, local e agente. Escolha uma organização no seletor de escopo para ver os ativos descobertos, perfis, trabalhos de varredura e a topologia.",
-      "title": "Selecione uma organização para ver a descoberta de rede"
+      "description": "A descoberta de rede é limitada a uma única organização, local e agente. Escolha uma organização no seletor de escopo para ver os ativos descobertos, perfis, trabalhos de varredura e a topologia."
     },
     "confirmDeleteProfile": "Excluir o perfil \"{{name}}\"? Isso também removerá todos os trabalhos de varredura associados.",
     "description": "Configure perfis de descoberta, acompanhe varreduras e gerencie ativos de rede.",

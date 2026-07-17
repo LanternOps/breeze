@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Layers, FilePlus2, Link as LinkIcon } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
-import { getJwtClaims } from "@/lib/authScope";
+import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import PolicyLinkSelector from "./featureTabs/PolicyLinkSelector";
 import { navigateTo } from "@/lib/navigation";
 import { extractApiError } from "@/lib/apiError";
@@ -27,7 +27,6 @@ export default function ConfigPolicyCreatePage() {
   const [mode, setMode] = useState<CreateMode | null>(null);
   const [linkedPolicyId, setLinkedPolicyId] = useState<string | null>(null);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
   const organizations = useOrgStore((s) => s.organizations);
   // Ownership axis (#1724). A partner-scope creator may own the policy at their
   // own partner (partner-wide / all-orgs, org_id NULL) OR scope it to a single
@@ -37,12 +36,11 @@ export default function ConfigPolicyCreatePage() {
   // detection (gate on partner scope from the JWT, not useOrgStore().partners);
   // unlike that picker we surface it for any partner-scope creator, not only
   // those with more than one org.
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === "partner" && !!jwtPartnerId;
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   // Default to partner-wide when the user is viewing the All-orgs scope (no
   // concrete org selected); otherwise default to the org they're focused on.
   const [ownerScope, setOwnerScope] = useState<OwnerScope>(
-    isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization",
+    defaultOwnerScope,
   );
   const [ownerOrgId, setOwnerOrgId] = useState<string>(currentOrgId ?? "");
   const {

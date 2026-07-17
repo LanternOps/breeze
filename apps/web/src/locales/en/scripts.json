@@ -214,7 +214,7 @@
     },
     "empty": "No automations found. Try adjusting your search or filters.",
     "partnerWideTitle": "Partner-wide automation — applies to every organization",
-    "allOrgs": "All orgs",
+    "allOrgs": "Partner-wide",
     "never": "Never",
     "actions": {
       "viewHistory": "View history",
@@ -579,7 +579,7 @@
     },
     "empty": "No policies found. Try adjusting your search or filters.",
     "partnerWideTitle": "Partner-wide policy — evaluates devices in every organization",
-    "allOrgs": "All orgs",
+    "allOrgs": "Partner-wide",
     "ruleCount": "{{count}} rule",
     "moreTargets": " +{{count}} more",
     "actions": {

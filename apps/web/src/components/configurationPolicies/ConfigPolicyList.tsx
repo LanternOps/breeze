@@ -1,13 +1,12 @@
 import { useMemo, useState } from "react";
 import {
+  Layers,
   Search,
   ChevronLeft,
   ChevronRight,
   Pencil,
   Trash2,
-  Globe,
-  Building2,
-} from "lucide-react";
+  Building2,} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -198,7 +197,7 @@ export default function ConfigPolicyList({
                           )}
                           data-testid="partner-wide-badge"
                         >
-                          <Globe className="h-3 w-3" />
+                          <Layers className="h-3 w-3" />
                           {i18n.t(
                             "policies:configurationPolicies.configPolicyList.allOrgs",
                           )}

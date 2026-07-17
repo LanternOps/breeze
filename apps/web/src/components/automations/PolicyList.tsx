@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
+  Layers,
   Search,
   ChevronLeft,
   ChevronRight,
@@ -14,8 +15,7 @@ import {
   Calendar,
   CheckCircle,
   XCircle,
-  Globe
-} from 'lucide-react';
+  Globe} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type EnforcementLevel = 'monitor' | 'warn' | 'enforce';
@@ -280,7 +280,7 @@ export default function PolicyList({
                               title={t('policyList.partnerWideTitle')}
                               data-testid="automation-policy-partner-wide-badge"
                             >
-                              <Globe className="h-3 w-3" />
+                              <Layers className="h-3 w-3" />
                               {t('policyList.allOrgs')}
                             </span>
                           )}

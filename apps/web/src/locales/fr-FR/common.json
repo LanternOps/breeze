@@ -502,21 +502,12 @@
     "breadcrumb": "Fil d’Ariane",
     "redirectingToLogin": "Redirection vers la connexion...",
     "scope": {
-      "shared": "Partagé entre toutes les organisations",
-      "allOrganizations": "Toutes les organisations"
+      "catalogLine": "Catalogue — identique pour toutes les organisations",
+      "fleetLine": "Toutes les organisations · {{count}}",
+      "orgRequiredLine": "Cette page affiche une organisation à la fois — choisissez-en une pour continuer."
     },
     "org": {
-      "allSites": "Tous les sites",
-      "deviceCount": "{{count}} appareils",
-      "deviceCount_one": "dispositif {{count}}",
-      "deviceCount_other": "{{count}} dispositifs",
-      "scopeLabel": "Portée de l’organisation",
-      "current": "Actuel",
-      "allOrgs": "Toutes les organisations",
-      "currentTitle": "Afficher uniquement les données pour l’organisation sélectionnée",
-      "allTitle": "Afficher les données sur toutes les organisations accessibles",
       "allOrganizations": "Toutes les organisations",
-      "globalTitle": "Cette page présente toutes les organisations",
       "selectTitle": "Organisation sélectionnée (Cmd+O)",
       "switching": "Échanger...",
       "organizations": "Organisations",
@@ -530,9 +521,12 @@
       "toast": {
         "showingAll": "Affichage de toutes les organisations",
         "showing": "Affichage de {{name}}",
-        "switched": "Changé pour {{name}}",
-        "showingAllSites": "Affichage de tous les sites"
-      }
+        "switched": "Changé pour {{name}}"
+      },
+      "fleetView": "Vue flotte · {{count}} organisations",
+      "noSelection": "Sélectionner une organisation",
+      "searchOrganizations": "Rechercher des organisations…",
+      "noMatches": "Aucune organisation ne correspond"
     },
     "header": {
       "menu": "Menu",
@@ -623,6 +617,11 @@
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
       "closeMenu": "Fermer le menu"
+    },
+    "orgRequired": {
+      "title": "Sélectionnez une organisation",
+      "description": "Cette page affiche une organisation à la fois.",
+      "moreHint": "Une autre organisation ? Utilisez le sélecteur ci-dessus (⌘O)."
     }
   },
   "longTail": {
@@ -1563,7 +1562,7 @@
         "pauseSnmpPolling": "Pause SNMP sondage",
         "resumeSnmpPolling": "Reprendre l’interrogation SNMP",
         "disableAllActiveMonitoring": "Désactiver toute surveillance active pour cet actif",
-        "needsOrgSelection": "Les actifs de surveillance réseau sont regroupés dans une seule organisation. Changez le scope dans la barre supérieure de <0>Toutes les organisations</0> à une organisation spécifique pour consulter ses ressources de surveillance.",
+        "needsOrgSelection": "Les actifs de surveillance réseau sont limités à une seule organisation.",
         "loadingAssets": "Chargement des moyens de surveillance...",
         "showingAllDiscoveredAssets": "Affichage de tous les actifs découverts",
         "showingMonitoredAssets": "Affichage des actifs surveillés",

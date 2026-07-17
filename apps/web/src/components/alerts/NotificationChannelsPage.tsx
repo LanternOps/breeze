@@ -7,6 +7,7 @@ import AlertsTabStrip from './AlertsTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '@/lib/authScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -136,13 +137,12 @@ export default function NotificationChannelsPage() {
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedChannel, setSelectedChannel] = useState<NotificationChannel | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const { currentOrgId, allOrgs } = useOrgStore();
+  const { currentOrgId } = useOrgStore();
 
   // Ownership axis (#2130, mirrors AlertRuleEditPage #2128): partner-scope
   // creators may own a channel/rule partner-wide ("all orgs"). Gate on the
   // JWT scope; default to partner-wide when viewing All orgs. Create-only.
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [channelOwnerScope, setChannelOwnerScope] = useState<'organization' | 'partner'>('organization');
 
   // Routing rules state
@@ -196,7 +196,7 @@ export default function NotificationChannelsPage() {
   }, [fetchChannels, fetchRoutingRules]);
 
   const handleCreate = () => {
-    setChannelOwnerScope(isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization');
+    setChannelOwnerScope(defaultOwnerScope);
     setSelectedChannel(null);
     setModalMode('create');
   };
@@ -636,7 +636,7 @@ export default function NotificationChannelsPage() {
                 rule={editingRule}
                 channels={channels}
                 showOwnerScope={isPartnerScope}
-                defaultOwnerScope={isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'}
+                defaultOwnerScope={defaultOwnerScope}
                 onSave={handleSaveRoutingRule}
                 onCancel={() => { setShowRuleForm(false); setEditingRule(null); }}
               />

@@ -214,7 +214,7 @@
     },
     "empty": "Keine Automatisierungen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "partnerWideTitle": "Partnerweite Automatisierung – gilt für jedes Unternehmen",
-    "allOrgs": "Alle Organisationen",
+    "allOrgs": "Partnerweit",
     "never": "Niemals",
     "actions": {
       "viewHistory": "Verlauf anzeigen",
@@ -579,7 +579,7 @@
     },
     "empty": "Keine Richtlinien gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "partnerWideTitle": "Partnerweite Richtlinie – bewertet Geräte in jeder Organisation",
-    "allOrgs": "Alle Organisationen",
+    "allOrgs": "Partnerweit",
     "ruleCount": "{{count}}-Regel",
     "moreTargets": "+{{count}} mehr",
     "actions": {

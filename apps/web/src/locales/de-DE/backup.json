@@ -777,7 +777,7 @@
     "loadFailed": "Sicherungsprofile konnten nicht geladen werden",
     "emptyTitle": "Noch keine Sicherungsprofile",
     "emptyBody": "Ein Profil bündelt Datenquellen (Dateien, Systemstatus, SQL Server, Hyper-V) mit ihren Optionen, sodass eine einzige Auswahl eine ganze Geräteklasse schützt. Beginnen Sie mit einer Vorlage:",
-    "allOrgs": "Alle Organisationen",
+    "allOrgs": "Partnerweit",
     "inUseCount_one": "Verwendet von {{count}} Richtlinie",
     "inUseCount_other": "Verwendet von {{count}} Richtlinien",
     "sourceFile": "Dateien",

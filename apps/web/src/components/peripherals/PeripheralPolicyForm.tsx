@@ -2,7 +2,7 @@ import { useState } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
-import { getJwtClaims } from "@/lib/authScope";
+import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 
@@ -51,11 +51,9 @@ export default function PeripheralPolicyForm({
   // creators may own the policy partner-wide ("all orgs"). Gate on the JWT
   // scope; default to partner-wide when viewing All orgs. Create-only.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === "partner" && !!jwtPartnerId;
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScope] = useState<"organization" | "partner">(
-    isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization",
+    defaultOwnerScope,
   );
 
   const [name, setName] = useState(policy?.name ?? "");
