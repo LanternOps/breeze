@@ -11,9 +11,10 @@ import {
   X,
   XCircle
 } from 'lucide-react';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { OrgRequiredState } from '../shared/OrgRequiredState';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
@@ -123,10 +124,13 @@ type Props = {
 export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks }: Props) {
   const { t } = useTranslation('common');
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
   // Monitoring assets are scoped to a single org; the API returns 400
   // ("orgId is required when partner has multiple organizations") for a
   // multi-org partner with no orgId. Prompt for one org instead of erroring.
-  const needsOrgSelection = !currentOrgId;
+  // Gate on the explicit fleet-view intent flag, not bare `!currentOrgId` —
+  // the transient null of a fresh session would flash this prompt on cold load.
+  const needsOrgSelection = !currentOrgId && allOrgs;
   const [assets, setAssets] = useState<MonitoringAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -365,13 +369,9 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
 
   if (needsOrgSelection) {
     return (
-      <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-        <Trans
-          t={t}
-          i18nKey="longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection"
-          components={[<span className="font-medium text-foreground" />]}
-        />
-      </div>
+      <OrgRequiredState
+        description={t('longTail.monitoring.MonitoringAssetsDashboard.needsOrgSelection')}
+      />
     );
   }
 

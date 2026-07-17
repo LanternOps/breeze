@@ -10,7 +10,6 @@ import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
-import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -356,7 +355,6 @@ export default function ScriptsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('scriptsPage.title')}</h1>
-          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/scripts'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">{t('scriptsPage.description')}</p>
         </div>
         <div className="flex items-center gap-2">

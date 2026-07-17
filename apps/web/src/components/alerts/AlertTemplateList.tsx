@@ -8,7 +8,6 @@ import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '@/stores/orgStore';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { ScopeBadge } from '../shared/ScopeBadge';
-import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import type { AlertSeverity } from './AlertList';
 
 // Raw row shape returned by GET /alert-templates/templates (the scope-aware CRUD
@@ -127,7 +126,6 @@ export default function AlertTemplateList() {
         <div>
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-lg font-semibold">{t('alertTemplateList.alertTemplates')}</h2>
-            <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/settings/alert-templates'} />
           </div>
           <p className="text-sm text-muted-foreground">
             {filteredTemplates.length} {t('alertTemplateList.of')} {templates.length} {t('alertTemplateList.templates')}
