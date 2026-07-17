@@ -516,7 +516,7 @@
     },
     "loading": "Loading enrollment keys...",
     "title": "Enrollment Keys",
-    "description": "Create and manage keys for agent enrollment. Use these keys with <code>breeze-agent enroll &lt;key&gt;</code>",
+    "description": "Create and manage keys for agent enrollment. Use these keys with breeze-agent enroll <key>",
     "createKey": "Create Key",
     "saveNow": "Save this enrollment key now. It will not be shown again.",
     "copied": "Copied",

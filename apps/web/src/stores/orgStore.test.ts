@@ -140,6 +140,53 @@ describe('org store', () => {
     expect(useOrgStore.getState().partners).toHaveLength(1);
   });
 
+  it('fetchPartners adopting the first partner preserves an explicit All-orgs choice', async () => {
+    // /settings/partner regression: pages that fetch partners must not hijack
+    // the user's context. Adopting the first partner id used to go through
+    // setPartner, whose reset + auto-select snapped scope to the first org.
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true });
+
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeResponse({ data: [{ id: 'partner-1', name: 'Partner One', status: 'active' }] })
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          data: [{ id: 'org-1', partnerId: 'partner-1', name: 'Org One', status: 'active' }]
+        })
+      );
+
+    await useOrgStore.getState().fetchPartners();
+    await flushAsync();
+
+    expect(useOrgStore.getState().currentPartnerId).toBe('partner-1');
+    expect(useOrgStore.getState().currentOrgId).toBeNull();
+    expect(useOrgStore.getState().allOrgs).toBe(true);
+  });
+
+  it('fetchPartners adopting the first partner preserves a concrete org selection', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-2', lastOrgId: 'org-2' });
+
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeResponse({ data: [{ id: 'partner-1', name: 'Partner One', status: 'active' }] })
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          data: [
+            { id: 'org-1', partnerId: 'partner-1', name: 'Org One', status: 'active' },
+            { id: 'org-2', partnerId: 'partner-1', name: 'Org Two', status: 'active' }
+          ]
+        })
+      );
+
+    await useOrgStore.getState().fetchPartners();
+    await flushAsync();
+
+    expect(useOrgStore.getState().currentPartnerId).toBe('partner-1');
+    expect(useOrgStore.getState().currentOrgId).toBe('org-2');
+  });
+
   it('fetchSites populates the shared site cache for the selected org', async () => {
     useOrgStore.setState({ currentOrgId: 'org-1' });
 

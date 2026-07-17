@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -528,6 +528,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: null,
       isLoading: true,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
 
@@ -547,6 +548,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: 'partner-1',
       isLoading: false,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
@@ -557,6 +559,27 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
     expect(screen.queryByText('Partner Access Required')).toBeNull();
   });
 
+  it('seeds a missing partner id from the JWT via adoptPartnerId — never the context-resetting setPartner', async () => {
+    // Regression: visiting /settings/partner with currentPartnerId unset used
+    // to call setPartner, whose reset + auto-select silently snapped the org
+    // scope to the first org (context hijack).
+    const setPartner = vi.fn();
+    const adoptPartnerId = vi.fn();
+    useOrgStoreMock.mockReturnValue({
+      currentPartnerId: null,
+      isLoading: false,
+      setPartner,
+      adoptPartnerId,
+    } as never);
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<PartnerSettingsPage />);
+
+    await waitFor(() => expect(adoptPartnerId).toHaveBeenCalledWith('partner-1'));
+    expect(setPartner).not.toHaveBeenCalled();
+  });
+
   it('shows access-denied once resolution confirms a genuine non-partner user', async () => {
     // Context finished resolving (isLoading false) with no partner, and the JWT
     // confirms a non-partner scope — the genuine denied case.
@@ -564,6 +587,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: null,
       isLoading: false,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
 

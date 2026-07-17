@@ -1714,7 +1714,7 @@
         "loading": "Vorfälle werden geladen...",
         "tryAgain": "Versuchen Sie es erneut",
         "title": "Vorfälle",
-        "description": "Verfolgen Sie Vorfälle und EDR-Befunde in Ihrer gesamten Organisation.",
+        "description": "Verfolgen Sie Vorfälle und EDR-Befunde in all Ihren Organisationen.",
         "filters": {
           "tracked": "Verfolgt",
           "findings": "Befunde"

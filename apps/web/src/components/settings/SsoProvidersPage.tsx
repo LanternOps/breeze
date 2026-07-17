@@ -5,6 +5,7 @@ import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
+import { getOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 
@@ -50,21 +51,26 @@ export default function SsoProvidersPage() {
       // render whatever loaded AND surface the error — never silently swallow it.
       let hadError = false;
 
-      const response = await fetchWithAuth('/sso/providers');
-      if (response.status === 401) {
-        void navigateTo('/login', { replace: true });
-        return;
-      }
+      // In fleet view (All organizations) there is no org to resolve for the
+      // org-scoped list — the API is guaranteed to 400 — so don't fire the
+      // request at all; the partner-wide providers below are the whole list.
       let orgProviders: SsoProvider[] = [];
-      if (response.ok) {
-        orgProviders = (await response.json()).data ?? [];
-      } else if (isPartnerScope && response.status === 400) {
-        // Expected: a partner viewer with no single-org context can't resolve an
-        // org for the org-scoped list (API returns 400 "Organization ID
-        // required"). Their partner-wide providers still load below — not an
-        // error worth surfacing. Any OTHER non-ok status is a real failure.
-      } else {
-        hadError = true;
+      if (getOrgScope().scope !== 'all') {
+        const response = await fetchWithAuth('/sso/providers');
+        if (response.status === 401) {
+          void navigateTo('/login', { replace: true });
+          return;
+        }
+        if (response.ok) {
+          orgProviders = (await response.json()).data ?? [];
+        } else if (isPartnerScope && response.status === 400) {
+          // Expected: a partner viewer with no single-org context can't resolve an
+          // org for the org-scoped list (API returns 400 "Organization ID
+          // required"). Their partner-wide providers still load below — not an
+          // error worth surfacing. Any OTHER non-ok status is a real failure.
+        } else {
+          hadError = true;
+        }
       }
 
       // Also pull partner-wide providers for partner-scope viewers and merge

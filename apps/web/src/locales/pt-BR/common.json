@@ -1714,7 +1714,7 @@
         "loading": "Carregando incidentes...",
         "tryAgain": "Tentar novamente",
         "title": "Incidentes",
-        "description": "Incidentes acompanhados e achados de EDR em toda a sua organização.",
+        "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
           "findings": "Achados"

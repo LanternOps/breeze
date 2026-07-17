@@ -54,6 +54,11 @@ interface OrgState {
 
   // Actions
   setPartner: (partnerId: string) => void;
+  /** Seed currentPartnerId WITHOUT resetting the org context. For "we just
+   * learned which partner this session belongs to" (JWT claims, first partner
+   * fetch) — as opposed to setPartner's real partner switch, whose reset +
+   * auto-select silently snaps the user to the first org. */
+  adoptPartnerId: (partnerId: string) => void;
   /** Pass a non-empty orgId to select that org; pass '' or null to clear the
    * selection (currentOrgId → null, allOrgs → true). */
   setOrganization: (orgId: string | null) => void;
@@ -88,6 +93,10 @@ export const useOrgStore = create<OrgState>()(
         });
         // Fetch organizations for the new partner
         get().fetchOrganizations();
+      },
+
+      adoptPartnerId: (partnerId) => {
+        set({ currentPartnerId: partnerId });
       },
 
       setOrganization: (orgId) => {
@@ -127,10 +136,23 @@ export const useOrgStore = create<OrgState>()(
           // Auto-select first partner if none selected or cached partner no longer exists
           const { currentPartnerId } = get();
           const cachedPartnerExists = currentPartnerId && partners.some((p: Partner) => p.id === currentPartnerId);
-          if ((!currentPartnerId || !cachedPartnerExists) && partners.length > 0) {
-            get().setPartner(partners[0].id);
+          if (!currentPartnerId && partners.length > 0) {
+            // First resolution of the partner id (typical single-partner login):
+            // adopt it WITHOUT the setPartner reset. setPartner clears the org
+            // selection and the allOrgs intent, and the subsequent auto-select
+            // then snaps the user to the first org — so any page that fetched
+            // partners (e.g. /settings/partner) silently hijacked whatever
+            // context the user had chosen.
+            get().adoptPartnerId(partners[0].id);
+            get().fetchOrganizations();
           } else if (currentPartnerId && !cachedPartnerExists) {
-            get().clearOrgContext();
+            // The cached partner genuinely vanished — a real context change, so
+            // the full reset (or clear when nothing to select) is correct.
+            if (partners.length > 0) {
+              get().setPartner(partners[0].id);
+            } else {
+              get().clearOrgContext();
+            }
           }
         } catch (error) {
           set({

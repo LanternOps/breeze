@@ -8,6 +8,7 @@ import {
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
+import { getOrgScope } from '@/hooks/useOrgScope';
 import { useAiStore } from '@/stores/aiStore';
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -84,6 +85,10 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
   const failedEndpoints: string[] = [];
   const results = await Promise.all(
     endpoints.map(async (ep) => {
+      // Maintenance windows are per-org (the endpoint 400s with no org); in
+      // fleet view skip the call instead of reporting a spurious partial-data
+      // failure banner. The stat simply reads as absent.
+      if (ep.name === 'maintenance' && getOrgScope().scope === 'all') return null;
       try {
         const res = await fetchWithAuth(ep.path);
         if (!res.ok) {

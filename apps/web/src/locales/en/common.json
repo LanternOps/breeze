@@ -1714,7 +1714,7 @@
         "loading": "Loading incidents...",
         "tryAgain": "Try again",
         "title": "Incidents",
-        "description": "Tracked incidents and EDR findings across your organization.",
+        "description": "Tracked incidents and EDR findings across your organizations.",
         "filters": {
           "tracked": "Tracked",
           "findings": "Findings"

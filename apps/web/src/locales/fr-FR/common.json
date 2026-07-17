@@ -1714,7 +1714,7 @@
         "loading": "Incidents de chargement...",
         "tryAgain": "Réessayer",
         "title": "Incidents",
-        "description": "Incidents suivis et constats EDR dans votre organisation.",
+        "description": "Incidents suivis et constats EDR dans vos organisations.",
         "filters": {
           "tracked": "Suivis",
           "findings": "Constats"

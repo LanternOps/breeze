@@ -18,6 +18,8 @@ import {
   statIconMap
 } from './backupDashboardHelpers';
 import { useTranslation } from 'react-i18next';
+import { useOrgScope } from '@/hooks/useOrgScope';
+import { OrgRequiredState } from '../shared/OrgRequiredState';
 import '../../lib/i18n';
 
 const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
@@ -64,7 +66,7 @@ function TabFallback() {
   );
 }
 
-export default function BackupDashboard() {
+function BackupDashboardInner() {
   const { t } = useTranslation('backup');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', (h) => (isValidTab(h) ? h : undefined));
@@ -476,4 +478,17 @@ export default function BackupDashboard() {
       )}
     </div>
   );
+}
+
+// The backup APIs are per-organization (they 400 on an
+// org-less request), so fleet view renders the standard org-required state and
+// the data component — with all its fetch effects — never mounts without an org.
+export default function BackupDashboard() {
+  const { ready, scope } = useOrgScope();
+  // Not-ready covers the pre-rehydration window (persisted context not yet
+  // loaded): mounting the data component there fires org-less fetches that
+  // 400 before the gate can flip. Render nothing for that frame.
+  if (!ready) return null;
+  if (scope === 'all') return <OrgRequiredState />;
+  return <BackupDashboardInner />;
 }

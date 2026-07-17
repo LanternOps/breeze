@@ -516,7 +516,7 @@
     },
     "loading": "Registrierungsschlüssel werden geladen...",
     "title": "Registrierungsschlüssel",
-    "description": "Schlüssel für die Agentenregistrierung erstellen und verwalten. Diese Schlüssel mit <code>breeze-agent enroll &lt;key&gt;</code> verwenden.",
+    "description": "Schlüssel für die Agentenregistrierung erstellen und verwalten. Diese Schlüssel mit breeze-agent enroll <key> verwenden.",
     "createKey": "Schlüssel erstellen",
     "saveNow": "Diesen Registrierungsschlüssel jetzt speichern. Er wird nicht erneut angezeigt.",
     "copied": "Kopiert",

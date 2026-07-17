@@ -516,7 +516,7 @@
     },
     "loading": "Carregando chaves de registro...",
     "title": "Chaves de registro",
-    "description": "Crie e gerencie chaves para o registro de agentes. Use estas chaves com <code>breeze-agent enroll &lt;key&gt;</code>",
+    "description": "Crie e gerencie chaves para o registro de agentes. Use estas chaves com breeze-agent enroll <key>",
     "createKey": "Criar chave",
     "saveNow": "Salve esta chave de registro agora. Ela não será exibida novamente.",
     "copied": "Copiada",

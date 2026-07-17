@@ -270,6 +270,11 @@ export default function DiscoveryPage() {
   // keying on the bare null would flash this prompt at single-org users on every
   // cold load before hydration completes.
   const allOrgsMode = allOrgs && currentOrgId === null;
+  // Neither an org nor the explicit All-orgs intent yet: the persisted context
+  // hasn't rehydrated (or the first org hasn't auto-selected). Mounting the
+  // tab content in that window fires org-less child fetches (e.g. the assets
+  // list) that 400 before the gate can flip.
+  const contextReady = allOrgsMode || currentOrgId !== null;
 
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
@@ -646,7 +651,7 @@ export default function DiscoveryPage() {
         )}
       </div>
 
-      {allOrgsMode ? (
+      {!contextReady ? null : allOrgsMode ? (
         <OrgRequiredState description={t('discoveryPage.allOrgs.description')} />
       ) : (
         <>

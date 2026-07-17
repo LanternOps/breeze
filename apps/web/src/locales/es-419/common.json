@@ -1714,7 +1714,7 @@
         "loading": "Cargando incidencias...",
         "tryAgain": "Intentar otra vez",
         "title": "Incidentes",
-        "description": "Seguimiento de incidentes y hallazgos de EDR en toda su organización.",
+        "description": "Seguimiento de incidentes y hallazgos de EDR en todas sus organizaciones.",
         "filters": {
           "tracked": "Rastreado",
           "findings": "Hallazgos"

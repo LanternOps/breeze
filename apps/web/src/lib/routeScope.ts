@@ -58,6 +58,11 @@ const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // --- org-required ---
   { pattern: /^\/discovery(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/monitoring(\/.*)?$/, kind: 'org-required' },
+  // Their APIs 400 without an org (backup dashboard, C2C connections/jobs,
+  // DR plans) — the pages render OrgRequiredState in fleet view.
+  { pattern: /^\/backup(\/.*)?$/, kind: 'org-required' },
+  { pattern: /^\/c2c(\/.*)?$/, kind: 'org-required' },
+  { pattern: /^\/dr(\/.*)?$/, kind: 'org-required' },
 
   // --- fleet-state (org-or-all) ---
   // NOTE: /patches is intentionally org-or-all, NOT catalog. It honours the org
@@ -72,7 +77,6 @@ const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/automations(\/.*)?$/, kind: 'org-or-all' },
-  { pattern: /^\/backup(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/vulnerabilities$/, kind: 'org-or-all' },
   { pattern: /^\/security(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/sensitive-data(\/.*)?$/, kind: 'org-or-all' },
@@ -81,8 +85,6 @@ const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/ai-risk$/, kind: 'org-or-all' },
   { pattern: /^\/ai-for-office$/, kind: 'org-or-all' },
   { pattern: /^\/incidents(\/.*)?$/, kind: 'org-or-all' },
-  { pattern: /^\/dr(\/.*)?$/, kind: 'org-or-all' },
-  { pattern: /^\/c2c(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/fleet(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/cis-hardening(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/analytics(\/.*)?$/, kind: 'org-or-all' },

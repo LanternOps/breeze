@@ -242,6 +242,7 @@ export default function OrgSwitcher() {
               <button
                 type="button"
                 data-testid="org-option-all"
+                aria-current={isFleet ? 'true' : undefined}
                 onClick={() => void applyContext(null)}
                 className={cn(
                   'flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left',
@@ -298,6 +299,8 @@ export default function OrgSwitcher() {
                 return (
                   <button
                     key={org.id}
+                    data-testid={`org-option-${org.id}`}
+                    aria-current={isSelected ? 'true' : undefined}
                     onClick={() => void applyContext(org.id)}
                     className={cn(
                       'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted',

@@ -14,6 +14,8 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useOrgScope } from '@/hooks/useOrgScope';
+import { OrgRequiredState } from '../shared/OrgRequiredState';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -116,7 +118,7 @@ function formatDate(d: string | null): string {
   return formatDateTime(d, { fallback: '-' });
 }
 
-export default function C2CDashboard() {
+function C2CDashboardInner() {
   const { t } = useTranslation('common');
   const [activeTab, setActiveTab] = useState<C2CTab>('connections');
   const [connections, setConnections] = useState<C2CConnection[]>([]);
@@ -538,4 +540,17 @@ export default function C2CDashboard() {
       )}
     </div>
   );
+}
+
+// The c2c APIs are per-organization (they 400 on an
+// org-less request), so fleet view renders the standard org-required state and
+// the data component — with all its fetch effects — never mounts without an org.
+export default function C2CDashboard() {
+  const { ready, scope } = useOrgScope();
+  // Not-ready covers the pre-rehydration window (persisted context not yet
+  // loaded): mounting the data component there fires org-less fetches that
+  // 400 before the gate can flip. Render nothing for that frame.
+  if (!ready) return null;
+  if (scope === 'all') return <OrgRequiredState />;
+  return <C2CDashboardInner />;
 }

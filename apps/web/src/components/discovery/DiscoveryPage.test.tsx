@@ -327,10 +327,12 @@ describe('DiscoveryPage', () => {
     });
   });
 
-  it('does not flash the prompt on a transient pre-hydration null org', async () => {
-    // Before the first org is auto-selected, currentOrgId is null but allOrgs is
-    // false. Single-org users must NOT see the "select an organization" prompt
-    // in this window -- the guard keys on the explicit allOrgs flag.
+  it('renders neither the prompt nor the tab content on a transient pre-hydration null org', () => {
+    // Before the persisted context rehydrates / the first org auto-selects,
+    // currentOrgId is null and allOrgs is false. Single-org users must NOT see
+    // the "select an organization" prompt in this window — and the tab content
+    // must not mount either, since child components (assets list) would fire
+    // org-less fetches that 400 before the context resolves.
     orgStoreState.currentOrgId = null;
     orgStoreState.allOrgs = false;
     window.history.pushState({}, '', '/discovery#assets');
@@ -338,10 +340,8 @@ describe('DiscoveryPage', () => {
 
     render(<DiscoveryPage />);
 
-    expect(await screen.findByText('Assets tab')).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('org-required-state')
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-required-state')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
   });
 });
 import '@/lib/i18n';

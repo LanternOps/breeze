@@ -516,7 +516,7 @@
     },
     "loading": "Cargando claves de inscripción...",
     "title": "Claves de inscripción",
-    "description": "Cree y administre claves para inscribir agentes. Use estas claves con <code>breeze-agent enroll &lt;key&gt;</code>",
+    "description": "Cree y administre claves para inscribir agentes. Use estas claves con breeze-agent enroll <key>",
     "createKey": "Crear clave",
     "saveNow": "Guarde esta clave de inscripción ahora. No se volverá a mostrar.",
     "copied": "Copiado",
