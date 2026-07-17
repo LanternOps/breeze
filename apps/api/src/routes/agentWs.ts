@@ -23,6 +23,7 @@ import {
   resolveVaultForResult,
 } from '../services/vaultSyncPersistence';
 import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
+import { applyBackupProgress } from '../services/backupProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
@@ -769,10 +770,22 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
   return decoded.toString('utf8');
 }
 
+// Live upload-progress ping for an in-flight backup_run (agent side:
+// agent/internal/websocket/client.go:613-632). `progress` is intentionally
+// loose here (z.record/z.any-ish) — applyBackupProgress does the strict
+// field-level validation so a malformed progress body is dropped rather than
+// failing the whole WS message parse.
+const backupProgressMessageSchema = z.object({
+  type: z.literal('backup_progress'),
+  commandId: z.string(),
+  progress: z.record(z.string(), z.unknown()).optional(),
+});
+
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
   heartbeatMessageSchema,
-  terminalOutputSchema
+  terminalOutputSchema,
+  backupProgressMessageSchema
 ]);
 
 // Command types sent to agent
@@ -2234,6 +2247,24 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               commandId: parsed.data.commandId
             }));
             break;
+
+          case 'backup_progress': {
+            const progressMessage = parsed.data as z.infer<typeof backupProgressMessageSchema>;
+            await runWithAgentDbAccess(async () => {
+              const applied = await applyBackupProgress({
+                agentId,
+                commandId: progressMessage.commandId,
+                progress: progressMessage.progress,
+              });
+              if (!applied.applied) {
+                console.warn(
+                  `[AgentWs] Dropping backup_progress for ${progressMessage.commandId} from agent ${agentId}: reason=${applied.reason}`
+                );
+              }
+            });
+            // Fire-and-forget: no ack expected by the agent for progress pings.
+            break;
+          }
 
           case 'heartbeat':
             {
