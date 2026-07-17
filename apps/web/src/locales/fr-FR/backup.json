@@ -46,6 +46,7 @@
     "policyId": "Politique ID",
     "featureLinkId": "Lien de fonctionnalité ID",
     "errorLog": "Journal d’erreurs",
+    "savings": "{{protected}} protégés — {{uploaded}} téléversés",
     "errorCount_one": "{{count}} erreur",
     "errorCount_other": "{{count}} erreurs"
   },

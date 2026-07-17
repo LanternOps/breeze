@@ -440,6 +440,167 @@ describe('BackupJobList', () => {
     expect(within(rowAfterPoll).queryByText('Running')).toBeNull();
   });
 
+  it('shows the incremental savings line for a completed job with referencedSize', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-1',
+              type: 'file',
+              deviceId: 'device-1',
+              configId: 'config-1',
+              deviceName: 'Alpha Workstation',
+              configName: 'Nightly',
+              status: 'completed',
+              startedAt: '2026-04-01T18:00:00.000Z',
+              completedAt: '2026-04-01T18:02:00.000Z',
+              createdAt: '2026-04-01T17:59:00.000Z',
+              totalSize: 10_485_760,
+              fileCount: 10,
+              errorCount: 0,
+              errorLog: null,
+            },
+          ],
+        });
+      }
+      if (url === '/backup/jobs/job-1') {
+        return makeJsonResponse({
+          id: 'job-1',
+          type: 'file',
+          deviceId: 'device-1',
+          configId: 'config-1',
+          deviceName: 'Alpha Workstation',
+          configName: 'Nightly',
+          status: 'completed',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          updatedAt: '2026-04-01T18:03:00.000Z',
+          totalSize: 10_485_760, // 10 MB protected
+          referencedSize: 4_194_304, // 4 MB reused -> 6 MB uploaded
+          fileCount: 10,
+          errorLog: null,
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Alpha Workstation');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
+
+    const savings = await screen.findByTestId('backup-job-savings');
+    expect(savings.textContent).toContain('10.0 MB');
+    expect(savings.textContent).toContain('6.00 MB');
+    expect(savings.textContent).toContain('protected');
+    expect(savings.textContent).toContain('uploaded');
+  });
+
+  it('renders nothing new for a completed job with null referencedSize (legacy/full run)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-1',
+              type: 'file',
+              deviceId: 'device-1',
+              configId: 'config-1',
+              deviceName: 'Alpha Workstation',
+              configName: 'Nightly',
+              status: 'completed',
+              startedAt: '2026-04-01T18:00:00.000Z',
+              completedAt: '2026-04-01T18:02:00.000Z',
+              createdAt: '2026-04-01T17:59:00.000Z',
+              totalSize: 10_485_760,
+              fileCount: 10,
+              errorCount: 0,
+              errorLog: null,
+            },
+          ],
+        });
+      }
+      if (url === '/backup/jobs/job-1') {
+        return makeJsonResponse({
+          id: 'job-1',
+          type: 'file',
+          deviceId: 'device-1',
+          configId: 'config-1',
+          status: 'completed',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          updatedAt: '2026-04-01T18:03:00.000Z',
+          totalSize: 10_485_760,
+          referencedSize: null,
+          fileCount: 10,
+          errorLog: null,
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Alpha Workstation');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
+
+    // Detail panel opens (snapshot/error sections load) but no savings line.
+    await screen.findByText(/No error log recorded/i);
+    expect(screen.queryByTestId('backup-job-savings')).toBeNull();
+  });
+
+  it('clamps uploaded to zero when referencedSize exceeds totalSize (no negatives)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-1',
+              type: 'file',
+              deviceId: 'device-1',
+              configId: 'config-1',
+              deviceName: 'Alpha Workstation',
+              configName: 'Nightly',
+              status: 'completed',
+              startedAt: '2026-04-01T18:00:00.000Z',
+              completedAt: '2026-04-01T18:02:00.000Z',
+              createdAt: '2026-04-01T17:59:00.000Z',
+              totalSize: 1024,
+              fileCount: 10,
+              errorCount: 0,
+              errorLog: null,
+            },
+          ],
+        });
+      }
+      if (url === '/backup/jobs/job-1') {
+        return makeJsonResponse({
+          id: 'job-1',
+          type: 'file',
+          deviceId: 'device-1',
+          configId: 'config-1',
+          status: 'completed',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          updatedAt: '2026-04-01T18:03:00.000Z',
+          totalSize: 1024, // 1 KB protected
+          referencedSize: 4096, // 4 KB referenced -> negative delta must clamp to 0
+          fileCount: 10,
+          errorLog: null,
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Alpha Workstation');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Alpha Workstation backup/i }));
+
+    const savings = await screen.findByTestId('backup-job-savings');
+    // No negative byte value should ever be rendered.
+    expect(savings.textContent).not.toMatch(/-\d/);
+    expect(savings.textContent).toContain('1.00 KB'); // protected
+  });
+
   it('labels the running-job action button "Stop"', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {

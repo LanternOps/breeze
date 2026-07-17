@@ -46,6 +46,7 @@
     "policyId": "Política ID",
     "featureLinkId": "Enlace de característica ID",
     "errorLog": "Registro de errores",
+    "savings": "{{protected}} protegidos — {{uploaded}} subidos",
     "errorCount_one": "error {{count}}",
     "errorCount_other": "errores {{count}}"
   },

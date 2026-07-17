@@ -46,6 +46,7 @@
     "policyId": "ID da política",
     "featureLinkId": "ID do link de recurso",
     "errorLog": "Log de erros",
+    "savings": "{{protected}} protegidos — {{uploaded}} enviados",
     "errorCount_one": "{{count}} erro",
     "errorCount_other": "{{count}} erros"
   },

@@ -46,6 +46,7 @@
     "policyId": "Richtlinien-ID",
     "featureLinkId": "Feature-Link-ID",
     "errorLog": "Fehlerprotokoll",
+    "savings": "{{protected}} gesichert — {{uploaded}} hochgeladen",
     "errorCount_one": "{{count}} Fehler",
     "errorCount_other": "{{count}} Fehler"
   },

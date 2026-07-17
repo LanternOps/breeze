@@ -46,6 +46,7 @@
     "policyId": "Policy ID",
     "featureLinkId": "Feature Link ID",
     "errorLog": "Error Log",
+    "savings": "{{protected}} protected — {{uploaded}} uploaded",
     "errorCount_one": "{{count}} error",
     "errorCount_other": "{{count}} errors"
   },

@@ -32,6 +32,8 @@ type BackupJobRaw = {
   createdAt: string;
   totalSize?: number | null;
   transferredSize?: number | null;
+  referencedSize?: number | null;
+  referencedFiles?: number | null;
   fileCount?: number | null;
   totalFiles?: number | null;
   lastProgressAt?: string | null;
@@ -647,6 +649,17 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
+                          {job.status === 'completed' && details.referencedSize != null && (
+                            <p
+                              data-testid="backup-job-savings"
+                              className="mt-4 text-xs text-muted-foreground"
+                            >
+                              {t('backupJobList.savings', {
+                                protected: formatBytes(details.totalSize ?? 0),
+                                uploaded: formatBytes(Math.max(0, (details.totalSize ?? 0) - details.referencedSize)),
+                              })}
+                            </p>
+                          )}
                           <div className="mt-4">
                             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                             <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
