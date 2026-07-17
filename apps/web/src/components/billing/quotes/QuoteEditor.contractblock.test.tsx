@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
-import { addBlock } from '../../../lib/api/quotes';
+import { addBlock, updateBlock } from '../../../lib/api/quotes';
 import { listContractTemplates, getContractTemplate } from '../../../lib/api/contractTemplates';
 
 vi.mock('../../../stores/auth', () => ({
@@ -186,15 +186,97 @@ describe('QuoteEditor — existing contract block', () => {
     getMock.mockResolvedValue(okRes(templateDetail));
   });
 
-  it('renders a read-only contract card with the template name and pinned version', async () => {
+  it('renders a read-only contract card when no admin authoring fields are present', async () => {
     const contractBlock: QuoteBlock = {
       id: 'blk-c', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
-      // Server-rendered client shape (renderContractBlocksForClient).
+      // Server-rendered client shape without `authoring` (legacy / non-admin).
       content: { templateName: 'MSA', versionNumber: 2, sourceType: 'authored', renderedHtml: '<p>Acme 12 months</p>', fileUrl: null },
       sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     };
     render(<QuoteEditor detail={{ ...detail, blocks: [contractBlock] }} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-block-contract-content-blk-c')).toBeInTheDocument());
     expect(screen.getByTestId('quote-block-contract-content-blk-c')).toHaveTextContent('MSA');
+  });
+});
+
+const updateBlockMock = vi.mocked(updateBlock);
+
+function persistedContractBlock(over: Partial<Record<string, unknown>> = {}): QuoteBlock {
+  return {
+    id: 'blk-c', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+    content: {
+      templateName: 'MSA', versionNumber: 1, sourceType: 'authored',
+      renderedHtml: '<p>Acme 12 months</p>', fileUrl: null, label: 'Master Agreement',
+      authoring: {
+        templateId: 'tpl-1', templateVersionId: 'ver-1',
+        variableValues: { initial_term: '12 months' },
+        declaredVariables: [{ name: 'client.name', kind: 'auto' }, { name: 'initial_term', kind: 'manual' }],
+        latestPublishedVersionId: 'ver-2', latestPublishedVersionNumber: 2,
+        ...over,
+      },
+    },
+    sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+  };
+}
+
+describe('QuoteEditor — edit persisted contract block', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listMock.mockResolvedValue(okRes([templateRow]));
+    getMock.mockResolvedValue(okRes(templateDetail));
+  });
+
+  async function renderWithBlock(block: QuoteBlock) {
+    render(<QuoteEditor detail={{ ...detail, blocks: [block] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  }
+
+  it('renders auto read-only + manual editable variables seeded from authoring, and PATCHes on save', async () => {
+    updateBlockMock.mockResolvedValue(okRes({}));
+    await renderWithBlock(persistedContractBlock());
+
+    expect(screen.getByTestId('quote-block-contract-auto-blk-c-client.name')).toBeInTheDocument();
+    const input = screen.getByTestId('quote-block-contract-var-blk-c-initial_term');
+    expect(input).toHaveValue('12 months');
+
+    fireEvent.change(input, { target: { value: '24 months' } });
+    fireEvent.click(screen.getByTestId('quote-block-contract-save-blk-c'));
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-c', {
+      blockType: 'contract',
+      content: { templateId: 'tpl-1', templateVersionId: 'ver-1', variableValues: { initial_term: '24 months' }, label: 'Master Agreement' },
+    }));
+  });
+
+  it('shows an "Update to vN" button when the pinned version is behind latest, and re-pins preserving values', async () => {
+    updateBlockMock.mockResolvedValue(okRes({}));
+    await renderWithBlock(persistedContractBlock());
+
+    const update = screen.getByTestId('quote-block-contract-update-blk-c');
+    expect(update).toHaveTextContent('2');
+    fireEvent.click(update);
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-c', {
+      blockType: 'contract',
+      content: { templateId: 'tpl-1', templateVersionId: 'ver-2', variableValues: { initial_term: '12 months' }, label: 'Master Agreement' },
+    }));
+  });
+
+  it('does not show the update button when the pinned version is already the latest published', async () => {
+    await renderWithBlock(persistedContractBlock({ latestPublishedVersionId: 'ver-1', latestPublishedVersionNumber: 1 }));
+    expect(screen.queryByTestId('quote-block-contract-update-blk-c')).not.toBeInTheDocument();
+  });
+
+  it('names unresolved (empty) manual variables inline and blocks save with a required error', async () => {
+    await renderWithBlock(persistedContractBlock({ variableValues: {} }));
+
+    // The empty manual variable is named in a visible inline warning (the
+    // send-time CONTRACT_VARIABLES_UNRESOLVED equivalent on the block card).
+    expect(screen.getByTestId('quote-block-contract-unresolved-blk-c')).toHaveTextContent('initial_term');
+
+    fireEvent.click(screen.getByTestId('quote-block-contract-save-blk-c'));
+
+    expect(screen.getByTestId('quote-block-contract-var-error-blk-c-initial_term')).toBeInTheDocument();
+    expect(updateBlockMock).not.toHaveBeenCalled();
   });
 });

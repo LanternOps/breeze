@@ -132,6 +132,10 @@ describe('portal quotes GET /quotes/:id', () => {
     expect(contractBlock.content).not.toHaveProperty('templateId');
     expect(contractBlock.content).not.toHaveProperty('templateVersionId');
     expect(contractBlock.content).not.toHaveProperty('variableValues');
+    // Parity: the ADMIN editor gets an `authoring` block (templateId/versionId/
+    // variableValues/declaredVariables); the tenant-facing portal payload must
+    // NEVER carry it.
+    expect(contractBlock.content).not.toHaveProperty('authoring');
   });
 
   it('serializes an uploaded contract block with a null renderedHtml and a portal contract-file fileUrl', async () => {

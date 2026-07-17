@@ -6,8 +6,8 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -29,6 +29,23 @@ export interface ContractBlockContent {
   sourceType: 'authored' | 'uploaded';
   renderedHtml: string | null;
   fileUrl: string | null;
+  /** ADMIN editor ONLY (added by GET /quotes/:id's admin serialization, never by
+   *  the portal/public serves): the raw authoring fields the editor needs to
+   *  render an editable manual-variable form and offer a version-update nudge.
+   *  Absent on portal/public payloads and on legacy/uploaded blocks. */
+  authoring?: ContractBlockAuthoring;
+}
+
+/** Raw authoring fields for a persisted `contract` block, exposed only on the
+ *  admin editor payload. `latestPublishedVersion*` describe the newest published
+ *  version of the same template (for the explicit "Update to vN" nudge). */
+export interface ContractBlockAuthoring {
+  templateId: string;
+  templateVersionId: string;
+  variableValues: Record<string, string>;
+  declaredVariables: ContractVariable[];
+  latestPublishedVersionId: string | null;
+  latestPublishedVersionNumber: number | null;
 }
 
 /** A row from `GET /quotes` / the `quote` field of `GET /quotes/:id`. */

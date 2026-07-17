@@ -14,6 +14,7 @@ vi.mock('../db', () => ({
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   loadContractBlockRenderData,
+  loadContractBlockAuthoring,
   resolveAutoVariables,
   substituteVariables,
   findUnresolvedVariables,
@@ -31,6 +32,12 @@ function selectReturning(rows: unknown[], onResolve?: () => void) {
       },
     }),
   };
+}
+
+// Variant whose `.where(...)` chains into `.orderBy(...)` — the latest-published
+// query in loadContractBlockAuthoring orders desc by versionNumber.
+function selectOrdered(rows: unknown[]) {
+  return { from: () => ({ where: () => ({ orderBy: () => Promise.resolve(rows) }) }) };
 }
 
 // Full quotes row fixture — resolveAutoVariables takes the whole row (see
@@ -439,5 +446,61 @@ describe('renderContractBlocksForClient', () => {
     const result = await renderContractBlocksForClient(blocks, fixtureQuote(), () => '/unused');
     expect(result).toEqual(blocks);
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadContractBlockAuthoring (admin-only editor fields)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(withSystemDbAccessContext).mockClear();
+  });
+
+  const contractBlock = {
+    id: 'blk-1',
+    blockType: 'contract',
+    content: { templateId: 'tpl-1', templateVersionId: 'ver-1', variableValues: { initial_term: '12 months' } },
+  };
+  const pinnedVersionRow = {
+    id: 'ver-1', templateId: 'tpl-1', versionNumber: 1, status: 'published',
+    declaredVariables: [{ name: 'client.name', kind: 'auto' }, { name: 'initial_term', kind: 'manual' }],
+  };
+
+  it('returns raw authoring fields + the latest published version as the nudge target', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([pinnedVersionRow]) as never) // pinned versions
+      .mockReturnValueOnce(selectOrdered([ // published versions, desc versionNumber
+        { id: 'ver-2', templateId: 'tpl-1', versionNumber: 2 },
+        { id: 'ver-1', templateId: 'tpl-1', versionNumber: 1 },
+      ]) as never);
+
+    const map = await loadContractBlockAuthoring([contractBlock]);
+    expect(map.get('blk-1')).toEqual({
+      templateId: 'tpl-1',
+      templateVersionId: 'ver-1',
+      variableValues: { initial_term: '12 months' },
+      declaredVariables: [{ name: 'client.name', kind: 'auto' }, { name: 'initial_term', kind: 'manual' }],
+      latestPublishedVersionId: 'ver-2',
+      latestPublishedVersionNumber: 2,
+    });
+  });
+
+  it('reports no nudge target (null) when the pinned version is already the latest published', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([pinnedVersionRow]) as never)
+      .mockReturnValueOnce(selectOrdered([{ id: 'ver-1', templateId: 'tpl-1', versionNumber: 1 }]) as never);
+
+    const map = await loadContractBlockAuthoring([contractBlock]);
+    const a = map.get('blk-1')!;
+    // The editor compares versionNumber (1) against latestPublishedVersionNumber
+    // (1) → no "Update to vN". latestPublishedVersionId still points at the pin.
+    expect(a.latestPublishedVersionNumber).toBe(1);
+    expect(a.latestPublishedVersionId).toBe('ver-1');
+  });
+
+  it('returns an empty map (no DB read) when there are no contract blocks', async () => {
+    const map = await loadContractBlockAuthoring([{ id: 'h1', blockType: 'heading', content: { text: 'x' } }]);
+    expect(map.size).toBe(0);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

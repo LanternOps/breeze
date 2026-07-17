@@ -637,7 +637,10 @@
         "variableRequired": "Wert eingeben",
         "variableUnresolved": "Diese Variable ist noch nicht aufgelöst",
         "untitledTemplate": "Vertrag",
-        "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern."
+        "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern.",
+        "updateToVersion": "Auf v{{version}} aktualisieren",
+        "saveVariables": "Variablen speichern",
+        "unresolvedWarning": "Nicht aufgelöste Variablen (verhindern das Senden): {{names}}"
       },
       "coverPage": {
         "title": "Deckblatt",

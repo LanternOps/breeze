@@ -637,7 +637,10 @@
         "variableRequired": "Ingresa un valor",
         "variableUnresolved": "Esta variable aún no está resuelta",
         "untitledTemplate": "Contrato",
-        "readOnlyHint": "Quita y vuelve a agregar esta sección para cambiar la plantilla, la versión o las variables."
+        "readOnlyHint": "Quita y vuelve a agregar esta sección para cambiar la plantilla, la versión o las variables.",
+        "updateToVersion": "Actualizar a v{{version}}",
+        "saveVariables": "Guardar variables",
+        "unresolvedWarning": "Variables sin resolver (bloquearán el envío): {{names}}"
       },
       "coverPage": {
         "title": "Portada",

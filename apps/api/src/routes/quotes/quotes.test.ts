@@ -38,6 +38,9 @@ vi.mock('../../services/contractTemplateRender', () => ({
   // unaffected; mergeUploadedContractPdfs is real (pdf-lib) but a no-op on an
   // empty uploads array, so the mocked '%PDF-1.4 test' buffer passes through.
   loadContractPdfInputs: vi.fn(async () => ({ contractRenderData: new Map(), uploads: [] })),
+  // ADMIN-only authoring fields for the editor. Default empty map so every other
+  // GET /:id test is unaffected (no `authoring` merged onto contract blocks).
+  loadContractBlockAuthoring: vi.fn(async () => new Map()),
 }));
 
 // Mock the PDF renderer — the route is what we exercise here, not pdfkit. The
@@ -82,7 +85,7 @@ vi.mock('../../middleware/auth', () => ({
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { renderContractBlocksForClient, loadContractBlockAuthoring } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 function app() {
@@ -262,6 +265,30 @@ describe('quote crud + lines routes', () => {
     );
     const fileUrlFor = (renderContractBlocksForClient as any).mock.calls[0][2] as (blockId: string) => string;
     expect(fileUrlFor(BLOCK_ID)).toBe(`/quotes/${QUOTE_ID}/contract-file/${BLOCK_ID}`);
+  });
+
+  it('GET /:id (ADMIN) merges the raw authoring fields onto each contract block for the editor', async () => {
+    const rawContractBlock = { id: BLOCK_ID, blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues: { initial_term: '12 months' } } };
+    (svc.getQuote as any).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: ORG_ID },
+      blocks: [rawContractBlock],
+      lines: [],
+    });
+    const renderedContent = { templateName: 'MSA', versionNumber: 1, sourceType: 'authored', renderedHtml: '<p>Acme Co</p>', fileUrl: null };
+    (renderContractBlocksForClient as any).mockResolvedValueOnce([{ ...rawContractBlock, content: renderedContent }]);
+    const authoring = {
+      templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues: { initial_term: '12 months' },
+      declaredVariables: [{ name: 'client.name', kind: 'auto' }, { name: 'initial_term', kind: 'manual' }],
+      latestPublishedVersionId: 'ver-2', latestPublishedVersionNumber: 2,
+    };
+    (loadContractBlockAuthoring as any).mockResolvedValueOnce(new Map([[BLOCK_ID, authoring]]));
+
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The display render shape is preserved AND the authoring block is attached.
+    expect(body.data.blocks[0].content).toEqual({ ...renderedContent, authoring });
+    expect(loadContractBlockAuthoring).toHaveBeenCalledWith([rawContractBlock]);
   });
 
   it('GET /:id maps a ContractTemplateServiceError (e.g. an orphaned contract block) to its status/code', async () => {

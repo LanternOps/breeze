@@ -637,7 +637,10 @@
         "variableRequired": "Enter a value",
         "variableUnresolved": "This variable is still unresolved",
         "untitledTemplate": "Contract",
-        "readOnlyHint": "Remove and re-add this section to change the template, version, or variables."
+        "readOnlyHint": "Remove and re-add this section to change the template, version, or variables.",
+        "updateToVersion": "Update to v{{version}}",
+        "saveVariables": "Save variables",
+        "unresolvedWarning": "Unresolved variables (will block sending): {{names}}"
       },
       "coverPage": {
         "title": "Cover page",

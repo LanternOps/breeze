@@ -20,7 +20,7 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
-import { renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
+import { renderContractBlocksForClient, loadContractPdfInputs, loadContractBlockAuthoring } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 export const quoteCrudRoutes = new Hono();
@@ -85,7 +85,22 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // in-app Preview (web QuoteDocument.tsx) understands — same contract portal
     // and public serve, so the editor preview matches what the customer sees.
     const blocks = await renderContractBlocksForClient(detail.blocks, detail.quote, (blockId) => `/quotes/${id}/contract-file/${blockId}`);
-    return c.json({ data: { ...detail, blocks, branding } });
+    // ADMIN-ONLY: attach the raw authoring fields (templateId/templateVersionId/
+    // variableValues + the pinned version's declaredVariables + latest-published
+    // nudge target) so the editor can render the manual-variable form and offer an
+    // explicit version-update action. This is the ONLY route that does this — the
+    // portal + public serves deliberately expose the stripped display shape only
+    // (tenant-facing boundary; see loadContractBlockAuthoring's doc comment).
+    const authoring = await loadContractBlockAuthoring(detail.blocks);
+    const blocksForEditor = authoring.size === 0
+      ? blocks
+      : blocks.map((b) => {
+          const a = authoring.get(b.id);
+          return a && b.blockType === 'contract'
+            ? { ...b, content: { ...(b.content as Record<string, unknown>), authoring: a } }
+            : b;
+        });
+    return c.json({ data: { ...detail, blocks: blocksForEditor, branding } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

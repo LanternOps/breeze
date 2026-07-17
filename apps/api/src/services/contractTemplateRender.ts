@@ -18,7 +18,7 @@
 //  3. substituteVariables / findUnresolvedVariables — pure text substitution
 //     and unresolved-variable reporting, no DB involved.
 
-import { inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { ContractVariable } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contractTemplates, contractTemplateVersions, quotes } from '../db/schema';
@@ -132,6 +132,102 @@ export async function loadContractBlockRenderData(
         });
       }
       return result;
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin-only authoring fields
+// ---------------------------------------------------------------------------
+
+/** The raw authoring fields of a `contract` block, resolved for the ADMIN quote
+ *  editor ONLY. The client render shape (ContractClientBlockContent) deliberately
+ *  strips these — portal/public tenant-facing payloads must NEVER carry them —
+ *  but the editor needs them to render the manual-variable form, know auto vs
+ *  manual without a second fetch, and offer an explicit version-update nudge.
+ *  `latestPublishedVersion*` are the newest PUBLISHED version of the SAME
+ *  template (null when the pinned version already is the latest / none exists),
+ *  so the editor can show "Update to vN" and re-pin without guessing. */
+export interface ContractBlockAuthoring {
+  templateId: string;
+  templateVersionId: string;
+  variableValues: Record<string, string>;
+  declaredVariables: ContractVariable[];
+  latestPublishedVersionId: string | null;
+  latestPublishedVersionNumber: number | null;
+}
+
+function parseVariableValues(content: unknown): Record<string, string> {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return {};
+  const vv = (content as Record<string, unknown>).variableValues;
+  if (!vv || typeof vv !== 'object' || Array.isArray(vv)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(vv as Record<string, unknown>)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
+}
+
+/** Resolve the ADMIN-only authoring fields for a quote's `contract` blocks. Same
+ *  system-context contract as loadContractBlockRenderData (dual-axis template
+ *  rows are invisible to org-scoped RLS; version content is immutable so a
+ *  read-before-transaction is safe). Returns a blockId→authoring map; blocks
+ *  whose pinned version is missing are simply omitted (the render path is the
+ *  authority that raises VERSION_NOT_FOUND — this loader must not double-throw). */
+export async function loadContractBlockAuthoring(
+  blocks: Array<{ id: string; blockType: string; content: unknown }>
+): Promise<Map<string, ContractBlockAuthoring>> {
+  const contractBlocks = blocks
+    .filter((b) => b.blockType === 'contract')
+    .map((block) => ({ block, parsed: parseContractBlockContent(block.content) }))
+    .filter((x): x is { block: (typeof blocks)[number]; parsed: ContractBlockContent } => x.parsed !== null);
+  if (contractBlocks.length === 0) return new Map();
+
+  const versionIds = [...new Set(contractBlocks.map((x) => x.parsed.templateVersionId))];
+
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const versions = await db
+        .select()
+        .from(contractTemplateVersions)
+        .where(inArray(contractTemplateVersions.id, versionIds));
+      const versionById = new Map(versions.map((v) => [v.id, v]));
+
+      const templateIds = [...new Set(versions.map((v) => v.templateId))];
+      // Latest PUBLISHED version per template (desc versionNumber → first seen is
+      // the latest) so the editor can nudge to a newer published version.
+      const published =
+        templateIds.length > 0
+          ? await db
+              .select({
+                id: contractTemplateVersions.id,
+                templateId: contractTemplateVersions.templateId,
+                versionNumber: contractTemplateVersions.versionNumber,
+              })
+              .from(contractTemplateVersions)
+              .where(and(inArray(contractTemplateVersions.templateId, templateIds), eq(contractTemplateVersions.status, 'published')))
+              .orderBy(desc(contractTemplateVersions.versionNumber))
+          : [];
+      const latestPublishedByTemplate = new Map<string, { id: string; versionNumber: number }>();
+      for (const v of published) {
+        if (!latestPublishedByTemplate.has(v.templateId)) latestPublishedByTemplate.set(v.templateId, { id: v.id, versionNumber: v.versionNumber });
+      }
+
+      const map = new Map<string, ContractBlockAuthoring>();
+      for (const { block, parsed } of contractBlocks) {
+        const version = versionById.get(parsed.templateVersionId);
+        if (!version || version.templateId !== parsed.templateId) continue;
+        const latestPublished = latestPublishedByTemplate.get(version.templateId) ?? null;
+        map.set(block.id, {
+          templateId: version.templateId,
+          templateVersionId: version.id,
+          variableValues: parseVariableValues(block.content),
+          declaredVariables: (version.declaredVariables as ContractVariable[] | null) ?? [],
+          latestPublishedVersionId: latestPublished?.id ?? null,
+          latestPublishedVersionNumber: latestPublished?.versionNumber ?? null,
+        });
+      }
+      return map;
     })
   );
 }

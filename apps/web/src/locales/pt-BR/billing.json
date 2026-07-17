@@ -637,7 +637,10 @@
         "variableRequired": "Insira um valor",
         "variableUnresolved": "Esta variável ainda não foi resolvida",
         "untitledTemplate": "Contrato",
-        "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis."
+        "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
+        "updateToVersion": "Atualizar para v{{version}}",
+        "saveVariables": "Salvar variáveis",
+        "unresolvedWarning": "Variáveis não resolvidas (bloquearão o envio): {{names}}"
       },
       "coverPage": {
         "title": "Página de capa",

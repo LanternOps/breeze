@@ -131,6 +131,9 @@ describe('quotesPublic GET /:token', () => {
     expect(contractBlock.content.versionNumber).toBe(2);
     expect(contractBlock.content).not.toHaveProperty('templateId');
     expect(contractBlock.content).not.toHaveProperty('templateVersionId');
+    // Parity: the ADMIN editor gets an `authoring` block; the public
+    // (unauthenticated) payload must NEVER carry it.
+    expect(contractBlock.content).not.toHaveProperty('authoring');
   });
 
   it('serializes an uploaded contract block with a null renderedHtml and a token-gated contract-file fileUrl', async () => {
