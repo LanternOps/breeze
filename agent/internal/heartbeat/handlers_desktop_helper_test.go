@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -341,6 +342,32 @@ func TestHandleUserHelperMessageClearsOwnerOnPeerDisconnect(t *testing.T) {
 
 	_ = session.Close()
 	_ = clientConn.Close()
+}
+
+func TestSpawnHelperForDesktopLinuxReturnsTypedError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only: exercises the non-darwin/non-windows spawn branch")
+	}
+	h := &Heartbeat{}
+	err := h.spawnHelperForDesktop("")
+	if !errors.Is(err, ErrLinuxDesktopHelperUnsupported) {
+		t.Fatalf("expected ErrLinuxDesktopHelperUnsupported, got %v", err)
+	}
+}
+
+func TestFindOrSpawnHelperSkipsPollOnUnsupportedPlatform(t *testing.T) {
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t),
+		spawnHelper:   func(string) error { return ErrLinuxDesktopHelperUnsupported },
+	}
+	start := time.Now()
+	got := h.findOrSpawnHelper("")
+	if got != nil {
+		t.Fatalf("expected nil helper on unsupported platform, got %v", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("findOrSpawnHelper should fast-fail, took %v (10s poll not skipped)", elapsed)
+	}
 }
 
 func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
