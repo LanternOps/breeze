@@ -12,6 +12,19 @@ type HashableLine = {
   recurrence: string; taxable: boolean; customerVisible: boolean; sortOrder: number;
   depositEligible?: boolean;
 };
+/**
+ * A quote's contract block content at the point it's about to be signed:
+ * which (immutable) template version rendered, and the fully-resolved
+ * variable set (auto + manual) that filled it in. Folding this into the
+ * acceptance hash means a later edit to a manual variable — or a template
+ * republish that would repoint templateVersionSha256 — invalidates a prior
+ * acceptance's signature, same as a tampered line amount does today.
+ */
+export type HashableContractPart = {
+  blockId: string;
+  templateVersionSha256: string;
+  resolvedVariables: Record<string, string>;
+};
 
 /**
  * Canonical, order-independent serialization of a quote's billable CONTENT,
@@ -29,9 +42,10 @@ type HashableLine = {
 export function computeQuoteSha256(
   quote: HashableQuote,
   blocks: HashableBlock[],
-  lines: HashableLine[]
+  lines: HashableLine[],
+  contractParts: HashableContractPart[]
 ): string {
-  const canonical: { quote: Record<string, unknown>; blocks: unknown[]; lines: unknown[] } = {
+  const canonical: { quote: Record<string, unknown>; blocks: unknown[]; lines: unknown[]; contracts?: unknown[] } = {
     quote: {
       id: quote.id, currency: quote.currencyCode,
       subtotal: quote.subtotal, taxTotal: quote.taxTotal, total: quote.total,
@@ -57,6 +71,18 @@ export function computeQuoteSha256(
       percent: quote.depositPercent ?? null,
       amount: quote.depositAmount ?? null,
     };
+  }
+  // Contract block content is part of what the customer signs once the quote
+  // embeds one. Included ONLY when non-empty so every pre-contract acceptance
+  // hash stays verifiable — same pattern as the deposit block above.
+  if (contractParts.length > 0) {
+    canonical.contracts = [...contractParts]
+      .sort((a, b) => a.blockId.localeCompare(b.blockId))
+      .map((p) => ({
+        blockId: p.blockId,
+        versionSha: p.templateVersionSha256,
+        vars: Object.fromEntries(Object.entries(p.resolvedVariables).sort(([a], [b]) => a.localeCompare(b))),
+      }));
   }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }

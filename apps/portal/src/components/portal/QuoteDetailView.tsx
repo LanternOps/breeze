@@ -65,7 +65,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     );
   }
 
-  const { quote, blocks, lines } = detail;
+  const { quote, blocks, lines, branding } = detail;
   const currency = quote.currencyCode;
   const open = status === 'sent' || status === 'viewed';
 
@@ -158,8 +158,10 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
         </a>
       </div>
 
-      <DocumentPaper>
+      <DocumentPaper primaryColor={branding?.primaryColor}>
         <DocumentHeader
+          logoUrl={branding?.logoUrl}
+          partnerName={branding?.partnerName}
           seller={seller}
           eyebrow="Proposal"
           title={quote.quoteNumber ?? 'Proposal'}
@@ -178,6 +180,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           lines={lines}
           currency={currency}
           imageUrl={(imageId) => buildPortalApiUrl(`/portal/quotes/${quote.id}/images/${imageId}`)}
+          buildUrl={buildPortalApiUrl}
           taxRate={taxRate}
           showTax={showTax}
         />

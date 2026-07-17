@@ -5,6 +5,7 @@ import { getTrustedClientIp } from '../../services/clientIp';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
 import { getRedis } from '../../services/redis';
+import { portalBase } from '../../services/portalUrl';
 import type { PortalSession } from './schemas';
 import {
   PORTAL_SESSION_COOKIE_NAME,
@@ -483,14 +484,12 @@ function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
 /**
  * Absolute base for portal-hosted pages in outbound emails (reset, invite).
  * The portal is served under /portal on the main domain, so links MUST include
- * that segment — DASHBOARD_URL/PUBLIC_APP_URL point at the MSP app root.
+ * that segment — delegated to the shared portalBase() resolver, which appends
+ * the portal base path to app-origin fallbacks and rejects malformed values.
  */
 export function buildPortalUrl(path: string): string {
-  const explicit = process.env.PUBLIC_PORTAL_URL?.trim();
-  const appRoot = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').trim();
-  const base = (explicit && explicit.length > 0 ? explicit : `${appRoot.replace(/\/$/, '')}/portal`).replace(/\/$/, '');
   const suffix = path.startsWith('/') ? path : `/${path}`;
-  return `${base}${suffix}`;
+  return `${portalBase()}${suffix}`;
 }
 
 export async function storePortalInviteToken(portalUserId: string): Promise<string | null> {

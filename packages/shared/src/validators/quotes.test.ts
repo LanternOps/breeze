@@ -4,6 +4,7 @@ import {
   acceptQuoteSchema, declineQuoteSchema,
   updateQuoteSchema, reorderBlocksSchema, reorderLinesSchema,
   updateQuoteLineSchema, catalogQuoteLineSchema, moveQuoteLineSchema,
+  quoteBlockTypeSchema, coverPageSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -206,5 +207,91 @@ describe('deposit validator fields', () => {
     expect(quoteLineInputSchema.parse({ ...base, depositEligible: true })).toMatchObject({ depositEligible: true });
     expect(quoteLineInputSchema.parse(base)).toMatchObject({ depositEligible: false }); // default
     expect(updateQuoteLineSchema.parse({ depositEligible: true })).toMatchObject({ depositEligible: true });
+  });
+});
+
+describe('contract block type', () => {
+  const TEMPLATE_ID = '11111111-1111-1111-1111-111111111111';
+  const VERSION_ID = '22222222-2222-2222-2222-222222222222';
+
+  it('quoteBlockTypeSchema includes contract', () => {
+    expect(quoteBlockTypeSchema.safeParse('contract').success).toBe(true);
+    expect(quoteBlockTypeSchema.options).toContain('contract');
+  });
+
+  it('round-trips a contract block: templateId/templateVersionId required, variableValues defaults to {}, label optional', () => {
+    const parsed = quoteBlockInputSchema.parse({
+      blockType: 'contract',
+      content: { templateId: TEMPLATE_ID, templateVersionId: VERSION_ID },
+    });
+    if (parsed.blockType !== 'contract') throw new Error('expected contract block');
+    expect(parsed.content).toEqual({
+      templateId: TEMPLATE_ID, templateVersionId: VERSION_ID, variableValues: {},
+    });
+
+    const withValues = quoteBlockInputSchema.parse({
+      blockType: 'contract',
+      content: {
+        templateId: TEMPLATE_ID, templateVersionId: VERSION_ID,
+        variableValues: { 'client.name': 'Acme Co' }, label: 'Master Services Agreement',
+      },
+    });
+    if (withValues.blockType !== 'contract') throw new Error('expected contract block');
+    expect(withValues.content.variableValues).toEqual({ 'client.name': 'Acme Co' });
+    expect(withValues.content.label).toBe('Master Services Agreement');
+  });
+
+  it('rejects a contract block missing templateId/templateVersionId', () => {
+    expect(quoteBlockInputSchema.safeParse({
+      blockType: 'contract', content: {},
+    }).success).toBe(false);
+    expect(quoteBlockInputSchema.safeParse({
+      blockType: 'contract', content: { templateId: TEMPLATE_ID },
+    }).success).toBe(false);
+  });
+
+  it('rejects an oversized variable value', () => {
+    expect(quoteBlockInputSchema.safeParse({
+      blockType: 'contract',
+      content: {
+        templateId: TEMPLATE_ID, templateVersionId: VERSION_ID,
+        variableValues: { note: 'x'.repeat(2001) },
+      },
+    }).success).toBe(false);
+  });
+});
+
+describe('coverPageSchema', () => {
+  it('accepts a minimal disabled cover page', () => {
+    const parsed = coverPageSchema.parse({ enabled: false });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.showPreparedBy).toBe(true); // default
+  });
+
+  it('accepts a fully populated cover page', () => {
+    const parsed = coverPageSchema.parse({
+      enabled: true,
+      title: 'Proposal for Acme Co',
+      coverImageId: '33333333-3333-3333-3333-333333333333',
+      preparedForName: 'Jane Buyer',
+      showPreparedBy: false,
+    });
+    expect(parsed.title).toBe('Proposal for Acme Co');
+    expect(parsed.showPreparedBy).toBe(false);
+  });
+
+  it('rejects a title over 200 chars', () => {
+    expect(coverPageSchema.safeParse({ enabled: true, title: 'x'.repeat(201) }).success).toBe(false);
+  });
+
+  it('rejects a malformed coverImageId but allows an explicit null', () => {
+    expect(coverPageSchema.safeParse({ enabled: true, coverImageId: 'not-a-guid' }).success).toBe(false);
+    expect(coverPageSchema.parse({ enabled: true, coverImageId: null }).coverImageId).toBeNull();
+  });
+
+  it('is accepted on updateQuoteSchema as nullable/optional', () => {
+    expect(updateQuoteSchema.parse({ coverPage: { enabled: false } }).coverPage).toEqual({ enabled: false, showPreparedBy: true });
+    expect(updateQuoteSchema.parse({ coverPage: null }).coverPage).toBeNull();
+    expect(updateQuoteSchema.parse({}).coverPage).toBeUndefined();
   });
 });

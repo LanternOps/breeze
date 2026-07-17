@@ -102,6 +102,7 @@ describe('quoteService deposits', () => {
     // resolveQuoteTaxRate for the NEW org: 5% org rate, no partner default
     queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
     queueResult([{ defaultTaxRate: null }]);
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -131,6 +132,7 @@ describe('quoteService deposits', () => {
     // loadDraft
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2' }]); // membership check — NO resolveQuoteTaxRate selects follow
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -155,6 +157,7 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'org2' }]); // membership check
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -184,6 +187,48 @@ describe('quoteService deposits', () => {
     queueResult([]); // membership check finds no org2 row under p1
 
     await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor)).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
+  it('updateQuote rejects reassignment that would carry an org-owned contract block to the new org (422)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
+    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
+    // assertContractBlockValid inside the tx: version published, template OWNED BY org1 (invalid for org2)
+    queueResult([{ templateId: 'tpl-1', status: 'published' }]);
+    queueResult([{ status: 'active', orgId: 'org1', partnerId: 'p1' }]);
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor))
+      .rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+    // The header update must never have fired — the reassignment rolls back.
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls.every((call) => !(call[0] as { orgId?: string }).orgId || (call[0] as { orgId?: string }).orgId !== 'org2')).toBe(true);
+  });
+
+  it('updateQuote allows reassignment carrying a PARTNER-WIDE contract block (org_id NULL passes)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
+    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch
+    queueResult([{ templateId: 'tpl-1', status: 'published' }]); // version published
+    queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]); // PARTNER-WIDE — visible to every org of the partner
+    queueResult([]); // tx: quotes header update
+    queueResult([]); // tx: blocks org move
+    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: images org move
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org2' }]); // final re-select
+
+    const updated = await svc.updateQuote('q1', { orgId: 'org2' }, orgActor);
+    expect(updated.orgId).toBe('org2');
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2' });
   });
 
   it('updateQuote throws DEPOSIT_REQUIRES_ONE_TIME_LINES when the quote has no one-time visible lines', async () => {
@@ -339,6 +384,62 @@ describe('quoteService deposits', () => {
     expect(billTo.taxId).toBe('ORG-TAX');
   });
 
+  it('addBlock sanitizes a rich_text block\'s content.html before insert (script tag stripped)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Hello</p>' } }]); // insert returning
+
+    await svc.addBlock('q1', { blockType: 'rich_text', content: { html: '<p>Hello</p><script>alert(1)</script>' } }, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    const inserted = valuesMock.mock.calls.at(-1)![0] as { content: { html: string } };
+    expect(inserted.content.html).toBe('<p>Hello</p>');
+    expect(inserted.content.html).not.toContain('script');
+  });
+
+  it('addBlock leaves non-rich_text block content untouched', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'heading', content: { text: 'Intro', level: 2 } }]); // insert returning
+
+    await svc.addBlock('q1', { blockType: 'heading', content: { text: 'Intro', level: 2 } }, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    const inserted = valuesMock.mock.calls.at(-1)![0] as { content: { text: string; level: number } };
+    expect(inserted.content).toEqual({ text: 'Intro', level: 2 });
+  });
+
+  it('updateBlock sanitizes a rich_text block\'s content.html before update (script tag stripped)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ blockType: 'rich_text' }]); // existing block type check
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Updated</p>' } }]); // update returning
+
+    await svc.updateBlock('q1', 'blk1', { blockType: 'rich_text', content: { html: '<p>Updated</p><script>alert(2)</script>' } }, actor);
+
+    const setMock = (db as unknown as Chain).set;
+    const updated = setMock.mock.calls.at(-1)![0] as { content: { html: string } };
+    expect(updated.content.html).toBe('<p>Updated</p>');
+    expect(updated.content.html).not.toContain('script');
+  });
+
+  it('getQuote sanitizes a legacy dirty rich_text block on read (defense in depth for pre-sanitizer rows)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]); // quote
+    queueResult([
+      { id: 'blk1', quoteId: 'q1', orgId: 'org1', blockType: 'rich_text', content: { html: '<p>Legacy</p><script>alert(3)</script>' }, sortOrder: 0 },
+      { id: 'blk2', quoteId: 'q1', orgId: 'org1', blockType: 'heading', content: { text: 'Title', level: 2 }, sortOrder: 1 },
+    ]); // blocks (one legacy dirty row, one unrelated block type)
+    queueResult([]); // quote lines
+    queueResult([]); // no staged Pax8 order
+
+    const { blocks } = await svc.getQuote('q1', actor);
+
+    const richBlock = blocks.find((b) => b.id === 'blk1') as { content: { html: string } };
+    expect(richBlock.content.html).toBe('<p>Legacy</p>');
+    expect(richBlock.content.html).not.toContain('script');
+    const headingBlock = blocks.find((b) => b.id === 'blk2') as { content: { text: string } };
+    expect(headingBlock.content).toEqual({ text: 'Title', level: 2 }); // untouched
+  });
+
   it('listQuotes left-joins the converted invoice and flattens invoiceDepositDue/invoiceAmountPaid onto each row', async () => {
     // The chain mock yields queued rows regardless of shape; queue the joined
     // projection shape the real select({ quote, invoiceDepositDue, invoiceAmountPaid }) returns.
@@ -353,5 +454,121 @@ describe('quoteService deposits', () => {
       { id: 'q1', orgId: 'org1', status: 'converted', depositType: 'percent', invoiceDepositDue: '300.00', invoiceAmountPaid: '300.00' },
       { id: 'q2', orgId: 'org1', status: 'draft', depositType: 'none', invoiceDepositDue: null, invoiceAmountPaid: null },
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Contract blocks (Task 11): addBlock/updateBlock validate the referenced
+  // template version BEFORE insert — exists, belongs to the named template,
+  // status='published', template not archived, template visible to the
+  // quote's org/partner. Any violation is a single 422 INVALID_CONTRACT_TEMPLATE.
+  // -------------------------------------------------------------------------
+  const contractContent = { templateId: 'tpl1', templateVersionId: 'ver1', variableValues: {} };
+
+  it('addBlock rejects a contract block whose template version is a draft (not published)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'draft' }]); // version lookup
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects a contract block whose template is archived', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'archived', orgId: 'org1', partnerId: null }]); // template lookup
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects a partner-wide contract template belonging to a different partner', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: null, partnerId: 'p2' }]); // template owned by another partner
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects an org-owned contract template belonging to a different org', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: 'org2', partnerId: null }]); // template owned by another org
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock accepts a contract block whose template version is published and visible to the quote org', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: 'org1', partnerId: null }]); // template lookup — same org
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'contract', content: contractContent }]); // insert returning
+
+    const row = await svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor);
+    expect(row).toMatchObject({ id: 'blk1', blockType: 'contract' });
+
+    const valuesMock = (db as unknown as Chain).values;
+    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({ blockType: 'contract', content: contractContent });
+  });
+
+  it('updateBlock rejects a contract block update whose template version is a draft', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ blockType: 'contract' }]); // existing block type check
+    queueResult([{ templateId: 'tpl1', status: 'draft' }]); // version lookup
+
+    await expect(
+      svc.updateBlock('q1', 'blk1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cover page (Task 11): updateQuote persists `coverPage`; a set `coverImageId`
+  // must reference a quote_images row on the SAME quote (mirrors the line
+  // imageId ownership check).
+  // -------------------------------------------------------------------------
+  it('updateQuote persists a coverPage patch verbatim', async () => {
+    const coverPage = { enabled: true, title: 'Cover', coverImageId: null, preparedForName: 'Jane', showPreparedBy: true };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([]); // updateQuote's own header update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org1', coverPage }]); // final re-select
+
+    const updated = await svc.updateQuote('q1', { coverPage } as never, actor);
+    expect(updated.coverPage).toEqual(coverPage);
+
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ coverPage });
+  });
+
+  it('updateQuote rejects a coverPage.coverImageId that is not a quote_images row on this quote', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([]); // image ownership check — no row found
+
+    await expect(
+      svc.updateQuote('q1', { coverPage: { enabled: true, coverImageId: 'img-other', showPreparedBy: true } } as never, actor)
+    ).rejects.toMatchObject({ code: 'IMAGE_NOT_FOUND', status: 404 });
+  });
+
+  it('updateQuote accepts a coverPage.coverImageId that IS a quote_images row on this quote', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'img1' }]); // image ownership check — found
+    queueResult([]); // updateQuote's own header update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org1', coverPage: { enabled: true, coverImageId: 'img1', showPreparedBy: true } }]); // final re-select
+
+    const updated = await svc.updateQuote(
+      'q1', { coverPage: { enabled: true, coverImageId: 'img1', showPreparedBy: true } } as never, actor
+    );
+    expect(updated.coverPage).toMatchObject({ coverImageId: 'img1' });
   });
 });

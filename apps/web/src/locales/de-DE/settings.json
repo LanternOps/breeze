@@ -203,12 +203,15 @@
     "email": "E-Mail",
     "phone": "Telefon",
     "website": "Webseite",
+    "emailSignature": "E-Mail-Signatur",
+    "emailSignatureDescription": "Wird an Angebots-E-Mails an Ihre Kunden angehängt.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "John Smith",
       "email": "contact@example.com",
       "phone": "+1 (555) 123-4567",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Mit freundlichen Grüßen,\nIhr Acme-MSP-Team"
     },
     "countries": {
       "select": "— Land auswählen —",
