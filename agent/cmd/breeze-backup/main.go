@@ -471,6 +471,16 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		// managerFromBackupRunPayload above).
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
+		// mgr here may be the ephemeral payload-built manager resolved above
+		// (not the long-lived agent.yaml manager), so the progress fn is set
+		// on it directly, right before the run that actually uses it.
+		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
+				CommandID: req.CommandID, Phase: "uploading",
+				Current: bytesDone, Total: bytesTotal,
+				FilesDone: filesDone, FilesTotal: filesTotal,
+			})
+		})
 		result := marshalResult(mgr.RunBackupContext(ctx, excludes))
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
@@ -577,6 +587,19 @@ func marshalResult(v any, err error) backupipc.BackupCommandResult {
 func sendError(conn *ipc.Conn, id, msg string) {
 	result := backupipc.BackupCommandResult{Success: false, Stderr: msg}
 	_ = conn.SendTyped(id, backupipc.TypeBackupResult, result)
+}
+
+// sendBackupRunProgress sends a backup_run progress envelope to the agent
+// over conn, mirroring how execBackupRestoreWithProgress sends restore
+// progress. Send failures are log-only: progress is best-effort telemetry,
+// never a reason to fail or abort the backup run itself.
+func sendBackupRunProgress(conn *ipc.Conn, id string, progress backupipc.BackupProgress) {
+	if conn == nil {
+		return
+	}
+	if err := conn.SendTyped("", backupipc.TypeBackupProgress, progress); err != nil {
+		slog.Warn("failed to send backup_run progress", "commandId", id, "error", err.Error())
+	}
 }
 
 func isTimeoutError(err error) bool {

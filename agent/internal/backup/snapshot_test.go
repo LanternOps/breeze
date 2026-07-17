@@ -309,6 +309,38 @@ func (p *stallOnceProvider) Download(remotePath, localPath string) error { retur
 func (p *stallOnceProvider) List(prefix string) ([]string, error)        { return nil, nil }
 func (p *stallOnceProvider) Delete(remotePath string) error              { return nil }
 
+// okProvider is a minimal contextUploader whose UploadContext always
+// succeeds immediately, for tests that only care about progress callback
+// behavior and don't need upload content/call tracking.
+type okProvider struct{}
+
+func (p *okProvider) Upload(localPath, remotePath string) error { return nil }
+func (p *okProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	return nil
+}
+func (p *okProvider) Download(remotePath, localPath string) error { return nil }
+func (p *okProvider) List(prefix string) ([]string, error)        { return nil, nil }
+func (p *okProvider) Delete(remotePath string) error              { return nil }
+
+func TestSnapshotProgressCallback(t *testing.T) {
+	p := &okProvider{} // UploadContext always succeeds
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 10},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 20},
+	}
+	var got []int64
+	restore := setProgressThrottleForTest(0) // emit every file in tests
+	defer restore()
+	_, err := createSnapshotWithProgress(context.Background(), p, files,
+		func(fd, ft int, bd, bt int64) { got = append(got, bd) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 || got[len(got)-1] != 30 {
+		t.Fatalf("want final bytesDone=30, got %v", got)
+	}
+}
+
 // writeTempFile writes content to a fresh temp file and returns its path.
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()

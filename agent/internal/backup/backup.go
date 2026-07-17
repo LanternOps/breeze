@@ -90,6 +90,20 @@ type BackupManager struct {
 	jobCancel        context.CancelFunc
 	jobDoneCh        chan struct{}
 	lastSnapshotTime time.Time
+	progressFn       ProgressFn
+}
+
+// SetProgressFn registers a callback invoked with files/bytes-done-vs-total
+// as RunBackupContext's snapshot upload loop progresses (throttled — see
+// progressThrottle in snapshot.go). Pass nil to stop reporting. The helper's
+// backup_run handler calls this on whichever manager instance actually runs
+// the command — including ephemeral payload-built managers — right before
+// invoking RunBackupContext, since there is no other reference to a
+// long-lived manager for those runs.
+func (m *BackupManager) SetProgressFn(fn ProgressFn) {
+	m.mu.Lock()
+	m.progressFn = fn
+	m.mu.Unlock()
 }
 
 // NewBackupManager creates a new BackupManager.
@@ -341,7 +355,21 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		return job, scanErr
 	}
 
-	snapshot, snapErr := CreateSnapshotContext(runCtx, m.config.Provider, files)
+	m.mu.Lock()
+	progressFn := m.progressFn
+	m.mu.Unlock()
+	if progressFn != nil {
+		var bytesTotal int64
+		for _, f := range files {
+			bytesTotal += f.size
+		}
+		// Initial "scanning done" notice: totals are now known even though
+		// nothing has uploaded yet, so the server learns the run's scope
+		// before the (throttled) per-file progress calls start arriving.
+		progressFn(0, len(files), 0, bytesTotal)
+	}
+
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}

@@ -90,6 +90,27 @@ type contextUploader interface {
 	UploadContext(ctx context.Context, localPath, remotePath string) error
 }
 
+// ProgressFn reports snapshot upload progress: files/bytes completed so far
+// out of the known totals. Called from the snapshot upload loop, throttled
+// (see progressThrottle) except for a final unconditional call after the
+// last file.
+type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64)
+
+// progressThrottle is the minimum interval between ProgressFn invocations
+// from the snapshot loop (the final call after the loop always fires
+// regardless of this interval).
+var progressThrottle = 3 * time.Second
+
+// setProgressThrottleForTest overrides progressThrottle so tests can observe
+// a callback on every file instead of waiting out the real interval. Call
+// the returned restore func (typically via defer) to put the real value
+// back.
+func setProgressThrottleForTest(d time.Duration) (restore func()) {
+	old := progressThrottle
+	progressThrottle = d
+	return func() { progressThrottle = old }
+}
+
 // uploadMinThroughputBps is the deadline floor: assume >=64 KiB/s or declare
 // the link stalled.
 const uploadMinThroughputBps = 64 * 1024
@@ -123,7 +144,17 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 }
 
 // CreateSnapshotContext creates a new snapshot using the provided context.
+// It does not report progress; see createSnapshotWithProgress for that.
 func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
+	return createSnapshotWithProgress(ctx, provider, files, nil)
+}
+
+// createSnapshotWithProgress creates a new snapshot using the provided
+// context, invoking onProgress (if non-nil) as files upload. Calls are
+// throttled to at most once per progressThrottle interval, except for a
+// final unconditional call after the last file so the server always learns
+// the true end state even if the throttle window swallowed the last delta.
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -141,6 +172,25 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
 	var errs []error
+
+	var bytesTotal int64
+	for _, file := range files {
+		bytesTotal += file.size
+	}
+	filesTotal := len(files)
+	var filesDone int
+	var bytesDone int64
+	lastProgressAt := time.Now()
+	emitProgress := func(force bool) {
+		if onProgress == nil {
+			return
+		}
+		if !force && time.Since(lastProgressAt) < progressThrottle {
+			return
+		}
+		lastProgressAt = time.Now()
+		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
+	}
 
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
@@ -195,7 +245,14 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 			Mode:       uint32(file.mode.Perm()),
 		})
 		snapshot.Size += file.size
+		filesDone++
+		bytesDone += file.size
+		emitProgress(false)
 	}
+	// Unconditional final call: guarantees the server observes the true end
+	// state even if the last file(s) landed inside the throttle window and
+	// were swallowed by the `!force` check above.
+	emitProgress(true)
 
 	if len(snapshot.Files) == 0 {
 		return nil, errors.Join(errs...)
