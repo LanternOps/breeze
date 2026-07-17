@@ -449,16 +449,18 @@ export interface QuoteHeader extends QuoteSummary {
   termsAndConditions?: string | null;
 }
 
-export interface QuoteDetail {
-  quote: QuoteHeader;
-  blocks: QuoteBlock[];
-  lines: QuoteLine[];
-}
-
 export interface QuoteBranding {
   partnerName: string;
   logoUrl: string | null;
   primaryColor: string | null;
+}
+
+export interface QuoteDetail {
+  quote: QuoteHeader;
+  blocks: QuoteBlock[];
+  lines: QuoteLine[];
+  /** Optional for API responses that predate the branding field. */
+  branding?: QuoteBranding;
 }
 
 export interface PublicQuoteDetail {

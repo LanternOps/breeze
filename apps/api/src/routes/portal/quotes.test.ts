@@ -84,6 +84,8 @@ describe('portal quotes GET /quotes/:id', () => {
     ]); // quoteBlocks SELECT — one legacy dirty row, one unrelated block type
     dbResults.push([]); // quoteLines SELECT
     dbResults.push([]); // markQuoteViewed's own quotes SELECT (no match → silent no-op)
+    dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -102,6 +104,46 @@ describe('portal quotes GET /quotes/:id', () => {
     expect(res.status).toBe(404);
   });
 
+  it('carries branding (partner name + portal logo/color) mirroring the public token view', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
+    dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456' }]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.branding).toEqual({
+      partnerName: 'Lantern IT',
+      logoUrl: 'https://cdn.example.test/logo.png',
+      primaryColor: '#123456',
+    });
+  });
+
+  it('falls back to null logo/color and a generic partner name when neither row exists', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([]); // partners SELECT (system ctx) → none
+    dbResults.push([]); // portalBranding SELECT → none
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null });
+  });
+
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {
     dbResults.push([{
       id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
@@ -115,6 +157,8 @@ describe('portal quotes GET /quotes/:id', () => {
     ]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
     dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
     dbResults.push([{
       id: VERSION_ID, templateId: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, versionNumber: 2, status: 'published',
       sourceType: 'authored', bodyHtml: '<p>{{client.name}} agrees to {{governing_state}}</p>', fileData: null, mime: null, byteSize: null,
@@ -157,6 +201,8 @@ describe('portal quotes GET /quotes/:id', () => {
     ]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
     dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
     dbResults.push([{
       id: VERSION_ID, templateId: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, versionNumber: 1, status: 'published',
       sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.4'), mime: 'application/pdf', byteSize: 8,
