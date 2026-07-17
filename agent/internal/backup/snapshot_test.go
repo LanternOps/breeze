@@ -341,7 +341,7 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64) { got = append(got, bd) }, nil)
+		func(fd, ft int, bd, bt int64) { got = append(got, bd) }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +663,7 @@ func TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil)
 		errCh <- err
 	}()
 
@@ -713,7 +713,7 @@ func TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal, nil)
 		errCh <- err
 	}()
 
@@ -784,7 +784,7 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal1)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal1, nil)
 		errCh <- err
 	}()
 	select {
@@ -827,7 +827,7 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 		recording.files[k] = v
 	}
 
-	snapshot2, err := createSnapshotWithProgress(context.Background(), recording, files, nil, journal2)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), recording, files, nil, journal2, nil)
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -889,7 +889,7 @@ func TestCreateSnapshotWithProgress_ChangedFileReuploadsAndSupersedes(t *testing
 		{sourcePath: changedPath, snapshotPath: "path_0/changed.txt", size: int64(len("new content")), modTime: newModTime},
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}
@@ -925,7 +925,7 @@ func TestCreateSnapshotWithProgress_JournalRecordFailureDoesNotFailBackup(t *tes
 		t.Fatalf("test setup: failed to close journal file: %v", err)
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil)
 	if err != nil {
 		t.Fatalf("a broken journal must not fail the backup, got: %v", err)
 	}
@@ -985,7 +985,7 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 		modTime:      modTime,
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, []backupFile{run2File}, nil, journal2)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, []backupFile{run2File}, nil, journal2, nil)
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1016,7 +1016,7 @@ func TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath(t *testing.T)
 		{sourcePath: writeTempFile(t, "plain"), snapshotPath: "a", size: 5}, // originalPath left zero-value
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 				case progressed <- emission{fd, ft, bd, bt}:
 				default:
 				}
-			}, nil)
+			}, nil, nil)
 		done <- err
 	}()
 
@@ -1397,5 +1397,235 @@ func TestCreateSnapshot_PartialFailureRecordsUploadFailures(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"UploadFailures":`) || strings.Contains(string(data), `"uploadFailures":`) {
 		t.Fatalf("UploadFailures must not serialize into the manifest: %s", data)
+	}
+}
+
+// TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles
+// is the incremental-backup integration test: run 1 uploads 3 files in
+// full; between runs, one file (f2) is mutated and one (f3) is deleted from
+// disk entirely. Run 2, fed run 1's manifest via previousManifest, must
+// upload exactly the changed file, reference the unchanged one (pointing
+// at run 1's prefix, no re-upload), and the deleted file must be absent
+// from the new manifest with no tombstone.
+func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t *testing.T) {
+	provider := newMockProvider()
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	f1 := createTempFile(t, tmpDir, "f1.txt", "one")
+	f2 := createTempFile(t, tmpDir, "f2.txt", "two")
+	f3 := createTempFile(t, tmpDir, "f3.txt", "three")
+	for _, p := range []string{f1, f2, f3} {
+		if err := os.Chtimes(p, modTime, modTime); err != nil {
+			t.Fatalf("test setup: Chtimes(%s) failed: %v", p, err)
+		}
+	}
+
+	run1Files := []backupFile{
+		{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime},
+		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
+		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
+	}
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("run 1 failed: %v", err)
+	}
+	if snapshot1.FormatVersion != 0 || snapshot1.BaseSnapshotID != "" {
+		t.Fatalf("run 1 (no previous manifest) must not set FormatVersion/BaseSnapshotID, got %+v", snapshot1)
+	}
+	if len(provider.uploadCalls) != 4 { // 3 files + manifest
+		t.Fatalf("run 1: expected 4 uploads, got %d: %v", len(provider.uploadCalls), provider.uploadCalls)
+	}
+
+	// Mutate f2's content+modTime between runs; delete f3 entirely
+	// (simulating a file removed from disk before run 2's walk — it must
+	// end up absent from the new manifest, no tombstone).
+	newModTime := modTime.Add(time.Hour)
+	if err := os.WriteFile(f2, []byte("TWO-CHANGED"), 0644); err != nil {
+		t.Fatalf("failed to mutate f2: %v", err)
+	}
+	if err := os.Chtimes(f2, newModTime, newModTime); err != nil {
+		t.Fatalf("failed to touch f2: %v", err)
+	}
+	if err := os.Remove(f3); err != nil {
+		t.Fatalf("failed to remove f3: %v", err)
+	}
+
+	provider.uploadCalls = nil // isolate run 2's upload assertions
+
+	prev, reason := previousManifest(context.Background(), provider)
+	if prev == nil {
+		t.Fatalf("expected a usable previous manifest for run 2, got none: %s", reason)
+	}
+	if prev.ID != snapshot1.ID {
+		t.Fatalf("previousManifest returned %q, want run 1's snapshot %q", prev.ID, snapshot1.ID)
+	}
+
+	run2Files := []backupFile{
+		{sourcePath: f1, snapshotPath: "path_0/f1.txt", size: 3, modTime: modTime},                            // unchanged
+		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
+		// f3 deliberately absent — deleted from disk before this run's walk.
+	}
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev)
+	if err != nil {
+		t.Fatalf("run 2 failed: %v", err)
+	}
+
+	if snapshot2.FormatVersion != 2 {
+		t.Errorf("run 2 FormatVersion = %d, want 2 (a previous manifest was used)", snapshot2.FormatVersion)
+	}
+	if snapshot2.BaseSnapshotID != snapshot1.ID {
+		t.Errorf("run 2 BaseSnapshotID = %q, want %q", snapshot2.BaseSnapshotID, snapshot1.ID)
+	}
+
+	// Exactly 1 data upload (f2, changed) + manifest = 2 uploads.
+	if len(provider.uploadCalls) != 2 {
+		t.Fatalf("run 2: expected exactly 2 uploads (1 changed file + manifest), got %d: %v", len(provider.uploadCalls), provider.uploadCalls)
+	}
+	uploadedBases := map[string]bool{}
+	for _, c := range provider.uploadCalls {
+		uploadedBases[pathpkg.Base(c.localPath)] = true
+	}
+	if !uploadedBases["f2.txt"] {
+		t.Errorf("f2 (changed) should have been uploaded: %v", provider.uploadCalls)
+	}
+	if uploadedBases["f1.txt"] {
+		t.Errorf("f1 (unchanged) should have been referenced, not re-uploaded: %v", provider.uploadCalls)
+	}
+
+	// Manifest lists exactly f1 (referenced) + f2 (uploaded) — f3 is gone,
+	// no tombstone.
+	if len(snapshot2.Files) != 2 {
+		t.Fatalf("expected 2 files in run 2's manifest, got %d: %+v", len(snapshot2.Files), snapshot2.Files)
+	}
+	bySource := map[string]SnapshotFile{}
+	for _, f := range snapshot2.Files {
+		bySource[f.SourcePath] = f
+	}
+	if _, ok := bySource[f3]; ok {
+		t.Errorf("deleted file f3 must be absent from run 2's manifest (no tombstone), got %+v", snapshot2.Files)
+	}
+	f1Entry, ok := bySource[f1]
+	if !ok {
+		t.Fatalf("f1 missing from run 2's manifest: %+v", snapshot2.Files)
+	}
+	// f1's BackupPath must point under run 1's prefix (a reference) — proof
+	// that restore/verify need zero changes, since BackupPath is absolute.
+	if !strings.HasPrefix(f1Entry.BackupPath, path.Join(snapshotRootDir, snapshot1.ID)+"/") {
+		t.Errorf("referenced f1's BackupPath = %q, want it under run 1's prefix %q", f1Entry.BackupPath, snapshot1.ID)
+	}
+	f2Entry, ok := bySource[f2]
+	if !ok {
+		t.Fatalf("f2 missing from run 2's manifest: %+v", snapshot2.Files)
+	}
+	if !strings.HasPrefix(f2Entry.BackupPath, path.Join(snapshotRootDir, snapshot2.ID)+"/") {
+		t.Errorf("uploaded f2's BackupPath = %q, want it under run 2's own prefix %q", f2Entry.BackupPath, snapshot2.ID)
+	}
+
+	// isReferenceEntry (what RunBackupContext uses to derive
+	// ReferencedFiles/ReferencedBytes) must agree: f1 is a reference, f2 is
+	// not.
+	if !isReferenceEntry(f1Entry, snapshot2.ID) {
+		t.Error("isReferenceEntry(f1) = false, want true")
+	}
+	if isReferenceEntry(f2Entry, snapshot2.ID) {
+		t.Error("isReferenceEntry(f2) = true, want false")
+	}
+}
+
+// TestIncrementalBackup_FetchFailureFallsBackToFullRun proves the fail-open
+// contract end-to-end: a provider whose List errors makes previousManifest
+// return nil, and feeding that nil into createSnapshotWithProgress produces
+// an ordinary full run — every file uploads, FormatVersion/BaseSnapshotID
+// stay at their zero values, exactly as if incremental backups didn't
+// exist.
+func TestIncrementalBackup_FetchFailureFallsBackToFullRun(t *testing.T) {
+	provider := newMockProvider()
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 1},
+	}
+
+	// Simulate a broken destination for the previous-manifest fetch only.
+	provider.listErr = errors.New("simulated list failure")
+	prev, reason := previousManifest(context.Background(), provider)
+	if prev != nil {
+		t.Fatalf("expected nil previous manifest on a list failure, got %+v", prev)
+	}
+	if reason == "" {
+		t.Error("expected a non-empty reason")
+	}
+	provider.listErr = nil // the run itself must still be able to list/delete normally
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, prev)
+	if err != nil {
+		t.Fatalf("full-run fallback failed: %v", err)
+	}
+	if snapshot.FormatVersion != 0 {
+		t.Errorf("FormatVersion = %d, want 0 (no previous manifest was used)", snapshot.FormatVersion)
+	}
+	if snapshot.BaseSnapshotID != "" {
+		t.Errorf("BaseSnapshotID = %q, want empty", snapshot.BaseSnapshotID)
+	}
+	if len(snapshot.Files) != 2 {
+		t.Fatalf("expected both files in the manifest, got %d", len(snapshot.Files))
+	}
+	if len(provider.uploadCalls) != 3 { // 2 files + manifest, nothing referenced
+		t.Fatalf("expected all files to actually upload (no dedupe), got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
+	}
+}
+
+// TestCreateSnapshotWithProgress_JournalResumeWinsOverReference proves the
+// priority rule when the SAME file matches both this run's own (resumed)
+// journal AND a DIFFERENT, older snapshot's reference index: the journal
+// wins. The journal represents an object this run itself already uploaded
+// (a prior, interrupted attempt at the very same snapshot ID) and is
+// authoritative for it; the reference index only offers to point at an
+// older snapshot's object instead — see createSnapshotWithProgress's doc
+// comment for why the journal check runs first in the loop.
+func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T) {
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	filePath := createTempFile(t, tmpDir, "f.txt", "content")
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-journal-vs-reference", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := journal.Record(SnapshotFile{
+		SourcePath: filePath,
+		BackupPath: path.Join(snapshotRootDir, journal.snapshotID, snapshotFilesDir, "path_0/f.txt.gz"),
+		Size:       int64(len("content")),
+		ModTime:    modTime,
+		Checksum:   "journal-checksum",
+	}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	// A DIFFERENT, older snapshot's manifest also has a matching entry
+	// (same size/modTime) for the same logical file, offering a reference.
+	prevSnapshot := &Snapshot{
+		ID: "snapshot-older",
+		Files: []SnapshotFile{
+			{SourcePath: filePath, BackupPath: "snapshots/snapshot-older/files/f.txt.gz", Size: int64(len("content")), ModTime: modTime, Checksum: "reference-checksum"},
+		},
+	}
+
+	provider := newMockProvider()
+	files := []backupFile{{sourcePath: filePath, snapshotPath: "path_0/f.txt", size: int64(len("content")), modTime: modTime}}
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, prevSnapshot)
+	if err != nil {
+		t.Fatalf("createSnapshotWithProgress failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	if snapshot.Files[0].Checksum != "journal-checksum" {
+		t.Errorf("expected the journal's entry to win over the reference, got checksum %q (want journal-checksum)", snapshot.Files[0].Checksum)
+	}
+	if len(provider.uploadCalls) != 1 { // only the manifest uploads
+		t.Fatalf("expected only the manifest to upload (file resumed via journal), got %d upload calls: %v", len(provider.uploadCalls), provider.uploadCalls)
 	}
 }

@@ -56,6 +56,19 @@ type Snapshot struct {
 	Timestamp time.Time      `json:"timestamp"`
 	Files     []SnapshotFile `json:"files"`
 	Size      int64          `json:"size"`
+	// FormatVersion marks manifest v2 (reference entries + BaseSnapshotID).
+	// Omitted (zero value) on a full backup that never consulted a previous
+	// manifest, matching a v1 manifest byte-for-byte for that case. A v1
+	// reader is never required (backups have no production users yet — see
+	// the design doc) but a v1 manifest still parses fine regardless, since
+	// both new fields are omitempty/zero-value-safe.
+	FormatVersion int `json:"formatVersion,omitempty"`
+	// BaseSnapshotID is the previous snapshot this manifest was compared
+	// against, for provenance/debugging. Set only when previousManifest
+	// actually found and returned a usable previous snapshot — never a
+	// blind "most recent snapshot ID", since a fetch/parse failure means no
+	// comparison happened at all (fail-open full run).
+	BaseSnapshotID string `json:"baseSnapshotId,omitempty"`
 	// UploadFailures records this run's per-file upload failures (skipped,
 	// stalled, or retry-exhausted files) when the snapshot still partially
 	// succeeded. In-memory only — `json:"-"` keeps it out of both the uploaded
@@ -216,11 +229,12 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 }
 
 // CreateSnapshotContext creates a new snapshot using the provided context.
-// It does not report progress and does not checkpoint to a journal (no
-// manager/destination-identity context to key one by); see
-// createSnapshotWithProgress for both.
+// It does not report progress, does not checkpoint to a journal (no
+// manager/destination-identity context to key one by), and does not
+// dedupe against a previous manifest (always a full backup); see
+// createSnapshotWithProgress for all three.
 func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
-	return createSnapshotWithProgress(ctx, provider, files, nil, nil)
+	return createSnapshotWithProgress(ctx, provider, files, nil, nil, nil)
 }
 
 // createSnapshotWithProgress creates a new snapshot using the provided
@@ -244,7 +258,24 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 //     journal is merely abandoned (closed, left on disk): the partial
 //     remote prefix plus the journal together ARE the resume state for the
 //     next run, so cleanupSnapshotPrefix is skipped for all of them.
-func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal) (*Snapshot, error) {
+//
+// prevSnapshot, if non-nil, is the previous run's completed snapshot (see
+// previousManifest) to dedupe against: every walked file is classified by
+// decideFile against an index built from prevSnapshot.Files (see
+// buildPreviousIndex). A decideReference file skips upload AND journal
+// Record entirely — it still counts toward filesDone/bytesDone through the
+// same locked markDone path used everywhere else (keepalive/progress just
+// work, same instant-jump semantics as a journal resume). nil means "no
+// usable previous manifest" — every file uploads, identical to this
+// function's behavior before incremental backups existed.
+//
+// Priority when a file matches BOTH the journal's resumedFiles set and the
+// reference index: the journal wins. The journal represents an object THIS
+// run itself already uploaded (during an earlier, interrupted attempt at
+// the very same snapshot ID) and is authoritative for it; the reference
+// index only offers to point at an OLDER snapshot's object. Checking
+// resumedFiles first in the loop below implements that priority.
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -277,6 +308,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		ID:        snapshotID,
 		Timestamp: time.Now().UTC(),
 	}
+	if prevSnapshot != nil {
+		snapshot.FormatVersion = 2
+		snapshot.BaseSnapshotID = prevSnapshot.ID
+	}
+	prevIndex := buildPreviousIndex(prevSnapshot)
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
 	var errs []error
@@ -385,6 +421,19 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// file via the pre-loop seed above; do not double count.
 			snapshot.Files = append(snapshot.Files, entry)
 			snapshot.Size += entry.Size
+			continue
+		}
+		if decision, refEntry := decideFile(file, prevIndex); decision == decideReference {
+			// Unchanged since prevSnapshot: no upload, no journal Record
+			// (there is nothing new to checkpoint — the bytes already live
+			// under prevSnapshot's prefix), but bytes/files still count
+			// toward progress through the same locked markDone path as a
+			// real upload, so the UI sees the same instant jump a journal
+			// resume produces.
+			snapshot.Files = append(snapshot.Files, refEntry)
+			snapshot.Size += refEntry.Size
+			markDone(1, refEntry.Size)
+			emitProgress(false)
 			continue
 		}
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)

@@ -85,6 +85,15 @@ type BackupJob struct {
 	ErrorCount          int                              `json:"errorCount,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
+	// ReferencedFiles/ReferencedBytes count how much of FilesBackedUp/
+	// BytesBackedUp this run satisfied by referencing an older snapshot's
+	// object instead of re-uploading (see decideFile / isReferenceEntry).
+	// FilesBackedUp/BytesBackedUp keep their existing meaning — "protected
+	// by this snapshot" (total) — these two fields say how much of that
+	// total was dedupe savings. Both 0 on a full backup (no previous
+	// manifest was usable) or any run predating incremental backups.
+	ReferencedFiles int   `json:"referencedFiles,omitempty"`
+	ReferencedBytes int64 `json:"referencedBytes,omitempty"`
 }
 
 // BackupManager orchestrates on-demand backups. Backup scheduling is owned by
@@ -300,6 +309,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
+	// systemStateStagingDir/systemStateStagingIdx let us recover, after any
+	// VSS rewrite below, whichever staging-root value was ACTUALLY walked —
+	// see the assignment right after the VSS rewrite for why the raw
+	// stagingDir returned here isn't necessarily it.
+	var systemStateStagingDir string
+	systemStateStagingIdx := -1
 	if m.config.SystemStateEnabled {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -320,6 +335,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				log.Printf("[backup] %s", job.Warning)
 			}
 			// Append staging dir to backup paths so artifacts are included in snapshot
+			systemStateStagingIdx = len(backupPaths)
 			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
@@ -332,6 +348,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
 		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+	}
+	if systemStateStagingIdx >= 0 && systemStateStagingIdx < len(backupPaths) {
+		// The staging dir's OS temp volume commonly coincides with a
+		// VSS-shadowed backup volume, so rewritePathsForVSS above may have
+		// rewritten it too — capture whichever value was actually walked
+		// (this index in the possibly-rewritten backupPaths) rather than
+		// the pre-rewrite path from collectSystemState, so
+		// markSystemStateFiles below compares against the same sourcePath
+		// prefix collectBackupFilesFromPaths actually produced.
+		systemStateStagingDir = backupPaths[systemStateStagingIdx]
 	}
 
 	if err := runCtx.Err(); err != nil {
@@ -350,6 +376,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// backupFile.originalPath doc comment.
 		originalPathsForVSS(files, vssSession.ShadowPaths)
 	}
+	markSystemStateFiles(files, systemStateStagingDir)
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -372,6 +399,26 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.CompletedAt = time.Now().UTC()
 		job.Error = scanErr
 		return job, scanErr
+	}
+
+	// Previous-manifest fetch for incremental reference decisions (manifest
+	// v2). Fail-open: any fetch/parse problem collapses to a loud log line
+	// and a full run — dedupe is strictly an optimization and must never
+	// fail or block a backup (see previousManifest's doc comment).
+	//
+	// Skipped entirely for a system-state-only run (no configured file
+	// paths): every one of its files is staging-dir and therefore already
+	// excluded from reference decisions by markSystemStateFiles above, so
+	// there is nothing eligible to dedupe against — the extra remote
+	// list+manifest-download would be pure waste.
+	var prevSnapshot *Snapshot
+	if !(m.config.SystemStateEnabled && len(m.config.Paths) == 0) {
+		prev, reason := previousManifest(runCtx, m.config.Provider)
+		if prev == nil {
+			log.Printf("[backup] running full backup (no reference dedupe): %s", reason)
+		} else {
+			prevSnapshot = prev
+		}
 	}
 
 	m.mu.Lock()
@@ -429,7 +476,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal)
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -438,6 +485,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if snapshot != nil {
 		job.FilesBackedUp = len(snapshot.Files)
 		job.BytesBackedUp = snapshot.Size
+		// Derived purely from the finished manifest (no isRef flag — see
+		// isReferenceEntry) rather than a counter threaded out of
+		// createSnapshotWithProgress: Snapshot itself must stay clean of any
+		// reference-count fields (they're result/wire-only, not manifest
+		// content — see BackupJob.ReferencedFiles's doc comment).
+		for _, f := range snapshot.Files {
+			if isReferenceEntry(f, snapshot.ID) {
+				job.ReferencedFiles++
+				job.ReferencedBytes += f.Size
+			}
+		}
 	}
 
 	retentionErr := error(nil)
@@ -565,6 +623,12 @@ type backupFile struct {
 	// copy device path every run), so keying the journal on it would make
 	// resume silently never match on Windows-with-VSS.
 	originalPath string
+	// systemState marks a file collected from the run's system-state
+	// staging directory (see markSystemStateFiles / collectSystemState's
+	// call site in RunBackupContext). decideFile always uploads these —
+	// they are never reference candidates, see markSystemStateFiles's doc
+	// comment for why this is explicit rather than incidental.
+	systemState bool
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
