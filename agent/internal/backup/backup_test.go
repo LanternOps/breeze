@@ -301,6 +301,43 @@ func TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh(t *testin
 	}
 }
 
+// TestOriginalPathsForVSS_ReconstructsOriginalPath tests the FIX-A
+// mechanism portably (originalPathsForVSS is pure string manipulation, no
+// OS/VSS calls) using OS-neutral fake paths built from filepath.Separator
+// rather than literal Windows backslashes, so it exercises the same logic
+// identically regardless of which OS runs the test.
+func TestOriginalPathsForVSS_ReconstructsOriginalPath(t *testing.T) {
+	sep := string(pathpkg.Separator)
+	shadowRoot := "SHADOWROOT"
+	shadowPaths := map[string]string{
+		"VOL:": shadowRoot,
+	}
+	files := []backupFile{
+		{sourcePath: shadowRoot + sep + "Users" + sep + "data" + sep + "f.txt"},
+		{sourcePath: shadowRoot},                                 // exact shadow-root match (single-file root case)
+		{sourcePath: "SOMETHINGELSE" + sep + "not-shadowed.txt"}, // not under any known shadow root
+	}
+	originalPathsForVSS(files, shadowPaths)
+
+	if want := "VOL:" + sep + "Users" + sep + "data" + sep + "f.txt"; files[0].originalPath != want {
+		t.Errorf("originalPath = %q, want %q", files[0].originalPath, want)
+	}
+	if want := "VOL:"; files[1].originalPath != want {
+		t.Errorf("originalPath = %q, want %q (exact shadow-root match)", files[1].originalPath, want)
+	}
+	if files[2].originalPath != "" {
+		t.Errorf("a file not under any known shadow root must keep an empty originalPath, got %q", files[2].originalPath)
+	}
+}
+
+func TestOriginalPathsForVSS_NoOpWhenNoShadowPaths(t *testing.T) {
+	files := []backupFile{{sourcePath: "/data/f.txt"}}
+	originalPathsForVSS(files, nil) // VSS off — the normal, non-Windows case
+	if files[0].originalPath != "" {
+		t.Errorf("originalPath must stay empty when VSS is off, got %q", files[0].originalPath)
+	}
+}
+
 func TestRunBackup_NilProvider(t *testing.T) {
 	mgr := NewBackupManager(BackupConfig{
 		Paths: []string{"/tmp/data"},

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -329,6 +330,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 		log.Printf("[backup] backup file scan completed with errors: %v", scanErr)
 	}
+	if vssSession != nil {
+		// Recover the pre-VSS-rewrite path for each file so the checkpoint
+		// journal has a stable resume key — see originalPathsForVSS and the
+		// backupFile.originalPath doc comment.
+		originalPathsForVSS(files, vssSession.ShadowPaths)
+	}
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -387,8 +394,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	}
 	if journal != nil {
 		if staleID, ok := journal.StaleSnapshotID(); ok {
-			log.Printf("[backup] discarding checkpoint journal older than %s (snapshot %s), cleaning up its remote prefix",
-				journalMaxAge, staleID)
+			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
+			// journal and the (near-impossible) identity-mismatch case — see
+			// openSnapshotJournal — so the message below is deliberately
+			// generic rather than claiming a specific cause.
+			log.Printf("[backup] discarding unusable checkpoint journal (snapshot %s, older than %s or identity-mismatched), cleaning up its remote prefix",
+				staleID, journalMaxAge)
 			cleanupSnapshotPrefix(m.config.Provider, staleID)
 		}
 		if resumedJournal {
@@ -443,6 +454,15 @@ type backupFile struct {
 	size         int64
 	modTime      time.Time
 	mode         os.FileMode
+	// originalPath is sourcePath reconstructed back through a VSS shadow-copy
+	// rewrite (see rewritePathsForVSS / originalPathsForVSS), i.e. the real
+	// on-disk path the user configured. Empty when VSS is off or this file
+	// wasn't under a rewritten root — sourcePath IS already stable in that
+	// case. This exists solely so the checkpoint journal has a stable resume
+	// key: sourcePath itself is per-run-ephemeral under VSS (a fresh shadow
+	// copy device path every run), so keying the journal on it would make
+	// resume silently never match on Windows-with-VSS.
+	originalPath string
 }
 
 func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
@@ -597,4 +617,41 @@ func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string 
 		}
 	}
 	return rewritten
+}
+
+// originalPathsForVSS sets backupFile.originalPath for every file whose
+// sourcePath was rewritten to a VSS shadow-copy device path by
+// rewritePathsForVSS, by inverting shadowPaths (volume -> shadow root) into
+// shadow root -> volume and substituting the matching prefix back. Files
+// whose sourcePath doesn't start with any known shadow root are left with
+// an empty originalPath — rewritePathsForVSS's own fallback means their
+// sourcePath was never rewritten in the first place, so it's already
+// stable and originalPath would be redundant.
+//
+// A no-op (files left untouched) when shadowPaths is empty, i.e. VSS is
+// off — the normal case and the only one on non-Windows.
+func originalPathsForVSS(files []backupFile, shadowPaths map[string]string) {
+	if len(shadowPaths) == 0 {
+		return
+	}
+	shadowToVolume := make(map[string]string, len(shadowPaths))
+	for vol, shadow := range shadowPaths {
+		if shadow == "" {
+			continue
+		}
+		shadowToVolume[shadow] = vol
+	}
+	for i := range files {
+		p := files[i].sourcePath
+		for shadow, vol := range shadowToVolume {
+			if p == shadow {
+				files[i].originalPath = vol
+				break
+			}
+			if strings.HasPrefix(p, shadow+string(filepath.Separator)) {
+				files[i].originalPath = vol + p[len(shadow):]
+				break
+			}
+		}
+	}
 }

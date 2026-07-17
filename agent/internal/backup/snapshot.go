@@ -84,6 +84,35 @@ type SnapshotFile struct {
 	// stores as 0 and is therefore treated as "unknown" (left at the OS default
 	// rather than restored to 0000) — an accepted limitation.
 	Mode uint32 `json:"mode,omitempty"`
+	// OriginalPath is SourcePath reconstructed back through a VSS
+	// shadow-copy rewrite — see backupFile.originalPath. Empty (and thus
+	// omitted, keeping non-VSS manifests byte-identical to before this
+	// field existed) except on Windows runs where VSS was active and this
+	// file's root was actually rewritten. journalEntryKey uses this instead
+	// of SourcePath when present, since SourcePath is a fresh per-run
+	// shadow-copy device path under VSS and would never match across runs.
+	OriginalPath string `json:"originalPath,omitempty"`
+}
+
+// journalEntryKey returns the checkpoint-journal resume key for f:
+// OriginalPath when set (VSS rewrote SourcePath to a per-run-ephemeral
+// shadow-copy device path), else SourcePath itself (the common, non-VSS
+// case, where SourcePath is already stable across runs).
+func journalEntryKey(f SnapshotFile) string {
+	if f.OriginalPath != "" {
+		return f.OriginalPath
+	}
+	return f.SourcePath
+}
+
+// journalLookupKey is journalEntryKey's backupFile-side counterpart, used
+// before a file has been uploaded (and thus before a SnapshotFile exists
+// for it) to look up whether a prior run's journal already has it.
+func journalLookupKey(f backupFile) string {
+	if f.originalPath != "" {
+		return f.originalPath
+	}
+	return f.sourcePath
 }
 
 type contextUploader interface {
@@ -249,8 +278,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	resumedFiles := make(map[string]SnapshotFile)
 	if journal != nil {
 		for _, file := range files {
-			if entry, ok := journal.Lookup(file.sourcePath, file.size, file.modTime); ok {
-				resumedFiles[file.sourcePath] = entry
+			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
+				resumedFiles[journalLookupKey(file)] = entry
 				filesDone++
 				bytesDone += entry.Size
 			}
@@ -276,7 +305,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if err := ctx.Err(); err != nil {
 			return abortStopped()
 		}
-		if entry, ok := resumedFiles[file.sourcePath]; ok {
+		if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
 			// Already uploaded in a prior (interrupted) run with identical
 			// (size, modTime) — filesDone/bytesDone already reflect this
 			// file via the pre-loop seed above; do not double count.
@@ -329,12 +358,13 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 
 		entry := SnapshotFile{
-			SourcePath: file.sourcePath,
-			BackupPath: backupPath,
-			Size:       file.size,
-			ModTime:    file.modTime,
-			Checksum:   checksum,
-			Mode:       uint32(file.mode.Perm()),
+			SourcePath:   file.sourcePath,
+			OriginalPath: file.originalPath,
+			BackupPath:   backupPath,
+			Size:         file.size,
+			ModTime:      file.modTime,
+			Checksum:     checksum,
+			Mode:         uint32(file.mode.Perm()),
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += file.size
@@ -630,14 +660,25 @@ func writeSnapshotManifest(snapshot *Snapshot) (string, error) {
 // instance and only risks a false-positive resume match across two
 // same-Go-type fake providers in a test — never in production, where every
 // real provider implements JournalIdentity.
+//
+// Deliberately ORDER-SENSITIVE: paths are hashed in configured order, not
+// sorted. Object naming is positional (collectBackupFilesFromPaths derives
+// each root's snapshotPath prefix from its index, "path_%d"), so a path-list
+// reorder between an interrupted run and its resume would keep the same
+// identity/snapshotID/prefix under a sorted identity while silently
+// swapping which root owns which index — a changed file at the new index
+// then re-uploads over an object a resumed (skipped) journal entry still
+// references, corrupting that entry's manifest mapping. Hashing in
+// configured order instead gives a reorder a fresh identity — a fresh
+// journal, no resume, safe re-upload of everything — trading a missed
+// resume opportunity (rare: paths rarely reorder between runs) for
+// guaranteed-correct object mapping (always required).
 func backupIdentity(provider providers.BackupProvider, paths []string) string {
 	material := fmt.Sprintf("%T", provider)
 	if idp, ok := provider.(providers.JournalIdentity); ok {
 		material = idp.BackupIdentity()
 	}
-	sortedPaths := append([]string(nil), paths...)
-	sort.Strings(sortedPaths)
-	return material + "|" + strings.Join(sortedPaths, ",")
+	return material + "|" + strings.Join(paths, ",")
 }
 
 func newSnapshotID() string {

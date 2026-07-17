@@ -112,7 +112,8 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 
 	header, entries, readErr := readJournal(path)
 	if readErr == nil {
-		if time.Since(header.CreatedAt) <= maxAge {
+		identityMatches := header.Identity == identity
+		if identityMatches && time.Since(header.CreatedAt) <= maxAge {
 			f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 			if openErr == nil {
 				var resumedBytes int64
@@ -133,9 +134,18 @@ func openSnapshotJournal(dir, identity string, maxAge time.Duration) (*snapshotJ
 			slog.Warn("failed to reopen backup journal for append, starting fresh",
 				"path", path, "error", openErr.Error())
 		} else {
-			// Stale: identity matches, but the run is too old to trust.
-			// Discard the local file; the caller cleans up the remote
-			// prefix for the abandoned snapshot ID (see StaleSnapshotID).
+			// Either stale (identity matches, but the run is too old to
+			// trust) or an identity mismatch (the file at this path — whose
+			// name is itself derived from identity, so a mismatch should
+			// only ever happen via a hash collision or file tampering —
+			// claims a different identity than expected). Both get the same
+			// treatment: never resume from it. Discard the local file; the
+			// caller cleans up the remote prefix for the abandoned snapshot
+			// ID (see StaleSnapshotID).
+			if !identityMatches {
+				slog.Warn("backup journal identity mismatch, discarding",
+					"path", path, "want", identity, "got", header.Identity)
+			}
 			staleID := header.SnapshotID
 			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 				slog.Warn("failed to remove stale backup journal", "path", path, "error", rmErr.Error())
@@ -197,7 +207,11 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return header, nil, fmt.Errorf("backup journal entry: %w", err)
 		}
-		entries[entry.SourcePath] = entry // last-entry-wins
+		// Keyed by journalEntryKey (OriginalPath when VSS rewrote SourcePath,
+		// else SourcePath itself), matching Record's keying below — a reload
+		// must key entries the same way a live run does, or a resumed
+		// journal's entries become unreachable by Lookup. last-entry-wins.
+		entries[journalEntryKey(entry)] = entry
 	}
 	if err := scanner.Err(); err != nil {
 		return header, nil, err
@@ -280,19 +294,24 @@ func (j *snapshotJournal) Record(f SnapshotFile) error {
 	if j.entries == nil {
 		j.entries = make(map[string]SnapshotFile)
 	}
-	j.entries[f.SourcePath] = f // last-entry-wins, mirrors reload semantics
+	// Keyed by journalEntryKey, not always f.SourcePath: under VSS,
+	// SourcePath is a fresh per-run shadow-copy device path, so keying on it
+	// directly would mean run 2 never matches anything run 1 recorded — see
+	// journalEntryKey and backupFile.originalPath. last-entry-wins on reload.
+	j.entries[journalEntryKey(f)] = f
 	return nil
 }
 
-// Lookup reports whether a prior run's journal already recorded sourcePath
-// with exactly this size and modTime — the resume-match rule. A changed
-// file (different size or modTime) is a miss: it will be re-uploaded, and
-// its new entry supersedes the old one on the next Record.
-func (j *snapshotJournal) Lookup(sourcePath string, size int64, modTime time.Time) (SnapshotFile, bool) {
+// Lookup reports whether a prior run's journal already recorded key (see
+// journalEntryKey / journalLookupKey — OriginalPath when VSS is active,
+// else SourcePath) with exactly this size and modTime — the resume-match
+// rule. A changed file (different size or modTime) is a miss: it will be
+// re-uploaded, and its new entry supersedes the old one on the next Record.
+func (j *snapshotJournal) Lookup(key string, size int64, modTime time.Time) (SnapshotFile, bool) {
 	if j == nil {
 		return SnapshotFile{}, false
 	}
-	entry, ok := j.entries[sourcePath]
+	entry, ok := j.entries[key]
 	if !ok || entry.Size != size || !entry.ModTime.Equal(modTime) {
 		return SnapshotFile{}, false
 	}

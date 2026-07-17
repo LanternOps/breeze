@@ -243,6 +243,64 @@ func TestOpenSnapshotJournal_StaleHeaderDoesNotResume(t *testing.T) {
 	j2.Abandon()
 }
 
+// TestOpenSnapshotJournal_IdentityMismatchDoesNotResume is FIX C's
+// regression test: openSnapshotJournal must verify header.Identity against
+// the caller-supplied identity, not just trust whatever's on disk at the
+// (identity-hash-derived) path. In normal operation the two can never
+// diverge — the path itself is sha256(identity) — so this can only really
+// happen via a hash collision or direct file tampering, but both must be
+// treated the same as staleness: discard and start fresh, never resume.
+func TestOpenSnapshotJournal_IdentityMismatchDoesNotResume(t *testing.T) {
+	dir := t.TempDir()
+
+	j1, _, err := openSnapshotJournal(dir, "identity-a", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if err := j1.Record(SnapshotFile{SourcePath: "/data/a.txt", Size: 10, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	mismatchedID := j1.snapshotID
+	journalPath := j1.path
+	j1.Abandon()
+
+	// Tamper with the on-disk header's identity field while keeping the
+	// file at the same (identity-a-derived) path — reopening with the SAME
+	// identity string used to create it must still refuse to resume, since
+	// the file's own claimed identity no longer matches what was recorded.
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	rest := ""
+	if idx := strings.IndexByte(string(raw), '\n'); idx >= 0 {
+		rest = string(raw)[idx+1:]
+	}
+	tamperedHeader := `{"snapshotId":"` + mismatchedID + `","createdAt":"` + time.Now().UTC().Format(time.RFC3339) + `","identity":"identity-b"}` + "\n"
+	if err := os.WriteFile(journalPath, []byte(tamperedHeader+rest), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	j2, resumed, err := openSnapshotJournal(dir, "identity-a", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if resumed {
+		t.Fatal("an identity-mismatched journal must never resume")
+	}
+	if j2.snapshotID == mismatchedID {
+		t.Error("expected a brand-new snapshot ID after an identity mismatch")
+	}
+	if got, ok := j2.StaleSnapshotID(); !ok || got != mismatchedID {
+		t.Errorf("StaleSnapshotID = (%q, %v), want (%q, true) — a mismatch should get the same remote-cleanup treatment as staleness",
+			got, ok, mismatchedID)
+	}
+	if _, ok := j2.Lookup("/data/a.txt", 10, time.Now()); ok {
+		t.Error("an identity-mismatched journal's entries must not be loaded")
+	}
+	j2.Abandon()
+}
+
 func TestOpenSnapshotJournal_DifferentIdentitiesGetDifferentFiles(t *testing.T) {
 	dir := t.TempDir()
 

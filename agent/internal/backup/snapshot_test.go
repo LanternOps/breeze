@@ -934,6 +934,104 @@ func TestCreateSnapshotWithProgress_JournalRecordFailureDoesNotFailBackup(t *tes
 	}
 }
 
+// TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch is FIX A's
+// regression test: under VSS, sourcePath is a fresh per-run shadow-copy
+// device path, so run 2's sourcePath for the same logical file is NEVER
+// equal to run 1's. The journal must key on OriginalPath (the stable,
+// pre-rewrite path) instead, or resume silently never matches on
+// Windows-with-VSS. Simulated portably — no real VSS/OS calls involved,
+// just two backupFile/SnapshotFile values with deliberately different
+// sourcePath but the same originalPath/OriginalPath.
+func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
+	provider := newMockProvider()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	journalDir := t.TempDir()
+
+	journal1, _, err := openSnapshotJournal(journalDir, "test-vss-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	// What run 1 actually recorded: SourcePath is run 1's shadow-copy
+	// device path (ephemeral — a fresh VSS session next run would produce a
+	// completely different string), OriginalPath is the stable, real
+	// on-disk path.
+	if err := journal1.Record(SnapshotFile{
+		SourcePath:   "SHADOW-RUN1/data/f.txt",
+		OriginalPath: "/data/f.txt",
+		BackupPath:   "snap/f.txt.gz",
+		Size:         11,
+		ModTime:      modTime,
+		Checksum:     "run1-checksum",
+	}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	journal1.Abandon()
+
+	journal2, resumed2, err := openSnapshotJournal(journalDir, "test-vss-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	if !resumed2 {
+		t.Fatal("expected run 2 to resume run 1's journal")
+	}
+
+	// Run 2 walks a DIFFERENT (fresh) shadow-copy device path for the same
+	// logical file, but the same OriginalPath.
+	run2File := backupFile{
+		sourcePath:   "SHADOW-RUN2/data/f.txt", // different from run 1's
+		originalPath: "/data/f.txt",            // same as run 1's
+		snapshotPath: "path_0/f.txt",
+		size:         11,
+		modTime:      modTime,
+	}
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, []backupFile{run2File}, nil, journal2)
+	if err != nil {
+		t.Fatalf("run 2 failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	if snapshot.Files[0].Checksum != "run1-checksum" {
+		t.Errorf("expected the resumed (run 1) entry to be carried forward, got %+v", snapshot.Files[0])
+	}
+	// Only the manifest should have uploaded — the data file itself must be
+	// skipped (resumed via OriginalPath), proving the match happened
+	// despite run 2's different sourcePath. If this fails with 2 uploads,
+	// resume silently regressed to matching on sourcePath again.
+	if len(provider.uploadCalls) != 1 {
+		t.Fatalf("expected only the manifest to upload (file resumed via OriginalPath), got %d upload calls: %v",
+			len(provider.uploadCalls), provider.uploadCalls)
+	}
+}
+
+// TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath is FIX A's
+// non-regression test: when VSS is off (the common, non-Windows-or-no-VSS
+// case), OriginalPath must stay empty and be omitted from the JSON manifest
+// entirely (omitempty) — manifests must be byte-identical to before this
+// field existed.
+func TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath(t *testing.T) {
+	provider := newMockProvider()
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "plain"), snapshotPath: "a", size: 5}, // originalPath left zero-value
+	}
+
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil)
+	if err != nil {
+		t.Fatalf("createSnapshotWithProgress failed: %v", err)
+	}
+	if snapshot.Files[0].OriginalPath != "" {
+		t.Errorf("non-VSS file must carry no OriginalPath, got %q", snapshot.Files[0].OriginalPath)
+	}
+	data, err := json.Marshal(snapshot.Files[0])
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if strings.Contains(string(data), "originalPath") {
+		t.Errorf("empty OriginalPath must be omitted from JSON (omitempty), got %s", data)
+	}
+}
+
 func TestEnsureGzipExtension(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1031,11 +1129,18 @@ func TestBackupIdentity_DistinguishesDestinations(t *testing.T) {
 		t.Error("different paths must produce different identities")
 	}
 
-	// Path order must not matter (sorted before hashing/joining).
-	idSortedFirst := backupIdentity(providerA, []string{"/a", "/b"})
-	idSortedSecond := backupIdentity(providerA, []string{"/b", "/a"})
-	if idSortedFirst != idSortedSecond {
-		t.Error("path order should not affect identity")
+	// Path order DOES matter (deliberately order-sensitive — see the
+	// backupIdentity doc comment: object naming is positional, so a
+	// reordered path list must get a fresh identity/journal rather than
+	// resuming under stale index assumptions).
+	idOrderFirst := backupIdentity(providerA, []string{"/a", "/b"})
+	idOrderSecond := backupIdentity(providerA, []string{"/b", "/a"})
+	if idOrderFirst == idOrderSecond {
+		t.Error("reordering paths must change the identity (order-sensitive by design)")
+	}
+	// Same order, called again, must be stable (not e.g. map-iteration flaky).
+	if backupIdentity(providerA, []string{"/a", "/b"}) != idOrderFirst {
+		t.Error("identity must be stable for the same provider+paths in the same order")
 	}
 
 	// A provider implementing JournalIdentity uses its own material instead
@@ -1045,6 +1150,45 @@ func TestBackupIdentity_DistinguishesDestinations(t *testing.T) {
 	if backupIdentity(local, []string{"/data"}) == backupIdentity(otherLocal, []string{"/data"}) {
 		t.Error("two LocalProviders with different base paths must produce different identities")
 	}
+}
+
+// TestBackupIdentity_ReorderedPathsDoNotResume is FIX B's regression test:
+// a path-list reorder between an interrupted run and its resume must not
+// keep resuming under the old identity — that would let a changed file at
+// the new index re-upload over an object a resumed (skipped) journal entry
+// still references, corrupting that entry's manifest mapping (object naming
+// is positional: path_%d). A fresh identity means a fresh journal, so
+// nothing in the old journal can wrongly match.
+func TestBackupIdentity_ReorderedPathsDoNotResume(t *testing.T) {
+	provider := newMockProvider()
+	dir := t.TempDir()
+
+	run1Identity := backupIdentity(provider, []string{"/data/a", "/data/b"})
+	journal1, resumed1, err := openSnapshotJournal(dir, run1Identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if resumed1 {
+		t.Fatal("run 1 should not resume")
+	}
+	if err := journal1.Record(SnapshotFile{SourcePath: "/data/a/f.txt", Size: 1, ModTime: time.Now()}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+	journal1.Abandon()
+
+	// Run 2: the same two paths, but reordered.
+	run2Identity := backupIdentity(provider, []string{"/data/b", "/data/a"})
+	journal2, resumed2, err := openSnapshotJournal(dir, run2Identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	if resumed2 {
+		t.Fatal("a reordered path list must not resume run 1's journal")
+	}
+	if journal2.snapshotID == journal1.snapshotID {
+		t.Fatal("a reordered path list must get a fresh snapshot ID, not run 1's")
+	}
+	journal2.Abandon()
 }
 
 func TestNewSnapshotID_Format(t *testing.T) {
