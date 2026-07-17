@@ -4,6 +4,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
+import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
@@ -11,6 +12,7 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
+import { sanitizeRichTextHtml } from './richTextSanitize';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
 } from '@breeze/shared';
@@ -30,6 +32,35 @@ import type {
  */
 export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Omit<T, 'unitCost'>[] {
   return lines.map(({ unitCost: _cost, ...rest }) => rest as Omit<T, 'unitCost'>);
+}
+
+/**
+ * Sanitize every rich_text block's content.html at READ-serialization time —
+ * defense in depth alongside the write-time sanitization in addBlock/updateBlock
+ * below, covering rows written before this sanitizer existed (or by any future
+ * write path that forgets to sanitize). Every place a quote's blocks leave the
+ * API — the internal editor (getQuote, below), the portal, and the public accept
+ * link — must route through this so no unsanitized author HTML is ever served.
+ */
+export function sanitizeQuoteBlocksForRead<T extends { blockType: string; content: unknown }>(blocks: T[]): T[] {
+  return blocks.map((block) => {
+    if (block.blockType !== 'rich_text') return block;
+    const content = block.content;
+    if (!content || typeof content !== 'object' || Array.isArray(content)) return block;
+    const html = (content as Record<string, unknown>).html;
+    if (typeof html !== 'string') return block;
+    return { ...block, content: { ...(content as Record<string, unknown>), html: sanitizeRichTextHtml(html) } };
+  });
+}
+
+/** Sanitize a rich_text block's content.html at WRITE time (addBlock/updateBlock) —
+ * the primary defense; sanitizeQuoteBlocksForRead above is the secondary one.
+ * Other block types pass through unchanged. */
+function sanitizeBlockContentForWrite(input: QuoteBlockInput): QuoteBlockInput['content'] {
+  if (input.blockType === 'rich_text') {
+    return { ...input.content, html: sanitizeRichTextHtml(input.content.html) };
+  }
+  return input.content;
 }
 
 function resolvePartner(actor: QuoteActor): string {
@@ -198,6 +229,26 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
 }
 
 /**
+ * Remap a cloned quote's `coverPage.coverImageId` onto its freshly-cloned
+ * `quoteImages` id (see the `imageIds` remap map in cloneQuote below) — mirrors
+ * the image-block `content.imageId` remap in the same function. Every other
+ * cover page field (title/enabled/preparedForName/showPreparedBy) is
+ * document presentation, not customer- or image-specific, so it passes
+ * through unchanged. A `null`/absent `coverPage`, or one with no
+ * `coverImageId` set, is returned as-is.
+ */
+function remapCoverPageImageId(coverPage: unknown, imageIds: Map<string, string>): unknown {
+  if (!coverPage || typeof coverPage !== 'object' || Array.isArray(coverPage)) return coverPage;
+  const cp = coverPage as Record<string, unknown>;
+  const sourceImageId = cp.coverImageId;
+  if (typeof sourceImageId !== 'string') return coverPage;
+  // Defensive fallback to null (rather than leaving the stale id) if the image
+  // somehow isn't among the ones just cloned — a dangling reference is worse
+  // than a missing cover image.
+  return { ...cp, coverImageId: imageIds.get(sourceImageId) ?? null };
+}
+
+/**
  * Deep-copy an accessible quote into a new draft. Images and every aggregate
  * relationship receive fresh IDs because image rendering is constrained to
  * image.quote_id and line items can reference blocks, images, and parent lines.
@@ -229,6 +280,11 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, source.partnerId)))
       .limit(1);
     if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    // Re-validate carried contract blocks against the NEW org: an org-owned
+    // template from the source org is invalid for the target org (422), which
+    // also prevents cloning a block that would later mint a cross-org
+    // contract_documents → contract_templates FK. Partner-wide templates pass.
+    await assertContractBlocksValidForOrg(blocks, { orgId: targetOrgId, partnerId: source.partnerId });
   }
   const taxRate = orgChanged
     ? await resolveQuoteTaxRate(targetOrgId, source.partnerId)
@@ -280,6 +336,13 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       introNotes: source.introNotes,
       terms: source.terms,
       sellerSnapshot: null,
+      // Cover page is document presentation, not customer-specific — carried
+      // over verbatim (title/enabled/preparedForName/showPreparedBy) on both a
+      // same-org and a retargeted clone. Its coverImageId is the one exception:
+      // it references a quote_images row keyed to the OLD quote, and images get
+      // fresh ids on clone (imageIds, above) — left unremapped it would point at
+      // an id that doesn't exist under the new quote at all.
+      coverPage: remapCoverPageImageId(source.coverPage, imageIds),
       termsAndConditions: source.termsAndConditions,
       declineReason: null,
       convertedInvoiceId: null,
@@ -362,7 +425,9 @@ export async function getQuote(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
-  const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
+  const blocks = sanitizeQuoteBlocksForRead(
+    await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder)
+  );
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
   // Quote acceptance returns the staged order id once, but the technician may
   // reload or open the converted quote later. Keep discoverability in the quote
@@ -527,6 +592,19 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.billToName !== undefined) set.billToName = input.billToName;
   // Numeric tax_rate takes a fixed-string value; null clears it.
   if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(5);
+  if (input.coverPage !== undefined) {
+    // Ownership check mirrors updateLine's imageId guard: coverImageId must be a
+    // quote_images row on THIS quote, or a caller could point the cover at
+    // another tenant's image and exfiltrate its bytes through the customer
+    // document/PDF. Only checked when a cover page object with a non-null
+    // coverImageId is being set — `null` (clear the whole cover page) skips it.
+    if (input.coverPage !== null && input.coverPage.coverImageId) {
+      const [img] = await db.select({ id: quoteImages.id }).from(quoteImages)
+        .where(and(eq(quoteImages.id, input.coverPage.coverImageId), eq(quoteImages.quoteId, id))).limit(1);
+      if (!img) throw new QuoteServiceError('Cover image not found on this quote', 404, 'IMAGE_NOT_FOUND');
+    }
+    set.coverPage = input.coverPage;
+  }
   if (input.depositType !== undefined || input.depositPercent !== undefined) {
     const lines = await db.select({
       quantity: quoteLines.quantity, unitPrice: quoteLines.unitPrice,
@@ -565,7 +643,16 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // sets a fresh override explicitly.
     if (input.billToName === undefined) set.billToName = null;
     if (orgTaxRate !== undefined) set.taxRate = orgTaxRate;
+    // Re-validate carried contract blocks against the NEW org before moving the
+    // quote onto it: an org-owned template embedded under the old org is invalid
+    // (422) for the target org — carrying it would expose another org's private
+    // legal template and create a cross-org contract_documents → contract_templates
+    // FK that aborts GDPR erasure. Partner-wide templates (org_id NULL) pass.
+    const contractBlocks = await db.select({ blockType: quoteBlocks.blockType, content: quoteBlocks.content })
+      .from(quoteBlocks)
+      .where(and(eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract')));
     await db.transaction(async (tx) => {
+      await assertContractBlocksValidForOrg(contractBlocks, { orgId: targetOrgId, partnerId: q.partnerId }, tx);
       await tx.update(quotes).set(set).where(eq(quotes.id, id));
       // Move the denormalized org_id on every child row in the same transaction.
       await tx.update(quoteBlocks).set({ orgId: targetOrgId }).where(eq(quoteBlocks.quoteId, id));
@@ -593,14 +680,87 @@ export async function deleteDraftQuote(id: string, actor: QuoteActor) {
 // Blocks
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate a `contract` block's content BEFORE insert/update: the referenced
+ * template version must exist and belong to the named template, be
+ * `status='published'` (drafts are never embeddable — they can still change),
+ * the template itself must not be archived, and the template must be visible
+ * to THIS quote's org/partner — org-owned → same org as the quote; partner-
+ * owned → same partner as the quote (Partner-Wide First, epic #2135). Every
+ * violation collapses to a single 422 INVALID_CONTRACT_TEMPLATE so a caller
+ * can't distinguish "wrong template" from "not published yet" from
+ * "not yours" — none of those distinctions are actionable without also
+ * leaking the existence of another tenant's template.
+ */
+/** Narrow a `contract` block's stored `content` to its template reference, or
+ *  null if the shape is unexpected (defensive — the block was validated on
+ *  write). Used by the org-change paths to re-validate carried contract blocks. */
+function parseContractBlockRef(content: unknown): { templateId: string; templateVersionId: string } | null {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return null;
+  const c = content as Record<string, unknown>;
+  if (typeof c.templateId !== 'string' || typeof c.templateVersionId !== 'string') return null;
+  return { templateId: c.templateId, templateVersionId: c.templateVersionId };
+}
+
+/** Re-validate every `contract` block on a quote against a (possibly new) target
+ *  org. Called from the clone-retarget and draft org-reassignment paths: an
+ *  org-owned template embedded under the SOURCE org is neither visible nor valid
+ *  under the TARGET org, and carrying it verbatim both exposes another org's
+ *  private legal template AND creates a cross-org contract_documents →
+ *  contract_templates FK that aborts GDPR org erasure. Partner-wide templates
+ *  (org_id NULL) stay valid because clone/reassign never crosses partners. */
+async function assertContractBlocksValidForOrg(
+  blocks: Array<{ blockType: string; content: unknown }>,
+  target: { orgId: string; partnerId: string },
+  dbc: Pick<typeof db, 'select'> = db,
+): Promise<void> {
+  for (const block of blocks) {
+    if (block.blockType !== 'contract') continue;
+    const ref = parseContractBlockRef(block.content);
+    if (ref) await assertContractBlockValid(ref, target, dbc);
+  }
+}
+
+async function assertContractBlockValid(
+  content: { templateId: string; templateVersionId: string },
+  quote: { orgId: string; partnerId: string },
+  dbc: Pick<typeof db, 'select'> = db,
+): Promise<void> {
+  const [version] = await dbc.select({
+    templateId: contractTemplateVersions.templateId,
+    status: contractTemplateVersions.status,
+  }).from(contractTemplateVersions).where(eq(contractTemplateVersions.id, content.templateVersionId)).limit(1);
+  if (!version || version.templateId !== content.templateId || version.status !== 'published') {
+    throw new QuoteServiceError('Contract template version is not published', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+  const [template] = await dbc.select({
+    status: contractTemplates.status,
+    orgId: contractTemplates.orgId,
+    partnerId: contractTemplates.partnerId,
+  }).from(contractTemplates).where(eq(contractTemplates.id, content.templateId)).limit(1);
+  if (!template || template.status === 'archived') {
+    throw new QuoteServiceError('Contract template is archived or no longer exists', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+  // XOR ownership (contract_templates_one_owner_chk): org-owned templates are
+  // visible only to that org; partner-wide templates (orgId NULL) are visible
+  // to every org of that partner.
+  const visible = template.orgId !== null ? template.orgId === quote.orgId : template.partnerId === quote.partnerId;
+  if (!visible) {
+    throw new QuoteServiceError('Contract template is not visible to this organization', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+}
+
 export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: QuoteActor) {
   const q = await loadDraft(quoteId, actor);
+  if (input.blockType === 'contract') {
+    await assertContractBlockValid(input.content, q);
+  }
   const sortOrder = await nextBlockSortOrder(quoteId);
   const [row] = await db.insert(quoteBlocks).values({
     quoteId,
     orgId: q.orgId,
     blockType: input.blockType,
-    content: input.content,
+    content: sanitizeBlockContentForWrite(input),
     sortOrder,
   }).returning();
   return row!;
@@ -614,7 +774,7 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
  * lines, so no totals recompute is needed.
  */
 export async function updateBlock(quoteId: string, blockId: string, input: QuoteBlockInput, actor: QuoteActor) {
-  await loadDraft(quoteId, actor);
+  const q = await loadDraft(quoteId, actor);
   const [existing] = await db.select({ blockType: quoteBlocks.blockType })
     .from(quoteBlocks)
     .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
@@ -623,8 +783,11 @@ export async function updateBlock(quoteId: string, blockId: string, input: Quote
   if (existing.blockType !== input.blockType) {
     throw new QuoteServiceError('Block type cannot be changed', 400, 'BLOCK_TYPE_MISMATCH');
   }
+  if (input.blockType === 'contract') {
+    await assertContractBlockValid(input.content, q);
+  }
   const [row] = await db.update(quoteBlocks)
-    .set({ content: input.content })
+    .set({ content: sanitizeBlockContentForWrite(input) })
     .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
     .returning();
   return row!;

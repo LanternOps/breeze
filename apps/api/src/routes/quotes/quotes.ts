@@ -20,6 +20,14 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
+import {
+  renderContractBlocksForClient,
+  loadContractPdfInputs,
+  loadContractBlockAuthoring,
+  attachContractAuthoring,
+} from '../../services/contractTemplateRender';
+import { ContractTemplateServiceError } from '../../services/contractTemplateService';
+import { PdfMergeError } from '../../services/pdfMerge';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -38,6 +46,11 @@ export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  // An unloadable/encrypted uploaded contract PDF surfaces as a 4xx (typed) here
+  // rather than an uncaught 500 — uploads are validated at write time, so this is
+  // the defense-in-depth backstop for a legacy row.
+  if (err instanceof PdfMergeError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -70,13 +83,31 @@ quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idPara
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
   try {
-    const detail = await getQuote(c.req.valid('param').id, quoteActorFrom(c));
+    const detail = await getQuote(id, quoteActorFrom(c));
     // Branding lets the in-app Preview render the customer-facing document
     // (logo, accent, seller, footer) without a second round-trip — same object
     // the PDF route builds, so the preview matches what the customer receives.
     const branding = await resolveQuoteBranding(detail.quote);
-    return c.json({ data: { ...detail, branding } });
+    // Resolves every `contract` block's pinned template version (system context)
+    // and replaces its raw authoring content with the render contract the
+    // in-app Preview (web QuoteDocument.tsx) understands — same contract portal
+    // and public serve, so the editor preview matches what the customer sees.
+    const blocks = await renderContractBlocksForClient(detail.blocks, detail.quote, (blockId) => `/quotes/${id}/contract-file/${blockId}`);
+    // ADMIN-ONLY: attach the raw authoring fields (templateId/templateVersionId/
+    // variableValues + the pinned version's declaredVariables + latest-published
+    // nudge target) so the editor can render the manual-variable form and offer an
+    // explicit version-update action. This is the ONLY route that does this — the
+    // portal + public serves deliberately expose the stripped display shape only
+    // (tenant-facing boundary; see loadContractBlockAuthoring's doc comment).
+    // attachContractAuthoring builds the ContractAdminBlockContent shape
+    // (ContractClientBlockContent + optional `authoring`) explicitly — the
+    // portal/public routes never call it, so their block content can never
+    // carry `authoring`.
+    const authoring = await loadContractBlockAuthoring(detail.blocks);
+    const blocksForEditor = attachContractAuthoring(blocks, authoring);
+    return c.json({ data: { ...detail, blocks: blocksForEditor, branding } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {
@@ -177,16 +208,25 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       return img?.data ? { data: img.data } : null;
     };
 
+    // Pre-fetch the same render data Task 13's client editor/preview path uses
+    // (system-context read of pinned template versions) and shape it for the
+    // renderer: substituted HTML per authored contract block, plus any uploaded
+    // contract PDFs to append after rendering (pdfkit can't draw an existing
+    // PDF's pages — see pdfMerge.ts).
+    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
+
     const { renderQuotePdf } = await import('../../services/quotePdf');
-    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage);
+    const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData);
+    const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
+    const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
 
     const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);
-    return new Response(new Uint8Array(pdf), {
+    return new Response(new Uint8Array(finalPdf), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `inline; filename="${filename}"`,
-        'Content-Length': String(pdf.length),
+        'Content-Length': String(finalPdf.length),
       },
     });
   } catch (err) { return handleServiceError(c, err); }

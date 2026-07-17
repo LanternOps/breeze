@@ -86,6 +86,39 @@ describe('email service', () => {
     expect(createTransportMock).not.toHaveBeenCalled();
   });
 
+  describe('fromWithDisplayName', () => {
+    it('wraps the default address with a quoted display name', async () => {
+      process.env.RESEND_API_KEY = 're_test_123';
+      process.env.EMAIL_FROM = 'noreply@example.com';
+      const { getEmailService } = await import('./email');
+      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
+        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
+    });
+
+    it('extracts the address when EMAIL_FROM already carries a display name', async () => {
+      process.env.RESEND_API_KEY = 're_test_123';
+      process.env.EMAIL_FROM = 'Breeze <noreply@example.com>';
+      const { getEmailService } = await import('./email');
+      expect(getEmailService()!.fromWithDisplayName('Acme MSP via Breeze'))
+        .toBe('"Acme MSP via Breeze" <noreply@example.com>');
+    });
+
+    it('strips header-breaking characters from the display name', async () => {
+      process.env.RESEND_API_KEY = 're_test_123';
+      process.env.EMAIL_FROM = 'noreply@example.com';
+      const { getEmailService } = await import('./email');
+      expect(getEmailService()!.fromWithDisplayName('Evil"\r\nBcc: victim <x>'))
+        .toBe('"Evil Bcc: victim x" <noreply@example.com>');
+    });
+
+    it('falls back to the default sender when the name is empty after sanitizing', async () => {
+      process.env.RESEND_API_KEY = 're_test_123';
+      process.env.EMAIL_FROM = 'noreply@example.com';
+      const { getEmailService } = await import('./email');
+      expect(getEmailService()!.fromWithDisplayName('"<>"')).toBe('noreply@example.com');
+    });
+  });
+
   it('uses SMTP when EMAIL_PROVIDER is smtp', async () => {
     process.env.EMAIL_PROVIDER = 'smtp';
     process.env.SMTP_HOST = 'smtp.example.com';

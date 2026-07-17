@@ -10,10 +10,15 @@ type Props = {
   name: string;
   address: Address;
   contact: Contact;
+  emailSignature: string;
   onNameChange: (value: string) => void;
   onAddressChange: (value: Address) => void;
   onContactChange: (value: Contact) => void;
+  onEmailSignatureChange: (value: string) => void;
 };
+
+// Matches the server-side cap on partners.email_signature (PATCH /partners/me).
+const MAX_EMAIL_SIGNATURE_LENGTH = 2000;
 
 const COUNTRY_CODES = ['', 'US', 'CA', 'MX', 'GB', 'IE', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'CH', 'AT', 'SE', 'NO', 'DK', 'FI', 'PL', 'PT', 'CZ', 'GR', 'AU', 'NZ', 'JP', 'KR', 'CN', 'HK', 'SG', 'IN', 'AE', 'IL', 'ZA', 'BR', 'AR', 'CL', 'CO'] as const;
 
@@ -23,9 +28,11 @@ export default function PartnerCompanyTab({
   name,
   address,
   contact,
+  emailSignature,
   onNameChange,
   onAddressChange,
   onContactChange,
+  onEmailSignatureChange,
 }: Props) {
   const { t } = useTranslation('settings');
   const setAddress = (field: keyof Address, value: string) => {
@@ -198,6 +205,32 @@ export default function PartnerCompanyTab({
               className={inputClass}
             />
           </div>
+        </div>
+      </section>
+
+      {/* Email signature */}
+      <section className="rounded-lg border bg-card p-6 shadow-xs">
+        <div className="mb-6">
+          <div className="flex items-center gap-2">
+            <Mail className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-lg font-semibold">{t('partnerCompany.emailSignature')}</h2>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t('partnerCompany.emailSignatureDescription')}
+          </p>
+        </div>
+        <div className="space-y-2">
+          <label htmlFor="email-signature" className="sr-only">{t('partnerCompany.emailSignature')}</label>
+          <textarea
+            id="email-signature"
+            data-testid="partner-email-signature"
+            value={emailSignature}
+            onChange={(e) => onEmailSignatureChange(e.target.value)}
+            rows={4}
+            maxLength={MAX_EMAIL_SIGNATURE_LENGTH}
+            placeholder={t('partnerCompany.placeholders.emailSignature')}
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+          />
         </div>
       </section>
     </div>

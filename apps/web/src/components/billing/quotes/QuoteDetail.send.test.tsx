@@ -3,11 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteDetail from './QuoteDetail';
 import * as quotesApi from '../../../lib/api/quotes';
+import { fetchWithAuth } from '../../../stores/auth';
 import type { QuoteDetail as QuoteDetailData, QuoteLine } from './quoteTypes';
 
-// Same auth-mock pattern as QuoteDetail.delete.test.tsx.
+// Same auth-mock pattern as QuoteDetail.delete.test.tsx, plus controllable
+// tokens so tests can flip the JWT scope the send composer reads (partner
+// scope unlocks the signature/Stripe support fetches).
 type Perm = { resource: string; action: string };
-const state = vi.hoisted(() => ({ permissions: [] as Perm[] }));
+const state = vi.hoisted(() => ({
+  permissions: [] as Perm[],
+  tokens: null as { accessToken: string } | null,
+}));
 
 vi.mock('../../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -15,7 +21,7 @@ vi.mock('../../../stores/auth', () => ({
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>
       selector({ user: { permissions: state.permissions } }),
-    { getState: () => ({ tokens: null }) },
+    { getState: () => ({ tokens: state.tokens }) },
   ),
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -58,10 +64,31 @@ const filledDraft: QuoteDetailData = {
   lines: [line],
 };
 
+/** Access token whose (unverified) payload claims partner scope — enough for
+ *  the composer's client-side getJwtClaims() gate on the support fetches. */
+const PARTNER_TOKENS = {
+  accessToken: `x.${btoa(JSON.stringify({ scope: 'partner', partnerId: 'p-1' }))}.y`,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [{ resource: 'quotes', action: 'send' }];
+  state.tokens = null;
+  // The composer's prefill/support fetches, routed by URL (not call order).
+  vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+    if (url.startsWith('/orgs/organizations/')) return resp({ billingContact: { email: 'ap@customer.example' } });
+    if (url === '/orgs/partners/me') return resp({ emailSignature: null });
+    if (url === '/partner/stripe-connect') return resp({ status: 'disconnected' });
+    return resp({}, false);
+  });
 });
+
+/** Open the composer and wait for the billing-contact prefill (Send stays
+ *  disabled until To holds at least one valid address). */
+async function openComposer() {
+  fireEvent.click(screen.getByTestId('quote-send'));
+  await waitFor(() => expect(screen.getByTestId('quote-send-to')).toHaveValue('ap@customer.example'));
+}
 
 describe('QuoteDetail — send proposal', () => {
   it('disables Send and shows a hint when the quote has no content', async () => {
@@ -91,15 +118,79 @@ describe('QuoteDetail — send proposal', () => {
     render(<QuoteDetail detail={filledDraft} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('quote-send'));
-    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+    await openComposer();
 
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
     await waitFor(() => {
-      // No note typed → the empty string is forwarded (the API client trims it away).
-      expect(sendQuote).toHaveBeenCalledWith('q-1', '');
+      // Untouched composer → only the (prefilled, user-visible) To list goes out;
+      // blank subject/message and the default includePdf are omitted.
+      expect(sendQuote).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'] });
       expect(onChanged).toHaveBeenCalled();
     });
+  });
+
+  it('shows a WARNING toast (not success) when the send committed but no email went out', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    // The API's email step is best-effort: emailed:false means the quote
+    // flipped to Sent but the customer received nothing (e.g. the org has no
+    // billing contact email — the black hole this regression-guards).
+    sendQuote.mockResolvedValue(resp({ data: { emailed: false, emailReason: 'no_billing_contact' } }));
+    const { showToast } = await import('../../shared/Toast');
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('no email was delivered'),
+      }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it.each([
+    ['no_email_service', 'not configured'],
+    ['send_failed', 'could not be delivered'],
+    ['pdf_render_failed', 'PDF could not be generated'],
+  ])('shows a distinct WARNING toast for emailReason %s', async (reason, fragment) => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    sendQuote.mockResolvedValue(resp({ data: { emailed: false, emailReason: reason } }));
+    const { showToast } = await import('../../shared/Toast');
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining(fragment),
+      }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('shows the success toast when the email actually went out', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    sendQuote.mockResolvedValue(resp({ data: { emailed: true } }));
+    const { showToast } = await import('../../shared/Toast');
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
   });
 
   it('forwards a typed personal message to the send call', async () => {
@@ -109,11 +200,70 @@ describe('QuoteDetail — send proposal', () => {
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('quote-send'));
-    await waitFor(() => expect(screen.getByTestId('quote-send-message')).toBeInTheDocument());
+    await openComposer();
     fireEvent.change(screen.getByTestId('quote-send-message'), { target: { value: 'Thanks for your business!' } });
 
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
-    await waitFor(() => expect(sendQuote).toHaveBeenCalledWith('q-1', 'Thanks for your business!'));
+    await waitFor(() =>
+      expect(sendQuote).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'], message: 'Thanks for your business!' }),
+    );
+  });
+
+  it('forwards To/Cc/Subject/includePdf overrides to the send call', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    sendQuote.mockResolvedValue(resp({ data: null }));
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: 'a@x.com, b@x.com' } });
+    // Cc starts collapsed behind the toggle, like a mail client.
+    expect(screen.queryByTestId('quote-send-cc')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-send-cc-toggle'));
+    fireEvent.change(screen.getByTestId('quote-send-cc'), { target: { value: 'c@x.com' } });
+    fireEvent.change(screen.getByTestId('quote-send-subject'), { target: { value: 'Custom subject' } });
+    fireEvent.click(screen.getByTestId('quote-send-include-pdf'));
+
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    await waitFor(() =>
+      expect(sendQuote).toHaveBeenCalledWith('q-1', {
+        to: ['a@x.com', 'b@x.com'],
+        cc: ['c@x.com'],
+        subject: 'Custom subject',
+        includePdf: false,
+      }),
+    );
+  });
+
+  it('disables Send and shows an inline error while To has an invalid address', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: 'not-an-email' } });
+
+    const confirm = screen.getByTestId('quote-send-confirm');
+    expect(confirm).toBeDisabled();
+    expect(screen.getByTestId('quote-send-to-error')).toHaveTextContent('not-an-email');
+    fireEvent.click(confirm);
+    expect(sendQuote).not.toHaveBeenCalled();
+  });
+
+  it('warns when a deposit is configured but Stripe is not connected', async () => {
+    // Partner scope unlocks the Stripe-status fetch (mocked to 'disconnected').
+    state.tokens = PARTNER_TOKENS;
+    const withDeposit: QuoteDetailData = {
+      ...filledDraft,
+      quote: { ...filledDraft.quote, depositType: 'percent', depositPercent: '30.00' },
+    };
+
+    render(<QuoteDetail detail={withDeposit} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    await waitFor(() => expect(screen.getByTestId('quote-send-payment-warning')).toBeInTheDocument());
   });
 });

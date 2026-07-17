@@ -17,8 +17,14 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 43,
     'auth.json': 14,
     'backup.json': 52,
-    'billing.json': 38,
-    'common.json': 89,
+    // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
+    // legitimately identical to English.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 45,
+    // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
+    'common.json': 90,
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -40,7 +46,12 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 39,
     'auth.json': 14,
     'backup.json': 30,
-    'billing.json': 32,
+    // +3: contract-template format strings ("v{{number}} · {{status}}",
+    // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
+    // to English in es-419.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 38,
     'common.json': 75,
     'devices.json': 115,
     'discovery.json': 17,
@@ -63,7 +74,13 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 58,
     'auth.json': 13,
     'backup.json': 59,
-    'billing.json': 38,
+    // +7: contract-template format strings + French cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
+    // "Versions", "Documents" ×2) that are legitimately identical to English
+    // in fr-FR.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 48,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,
@@ -86,8 +103,14 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 46,
     'auth.json': 15,
     'backup.json': 63,
-    'billing.json': 26,
-    'common.json': 90,
+    // +6: contract-template format strings + German cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
+    // that are legitimately identical to English in de-DE.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 35,
+    // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
+    'common.json': 91,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,

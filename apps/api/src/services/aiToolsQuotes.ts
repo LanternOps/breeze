@@ -252,8 +252,11 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             description:
               'Quote header or line patch fields. Header (update): depositType (\'none\'|\'percent\'|\'selected_lines\', ' +
               'omit to leave unchanged), depositPercent (0-100 exclusive, 2dp; null clears — only used when depositType ' +
-              'is \'percent\'). Line (update_line): depositEligible (boolean; whether this line counts toward the ' +
-              'deposit-due calculation when depositType is \'selected_lines\').',
+              'is \'percent\'); coverPage (null clears a previously-set cover page; omit to leave untouched) — ' +
+              '{enabled (boolean), title?, coverImageId? (quote image UUID, or null to clear — must be an image on ' +
+              'this SAME quote), preparedForName?, showPreparedBy? (default true)}. Line (update_line): ' +
+              'depositEligible (boolean; whether this line counts toward the deposit-due calculation when ' +
+              'depositType is \'selected_lines\').',
             properties: {
               depositType: { type: 'string', enum: ['none', 'percent', 'selected_lines'] },
               depositPercent: { type: ['number', 'null'] },
@@ -264,9 +267,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Quote block input (add_block/update_block). Required: blockType (\'heading\'|\'rich_text\'|\'image\'|' +
-              '\'line_items\') plus a matching content object — heading: {text, level? (1-3)}; rich_text: {html}; ' +
-              'image: {imageId (quote image UUID), caption?, width?}; line_items: {label?}. update_block must ' +
-              'restate the existing blockType (the type itself cannot change).',
+              '\'line_items\'|\'contract\') plus a matching content object — heading: {text, level? (1-3)}; rich_text: ' +
+              '{html}; image: {imageId (quote image UUID), caption?, width?}; line_items: {label?}; contract: ' +
+              '{templateId (contract template UUID), templateVersionId (must be a PUBLISHED version of that ' +
+              'template, visible to the quote\'s org/partner — otherwise rejected with INVALID_CONTRACT_TEMPLATE), ' +
+              'variableValues? (manual fill-ins keyed by variable name), label?}. update_block must restate the ' +
+              'existing blockType (the type itself cannot change).',
           },
           line: {
             type: 'object',

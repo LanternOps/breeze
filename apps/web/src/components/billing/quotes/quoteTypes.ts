@@ -6,8 +6,8 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -15,7 +15,41 @@ export type QuoteStatus =
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
 export type QuoteLineSourceType = 'catalog' | 'bundle' | 'manual';
-export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
+export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract';
+
+/** Client-facing shape of a `contract` block's `content` — server-rendered and
+ *  variable-substituted (contractTemplateRender.ts's renderContractBlocksForClient),
+ *  identical across portal/public/admin. Never carries the raw
+ *  templateId/templateVersionId/variableValues authoring shape or an
+ *  unresolved `{{token}}`. */
+export interface ContractBlockContent {
+  label?: string;
+  templateName: string;
+  versionNumber: number;
+  sourceType: 'authored' | 'uploaded';
+  renderedHtml: string | null;
+  fileUrl: string | null;
+  /** ADMIN editor ONLY (added by GET /quotes/:id's admin serialization, never by
+   *  the portal/public serves): the raw authoring fields the editor needs to
+   *  render an editable manual-variable form and offer a version-update nudge.
+   *  Populated for authored AND uploaded-PDF blocks alike (loadContractBlockAuthoring
+   *  keys off the pinned version row, not sourceType). Absent on portal/public
+   *  payloads, and on a block whose pinned template version no longer exists
+   *  (deleted/malformed) — that block is omitted from the authoring map. */
+  authoring?: ContractBlockAuthoring;
+}
+
+/** Raw authoring fields for a persisted `contract` block, exposed only on the
+ *  admin editor payload. `latestPublishedVersion*` describe the newest published
+ *  version of the same template (for the explicit "Update to vN" nudge). */
+export interface ContractBlockAuthoring {
+  templateId: string;
+  templateVersionId: string;
+  variableValues: Record<string, string>;
+  declaredVariables: ContractVariable[];
+  latestPublishedVersionId: string | null;
+  latestPublishedVersionNumber: number | null;
+}
 
 /** A row from `GET /quotes` / the `quote` field of `GET /quotes/:id`. */
 export interface Quote {
@@ -64,6 +98,9 @@ export interface Quote {
   terms: string | null;
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
+  /** Enhanced-proposals cover page (quotes.cover_page jsonb). Optional/null so
+   *  older payloads and list fixtures without the column stay assignable. */
+  coverPage?: CoverPage | null;
   acceptedAt: string | null;
   declinedAt: string | null;
   convertedAt: string | null;

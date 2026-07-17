@@ -14,7 +14,7 @@ export const quoteStatusEnum = pgEnum('quote_status', [
 ]);
 export const quoteLineSourceTypeEnum = pgEnum('quote_line_source_type', ['catalog', 'bundle', 'manual']);
 export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_time', 'monthly', 'annual']);
-export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items']);
+export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items', 'contract']);
 export const quoteDepositTypeEnum = pgEnum('quote_deposit_type', ['none', 'percent', 'selected_lines']);
 
 function sqlNumberPresent(t: { quoteNumber: unknown }): SQL { return sql`${t.quoteNumber} IS NOT NULL`; }
@@ -55,6 +55,9 @@ export const quotes = pgTable('quotes', {
   introNotes: text('intro_notes'),
   terms: text('terms'),
   sellerSnapshot: jsonb('seller_snapshot'),
+  // Enhanced-proposals cover page content (title, logo, hero image, etc.) —
+  // contract documents + enhanced proposals Phase 1.
+  coverPage: jsonb('cover_page'),
   termsAndConditions: text('terms_and_conditions'),
   declineReason: text('decline_reason'),
   convertedInvoiceId: uuid('converted_invoice_id'),

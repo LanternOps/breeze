@@ -67,6 +67,19 @@
     "dashboard": "Dashboard",
     "profileSettings": "Profile Settings"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formatting",
+    "bold": "Bold",
+    "italic": "Italic",
+    "underline": "Underline",
+    "heading3": "Heading",
+    "heading4": "Subheading",
+    "bulletList": "Bulleted list",
+    "orderedList": "Numbered list",
+    "link": "Link",
+    "linkPrompt": "Enter a URL (http:// or https://)",
+    "linkInvalid": "Only http:// and https:// links are allowed"
+  },
   "actions": {
     "save": "Save",
     "cancel": "Cancel",

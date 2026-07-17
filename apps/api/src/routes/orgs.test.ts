@@ -999,6 +999,97 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — emailSignature', () => {
+    // Local copies of the :id-block helpers (plain functions, safe to
+    // duplicate — same pattern as the ticketing.inbound describe above).
+    function mockCurrentPartnerSelect() {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {}, emailSignature: null }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings, emailSignature: data.emailSignature }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+    });
+
+    // body.emailSignature?.trim() || null (orgs.ts ~716): an all-whitespace
+    // value trims to '', which is falsy, so it persists as null rather than
+    // as a whitespace string.
+    it('persists a whitespace-only signature as null', async () => {
+      mockCurrentPartnerSelect();
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ emailSignature: '   \n\t  ' });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().emailSignature).toBeNull();
+    });
+
+    // updatePartnerSettingsSchema caps emailSignature at 2000 chars — a longer
+    // value must 400 via zValidator before the handler runs any DB write.
+    it('rejects a signature over 2000 chars with 400 and never writes to the DB', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ emailSignature: 'a'.repeat(2001) });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('round-trips a valid signature into the update payload', async () => {
+      mockCurrentPartnerSelect();
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ emailSignature: 'Best regards,\nAcme Support' });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().emailSignature).toBe('Best regards,\nAcme Support');
+    });
+
+    // body.emailSignature !== undefined gates the write (orgs.ts ~716) — an
+    // omitted field must leave the column untouched rather than nulling it.
+    it('leaves the signature untouched when the field is omitted', async () => {
+      mockCurrentPartnerSelect();
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ name: 'Renamed Partner' });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured()).not.toHaveProperty('emailSignature');
+    });
+  });
+
   describe('DELETE /orgs/partners/:id', () => {
     it('should delete a partner', async () => {
       vi.mocked(db.update).mockReturnValue({

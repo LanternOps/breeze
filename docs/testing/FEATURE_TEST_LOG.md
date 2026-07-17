@@ -3717,3 +3717,29 @@ Refined the review-round C1 handling — missing *required* artifacts now fails 
 - `backup_stop` during helper spawn returns "backup helper is already being spawned" (stop lost); benign for the reaper (retries) but a UI stop click in that window is dropped.
 - Rebuilding `bin/breeze-backup` under a running agent → "auth rejected: binary hash mismatch" until agent restart (hash pinning working as designed; dev-loop gotcha).
 - Device "Updating" badge persists while a failed auto-update retries every heartbeat; recovers once update stops failing.
+
+## PAM approval dialog on the secure desktop — 2026-07-16
+
+**Branch:** `ToddHebebrand/PAM-Testing-2`
+**Commit:** `3e9046839`
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] Agent: SYSTEM-only PAM scope/selection, same-Windows-session fail-closed routing, dialog IPC authorization, input-desktop fallback, restore/cleanup ordering, restore failure, and panic cleanup under Go unit tests with `-race`.
+- [x] Agent: full `go test -race ./...` suite.
+- [x] Windows build: `internal/userhelper`, `internal/sessionbroker`, and `internal/heartbeat` test binaries cross-compiled for Windows amd64 with CGO disabled.
+- [ ] Native Windows: real UAC interaction with `PromptOnSecureDesktop=1` and `=0` was unavailable because this worktree has no configured E2E/dev-push credentials or Windows device ID.
+
+### Evidence
+
+- Focused `sessionbroker`, `userhelper`, and `heartbeat` race tests passed.
+- Full agent race suite passed after all review fixes.
+- Focused Go vet, Windows cross-compilation, and diff whitespace checks passed.
+- Independent task review and final whole-branch review found no unresolved Critical or Important issues.
+
+### Issues Found
+
+- No implementation defects remain from automated review and verification.
+- Before release, manually verify Approve, Deny, timeout, default-desktop fallback, and console/RDP coexistence on a native Windows test host.

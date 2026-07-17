@@ -556,6 +556,8 @@ const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
   name: z.string().min(1).optional(),
   billingEmail: z.string().email().optional(),
+  // Plain-text signature appended to outbound customer emails (quote sends).
+  emailSignature: z.string().max(2000).nullable().optional(),
   inboundLocalPart: z
     .string()
     .max(63)
@@ -710,6 +712,8 @@ orgRoutes.patch(
 
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
+  // Explicit null (or an all-whitespace value) clears the signature.
+  if (body.emailSignature !== undefined) updateData.emailSignature = body.emailSignature?.trim() || null;
   if (body.inboundLocalPart !== undefined) {
     if (body.inboundLocalPart === null) {
       updateData.inboundLocalPart = null;

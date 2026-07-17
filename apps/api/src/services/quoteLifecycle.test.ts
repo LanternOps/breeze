@@ -38,19 +38,27 @@ vi.mock('../db', () => {
 let capturedPdfArgs: unknown[] | null = null;
 const sendEmailMock = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('./quotePdf', () => ({
-  renderQuotePdf: vi.fn((...args: unknown[]) => {
-    capturedPdfArgs = args;
-    return Promise.resolve(Buffer.from('%PDF-fake'));
-  }),
-}));
+// Keep formatMoney/formatDate real (importOriginal) — contractTemplateRender.ts's
+// resolveAutoVariables imports them from this module for the send-time contract
+// gate (Task 12); only renderQuotePdf itself is stubbed out.
+vi.mock('./quotePdf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quotePdf')>();
+  return {
+    ...actual,
+    renderQuotePdf: vi.fn((...args: unknown[]) => {
+      capturedPdfArgs = args;
+      return Promise.resolve(Buffer.from('%PDF-fake'));
+    }),
+  };
+});
 
 vi.mock('./email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./email')>();
-  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock })) };
+  return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
 });
 
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
+import { renderQuotePdf } from './quotePdf';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -63,7 +71,7 @@ const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
  * matching the invoice-link convention in invoicePdf.ts.
  */
 describe('quoteLifecycle portal URL', () => {
-  const ENV_KEYS = ['PUBLIC_PORTAL_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL'] as const;
+  const ENV_KEYS = ['PUBLIC_PORTAL_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL', 'PORTAL_BASE_PATH'] as const;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -115,7 +123,7 @@ describe('quoteLifecycle portal URL', () => {
     expect(url).not.toMatch(/^https?:\/\/\//); // no empty-authority `://[/]`
     expect(url).not.toContain('https:///portal');
     expect(new URL(url).hostname).toBe('app.example.com'); // fell through to next valid candidate
-    expect(url).toBe('https://app.example.com/quote/tok');
+    expect(url).toBe('https://app.example.com/portal/quote/tok');
   });
 
   it('preserves a valid host + /portal base path (not over-eagerly skipped)', () => {
@@ -125,10 +133,34 @@ describe('quoteLifecycle portal URL', () => {
     expect(new URL(base).hostname).toBe('example.com');
   });
 
-  it('falls through an empty PUBLIC_PORTAL_URL to PUBLIC_APP_URL', () => {
+  it('falls through an empty PUBLIC_PORTAL_URL to PUBLIC_APP_URL and appends /portal', () => {
+    // The prod-symptom regression: PUBLIC_PORTAL_URL unset + PUBLIC_APP_URL set
+    // used to emit https://host/quote/<t> — a dead link missing /portal.
     process.env.PUBLIC_PORTAL_URL = '';
     process.env.PUBLIC_APP_URL = 'https://app.example.com';
-    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/quote/t');
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/portal/quote/t');
+  });
+
+  it('does not double-append when the app-origin fallback already ends with /portal', () => {
+    process.env.PUBLIC_APP_URL = 'https://app.example.com/portal';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/portal/quote/t');
+  });
+
+  it('appends /portal to the DASHBOARD_URL fallback too', () => {
+    process.env.DASHBOARD_URL = 'https://dash.example.com/';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://dash.example.com/portal/quote/t');
+  });
+
+  it('honors a custom PORTAL_BASE_PATH on app-origin fallbacks', () => {
+    process.env.PUBLIC_APP_URL = 'https://app.example.com';
+    process.env.PORTAL_BASE_PATH = '/c';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://app.example.com/c/quote/t');
+  });
+
+  it('never appends the base path to an explicit PUBLIC_PORTAL_URL', () => {
+    // PUBLIC_PORTAL_URL is authoritative — even one without a path segment.
+    process.env.PUBLIC_PORTAL_URL = 'https://portal.example.com';
+    expect(buildPublicQuoteAcceptUrl('t')).toBe('https://portal.example.com/quote/t');
   });
 
   it('falls back to a host-bearing localhost URL (with portal base) when nothing is configured', () => {
@@ -292,6 +324,167 @@ describe('sendQuote customer-facing PDF', () => {
 });
 
 /**
+ * Email delivery status: the send is best-effort-emailed, so the result must
+ * say honestly whether an email went out and WHY not (the web UI branches its
+ * toast on this — a silent `emailed:false` was the "no billing contact" black
+ * hole where the seller saw success while the customer received nothing).
+ */
+describe('sendQuote email delivery status', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  const quoteRow = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+  };
+  const lineRow = { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' };
+
+  /** getQuote (quote/blocks/lines/pax8/billTo-org) + partnerRow + org + claim. */
+  function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}) {
+    queueResult([quoteRow]);
+    queueResult([]); // blocks
+    queueResult([lineRow]); // lines
+    queueResult([]); // no staged Pax8 order
+    queueResult([org]); // getQuote's draft billTo org lookup
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, ...partner }]);
+    queueResult([org]); // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+  }
+
+  it('reports no_billing_contact (and sends nothing) when the org has no billing email', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    // No billingContact → the email branch short-circuits before the
+    // portalBranding read, straight to the final re-select.
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('no_billing_contact');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(result.quote.status).toBe('sent'); // the send itself still commits
+  });
+
+  it('reports send_failed when the email provider throws (send still commits)', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    sendEmailMock.mockRejectedValue(new Error('smtp down'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('send_failed');
+    expect(result.quote.status).toBe('sent');
+  });
+
+  it('reports pdf_render_failed (and never calls the email transport) when building the attachment throws', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+    vi.mocked(renderQuotePdf).mockRejectedValueOnce(new Error('pdfkit blew up'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('pdf_render_failed');
+    expect(sendEmailMock).not.toHaveBeenCalled(); // never reached the transport
+    expect(result.quote.status).toBe('sent'); // the send itself still commits
+  });
+
+  it('reports emailed:true with no reason on a successful send', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(result.emailReason).toBeUndefined();
+  });
+
+  it('sends with an MSP-branded from display name and the partner billing email as reply-to', async () => {
+    queueThroughClaim(
+      { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
+      { billingEmail: 'accounts@acmemsp.example' },
+    );
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor);
+
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      // Display name is the MSP ("via Breeze" keeps the platform address honest);
+      // the envelope address itself stays the platform's for SPF/DKIM alignment.
+      from: '"Acme MSP via Breeze" <no-reply@test.example>',
+      replyTo: 'accounts@acmemsp.example',
+    }));
+  });
+
+  it('uses composer recipients + cc over the billing-contact fallback', async () => {
+    // Org has NO billing contact — the explicit `to` must carry the send anyway.
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor, { to: ['buyer@customer.example'], cc: ['cfo@customer.example'] });
+
+    expect(result.emailed).toBe(true);
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['buyer@customer.example'],
+      cc: ['cfo@customer.example'],
+    }));
+  });
+
+  it('includePdf:false skips the PDF render and attaches nothing', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    const result = await sendQuote('q1', actor, { includePdf: false });
+
+    expect(result.emailed).toBe(true);
+    expect(capturedPdfArgs).toBeNull(); // renderQuotePdf never invoked
+    const sent = sendEmailMock.mock.calls[0]![0] as { attachments?: unknown; html: string };
+    expect(sent.attachments).toBeUndefined();
+    expect(sent.html).not.toContain('PDF copy is attached');
+  });
+
+  it('passes subject override and partner signature through to the email', async () => {
+    queueThroughClaim(
+      { name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } },
+      { emailSignature: 'Todd @ Acme MSP' },
+    );
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor, { subject: 'Your workstation refresh' });
+
+    const sent = sendEmailMock.mock.calls[0]![0] as { subject: string; html: string };
+    expect(sent.subject).toBe('Your workstation refresh');
+    expect(sent.html).toContain('Todd @ Acme MSP');
+  });
+
+  it('omits reply-to when the partner has no billing email', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor);
+
+    expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({ replyTo: undefined }));
+  });
+});
+
+/**
  * Bill-to snapshot freeze (bug: org Billing address never appeared on the quote).
  * `sendQuote` must copy the org's Billing-settings address into the quote's frozen
  * `billToAddress` (+ name/taxId) at send time — the same snapshot the invoice issue
@@ -427,5 +620,177 @@ describe('sendQuote bill-to snapshot', () => {
     expect(claimSet().billToAddress).toEqual({
       line1: null, line2: null, city: null, region: null, postalCode: null, country: null,
     });
+  });
+});
+
+/**
+ * Send-time contract-variable gate (Task 12): a `contract` block references an
+ * immutable, published template version with declared variables (auto/manual).
+ * Sending must be blocked while any declared variable has no resolved value —
+ * otherwise a raw `{{token}}` placeholder ships straight into a legal document.
+ * loadContractBlockRenderData (contractTemplateRender.ts) reads through the
+ * SAME mocked '../db' + withSystemDbAccessContext/runOutsideDbContext used
+ * throughout this file, so its selects are just more entries in the shared
+ * `results` queue, exactly like every other db read in sendQuote.
+ */
+describe('sendQuote contract-variable gate', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: '2026-08-01',
+    title: 'Managed Services Proposal',
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: 'Acme Co', billToTaxId: null, billToAddress: null,
+    oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+  };
+
+  const contractBlock = (variableValues: Record<string, string>) => ({
+    id: 'block-1',
+    blockType: 'contract',
+    content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues },
+  });
+
+  const versionRow = {
+    id: 'ver-1',
+    templateId: 'tmpl-1',
+    orgId: null,
+    partnerId: 'p1',
+    versionNumber: 1,
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>{{client.name}} agrees to {{governing_state}}</p>',
+    fileData: null,
+    mime: null,
+    byteSize: null,
+    sha256: 'abc123',
+    declaredVariables: [
+      { name: 'client.name', kind: 'auto' },
+      { name: 'governing_state', kind: 'manual' },
+    ],
+    publishedAt: new Date('2026-07-01T00:00:00Z'),
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const templateRow = {
+    id: 'tmpl-1', orgId: null, partnerId: 'p1', name: 'MSA', description: null,
+    status: 'active', createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+
+  const org = {
+    name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' },
+    billingAddressLine1: '1 Elm', billingAddressLine2: null,
+    billingAddressCity: 'Reno', billingAddressRegion: 'NV',
+    billingAddressPostalCode: '89501', billingAddressCountry: 'US',
+  };
+
+  it('blocks send with the unresolved (manual) variable name when a contract block variable is unfilled', async () => {
+    queueResult([baseQuote]);              // getQuote: quote
+    queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
+    queueResult([]);                        // getQuote: lines
+    queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([org]);                     // getQuote's own draft billTo org lookup
+    queueResult([versionRow]);              // loadContractBlockRenderData: version select
+    queueResult([templateRow]);             // loadContractBlockRenderData: template select
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({
+      status: 422,
+      code: 'CONTRACT_VARIABLES_UNRESOLVED',
+      message: expect.stringContaining('governing_state'),
+    });
+  });
+
+  it('does not gate on an auto variable — it is always resolved from the quote itself', async () => {
+    // declaredVariables includes 'client.name' (kind: auto); only the manual
+    // 'governing_state' should ever appear in the unresolved list.
+    queueResult([baseQuote]);
+    queueResult([contractBlock({})]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([org]);
+    queueResult([versionRow]);
+    queueResult([templateRow]);
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({
+      code: 'CONTRACT_VARIABLES_UNRESOLVED',
+      message: expect.not.stringContaining('client.name'),
+    });
+  });
+
+  it('sends successfully once every manual variable is filled in', async () => {
+    queueResult([baseQuote]);                                   // getQuote: quote
+    queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([org]);                     // getQuote's own draft billTo org lookup
+    queueResult([versionRow]);              // loadContractBlockRenderData: version select
+    queueResult([templateRow]);             // loadContractBlockRenderData: template select
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([org]);                     // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]);            // update ... returning (claimed)
+    queueResult([]);                        // portalBranding
+    // Task 14: the emailed-PDF attachment pre-fetches contract render data via
+    // loadContractPdfInputs, which calls loadContractBlockRenderData a SECOND
+    // time (the first call above was the send-time variable gate) — same
+    // version + template selects, since the read is a plain (uncached) DB call.
+    queueResult([versionRow]);              // loadContractPdfInputs: version select
+    queueResult([templateRow]);             // loadContractPdfInputs: template select
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    const result = await sendQuote('q1', actor);
+    expect(result.quote.status).toBe('sent');
+  });
+
+  it('overlays the just-frozen billTo/seller onto the quote before rendering the contract + PDF', async () => {
+    // Regression: the in-memory `quote` was read BEFORE the send-time freeze, so
+    // its billTo*/sellerSnapshot were still NULL (draft). Rendering the emailed
+    // contract/PDF from that stale row substituted {{client.name}}/{{seller.name}}
+    // to empty strings. sendQuote must overlay the frozen values first.
+    const autoOnlyVersion = {
+      ...versionRow,
+      bodyHtml: '<p>Prepared for {{client.name}} by {{seller.name}}</p>',
+      declaredVariables: [
+        { name: 'client.name', kind: 'auto' },
+        { name: 'seller.name', kind: 'auto' },
+      ],
+    };
+    const draftNullBillTo = { ...baseQuote, billToName: null, billToAddress: null, sellerSnapshot: null };
+
+    queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
+    queueResult([contractBlock({})]);        // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);                         // getQuote: no staged Pax8 order
+    queueResult([org]);                      // getQuote's own draft billTo org lookup
+    queueResult([autoOnlyVersion]);          // send gate: version
+    queueResult([templateRow]);              // send gate: template
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([org]);                      // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]);             // update ... returning (claimed)
+    queueResult([]);                         // portalBranding
+    queueResult([autoOnlyVersion]);          // loadContractPdfInputs: version
+    queueResult([templateRow]);              // loadContractPdfInputs: template
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    await sendQuote('q1', actor);
+
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, ...) — arg 0 is the quote object that was rendered.
+    const renderedQuote = capturedPdfArgs![0] as Record<string, unknown>;
+    expect(renderedQuote.billToName).toBe('Customer Co'); // frozen org name, not the stale NULL
+    expect((renderedQuote.sellerSnapshot as { name?: string } | null)?.name).toBe('Acme MSP'); // built from partnerRow, not NULL
+    // renderQuotePdf(..., contractRenderData) — the substituted contract HTML must
+    // carry the frozen customer/seller identity, not empty strings.
+    const contractRenderData = capturedPdfArgs![6] as Map<string, { html: string | null }>;
+    const html = contractRenderData.get('block-1')!.html!;
+    expect(html).toContain('Customer Co');
+    expect(html).toContain('Acme MSP');
   });
 });

@@ -203,12 +203,15 @@
     "email": "Email",
     "phone": "Phone",
     "website": "Website",
+    "emailSignature": "Email Signature",
+    "emailSignatureDescription": "Appended to proposal emails sent to your customers.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "John Smith",
       "email": "contact@example.com",
       "phone": "+1 (555) 123-4567",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Best regards,\nThe Acme MSP team"
     },
     "countries": {
       "select": "— Select country —",

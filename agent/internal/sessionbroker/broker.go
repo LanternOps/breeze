@@ -207,10 +207,11 @@ func (b *Broker) maybeStartKeepalive(session *Session, role string) {
 	}
 }
 
-// Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
+// Role-based scopes: SYSTEM helpers own desktop capture and secure-desktop PAM
+// dialogs; user-token helpers own script execution.
 var (
-	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
-	userHelperScopes     = []string{"notify", "clipboard", "run_as_user", ipc.ScopePam}
+	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop", ipc.ScopePam}
+	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
 	watchdogHelperScopes = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
@@ -1183,7 +1184,7 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 
 	hasCapability := func(s *Session) bool {
 		if capability == ipc.ScopePam {
-			return s.HelperRole == ipc.HelperRoleUser && s.HasScope(ipc.ScopePam)
+			return s.HelperRole == ipc.HelperRoleSystem && s.HasScope(ipc.ScopePam)
 		}
 		// GetCapabilities takes s.mu — required because the atomic snapshot
 		// only protects the outer map identity, not per-session fields. A
@@ -1219,6 +1220,12 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	}
 	if best != nil {
 		return best
+	}
+	// PAM approval is tied to the requested (normally console) Windows
+	// session. Never fall back to another active session: that would expose
+	// one user's elevation decision to a different interactive user.
+	if capability == ipc.ScopePam {
+		return nil
 	}
 
 	// Second pass: fall back to any capable session that isn't disconnected.
@@ -1419,6 +1426,12 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	if session == nil {
 		return denyDismiss, fmt.Errorf("nil PAM helper session")
 	}
+	if session.HelperRole != ipc.HelperRoleSystem {
+		return denyDismiss, fmt.Errorf("PAM dialog requires a SYSTEM helper session")
+	}
+	if !session.HasScope(ipc.ScopePam) {
+		return denyDismiss, fmt.Errorf("PAM SYSTEM helper session is missing %q scope", ipc.ScopePam)
+	}
 
 	resp, err := b.SendCommandAndWait(session, id, ipc.TypePamRequestDialog, req, timeout)
 	if err != nil {
@@ -1433,6 +1446,70 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 		return denyDismiss, fmt.Errorf("decode PAM dialog result: %w", err)
 	}
 	return result, nil
+}
+
+// DismissPamConsent asks the SYSTEM PAM helper to dismiss the active Windows
+// consent process and waits for the correlated result.
+func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	var zero ipc.PamDismissConsentResult
+	if session == nil {
+		return zero, fmt.Errorf("nil PAM helper session")
+	}
+	if session.HelperRole != ipc.HelperRoleSystem {
+		return zero, fmt.Errorf("PAM consent dismissal requires a SYSTEM helper session")
+	}
+	if !session.HasScope(ipc.ScopePam) {
+		return zero, fmt.Errorf("PAM SYSTEM helper session is missing %q scope", ipc.ScopePam)
+	}
+	deadline, err := pamDismissConsentDeadline(time.Now(), timeout)
+	if err != nil {
+		return zero, err
+	}
+
+	resp, quiesced, err := session.sendCommandWithQuiescence(
+		id,
+		ipc.TypePamDismissConsent,
+		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()},
+		timeout,
+	)
+	if err != nil {
+		if quiesced != nil {
+			return zero, &PamDismissUncertainError{Cause: err, Quiesced: quiesced}
+		}
+		return zero, err
+	}
+	if resp.Error != "" {
+		return zero, fmt.Errorf("PAM consent dismissal helper error: %s", resp.Error)
+	}
+
+	var result ipc.PamDismissConsentResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return zero, fmt.Errorf("decode PAM consent dismissal result: %w", err)
+	}
+	return result, nil
+}
+
+// pamDismissConsentDeadline reserves enough of the broker timeout for the
+// helper to serialize and return its result after input injection stops. The
+// deadline is truncated to the request's millisecond wire precision.
+func pamDismissConsentDeadline(now time.Time, timeout time.Duration) (time.Time, error) {
+	if timeout <= 0 {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout must be positive")
+	}
+
+	grace := timeout / 5
+	if grace > time.Second {
+		grace = time.Second
+	}
+	if grace <= 0 {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout is too small")
+	}
+
+	deadline := now.Add(timeout - grace).Truncate(time.Millisecond)
+	if !deadline.After(now) {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout is too small for millisecond deadline precision")
+	}
+	return deadline, nil
 }
 
 // sendPreAuthRejectAndClose wraps rawConn, sends a PreAuthReject envelope
