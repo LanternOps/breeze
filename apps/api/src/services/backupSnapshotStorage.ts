@@ -137,18 +137,29 @@ function keyMatchesSnapshotPrefix(key: string, normalizedPrefix: string): boolea
 //
 // Unlike normalizeStoragePrefix (per-snapshot, honors metadata.storagePrefix
 // overrides for legacy compat), these compute the single destination-wide
-// "snapshot root" GC lists once per backupConfigs row, and the manifest key
-// GC expects every retained snapshot to have. No production backups exist yet
-// (see design doc), so there's no legacy storagePrefix override to honor here.
+// "snapshot root" GC lists once per storage identity, and the manifest key
+// GC expects every retained snapshot to have.
+//
+// KNOWN GAP (GC review 2026-07-17, IMPORTANT 1): these deliberately IGNORE
+// `providerConfig.prefix` entirely — the agent
+// (agent/internal/backup/snapshot.go's snapshotRootDir) writes every object
+// under `snapshots/<id>/...` VERBATIM regardless of any configured prefix,
+// so applying a prefix here made GC 404 on manifest fetches for any
+// destination with a configured prefix. If/when the agent gains real prefix
+// support, this function and the agent's snapshotRootDir usage must change
+// TOGETHER — applying a prefix on only one side either 404s manifest fetches
+// (GC prefixed, agent didn't) or sweeps/lists the wrong bucket region
+// (agent prefixed, GC didn't). This is also why GC groups destinations by
+// storage identity EXCLUDING prefix (see backupRetention.ts) — two configs
+// that only differ by a cosmetically-configured prefix are, in reality, the
+// exact same physical object namespace as far as the agent is concerned.
 
-export function backupSnapshotRootPrefix(providerConfig: Record<string, unknown>): string {
-  const configuredPrefix = getStringValue(providerConfig, 'prefix');
-  const normalized = configuredPrefix ? configuredPrefix.replace(/^\/+|\/+$/g, '') : '';
-  return normalized ? `${normalized}/${BACKUP_SNAPSHOT_ROOT_DIR}` : BACKUP_SNAPSHOT_ROOT_DIR;
+export function backupSnapshotRootPrefix(): string {
+  return BACKUP_SNAPSHOT_ROOT_DIR;
 }
 
-export function backupSnapshotManifestKey(providerConfig: Record<string, unknown>, snapshotId: string): string {
-  return `${backupSnapshotRootPrefix(providerConfig)}/${snapshotId}/${BACKUP_SNAPSHOT_MANIFEST_KEY}`;
+export function backupSnapshotManifestKey(snapshotId: string): string {
+  return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/${BACKUP_SNAPSHOT_MANIFEST_KEY}`;
 }
 
 // ── GC support: list objects with last-modified ──────────────────────────────
@@ -158,7 +169,14 @@ async function listS3ObjectsWithLastModified(
   prefix: string,
 ): Promise<BackupObjectListing[]> {
   const { bucket, client } = buildS3StorageClient(providerConfig);
-  const normalizedPrefix = normalizeObjectPrefix(prefix);
+  // CRITICAL (GC review 2026-07-17): a bare "snapshots" Prefix string-matches
+  // ANY key that merely starts with those characters — e.g. "snapshots-old/db.dump"
+  // or "snapshotsummary.txt" — not just the "snapshots/" namespace. That would
+  // make an unrelated object a GC delete candidate. Force exactly one trailing
+  // slash so S3's prefix match is scoped to the actual directory-like
+  // namespace, same guard `keyMatchesSnapshotPrefix` (above) applies for
+  // per-snapshot prefixes elsewhere in this file.
+  const normalizedPrefix = `${normalizeObjectPrefix(prefix)}/`;
   const results: BackupObjectListing[] = [];
 
   let continuationToken: string | undefined;
@@ -170,7 +188,15 @@ async function listS3ObjectsWithLastModified(
     }));
 
     for (const item of listed.Contents ?? []) {
-      if (typeof item.Key === 'string' && item.Key.length > 0) {
+      // Defense-in-depth: AWS's own Prefix filtering is authoritative, but
+      // don't rely on it exclusively — a misbehaving or (in tests) mocked
+      // provider returning an out-of-namespace key must never become a
+      // delete candidate.
+      if (
+        typeof item.Key === 'string' &&
+        item.Key.length > 0 &&
+        item.Key.startsWith(normalizedPrefix)
+      ) {
         results.push({
           key: item.Key,
           lastModified: item.LastModified instanceof Date ? item.LastModified : null,

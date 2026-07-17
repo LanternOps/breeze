@@ -18,6 +18,7 @@ import {
   applyBackupSnapshotImmutability,
   checkBackupProviderCapabilities,
   deleteBackupSnapshotArtifacts,
+  listBackupObjectsUnderPrefix,
 } from './backupSnapshotStorage';
 
 describe('backup snapshot storage', () => {
@@ -245,5 +246,58 @@ describe('backup snapshot storage', () => {
       metadata: {},
       retainUntil: new Date('2026-04-30T00:00:00.000Z'),
     })).rejects.toThrow('No snapshot objects found for provider-enforced immutability');
+  });
+
+  // GC review 2026-07-17, CRITICAL 2: a bare "snapshots" Prefix string-matches
+  // ANY key starting with those characters ("snapshots-old/…",
+  // "snapshotsummary.txt", …), not just the "snapshots/" namespace. GC's
+  // listing must scope with a trailing slash, and must not trust a
+  // misbehaving/mocked provider that ignores the Prefix it was given.
+  describe('listBackupObjectsUnderPrefix — S3 namespace scoping (CRITICAL 2)', () => {
+    it('lists with a trailing-slash-scoped prefix, not a bare namespace string', async () => {
+      sendMock.mockImplementationOnce(async (command) => {
+        expect(command).toBeInstanceOf(ListObjectsV2Command);
+        expect(command.input.Prefix).toBe('snapshots/');
+        return {
+          Contents: [{ Key: 'snapshots/abc/manifest.json', LastModified: new Date('2026-01-01') }],
+          IsTruncated: false,
+        };
+      });
+
+      const result = await listBackupObjectsUnderPrefix({
+        provider: 's3',
+        providerConfig: { bucket: 'backups', region: 'us-east-1' },
+        prefix: 'snapshots',
+      });
+
+      expect(result).toEqual([
+        { key: 'snapshots/abc/manifest.json', lastModified: new Date('2026-01-01') },
+      ]);
+    });
+
+    it('filters out an out-of-namespace lookalike key even if a misbehaving provider returns one', async () => {
+      sendMock.mockImplementationOnce(async () => ({
+        Contents: [
+          { Key: 'snapshots/abc/manifest.json', LastModified: new Date('2026-01-01') },
+          // Lookalikes a bare "snapshots" prefix match would have let through —
+          // must never become GC delete candidates.
+          { Key: 'snapshots-old/db.dump', LastModified: new Date('2020-01-01') },
+          { Key: 'snapshotsummary.txt', LastModified: new Date('2020-01-01') },
+        ],
+        IsTruncated: false,
+      }));
+
+      const result = await listBackupObjectsUnderPrefix({
+        provider: 's3',
+        providerConfig: { bucket: 'backups', region: 'us-east-1' },
+        prefix: 'snapshots',
+      });
+
+      expect(result).toEqual([
+        { key: 'snapshots/abc/manifest.json', lastModified: new Date('2026-01-01') },
+      ]);
+      expect(result.map((r) => r.key)).not.toContain('snapshots-old/db.dump');
+      expect(result.map((r) => r.key)).not.toContain('snapshotsummary.txt');
+    });
   });
 });

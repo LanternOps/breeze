@@ -18,6 +18,15 @@ import (
 // than this most likely belongs to a run whose remote partial upload has
 // already drifted too far from the current source tree to safely resume —
 // treat it as abandoned instead.
+//
+// Server-side cross-reference: the API's mark-and-sweep GC
+// (BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS in
+// apps/api/src/jobs/backupRetention.ts) protects a manifest-less (no
+// manifest.json yet) snapshot prefix from deletion until it's older than
+// this SAME 7-day window, because a fresher partial prefix may still be
+// this journal's live resume target. If this value changes, that constant
+// must change with it (and vice versa) or GC can delete state a resumable
+// run still depends on.
 var journalMaxAge = 7 * 24 * time.Hour
 
 // setJournalMaxAgeForTest overrides journalMaxAge so tests can exercise the
