@@ -16,8 +16,6 @@ type PatchApprovalModalProps = {
   open: boolean;
   patch?: Patch | null;
   ringId?: string | null;
-  /** @deprecated No longer drives the approval gate; retained only for callers that still pass it. */
-  currentOrgId?: string | null;
   /** Name of the organization this patch approval applies to, for the confirm message. */
   orgName?: string | null;
   /** Number of devices in the target ring/scope, for the confirm message. */
@@ -59,7 +57,6 @@ export default function PatchApprovalModal({
   open,
   patch,
   ringId,
-  currentOrgId,
   orgName,
   ringDeviceCount,
   onClose,

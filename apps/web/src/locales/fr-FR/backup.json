@@ -777,7 +777,7 @@
     "loadFailed": "Échec du chargement des profils de sauvegarde",
     "emptyTitle": "Aucun profil de sauvegarde pour l'instant",
     "emptyBody": "Un profil regroupe des sources de données (fichiers, état du système, SQL Server, Hyper-V) avec leurs options, de sorte qu'une seule sélection protège toute une classe d'appareils. Partez d'un modèle :",
-    "allOrgs": "Toutes les organisations",
+    "allOrgs": "À l’échelle du partenaire",
     "inUseCount_one": "Utilisé par {{count}} politique",
     "inUseCount_other": "Utilisé par {{count}} politiques",
     "sourceFile": "Fichiers",

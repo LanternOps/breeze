@@ -27,7 +27,6 @@ type ProfileOption = {
 
 type NetworkChangesPanelProps = {
   currentOrgId: string | null;
-  currentSiteId: string | null;
   siteOptions: SiteOption[];
   timezone?: string;
 };
@@ -40,9 +39,11 @@ type FilterState = {
   since: string;
 };
 
-function createDefaultFilters(currentSiteId: string | null): FilterState {
+// Site filtering is owned by this panel's own filter select (the global
+// switcher no longer carries a site dimension).
+function createDefaultFilters(): FilterState {
   return {
-    siteId: currentSiteId ?? 'all',
+    siteId: 'all',
     profileId: 'all',
     eventType: 'all',
     acknowledged: 'false',
@@ -85,7 +86,6 @@ function normalizeDevices(raw: unknown): DeviceOption[] {
 
 export default function NetworkChangesPanel({
   currentOrgId,
-  currentSiteId,
   siteOptions,
   timezone
 }: NetworkChangesPanelProps) {
@@ -95,7 +95,7 @@ export default function NetworkChangesPanel({
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState(false);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
-  const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters(currentSiteId));
+  const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -105,10 +105,6 @@ export default function NetworkChangesPanel({
   const [canAcknowledge, setCanAcknowledge] = useState(true);
   const [canLinkDevice, setCanLinkDevice] = useState(true);
   const [detailEventId, setDetailEventId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setFilters((previous) => ({ ...previous, siteId: currentSiteId ?? previous.siteId }));
-  }, [currentSiteId]);
 
   const fetchProfiles = useCallback(async () => {
     setProfilesLoaded(false);
@@ -630,7 +626,7 @@ export default function NetworkChangesPanel({
         <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
           <button
             type="button"
-            onClick={() => setFilters(createDefaultFilters(currentSiteId))}
+            onClick={() => setFilters(createDefaultFilters())}
             className="rounded-md border px-2 py-1 hover:bg-muted"
           >
             {t('networkChangesPanel.actions.resetFilters')}

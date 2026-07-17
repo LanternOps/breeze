@@ -1,10 +1,10 @@
 import '@/lib/i18n';
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, Globe } from 'lucide-react';
+import { Layers, Plus, Pencil, Trash2, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '@/lib/authScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
@@ -59,9 +59,7 @@ export default function PoliciesTab() {
   // creators may own the policy partner-wide ("all orgs"). Gate on the JWT
   // scope; default to partner-wide when viewing All orgs. Create-only.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>('organization');
 
   const fetchPolicies = useCallback(async () => {
@@ -96,7 +94,7 @@ export default function PoliciesTab() {
   const openCreate = () => {
     setEditingId(null);
     setForm(defaultForm);
-    setOwnerScope(isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization');
+    setOwnerScope(defaultOwnerScope);
     setShowForm(true);
   };
 
@@ -472,7 +470,7 @@ export default function PoliciesTab() {
                           })}
                           data-testid="sensitive-policy-partner-wide-badge"
                         >
-                          <Globe className="h-3 w-3" />
+                          <Layers className="h-3 w-3" />
                           {t('sensitiveDataPoliciesTab.badges.allOrgs', { defaultValue: 'All orgs' })}
                         </span>
                       )}

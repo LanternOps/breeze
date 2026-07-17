@@ -243,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Todos los estados",
-        "allOrganizations": "Todas las organizaciones",
         "searchPlaceholder": "Buscar nombre u organización",
         "searchAria": "Buscar contratos"
       },
@@ -941,9 +940,7 @@
         "loadSites": "No se pudieron cargar los sitios."
       },
       "filters": {
-        "allOrganizations": "Todas las organizaciones",
         "allStatuses": "Todos los estados",
-        "organizationAria": "Filtrar por organización",
         "searchAria": "Buscar cotizaciones",
         "searchPlaceholder": "Buscar número u organización",
         "statusAria": "Filtrar por estado"
@@ -1344,11 +1341,9 @@
       "loadSites": "No se pudieron cargar los sitios."
     },
     "filters": {
-      "allOrganizations": "Todas las organizaciones",
       "allStatuses": "Todos los estados",
       "issuedFrom": "Emitido desde",
       "issuedTo": "Emitido a",
-      "organizationAria": "Filtrar por organización",
       "searchAria": "Buscar facturas",
       "searchPlaceholder": "Buscar número u organización",
       "statusAria": "Filtrar por estado"

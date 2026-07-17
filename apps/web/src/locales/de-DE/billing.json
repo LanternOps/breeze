@@ -243,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Alle Status",
-        "allOrganizations": "Alle Organisationen",
         "searchPlaceholder": "Nach Name oder Organisation suchen",
         "searchAria": "Verträge suchen"
       },
@@ -941,9 +940,7 @@
         "loadSites": "Die Standorte konnten nicht geladen werden."
       },
       "filters": {
-        "allOrganizations": "Alle Organisationen",
         "allStatuses": "Alle Status",
-        "organizationAria": "Nach Organisation filtern",
         "searchAria": "Angebote suchen",
         "searchPlaceholder": "Nach Nummer oder Organisation suchen",
         "statusAria": "Nach Status filtern"
@@ -1344,11 +1341,9 @@
       "loadSites": "Die Standorte konnten nicht geladen werden."
     },
     "filters": {
-      "allOrganizations": "Alle Organisationen",
       "allStatuses": "Alle Status",
       "issuedFrom": "Ausgestellt von",
       "issuedTo": "Ausgestellt an",
-      "organizationAria": "Nach Organisation filtern",
       "searchAria": "Rechnungen suchen",
       "searchPlaceholder": "Nach Nummer oder Organisation suchen",
       "statusAria": "Nach Status filtern"

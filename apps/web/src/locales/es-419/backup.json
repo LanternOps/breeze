@@ -777,7 +777,7 @@
     "loadFailed": "No se pudieron cargar los perfiles de respaldo",
     "emptyTitle": "Aún no hay perfiles de respaldo",
     "emptyBody": "Un perfil agrupa fuentes de datos (archivos, Estado del sistema, SQL Server, Hyper-V) con sus opciones para que una sola selección proteja toda una clase de dispositivos. Comienza desde una plantilla:",
-    "allOrgs": "Todas las organizaciones",
+    "allOrgs": "En todo el socio",
     "inUseCount_one": "Usado por {{count}} política",
     "inUseCount_other": "Usado por {{count}} políticas",
     "sourceFile": "Archivos",

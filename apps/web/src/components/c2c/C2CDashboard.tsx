@@ -14,6 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { OrgRequiredGate } from '../shared/OrgRequiredGate';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
@@ -116,7 +117,7 @@ function formatDate(d: string | null): string {
   return formatDateTime(d, { fallback: '-' });
 }
 
-export default function C2CDashboard() {
+function C2CDashboardInner() {
   const { t } = useTranslation('common');
   const [activeTab, setActiveTab] = useState<C2CTab>('connections');
   const [connections, setConnections] = useState<C2CConnection[]>([]);
@@ -537,5 +538,16 @@ export default function C2CDashboard() {
         />
       )}
     </div>
+  );
+}
+
+// The c2c APIs are per-organization (they 400 on an org-less request), so the
+// gate resolves loading/error/empty/fleet before the data component — with all
+// its fetch effects — ever mounts without an org.
+export default function C2CDashboard() {
+  return (
+    <OrgRequiredGate>
+      <C2CDashboardInner />
+    </OrgRequiredGate>
   );
 }

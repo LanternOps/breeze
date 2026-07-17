@@ -332,7 +332,7 @@
   },
   "templatesTab": {
     "allApps": "Alle Apps",
-    "allOrgs": "Alle Organisationen",
+    "allOrgs": "Partnerweit",
     "org": "Organisation",
     "errors": {
       "delete": "Vorlage konnte nicht gelöscht werden",

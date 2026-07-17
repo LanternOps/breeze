@@ -243,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "All statuses",
-        "allOrganizations": "All organizations",
         "searchPlaceholder": "Search name or org",
         "searchAria": "Search contracts"
       },
@@ -941,9 +940,7 @@
         "loadSites": "Failed to load sites."
       },
       "filters": {
-        "allOrganizations": "All organizations",
         "allStatuses": "All statuses",
-        "organizationAria": "Filter by organization",
         "searchAria": "Search quotes",
         "searchPlaceholder": "Search number or org",
         "statusAria": "Filter by status"
@@ -1344,11 +1341,9 @@
       "loadSites": "Failed to load sites."
     },
     "filters": {
-      "allOrganizations": "All organizations",
       "allStatuses": "All statuses",
       "issuedFrom": "Issued from",
       "issuedTo": "Issued to",
-      "organizationAria": "Filter by organization",
       "searchAria": "Search invoices",
       "searchPlaceholder": "Search number or org",
       "statusAria": "Filter by status"

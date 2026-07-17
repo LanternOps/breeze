@@ -18,6 +18,7 @@ import {
   statIconMap
 } from './backupDashboardHelpers';
 import { useTranslation } from 'react-i18next';
+import { OrgRequiredGate } from '../shared/OrgRequiredGate';
 import '../../lib/i18n';
 
 const MssqlDashboard = lazy(() => import('./MssqlDashboard'));
@@ -64,7 +65,7 @@ function TabFallback() {
   );
 }
 
-export default function BackupDashboard() {
+function BackupDashboardInner() {
   const { t } = useTranslation('backup');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', (h) => (isValidTab(h) ? h : undefined));
@@ -475,5 +476,16 @@ export default function BackupDashboard() {
         </Suspense>
       )}
     </div>
+  );
+}
+
+// The backup APIs are per-organization (they 400 on an org-less request), so
+// the gate resolves loading/error/empty/fleet before the data component — with
+// all its fetch effects — ever mounts without an org.
+export default function BackupDashboard() {
+  return (
+    <OrgRequiredGate>
+      <BackupDashboardInner />
+    </OrgRequiredGate>
   );
 }

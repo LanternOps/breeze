@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '@/lib/authScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
@@ -122,14 +122,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   const [softwareCatalog, setSoftwareCatalog] = useState<SoftwareCatalogItem[]>([]);
 
   // Ownership axis (#2133, mirrors software/ComplianceDashboard #2126):
-  // partner-scope creators may own an automation partner-wide ("all orgs").
-  // Gate on the JWT scope; default to partner-wide when viewing All orgs.
+  // partner-scope creators may own an automation partner-wide.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
-  const defaultOwnerScope: AutomationFormValues['ownerScope'] =
-    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization';
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
 
   const fetchAutomation = useCallback(async () => {
     if (!automationId || isNew) return;

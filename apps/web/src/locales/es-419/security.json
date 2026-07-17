@@ -1249,7 +1249,7 @@
     "empty": "Aún no hay políticas. Cree uno para comenzar.",
     "badges": {
       "partnerWideTitle": "Política en todo el socio: analiza dispositivos en cada organización",
-      "allOrgs": "Todas las organizaciones"
+      "allOrgs": "En todo el socio"
     },
     "deleteDialog": {
       "title": "Eliminar política de escaneo",

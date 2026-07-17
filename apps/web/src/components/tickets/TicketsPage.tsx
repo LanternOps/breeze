@@ -8,7 +8,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
-import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
+import { loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
 import TicketWorkbench from './TicketWorkbench';
@@ -145,13 +145,6 @@ function hashFor(selection: string | null, sort: TicketSort): string {
 
 export default function TicketsPage() {
   const { t } = useTranslation('tickets');
-  // Re-read per render to hide the org filter for org-scoped users. On a cold
-  // page load the memory-only access token may not exist yet, so this can read
-  // null scope before token bootstrap — the options effect below re-reads the
-  // claims after its first fetches bootstrap the token, and `orgs.length > 1`
-  // keeps the filter hidden either way (belt and braces).
-  const orgScoped = getJwtClaims().scope === 'organization';
-
   // Soft-delete / restore / archived queue are all tickets:manage-gated (server
   // re-enforces). UX-only: hides controls the caller can't use. Partner/Org Admin.
   const { can } = usePermissions();
@@ -172,11 +165,11 @@ export default function TicketsPage() {
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [orgFilter, setOrgFilter] = useState('');
+  // Org scoping is the header switcher's job (fetchWithAuth injects the
+  // selected org); a page-local org filter would silently disagree with it.
   const [priorityFilter, setPriorityFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
   // null = assignee select hidden (e.g. caller lacks USERS_READ); graceful degradation, no error UI.
   const [assignees, setAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -200,10 +193,9 @@ export default function TicketsPage() {
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
   const assigneeLocked = tab === 'mine' || tab === 'unassigned';
-  const filtersActive = Boolean(orgFilter || priorityFilter || categoryFilter || assigneeFilter);
+  const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter);
 
   const clearFilters = useCallback(() => {
-    setOrgFilter('');
     setPriorityFilter('');
     setCategoryFilter('');
     setAssigneeFilter('');
@@ -214,9 +206,7 @@ export default function TicketsPage() {
     let cancelled = false;
     const readJson = async (res: Response): Promise<unknown> => (res.ok ? res.json() : null);
     void (async () => {
-      // Categories + users first: access tokens are memory-only, so on a cold
-      // load the JWT claims are unreadable at mount — these fetches bootstrap
-      // the token before we decide whether the orgs fetch is allowed.
+      // Load categories + users to populate the filter selects.
       const [catRes, userRes] = await Promise.allSettled([
         fetchWithAuth('/ticket-categories').then(readJson),
         fetchWithAuth('/users').then(readJson)
@@ -230,16 +220,6 @@ export default function TicketsPage() {
         const body = userRes.value as { data?: Array<{ id: string; name: string | null; email: string }> };
         const rows = Array.isArray(body) ? body : body.data;
         if (Array.isArray(rows)) setAssignees(rows.filter((u) => u.id));
-      }
-      // Token is bootstrapped by the fetches above, so the claims read is reliable now.
-      // Org-scoped users can't list organizations (403 console spam) and don't need
-      // the filter — their queue is already single-org.
-      const orgScopedNow = getJwtClaims().scope === 'organization';
-      if (!orgScopedNow) {
-        const orgBody = await fetchWithAuth('/orgs/organizations?limit=100').then(readJson).catch(() => null);
-        if (cancelled || !orgBody) return;
-        const body = orgBody as { data?: Array<{ id: string; name: string }>; organizations?: Array<{ id: string; name: string }> };
-        setOrgs((body.data ?? body.organizations ?? []).filter((o) => o.id && o.name));
       }
     })();
     return () => { cancelled = true; };
@@ -259,7 +239,6 @@ export default function TicketsPage() {
         ? new URLSearchParams({ deleted: 'only' })
         : new URLSearchParams(tabQuery(tab));
       if (debouncedSearch) params.set('search', debouncedSearch);
-      if (orgFilter) params.set('orgId', orgFilter);
       if (priorityFilter) params.set('priority', priorityFilter);
       if (categoryFilter) params.set('categoryId', categoryFilter);
       // The 'mine'/'unassigned' tabs already set assignee; the filter applies only on the other tabs.
@@ -282,7 +261,7 @@ export default function TicketsPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, debouncedSearch, orgFilter, priorityFilter, categoryFilter, assigneeFilter, sort, t]);
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, sort, t]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -357,7 +336,7 @@ export default function TicketsPage() {
     setBulkSelectedIds(new Set());
     setBulkAssignee('');
     setBulkStatus('');
-  }, [search, orgFilter, priorityFilter, categoryFilter, assigneeFilter]);
+  }, [search, priorityFilter, categoryFilter, assigneeFilter]);
 
   // Single writer for the hash so selection and sort never clobber each other.
   const writeHash = useCallback((selection: string | null, sortValue: TicketSort) => {
@@ -618,20 +597,6 @@ export default function TicketsPage() {
 
       {tab !== 'review' && (
       <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="tickets-filter-bar">
-        {!orgScoped && orgs.length > 1 && (
-          <select
-            value={orgFilter}
-            onChange={(e) => setOrgFilter(e.target.value)}
-            aria-label={t('ticketsPage.filterByOrganization')}
-            data-testid="tickets-filter-org"
-            className={filterSelectClass(!!orgFilter)}
-          >
-            <option value="">{t('ticketsPage.allOrganizations')}</option>
-            {orgs.map((o) => (
-              <option key={o.id} value={o.id}>{o.name}</option>
-            ))}
-          </select>
-        )}
         <select
           value={priorityFilter}
           onChange={(e) => setPriorityFilter(e.target.value)}

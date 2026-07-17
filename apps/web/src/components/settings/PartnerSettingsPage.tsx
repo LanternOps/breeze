@@ -163,7 +163,7 @@ export async function runPartnerSave(
 
 export default function PartnerSettingsPage() {
   const { t } = useTranslation('settings');
-  const { currentPartnerId, isLoading: contextLoading, setPartner: setPartnerContext } = useOrgStore();
+  const { currentPartnerId, isLoading: contextLoading, adoptPartnerId } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -328,17 +328,20 @@ export default function PartnerSettingsPage() {
       return;
     }
     if (contextLoading) return;
-    // No partner context in store yet. Try to seed it from the JWT (handles
+    // No partner context in store yet. Seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
+    // adoptPartnerId, NOT setPartner: setPartner resets the org selection and
+    // the subsequent auto-select snapped scope to the first org — visiting
+    // this page silently hijacked the user's chosen context.
     // getJwtClaims returns all-null on a missing/undecodable token, so the
     // access-denied fall-through below covers those cases too.
     const { scope, partnerId } = getJwtClaims();
     if (scope === 'partner' && partnerId) {
-      setPartnerContext(partnerId);
+      adoptPartnerId(partnerId);
       return; // Re-render will follow with currentPartnerId set
     }
     setLoading(false); // JWT confirms non-partner scope; show access denied
-  }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
+  }, [currentPartnerId, contextLoading, fetchPartner, adoptPartnerId]);
 
   // Deep-link support: open the tab named in the URL hash on mount (e.g.
   // `/settings/partner#ticketing`, which the legacy `/settings/ticketing` route

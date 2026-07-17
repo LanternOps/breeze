@@ -43,10 +43,10 @@ beforeEach(() => {
 });
 
 describe('TicketFormsCard', () => {
-  it('lists forms with an All orgs badge for partner-wide rows', async () => {
+  it('lists forms with a Partner-wide badge for partner-wide rows', async () => {
     render(<TicketFormsCard />);
     expect(await screen.findByTestId('ticket-form-row-f-1')).toBeTruthy();
-    expect(screen.getByTestId('ticket-form-row-f-1').textContent).toContain('All orgs');
+    expect(screen.getByTestId('ticket-form-row-f-1').textContent).toContain('Partner-wide');
   });
 
   it('opens the editor, adds a field, and creates a partner-wide form', async () => {

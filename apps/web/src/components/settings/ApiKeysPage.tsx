@@ -21,6 +21,11 @@ export default function ApiKeysPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [isAdmin, setIsAdmin] = useState(false);
+  // API keys are org-scoped objects. With an org context the key inherits it;
+  // in fleet view (no org selected) the create form asks for the target org
+  // up front instead of erroring after submit.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const organizations = useOrgStore((s) => s.organizations);
 
   const fetchApiKeys = useCallback(async (page = 1) => {
     try {
@@ -89,13 +94,13 @@ export default function ApiKeysPage() {
   const handleCreateSubmit = async (values: ApiKeyFormValues) => {
     setSubmitting(true);
     try {
-      const { currentOrgId } = useOrgStore.getState();
-      if (!currentOrgId) {
+      const targetOrgId = values.orgId ?? currentOrgId;
+      if (!targetOrgId) {
         throw new Error(t('apiKeysPage.noOrganizationSelected'));
       }
       const response = await fetchWithAuth('/api-keys', {
         method: 'POST',
-        body: JSON.stringify({ ...values, orgId: currentOrgId })
+        body: JSON.stringify({ ...values, orgId: targetOrgId })
       });
 
       if (!response.ok) {
@@ -230,6 +235,7 @@ export default function ApiKeysPage() {
           title={t('apiKeysPage.createAPIKey')}
           description={t('apiKeysPage.createANewAPIKeyWithSpecificPermissions')}
           isAdmin={isAdmin}
+          organizations={!currentOrgId ? organizations : undefined}
         />
       )}
 

@@ -213,10 +213,7 @@
     "huntressIntegration": "Huntress Integration",
     "connectOnePartnerLevelHuntressAccountAndMap": "Connect one partner-level Huntress account and map Huntress organizations to Breeze organizations. ",
     "huntressIsntConnectedYet": "Huntress isn't connected yet",
-    "huntressIsConfiguredOnceAtThePartnerLevel": "Huntress is configured once at the partner level and shared across every organization. Switch your scope to",
-    "allOrgs": "All orgs",
-    "toAddTheAPIKeyAndSecret": "to add the API Key and Secret. ",
-    "thisBreezeOrganizationIsNotMappedToA": "This Breeze organization is not mapped to a Huntress organization yet. Switch to All orgs as a partner admin to map it. ",
+    "thisBreezeOrganizationIsNotMappedToA": "This Breeze organization is not mapped to a Huntress organization yet. Ask your MSP administrator to map it.",
     "partnerConnection": "Partner connection",
     "oneAPIKeyAndSecretCoversEveryHuntress": "One API Key and Secret covers every Huntress organization under this partner account. ",
     "partnerHuntress": "Partner Huntress",
@@ -309,7 +306,8 @@
     "webhookSecretPlaceholder": "Enter or generate a webhook secret",
     "update": "Update",
     "saveAndConnect": "Save & Connect",
-    "unknownTime": "Unknown time"
+    "unknownTime": "Unknown time",
+    "askAdminToConnect": "Huntress is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it."
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -441,9 +439,6 @@
     "connectionTestFailed": "Connection test failed",
     "monitoringIntegrations": "Monitoring integrations",
     "connectObservabilityPlatformsAlertingToolsAndExternalMonitoring": "Connect observability platforms, alerting tools, and external monitoring endpoints. ",
-    "monitoringIntegrationsAreConfiguredPerOrganizationSwitchThe": "Monitoring integrations are configured per organization. Switch the scope in the top bar from ",
-    "allOrgs": "All orgs",
-    "toASingleOrganizationToViewOrEdit": "to a single organization to view or edit its monitoring settings. ",
     "loadingMonitoringIntegrations": "Loading monitoring integrations...",
     "unsavedChanges": "Unsaved changes",
     "prometheus": "Prometheus",
@@ -478,7 +473,8 @@
     "metricsSelected": "metrics selected.",
     "connectionSuccessful": "Connection successful.",
     "saving": "Saving...",
-    "saveSettings": "Save settings"
+    "saveSettings": "Save settings",
+    "selectOrgToConfigure": "Monitoring integrations are configured per organization. Select an organization in the top bar to view or edit its monitoring settings."
   },
   "psaConnectionList": {
     "ticketsCompaniesAndConfigs": "Tickets, companies, and configs",
@@ -684,10 +680,7 @@
     "sentineloneIntegration": "SentinelOne Integration",
     "connectOnePartnerLevelSentinelOneTenantAndMap": "Connect one partner-level SentinelOne tenant and map SentinelOne sites to Breeze organizations. ",
     "sentineloneIsntConnectedYet": "SentinelOne isn't connected yet",
-    "sentineloneIsConfiguredOnceAtThePartnerLevel": "SentinelOne is configured once at the partner level and shared across every organization. Switch your scope to ",
-    "allOrgs": "All orgs",
-    "toAddTheManagementURLAndAPIToken": "to add the management URL and API token. ",
-    "thisOrganizationIsntMappedToASentinelOneSite": "This organization isn't mapped to a SentinelOne site yet. Switch to All orgs as a partner admin to map it. ",
+    "thisOrganizationIsntMappedToASentinelOneSite": "This organization isn't mapped to a SentinelOne site yet. Ask your MSP administrator to map it.",
     "partnerConnection": "Partner connection",
     "oneManagementURLAndAPITokenCoversEvery": "One management URL and API token covers every SentinelOne site under this partner account. ",
     "myS1Tenant": "My S1 Tenant",
@@ -721,7 +714,8 @@
     "hideApiToken": "Hide API token",
     "showApiToken": "Show API token",
     "update": "Update",
-    "saveAndConnect": "Save & Connect"
+    "saveAndConnect": "Save & Connect",
+    "askAdminToConnect": "SentinelOne is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it."
   },
   "stripePaymentsIntegration": {
     "loadFailed": "load failed",

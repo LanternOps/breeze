@@ -10,6 +10,13 @@ import {
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+}));
+// Fleet view by default so the Organization column (fleet-only) is available
+// to the column/sort tests; individual tests flip this to org scope.
+const orgScopeState = { currentOrgId: null as string | null, allOrgs: true };
+vi.mock('@/stores/orgStore', () => ({
+  useOrgStore: (selector: (s: typeof orgScopeState) => unknown) => selector(orgScopeState),
 }));
 vi.mock('../remote/ConnectDesktopButton', () => ({
   default: () => null,
@@ -403,6 +410,19 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     clickHeader('Sort by organization');
     expect(rowOrder(container)).toEqual(['host-zeta', 'host-mid', 'host-acme']);
+  });
+
+  it('hides the Organization column entirely in single-org scope (it would repeat the header org)', () => {
+    orgScopeState.currentOrgId = 'org-1';
+    orgScopeState.allOrgs = false;
+    try {
+      render(<DeviceList devices={[baseDevice]} />);
+      expect(screen.queryByTitle('Sort by organization')).toBeNull();
+      expect(screen.queryByText('Acme')).toBeNull();
+    } finally {
+      orgScopeState.currentOrgId = null;
+      orgScopeState.allOrgs = true;
+    }
   });
 
   it('sorts devices with numeric collation (host-2 before host-10)', () => {

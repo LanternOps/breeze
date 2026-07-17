@@ -332,7 +332,7 @@
   },
   "templatesTab": {
     "allApps": "Todas las aplicaciones",
-    "allOrgs": "Todas las organizaciones",
+    "allOrgs": "En todo el socio",
     "org": "organización",
     "errors": {
       "delete": "No se pudo eliminar la plantilla",

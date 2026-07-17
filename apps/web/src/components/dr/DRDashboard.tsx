@@ -20,6 +20,7 @@ import DRExecutionView from './DRExecutionView';
 import DRPlanEditor from './DRPlanEditor';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { OrgRequiredGate } from '../shared/OrgRequiredGate';
 import '../../lib/i18n';
 
 type DRTab = 'plans' | 'executions';
@@ -80,7 +81,7 @@ function statusBadge(status: string) {
   return <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">{status}</span>;
 }
 
-export default function DRDashboard() {
+function DRDashboardInner() {
   const { t } = useTranslation('backup');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashState<DRTab>('plans', (h) => (h === 'executions' ? 'executions' : undefined));
@@ -474,5 +475,16 @@ export default function DRDashboard() {
         </div>
       </Dialog>
     </div>
+  );
+}
+
+// The dr APIs are per-organization (they 400 on an org-less request), so the
+// gate resolves loading/error/empty/fleet before the data component — with all
+// its fetch effects — ever mounts without an org.
+export default function DRDashboard() {
+  return (
+    <OrgRequiredGate>
+      <DRDashboardInner />
+    </OrgRequiredGate>
   );
 }

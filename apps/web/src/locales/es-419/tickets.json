@@ -268,8 +268,6 @@
     "reviewQueue": "Cola de revisión",
     "archived": "Archivado",
     "searchPlaceholder": "Buscar tickets",
-    "filterByOrganization": "Filtrar por organización",
-    "allOrganizations": "Todas las organizaciones",
     "filterByPriority": "Filtrar por prioridad",
     "allPriorities": "Todas las prioridades",
     "filterByCategory": "Filtrar por categoría",

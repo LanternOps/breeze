@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
+import { useOrgScope } from "@/hooks/useOrgScope";
+import { getJwtClaims } from "../../lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
@@ -255,11 +257,34 @@ export default function MonitoringIntegration() {
   const [newWebhookName, setNewWebhookName] = useState("");
   const [newWebhookUrl, setNewWebhookUrl] = useState("");
 
-  // Monitoring settings are per organization. When no org is selected (null)
-  // there is no single org to load/save, and the API rejects the request with
-  // a 400; show a prompt instead of firing a doomed call.
+  // Two-layer context model: whether this page is accessible is a TOKEN
+  // capability, never a header-context question. Monitoring settings are
+  // per-organization DATA, so the selected org only decides WHICH org's
+  // settings load (fetchWithAuth auto-appends ?orgId=<selected>).
+  //
+  // - Org-scope tokens carry their org and the API resolves it server-side,
+  //   so org users always load — the old bare `!currentOrgId` gate wrongly
+  //   blocked them during the transient pre-hydration null.
+  // - Partner admins (token capability, regardless of header context) keep
+  //   access to configuration; but with no org selected there is no target
+  //   org for this per-org data and the GET/PUT would 400, so we show a
+  //   pick-an-organization note instead of firing the doomed call.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const isAllOrgs = !currentOrgId;
+  const orgScope = useOrgScope();
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const isPartnerAdmin = jwtScope === "partner" && !!jwtPartnerId;
+  // System tokens can also address many orgs; same missing-data-target state.
+  const canAddressManyOrgs = isPartnerAdmin || jwtScope === "system";
+  // Show the pick-an-org note only on the RESOLVED no-single-org states
+  // (explicit fleet view or a zero-org partner) — gating on the allOrgs intent,
+  // not bare `!currentOrgId`, so the transient pre-hydration null no longer
+  // flashes the note (and a failed org-context load no longer strands here).
+  const needsOrgSelection =
+    canAddressManyOrgs && (orgScope.scope === "all" || orgScope.status === "empty");
+  // Partner/system with no org yet but context still resolving (or it failed):
+  // hold the loading frame instead of firing the doomed org-less GET.
+  const awaitingOrgContext =
+    canAddressManyOrgs && !currentOrgId && !needsOrgSelection;
 
   const selectedMetricsCount = settings.metrics.selected.length;
 
@@ -329,13 +354,20 @@ export default function MonitoringIntegration() {
   }, [normalizeSettings]);
 
   useEffect(() => {
-    if (isAllOrgs) {
+    if (needsOrgSelection) {
       setLoading(false);
       setLoadError(undefined);
       return;
     }
+    // Context not resolved yet — keep the loading frame; don't fire an org-less
+    // request that would 400 before auto-select lands.
+    if (awaitingOrgContext) {
+      setLoading(true);
+      setLoadError(undefined);
+      return;
+    }
     fetchSettings();
-  }, [fetchSettings, currentOrgId]);
+  }, [fetchSettings, currentOrgId, needsOrgSelection, awaitingOrgContext]);
 
   function updateSection<K extends keyof MonitoringSettings>(
     key: K,
@@ -514,7 +546,7 @@ export default function MonitoringIntegration() {
     }
   };
 
-  if (isAllOrgs) {
+  if (needsOrgSelection) {
     return (
       <div className="space-y-6">
         <div>
@@ -528,13 +560,10 @@ export default function MonitoringIntegration() {
           </p>
         </div>
         <div className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground">
-          {t(
-            "monitoringIntegration.monitoringIntegrationsAreConfiguredPerOrganizationSwitchThe",
-          )}
-          <span className="font-medium text-foreground">
-            {t("monitoringIntegration.allOrgs")}
-          </span>{" "}
-          {t("monitoringIntegration.toASingleOrganizationToViewOrEdit")}
+          {/* Partner/system audience with no org selected: monitoring settings
+              are genuinely per-org (a data target), so picking one is the
+              correct next step — stated without the old scope-switch framing. */}
+          {t("monitoringIntegration.selectOrgToConfigure")}
         </div>
       </div>
     );

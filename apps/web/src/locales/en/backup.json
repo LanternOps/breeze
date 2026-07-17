@@ -777,7 +777,7 @@
     "loadFailed": "Failed to load backup profiles",
     "emptyTitle": "No backup profiles yet",
     "emptyBody": "A profile bundles data sources (files, System State, SQL Server, Hyper-V) with their options so one selection protects a whole device class. Start from a template:",
-    "allOrgs": "All orgs",
+    "allOrgs": "Partner-wide",
     "inUseCount_one": "Used by {{count}} policy",
     "inUseCount_other": "Used by {{count}} policies",
     "sourceFile": "Files",

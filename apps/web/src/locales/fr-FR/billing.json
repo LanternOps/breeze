@@ -243,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Tous les statuts",
-        "allOrganizations": "Toutes les organisations",
         "searchPlaceholder": "Rechercher par nom ou org.",
         "searchAria": "Rechercher des contrats"
       },
@@ -941,9 +940,7 @@
         "loadSites": "Impossible de charger les sites."
       },
       "filters": {
-        "allOrganizations": "Toutes les organisations",
         "allStatuses": "Tous les statuts",
-        "organizationAria": "Filtrer par organisation",
         "searchAria": "Rechercher des devis",
         "searchPlaceholder": "Rechercher par numéro ou org.",
         "statusAria": "Filtrer par statut"
@@ -1344,11 +1341,9 @@
       "loadSites": "Impossible de charger les sites."
     },
     "filters": {
-      "allOrganizations": "Toutes les organisations",
       "allStatuses": "Tous les statuts",
       "issuedFrom": "Émise depuis le",
       "issuedTo": "Émise jusqu'au",
-      "organizationAria": "Filtrer par organisation",
       "searchAria": "Rechercher des factures",
       "searchPlaceholder": "Rechercher par numéro ou org.",
       "statusAria": "Filtrer par statut"

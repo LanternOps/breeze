@@ -76,7 +76,10 @@
     "noM365Customer": "Nenhum cliente M365",
     "dismiss": "Dispensar"
   },
-  "aiContextBadge": { "context": "Contexto", "dashboard": "Painel" },
+  "aiContextBadge": {
+    "context": "Contexto",
+    "dashboard": "Painel"
+  },
   "aiCostIndicator": {
     "messageCount": "{{count}} mens.",
     "messageCount_one": "{{count}} mensagem",
@@ -196,7 +199,9 @@
       "save": "Falha ao salvar a política",
       "load": "Falha ao carregar a política da organização."
     },
-    "messages": { "saved": "Política salva" },
+    "messages": {
+      "saved": "Política salva"
+    },
     "organizations": "Organizações",
     "title": "Política da organização",
     "description": "Tudo o que o assistente do Excel desta organização cliente tem permissão para fazer.",
@@ -327,7 +332,7 @@
   },
   "templatesTab": {
     "allApps": "Todos os aplicativos",
-    "allOrgs": "Todas as organizações",
+    "allOrgs": "Todo o parceiro",
     "org": "Organização",
     "errors": {
       "delete": "Falha ao excluir o modelo",
@@ -402,7 +407,9 @@
     "newConversation": "Nova conversa",
     "limit": "Até 5 conversas simultâneas"
   },
-  "workspaceTab": { "approvalPending": "Aprovação pendente" },
+  "workspaceTab": {
+    "approvalPending": "Aprovação pendente"
+  },
   "workspaceTabBar": {
     "newTabShortcut": "Nova guia (Cmd+Shift+N)",
     "new": "Nova"

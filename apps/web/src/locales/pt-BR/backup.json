@@ -777,7 +777,7 @@
     "loadFailed": "Falha ao carregar perfis de backup",
     "emptyTitle": "Nenhum perfil de backup ainda",
     "emptyBody": "Um perfil agrupa fontes de dados (arquivos, Estado do sistema, SQL Server, Hyper-V) com suas opções para que uma seleção proteja toda uma classe de dispositivos. Comece por um modelo:",
-    "allOrgs": "Todas as orgs",
+    "allOrgs": "Todo o parceiro",
     "inUseCount_one": "Usado por {{count}} política",
     "inUseCount_other": "Usado por {{count}} políticas",
     "sourceFile": "Arquivos",

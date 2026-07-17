@@ -332,7 +332,7 @@
   },
   "templatesTab": {
     "allApps": "Toutes les applications",
-    "allOrgs": "Toutes les organisations",
+    "allOrgs": "À l’échelle du partenaire",
     "org": "Organisation",
     "errors": {
       "delete": "Impossible de supprimer le modèle",

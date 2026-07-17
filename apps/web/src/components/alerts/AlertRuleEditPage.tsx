@@ -6,7 +6,7 @@ import AlertRuleForm, { type AlertRuleFormValues } from './AlertRuleForm';
 import type { NotificationChannel } from './NotificationChannelList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { getJwtClaims } from '@/lib/authScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 
@@ -30,16 +30,14 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
   const [devices, setDevices] = useState<Device[]>([]);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const { currentOrgId } = useOrgStore();
-  const allOrgs = useOrgStore((s) => s.allOrgs);
 
   // Ownership axis (#2128, mirrors software/security policies): partner-scope
   // creators may own the rule partner-wide ("all orgs" — targets every device
   // under the partner, uses each org's default alert routing). Gate on the
   // JWT scope; default to partner-wide when viewing All orgs. Create-only.
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === 'partner' && !!jwtPartnerId;
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScope] = useState<'organization' | 'partner'>(
-    isPartnerScope && (allOrgs || !currentOrgId) ? 'partner' : 'organization'
+    defaultOwnerScope
   );
 
   const fetchRule = useCallback(async () => {

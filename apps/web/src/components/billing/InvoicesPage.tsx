@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
@@ -9,6 +10,7 @@ import { usePermissions } from '../../lib/permissions';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
+import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from './bulk/useBulkSelection';
 import { BulkActionBar } from './bulk/BulkActionBar';
 import { SortableTh } from './shared/SortableTh';
@@ -42,20 +44,21 @@ type SortKey = 'issued' | 'due' | 'total' | 'balance';
 interface Sort { key: SortKey; dir: 'asc' | 'desc' }
 
 // ---- hash filter state (key=value&key=value) ----------------------------
+// Org scoping deliberately absent: the header switcher owns it (fetchWithAuth
+// injects the selected org), and a page-local orgId — typed or deep-linked —
+// would suppress that injection and silently disagree with the header.
 interface Filters {
-  orgId: string;
   status: '' | InvoiceStatus;
   from: string;
   to: string;
 }
-const EMPTY_FILTERS: Filters = { orgId: '', status: '', from: '', to: '' };
+const EMPTY_FILTERS: Filters = { status: '', from: '', to: '' };
 
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
 function readFilters(hash: string): Filters {
   const params = new URLSearchParams(hash);
   const status = params.get('status') ?? '';
   return {
-    orgId: params.get('orgId') ?? '',
     status: (STATUS_OPTION_VALUES.some((value) => value === status) ? status : '') as Filters['status'],
     from: params.get('from') ?? '',
     to: params.get('to') ?? '',
@@ -64,7 +67,6 @@ function readFilters(hash: string): Filters {
 
 function writeFilters(f: Filters): void {
   const params = new URLSearchParams();
-  if (f.orgId) params.set('orgId', f.orgId);
   if (f.status) params.set('status', f.status);
   if (f.from) params.set('from', f.from);
   if (f.to) params.set('to', f.to);
@@ -99,6 +101,9 @@ export function InvoicesPage() {
   // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
   // no-deep-link case keeps the default reference and never refetches.
   const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
+  // Surface (and strip) a leftover `#orgId=` from a pre-header-scoping bookmark
+  // so it doesn't silently widen the invoice view to every org.
+  useLegacyOrgIdHashNotice(t('common:layout.org.legacyFilterNotice'));
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
   // Monotonic id of the newest in-flight list request (see loadInvoices).
@@ -145,7 +150,6 @@ export function InvoicesPage() {
       setError(undefined);
       setForbidden(false);
       const params = new URLSearchParams();
-      if (f.orgId) params.set('orgId', f.orgId);
       if (f.status) params.set('status', f.status);
       if (f.from) params.set('from', f.from);
       if (f.to) params.set('to', f.to);
@@ -173,7 +177,7 @@ export function InvoicesPage() {
   // change so stale invisible rows are never acted on.
   useEffect(() => {
     bulk.clear();
-  }, [filters.orgId, filters.status, filters.from, filters.to, search, bulk.clear]);
+  }, [filters.status, filters.from, filters.to, search, bulk.clear]);
 
   const applyFilter = useCallback((patch: Partial<Filters>) => {
     setFilters((prev) => {
@@ -203,7 +207,9 @@ export function InvoicesPage() {
 
   const openAssemble = useCallback(() => {
     setMode('assemble');
-    setAssembleOrgId(filters.orgId || '');
+    // Default the target org to the header's context when one is selected.
+    const contextOrgId = useOrgStore.getState().currentOrgId ?? '';
+    setAssembleOrgId(contextOrgId);
     setAssembleSiteId('');
     setAssembleSites([]);
     const today = new Date();
@@ -211,8 +217,8 @@ export function InvoicesPage() {
     setAssembleFrom(monthAgo.toISOString().slice(0, 10));
     setAssembleTo(today.toISOString().slice(0, 10));
     setAssembleOpen(true);
-    if (filters.orgId) void loadAssembleSites(filters.orgId);
-  }, [filters.orgId, loadAssembleSites]);
+    if (contextOrgId) void loadAssembleSites(contextOrgId);
+  }, [loadAssembleSites]);
 
   const submitDialog = useCallback(async () => {
     if (assembling || !assembleOrgId) return;
@@ -332,7 +338,7 @@ export function InvoicesPage() {
 
   // Any server- or client-side filter narrowing the list. Drives both the Clear
   // affordance and whether the toolbar shows on an otherwise-empty list.
-  const filtersActive = !!(filters.orgId || filters.status || filters.from || filters.to || search.trim());
+  const filtersActive = !!(filters.status || filters.from || filters.to || search.trim());
 
   if (forbidden) {
     return (
@@ -403,18 +409,6 @@ export function InvoicesPage() {
           className="h-10 min-w-[12rem] flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           data-testid="invoices-search"
         />
-        <select
-          value={filters.orgId}
-          onChange={(e) => applyFilter({ orgId: e.target.value })}
-          data-testid="invoices-filter-org"
-          aria-label={t('invoicesPage.filters.organizationAria')}
-          className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-        >
-          <option value="">{t('invoicesPage.filters.allOrganizations')}</option>
-          {orgs.map((o) => (
-            <option key={o.id} value={o.id}>{o.name}</option>
-          ))}
-        </select>
         <select
           value={filters.status}
           onChange={(e) => applyFilter({ status: e.target.value as Filters['status'] })}
