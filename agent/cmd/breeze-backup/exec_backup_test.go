@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +263,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 		wantBasePath    string   // for local
 		wantPaths       []string // expected manager paths
 		wantSystemImage bool     // expected SystemStateEnabled
+		wantVSS         bool     // expected VSSEnabled
 	}{
 		{
 			name:    "empty payload falls back to agent.yaml manager",
@@ -284,6 +286,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider: "s3",
 			wantBucket:   "my-bucket",
 			wantPaths:    []string{"/etc", "/home/user"},
+			wantVSS:      runtime.GOOS == "windows",
 		},
 		{
 			name:         "local provider with path",
@@ -291,6 +294,42 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider: "local",
 			wantBasePath: filepath.Clean("/var/backups"),
 			wantPaths:    []string{"/data"},
+			wantVSS:      runtime.GOOS == "windows",
+		},
+		{
+			name:         "vss:true forces VSS on for file backups regardless of OS",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"vss":true}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      true,
+		},
+		{
+			name:         "vss:false forces VSS off for file backups regardless of OS",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"],"vss":false}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+			wantVSS:      false,
+		},
+		{
+			// system_image mode manages its own consistency (system state
+			// collection), so an absent vss field must not default it on even on
+			// Windows.
+			name:            "system_image mode without vss override defaults to VSS off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantSystemImage: true,
+			wantVSS:         false,
+		},
+		{
+			name:            "vss:true overrides system_image mode's default-off",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true,"vss":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantSystemImage: true,
+			wantVSS:         true,
 		},
 		{
 			name:    "unsupported provider errors",
@@ -317,6 +356,7 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			wantProvider:    "s3",
 			wantBucket:      "my-bucket",
 			wantSystemImage: true,
+			wantVSS:         false,
 		},
 	}
 
@@ -360,6 +400,10 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 
 			if got := mgr.GetSystemStateEnabled(); got != tt.wantSystemImage {
 				t.Fatalf("SystemStateEnabled = %v, want %v", got, tt.wantSystemImage)
+			}
+
+			if got := mgr.GetVSSEnabled(); got != tt.wantVSS {
+				t.Fatalf("VSSEnabled = %v, want %v", got, tt.wantVSS)
 			}
 
 			provider := mgr.GetProvider()

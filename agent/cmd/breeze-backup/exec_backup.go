@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -89,12 +90,28 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
 		SystemImage    bool                     `json:"systemImage"`
+		// Vss lets the server force VSS on/off for this run. Not currently sent
+		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
+		// absent the agent defaults it itself below.
+		Vss *bool `json:"vss,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("invalid backup_run payload: %w", err)
 	}
 	if p.ProviderConfig == nil || p.Provider == "" {
 		return nil, nil
+	}
+	// vssEnabled defaults to on for server-dispatched Windows file backups so
+	// locked files (open documents, DB files) aren't silently skipped — VSS
+	// failure is already non-fatal (backup.go's RunBackupWithExcludes proceeds
+	// without it), so this can't newly break Linux/macOS or Windows hosts
+	// without VSS. system_image mode manages its own consistency via system
+	// state collection, so it stays off there unless the payload overrides it.
+	// The server can force it either way via the optional `vss` field (not
+	// currently sent by apps/api/src/jobs/backupWorker.ts).
+	vssEnabled := runtime.GOOS == "windows" && !p.SystemImage
+	if p.Vss != nil {
+		vssEnabled = *p.Vss
 	}
 	var provider providers.BackupProvider
 	switch p.Provider {
@@ -120,6 +137,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		return backup.NewBackupManager(backup.BackupConfig{
 			Provider:           provider,
 			SystemStateEnabled: true,
+			VSSEnabled:         vssEnabled,
 		}), nil
 	}
 	if len(p.Paths) == 0 {
@@ -133,9 +151,10 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
 	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider:  provider,
-		Paths:     p.Paths,
-		Retention: 0,
+		Provider:   provider,
+		Paths:      p.Paths,
+		Retention:  0,
+		VSSEnabled: vssEnabled,
 	}), nil
 }
 
