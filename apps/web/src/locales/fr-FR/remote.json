@@ -63,8 +63,12 @@
       "manualInstall": "Le bureau de la fenêtre de connexion n’est pris en charge que pour les installations gérées",
       "missingEntitlement": "Le bureau de la fenêtre de connexion est bloqué jusqu’à ce que le droit requis Apple soit approuvé",
       "missingPermission": "macOS les permissions requises pour un accès non surveillé au bureau manquent toujours",
+      "noDisplaySession": "Aucune session graphique active — connectez-vous d’abord via RDP ou la console",
       "unsupportedOs": "Le bureau de la fenêtre de connexion nécessite macOS 14 (Sonoma) ou une version ultérieure. Activez le relais VNC dans la politique de configuration de l’appareil pour se connecter à l’écran de connexion.",
-      "virtualDisplay": "Aucun écran capturable n’est disponible pour ce Mac. Activez le relais VNC pour se connecter via le partage d’écran macOS."
+      "virtualDisplay": "Aucun écran capturable n’est disponible pour ce Mac. Activez le relais VNC pour se connecter via le partage d’écran macOS.",
+      "waylandUnsupported": "Il s’agit d’un bureau Wayland — le bureau à distance nécessite un agent plus récent",
+      "x11AuthFailed": "Impossible de s’authentifier auprès du serveur d’affichage (autorité X)",
+      "x11ConnectFailed": "Impossible de se connecter au serveur d’affichage de cet appareil"
     }
   },
   "connectVncButton": {

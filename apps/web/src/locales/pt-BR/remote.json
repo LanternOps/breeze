@@ -63,8 +63,12 @@
       "manualInstall": "O acesso à tela de início de sessão só é compatível com instalações gerenciadas",
       "missingEntitlement": "O acesso à tela de início de sessão ficará bloqueado até que a autorização exigida pela Apple seja aprovada",
       "missingPermission": "Ainda faltam permissões do macOS necessárias para o acesso não assistido à área de trabalho",
+      "noDisplaySession": "Nenhuma sessão gráfica ativa — faça login via RDP ou pelo console primeiro",
       "unsupportedOs": "O acesso à tela de início de sessão requer macOS 14 (Sonoma) ou posterior. Ative o Retransmissor VNC na política de configuração do dispositivo para conectar nessa tela.",
-      "virtualDisplay": "Não há uma tela capturável disponível neste Mac. Ative o Retransmissor VNC para conectar pelo Compartilhamento de Tela do macOS."
+      "virtualDisplay": "Não há uma tela capturável disponível neste Mac. Ative o Retransmissor VNC para conectar pelo Compartilhamento de Tela do macOS.",
+      "waylandUnsupported": "Esta é uma área de trabalho Wayland — a área de trabalho remota requer um agente mais recente",
+      "x11AuthFailed": "Não foi possível autenticar no servidor de exibição (autoridade X)",
+      "x11ConnectFailed": "Não foi possível conectar ao servidor de exibição deste dispositivo"
     }
   },
   "connectVncButton": {
