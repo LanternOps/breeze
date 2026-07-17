@@ -735,10 +735,29 @@
       "savingHint": "Guardando cambios... Enviar desbloqueos cuando todo esté guardado.",
       "savingTitle": "Guardar sus cambios: envíe desbloqueos cuando todo esté guardado.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Adjuntar el PDF de la propuesta",
+        "invalidEmail": "Dirección de correo no válida: {{addresses}}",
         "message": "Enviaremos esta propuesta por correo electrónico a {{orgName}} y la marcaremos como Enviada - {{amount}} al momento de su aceptación. Esto no se puede deshacer.",
         "messageLabel": "Agregar un mensaje personal (opcional)",
         "messagePlaceholder": "Incluye una nota breve: aparecerá en el correo, encima del enlace para aceptar.",
-        "title": "¿Enviar esta propuesta?"
+        "paymentEnabled": "El pago en línea está habilitado: el cliente puede pagar con tarjeta después de aceptar.",
+        "paymentNoteNoStripe": "No se ofrecerá pago en línea después de la aceptación. Conecta Stripe en Configuración → Integraciones para habilitarlo.",
+        "paymentWarningDeposit": "Esta propuesta solicita un depósito, pero los clientes aún no pueden pagar en línea: conecta Stripe en Configuración → Integraciones para poder cobrar el depósito al aceptar.",
+        "signaturePreviewLabel": "Firma (configurada en Configuración → Marca):",
+        "subjectLabel": "Asunto",
+        "subjectPlaceholder": "Propuesta {{number}} de tu empresa",
+        "subjectPlaceholderNoNumber": "Propuesta de tu empresa",
+        "title": "¿Enviar esta propuesta?",
+        "toLabel": "Para",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Usa como máximo {{max}} direcciones."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
+        "noEmailService": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — el correo no está configurado en este servidor.",
+        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección o comparta el enlace de aceptación manualmente."
       },
       "sendError": "No se pudo enviar la propuesta.",
       "sendProposal": "Enviar propuesta",

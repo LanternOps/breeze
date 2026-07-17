@@ -20,7 +20,9 @@ const namespaceDuplicateBaselines = {
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
     // legitimately identical to English.
-    'billing.json': 42,
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 45,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     'common.json': 90,
     'devices.json': 159,
@@ -47,7 +49,9 @@ const namespaceDuplicateBaselines = {
     // +3: contract-template format strings ("v{{number}} · {{status}}",
     // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
     // to English in es-419.
-    'billing.json': 35,
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 38,
     'common.json': 75,
     'devices.json': 115,
     'discovery.json': 17,
@@ -74,7 +78,9 @@ const namespaceDuplicateBaselines = {
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
     // "Versions", "Documents" ×2) that are legitimately identical to English
     // in fr-FR.
-    'billing.json': 45,
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 48,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,
@@ -100,7 +106,9 @@ const namespaceDuplicateBaselines = {
     // +6: contract-template format strings + German cognates ("v{{number}} ·
     // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
     // that are legitimately identical to English in de-DE.
-    'billing.json': 32,
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 35,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     'common.json': 91,
     'devices.json': 146,

@@ -193,14 +193,37 @@ export function quotePdfUrl(id: string): string {
 
 // ---- Phase 2 lifecycle / image upload -------------------------------------
 
+/** Composer fields for `POST /quotes/:id/send`. Everything is optional — the
+ *  server's `.strict()` schema treats an absent field as "use the default". */
+export interface SendQuoteOptions {
+  /** Explicit recipients (1-10) — override the org billing-contact fallback. */
+  to?: string[];
+  /** Extra recipients (0-10). */
+  cc?: string[];
+  /** Overrides the server default "Proposal <number> from <partner>". */
+  subject?: string;
+  /** Personal note shown in the customer email above the accept link. */
+  message?: string;
+  /** false skips the PDF attachment; the server defaults to attaching it. */
+  includePdf?: boolean;
+}
+
 /** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
- *  quotes:send. An optional `message` is included in the customer email above the
- *  accept link. Responds with the updated quote in a `{ data }` envelope. */
-export function sendQuote(id: string, message?: string): Promise<Response> {
-  const note = message?.trim();
+ *  quotes:send. Only non-empty / non-default fields are POSTed, so a bare
+ *  `sendQuote(id)` reproduces the classic body-less send. Responds with
+ *  `{ data: { quote, emailed, emailReason?, acceptUrl } }`. */
+export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
+  const body: Record<string, unknown> = {};
+  if (opts.to && opts.to.length > 0) body.to = opts.to;
+  if (opts.cc && opts.cc.length > 0) body.cc = opts.cc;
+  const subject = opts.subject?.trim();
+  if (subject) body.subject = subject;
+  const note = opts.message?.trim();
+  if (note) body.message = note;
+  if (opts.includePdf === false) body.includePdf = false;
   return fetchWithAuth(`/quotes/${id}/send`, {
     method: 'POST',
-    ...(note ? { body: JSON.stringify({ message: note }) } : {}),
+    ...(Object.keys(body).length > 0 ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
   });
 }
 

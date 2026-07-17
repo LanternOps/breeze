@@ -735,10 +735,29 @@
       "savingHint": "Salvando alterações… O envio será liberado quando tudo estiver salvo.",
       "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Anexar o PDF da proposta",
+        "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
         "message": "Enviaremos esta proposta por e-mail para {{orgName}} e a marcaremos como Enviada — {{amount}} devidos na aceitação. Não é possível desfazer esta ação.",
         "messageLabel": "Adicionar uma mensagem pessoal (opcional)",
         "messagePlaceholder": "Inclua uma breve nota — ela aparece no e-mail, acima do link de aceitação.",
-        "title": "Enviar esta proposta?"
+        "paymentEnabled": "O pagamento on-line está ativado — o cliente pode pagar com cartão após aceitar.",
+        "paymentNoteNoStripe": "O pagamento on-line não será oferecido após a aceitação. Conecte o Stripe em Configurações → Integrações para ativá-lo.",
+        "paymentWarningDeposit": "Esta proposta pede um depósito, mas os clientes ainda não podem pagar on-line — conecte o Stripe em Configurações → Integrações para cobrar o depósito na aceitação.",
+        "signaturePreviewLabel": "Assinatura (definida em Configurações → Marca):",
+        "subjectLabel": "Assunto",
+        "subjectPlaceholder": "Proposta {{number}} da sua empresa",
+        "subjectPlaceholderNoNumber": "Proposta da sua empresa",
+        "title": "Enviar esta proposta?",
+        "toLabel": "Para",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Use no máximo {{max}} endereços."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",
+        "noEmailService": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — o e-mail não está configurado neste servidor.",
+        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço ou compartilhe o link de aceitação manualmente."
       },
       "sendError": "Não foi possível enviar a proposta.",
       "sendProposal": "Enviar proposta",

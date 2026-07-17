@@ -163,12 +163,15 @@
     "email": "E-mail",
     "phone": "Telefone",
     "website": "Site",
+    "emailSignature": "Assinatura de e-mail",
+    "emailSignatureDescription": "Adicionada ao final dos e-mails de proposta enviados aos seus clientes.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "João da Silva",
       "email": "contato@example.com",
       "phone": "+55 (11) 1234-5678",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Atenciosamente,\nEquipe Acme MSP"
     },
     "countries": {
       "select": "— Selecione o país —",

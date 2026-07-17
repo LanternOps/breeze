@@ -735,10 +735,29 @@
       "savingHint": "Änderungen speichern… Entsperrungen senden, wenn alles gespeichert ist.",
       "savingTitle": "Speichern Ihrer Änderungen – Entsperrungen senden, wenn alles gespeichert ist.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Angebots-PDF anhängen",
+        "invalidEmail": "Ungültige E-Mail-Adresse: {{addresses}}",
         "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Dies kann nicht rückgängig gemacht werden.",
         "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
         "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
-        "title": "Dieses Angebot senden?"
+        "paymentEnabled": "Online-Zahlung ist aktiviert – der Kunde kann nach der Annahme per Karte zahlen.",
+        "paymentNoteNoStripe": "Nach der Annahme wird keine Online-Zahlung angeboten. Verbinden Sie Stripe unter Einstellungen → Integrationen, um sie zu aktivieren.",
+        "paymentWarningDeposit": "Für dieses Angebot ist eine Anzahlung konfiguriert, aber Kunden können noch nicht online zahlen – verbinden Sie Stripe unter Einstellungen → Integrationen, damit die Anzahlung bei Annahme eingezogen werden kann.",
+        "signaturePreviewLabel": "Signatur (festgelegt unter Einstellungen → Branding):",
+        "subjectLabel": "Betreff",
+        "subjectPlaceholder": "Angebot {{number}} von Ihrem Unternehmen",
+        "subjectPlaceholderNoNumber": "Angebot von Ihrem Unternehmen",
+        "title": "Dieses Angebot senden?",
+        "toLabel": "An",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",
+        "noEmailService": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — E-Mail ist auf diesem Server nicht konfiguriert.",
+        "sendFailed": "Vorschlag als Gesendet markiert, aber die E-Mail konnte nicht zugestellt werden. Prüfen Sie die Adresse oder teilen Sie den Annahme-Link manuell."
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",
       "sendProposal": "Vorschlag senden",

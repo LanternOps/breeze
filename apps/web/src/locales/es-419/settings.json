@@ -163,12 +163,15 @@
     "email": "Correo electrónico",
     "phone": "Teléfono",
     "website": "Sitio web",
+    "emailSignature": "Firma de correo electrónico",
+    "emailSignatureDescription": "Se agrega al final de los correos de propuestas enviados a sus clientes.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "Juan Smith",
       "email": "contact@example.com",
       "phone": "+1 (555) 123-4567",
-      "website": "https://example.com"
+      "website": "https://example.com",
+      "emailSignature": "Saludos cordiales,\nEl equipo de Acme MSP"
     },
     "countries": {
       "select": "— Seleccionar país —",

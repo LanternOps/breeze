@@ -735,10 +735,29 @@
       "savingHint": "Enregistrement des modifications… L'envoi sera disponible une fois tout enregistré.",
       "savingTitle": "Enregistrement de vos modifications — l'envoi sera disponible une fois tout enregistré.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Joindre le PDF de la proposition",
+        "invalidEmail": "Adresse e-mail non valide : {{addresses}}",
         "message": "Nous enverrons cette proposition par e-mail à {{orgName}} et la marquerons Envoyée — {{amount}} dû à l'acceptation. Cette action est irréversible.",
         "messageLabel": "Ajouter un message personnel (facultatif)",
         "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans l'e-mail, au-dessus du lien d'acceptation.",
-        "title": "Envoyer cette proposition ?"
+        "paymentEnabled": "Le paiement en ligne est activé — le client peut payer par carte après acceptation.",
+        "paymentNoteNoStripe": "Aucun paiement en ligne ne sera proposé après l'acceptation. Connectez Stripe dans Paramètres → Intégrations pour l'activer.",
+        "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans Paramètres → Intégrations pour encaisser l'acompte à l'acceptation.",
+        "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
+        "subjectLabel": "Objet",
+        "subjectPlaceholder": "Proposition {{number}} de votre entreprise",
+        "subjectPlaceholderNoNumber": "Proposition de votre entreprise",
+        "title": "Envoyer cette proposition ?",
+        "toLabel": "À",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Utilisez au maximum {{max}} adresses."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
+        "noEmailService": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — l'e-mail n'est pas configuré sur ce serveur.",
+        "sendFailed": "Proposition marquée comme Envoyée, mais l'e-mail n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement."
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",

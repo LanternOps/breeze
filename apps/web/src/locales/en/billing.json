@@ -735,10 +735,29 @@
       "savingHint": "Saving changes… Send unlocks when everything is saved.",
       "savingTitle": "Saving your changes — Send unlocks when everything is saved.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Attach the proposal PDF",
+        "invalidEmail": "Invalid email address: {{addresses}}",
         "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. This can't be undone.",
         "messageLabel": "Add a personal message (optional)",
         "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
-        "title": "Send this proposal?"
+        "paymentEnabled": "Online payment is enabled — the customer can pay by card after accepting.",
+        "paymentNoteNoStripe": "Online payment won't be offered after acceptance. Connect Stripe in Settings → Integrations to enable it.",
+        "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in Settings → Integrations so the deposit can be collected on acceptance.",
+        "signaturePreviewLabel": "Signature (set in Settings → Branding):",
+        "subjectLabel": "Subject",
+        "subjectPlaceholder": "Proposal {{number}} from your company",
+        "subjectPlaceholderNoNumber": "Proposal from your company",
+        "title": "Send this proposal?",
+        "toLabel": "To",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Use at most {{max}} addresses."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
+        "noEmailService": "Proposal marked Sent, but no email was delivered — email is not configured on this server.",
+        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually."
       },
       "sendError": "Could not send the proposal.",
       "sendProposal": "Send proposal",
