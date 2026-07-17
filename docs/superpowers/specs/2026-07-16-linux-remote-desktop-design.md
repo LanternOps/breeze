@@ -47,34 +47,37 @@ The investigated machine is representative of "Linux box used for interactive lo
 
 ```
 Phase 0  Correctness: stop running darwin code on Linux; fix Assist thrash; honest errors
-Phase 1  X11 mirror via purego (no CGO): display discovery + Xauthority resolution +
+Phase 1  X11 mirror via pure-Go wire protocol (jezek/xgb, no CGO): display discovery + Xauthority resolution +
          dynamic headless + XTest input + Linux desktopAccess reporting
 Phase 2  Linux desktop-helper (per-session) + Wayland via portal/PipeWire;
          helper spawn branch for Linux; real capability probing
 Phase 3  (deferred) session creation / greeter attach / virtual displays
 ```
 
-The key packaging decision: **stay `CGO_ENABLED=0` and load X libraries at runtime via purego** (`github.com/ebitengine/purego`, already a dependency — this is exactly how OpenH264 is loaded today, see `encoder_openh264.go`). `dlopen("libX11.so.6")` at session start; if absent (true headless server), degrade to a typed capability reason instead of a link-time failure. No new cross-toolchains in CI for Phase 1.
+The key packaging decision: **stay `CGO_ENABLED=0` and speak the X11 wire protocol in pure Go via `github.com/jezek/xgb` (≥v1.2.0; pin v1.3.1)** — no C libraries loaded at all, only the `/tmp/.X11-unix/XN` socket plus the auth cookie. This supersedes the earlier purego/Xlib idea, which is disqualified: Xlib's IO-error contract calls `exit(1)` when the X connection dies (exactly the xrdp session-logout case this feature targets) and the only escape hatches (longjmp/pthread_exit from the error callback) are inexpressible from Go. xgb turns a dead server into a plain read error, and the jezek fork exists specifically to fix close-time panics with server-death tests. MIT-SHM segments come from `golang.org/x/sys/unix` (`SysvShmGet/Attach/Detach/Ctl`, already a direct dep). One new direct dependency, zero transitive. No new cross-toolchains in CI for Phase 1.
 
 ---
 
 ## Phase 0 — Correctness fixes (independent PRs, ship immediately)
 
 1. **Gate the darwin spawn path on darwin.** `spawnHelperForDesktop` (`handlers_desktop_helper.go:467`): change `runtime.GOOS != "windows"` to an explicit `darwin` branch; Linux returns a typed error (`errors.New("linux desktop-helper not yet supported")`) that Phase 2 replaces with a real spawn. Same sweep for `kickstartDarwinDesktopHelpers` callers.
-2. **Fix the Assist migrate/uninstall thrash loop.** `helper/manager.go:194` runs `migrateToSessions()` (which recreates `<baseDir>/sessions` and `pkill`s the helper) on every Apply tick when the dir is missing; with Assist disabled, `uninstallLocked()` (`manager.go:301`) then deletes the dir and clears `pendingHelperVersion`, so both re-fire every tick on **all platforms**. Fix: skip migration when `!settings.Enabled && !m.isInstalled()`; make `uninstallPackage()` (`install_linux.go:27`) log only when a file was actually removed. Add a regression test asserting a disabled second Apply tick is a no-op.
-3. **Honest error for the nocgo stub.** Until Phase 1 lands, `start_desktop` on Linux should return "remote desktop is not yet supported on Linux agents" rather than the plist/launchctl noise.
+2. **Fix the Assist migrate/uninstall thrash loop.** `helper/manager.go:194` runs `migrateToSessions()` (which recreates `<baseDir>/sessions` and `pkill`s the helper) on every Apply tick when the dir is missing; with Assist disabled, `uninstallLocked()` (`manager.go:301`) then deletes the dir and clears `pendingHelperVersion`, so both re-fire every tick on **all platforms**. Fix: gate the migration call on `settings.Enabled || m.isInstalled()` — but snapshot `wasInstalled := m.isInstalled()` **before** `migrateFromLegacyName()` (which can delete the binary first) so a pre-sessions legacy box upgrading with Assist disabled still completes uninstall cleanup exactly once instead of stranding `helper_config.yaml`. Make `uninstallPackage()` log only on actual removal (linux `install_linux.go:27` **and** darwin `install_darwin.go`; windows already correct). Two regression tests: disabled+uninstalled = stable no-op (0 seam calls, `pendingHelperVersion` preserved), and disabled+installed = cleanup fires exactly once then no-ops.
+3. **Honest error for the nocgo stub.** Until Phase 1 lands, `start_desktop` on Linux should return "remote desktop is not yet supported on Linux agents" rather than the plist/launchctl noise (a `runtime.GOOS == "linux"` early return in `handleStartDesktop` — the spawn-path gating in fix 1 alone still yields the generic "no capable helper" message).
+4. **(Track for Phase 2, do not fix in Phase 0)** On Linux `legacyBinaryPath()` == `defaultBinaryPath()` == `/usr/local/bin/breeze-helper`, so once a Linux Assist/helper binary is ever installed, `migrateFromLegacyName()` will `pkill` + delete it on **every** Apply tick even when enabled. Harmless today (no Linux helper is published) but Phase 2's desktop-helper must guard `migrateFromLegacyName` on `oldPath != m.binaryPath` first.
 
 ## Phase 1 — X11 mirror done right (agent-only, no new binaries)
 
-### 1.1 Runtime X11 loading (purego)
+### 1.1 X11 over the wire (jezek/xgb, no CGO)
 
-New `agent/internal/remote/desktop/x11/` package wrapping the needed Xlib/XExt/XTst surface via purego:
+New `agent/internal/remote/desktop/x11/` package speaking the X protocol via `github.com/jezek/xgb` v1.3.1:
 
-- `libX11.so.6`: `XOpenDisplay(name)`, `XCloseDisplay`, `XDefaultRootWindow`, `XGetWindowAttributes`, `XGetImage` (fallback path), `XStringToKeysym`, `XKeysymToKeycode`, `XFlush`, `XWarpPointer`, cursor via `XFixes` (`libXfixes.so.3`, `XFixesGetCursorImage`).
-- `libXext.so.6`: XShm (`XShmAttach`, `XShmGetImage`, `XShmQueryExtension`); SysV shm segments via `golang.org/x/sys/unix` (`SysvShmGet/Attach` — pure Go).
-- `libXtst.so.6`: `XTestFakeMotionEvent`, `XTestFakeButtonEvent`, `XTestFakeKeyEvent`.
+- **Connection + auth**: the agent dials `/tmp/.X11-unix/XN` itself, extracts the MIT-MAGIC-COOKIE-1 for display N from the resolver-determined Xauthority file with its own ~40-line parser (cloned from xgb `auth.go`, with a stale-hostname fallback), and connects via `xgb.NewConnNetWithCookieHex` — per-connection auth, zero process-global env. Only MIT-MAGIC-COOKIE-1 is supported (maps to the `x11_auth_failed` reason).
+- **Capture**: `shm.GetImage` into a SysV segment (`unix.SysvShmGet(IPC_PRIVATE, size, IPC_CREAT|0o777)` + `unix.SysvShmAttach`, `IPC_RMID` immediately after the server attaches so segments never leak); core-protocol `xproto.GetImage` fallback when MIT-SHM is absent. Frames are 32bpp BGRX → capturer implements `BGRAProvider`; existing colorconv/OpenH264 path unchanged.
+- **Input**: `xtest.FakeInputChecked` (motion/button/key); keysym→keycode via `xproto.GetKeyboardMapping` with a static name→keysym table (ported from today's `translateKey`).
+- **Cursor**: `xfixes.QueryVersion` + `GetCursorImageAndName` on a dedicated second connection (preserves the existing name→CSS `CursorShape()` contract and the 120Hz-polling isolation).
+- **Monitors**: `randr.GetMonitors` (RandR ≥1.5) with `GetScreenResources`/xinerama fallback, mapped onto the existing `MonitorInfo` shape.
 
-Loaded lazily at first use; a missing library yields `ErrX11Unavailable` which maps to the `x11_libs_missing` capability reason. The existing CGO implementation in `capture_linux.go` is ported onto this package and the `linux && cgo` / `linux && !cgo` split collapses to one `//go:build linux` file. Frame format from XShm is 32bpp BGRX → existing `BGRAProvider`/`colorconv` path unchanged; encoder factory already lands on OpenH264 software on Linux.
+**All X state is per-capturer-instance** — the C-global `g_ctx`/`g_curCtx`/`cursorCtxOnce` pattern in today's CGO code is deleted, which is what makes monitor switch, WS+WebRTC coexistence, standalone tool capturers, and Close-during-borrow benign. A failed connect yields the `x11_connect_failed` capability reason (there are no client libraries to be "missing"). The `linux && cgo` / `linux && !cgo` split collapses to one `//go:build linux` file.
 
 ### 1.2 Display/session discovery (`resolveLinuxDisplayTargets`)
 
@@ -87,7 +90,7 @@ New resolver in the agent, evaluated **fresh on every `start_desktop` and every 
 3. `XAUTHORITY` resolution order: X server `-auth` arg → session leader's `/proc/<pid>/environ` `XAUTHORITY` → `~owner/.Xauthority` → `/run/user/<uid>/gdm/Xauthority`.
 4. Selection policy (Phase 1, no picker): active `loginctl` graphical session first, else the display with the most recently active session, else lowest display number. Log the chosen target and alternatives at info.
 
-The resolver result (`{display, xauthPath, ownerUID, ownerName, sessionType}`) is injected into the capturer, cursor tracker, and input handler. `XAUTHORITY` is set process-wide under the desktop manager's session lock immediately before `XOpenDisplay(display)`; Linux supports **one desktop session at a time** in Phase 1 (documented; matches current `desktopMgr` usage). The root agent reads the user's Xauthority directly — it is never copied or re-permissioned.
+The resolver result (`{display, xauthPath, ownerUID, ownerName, sessionType}`) is consumed inside `newPlatformCapturer` and the input handler — NOT only in `handleStartDesktop` — so every standalone capturer path (AI screenshot/computer_action tools, `ProbeCaptureAccess`, the legacy WS manager, monitor switch) inherits it with no new plumbing. Auth is injected per connection via the xgb cookie constructor; nothing process-global is mutated. Note the "one desktop session at a time" invariant holds only *inside* `SessionManager` (`startMu`): the WS JPEG manager, screenshot borrowers, monitor-switch second capturers, and the 120Hz cursor loop all run concurrently — per-instance X state is the correctness mechanism, not the single-session assumption. The root agent reads the user's Xauthority directly — it is never copied or re-permissioned.
 
 ### 1.3 Routing changes
 
@@ -99,20 +102,25 @@ if runtime.GOOS == "linux" {
     if target := resolveLinuxDisplayTargets(); target.HasX11() {
         return direct capture with target        // Phase 1 path
     }
-    return typed error (reason from resolver)     // no_display_session / wayland_unsupported / x11_libs_missing
+    return typed error (reason from resolver)     // no_display_session / wayland_unsupported / x11_connect_failed
 }
 ```
 
-`cfg.IsHeadless` remains for macOS/Windows routing; on Linux the heartbeat recomputes it per tick from the resolver (fixes staleness) — `heartbeat.go:3016` reads a live value instead of the boot-time field.
+`cfg.IsHeadless` remains for macOS/Windows routing. On Linux the payload's `IsHeadless` is recomputed per tick from the resolver (fixes staleness) — but the command handlers must NOT gate on a mutating shared `h.isHeadless` bool. Required companion changes (verified against the routing code):
+
+- **No data race / no route-flip:** never rewrite the `h.isHeadless` field the handlers read (it is a plain bool read on pool-worker goroutines; per-tick writes fail `go test -race`, and a flip between start and stop strands a live capture session). Route `start_desktop` off the fresh resolver result and make **stop routing state-based** — `handleStopDesktop` checks `h.desktopOwners` first, else `h.desktopMgr.StopSession` (both are safe no-ops for unknown IDs) — rather than re-reading the flag. Give the same treatment to the `desktop_stream_stop` no-op and the `desktop_input`/`desktop_config` gates (`handlers_desktop.go:382/400/434`).
+- **Register `desktopMgr.OnSessionStopped` unconditionally on Linux** (`heartbeat.go:629`): today it is wired only when `!cfg.IsService && !cfg.IsHeadless` at boot, so a box that booted headless never reports a direct-session WebRTC drop and never tears down the consent banner. The callback is nil-checked at every fire site and inert in helper mode, so unconditional registration is safe.
+- **Static-screen watchdog:** the ticker loop's no-video watchdog terminates a session after ~3s+5×5s if `lastVideoWriteUnixNano` never advances. Today the CRC-unchanged skip path never bumps the capture-alive heartbeat (it's only reached on a `nil,nil` Capture, which the current capturer never returns). The rewrite must feed the heartbeat on a genuinely-static screen — either bump `noteVideoWrite` on a differ-skip, or return `nil,nil` on no-damage like DXGI — and a perf-sanity test must assert a long static period does not kill the session.
+- Note `heartbeat.go:542` (the headless Assist spawn-func branch) is dead code — `h.sessionBroker` is nil at that line, assigned later at `:592`. Fix or delete it while touching the constructor; do not replicate the ordering bug.
 
 ### 1.4 Input: XTest replaces xdotool
 
-`input_linux.go` reimplemented on the purego XTest bindings, sharing the capturer's display connection: mouse move/click/scroll (buttons 4/5/6/7 for scroll), key events via keysym→keycode with shift-state handling (same viewer keymap contract as today, `apps/viewer/src/lib/keymap.ts`). `InputAvailable()` returns whether the X connection + XTest extension are live. `xdotool` dependency is removed entirely (docs updated). Multi-monitor offsets work as on other platforms (single X screen spanning monitors; `SetDisplayOffset` already generic).
+`input_linux.go` reimplemented on xgb's XTEST bindings, owning its own resolved X connection (the AI computer_action path constructs an InputHandler with no capturer present, so input cannot assume a shared connection): mouse move/click/scroll (buttons 4/5/6/7 for scroll), key events via keysym→keycode with shift-state handling (same viewer keymap contract as today, `apps/viewer/src/lib/keymap.ts`). `InputAvailable()` returns whether the X connection + XTest extension are live. `xdotool` dependency is removed entirely (docs updated). Multi-monitor offsets work as on other platforms (single X screen spanning monitors; `SetDisplayOffset` already generic).
 
 ### 1.5 Capability reporting + UI
 
-- New `heartbeat/desktop_access_linux.go` implementing `computeDesktopAccess` (replacing the nil stub for linux within `desktop_access_other.go`): probes the resolver (and a cached `XOpenDisplay` round-trip, ≤1/60s) and emits `mode: available | unavailable` with reasons: `no_display_session`, `wayland_unsupported` (Phase 1), `x11_libs_missing`, `x11_auth_failed`.
-- API: extend the `desktopAccess` reason enum (`apps/api/src/routes/agents/schemas.ts:22-29`) with the four Linux reasons. `heartbeat.ts:458-468` already trusts Linux `isHeadless` — unchanged.
+- New `heartbeat/desktop_access_linux.go` implementing `computeDesktopAccess` (retag `desktop_access_other.go` to `!darwin && !linux`): probes the resolver (and a cached connect round-trip, ≤1/60s) and emits **`mode: 'user_session'`** when capturable (NOT a new `available` value — `mode` has no zod `.catch`, so an unknown value silently drops the whole desktopAccess object on already-deployed servers) or `mode: 'unavailable'` with reasons: `no_display_session`, `wayland_unsupported` (Phase 1), `x11_connect_failed`, `x11_auth_failed`. The call site (`heartbeat.go:3083`) is currently gated `runtime.GOOS == "darwin" && h.sessionBroker != nil` — a Linux arm without the broker condition must be added, and the Linux impl nil-guards the broker.
+- API: extend the `desktopAccess` reason enum (`apps/api/src/routes/agents/schemas.ts:22-29`) AND the shared `DesktopAccessReason` type (`packages/shared/src/types/index.ts`) with the four Linux reasons. `heartbeat.ts:458-468` already trusts Linux `isHeadless` — unchanged.
 - Web: `ConnectDesktopButton.tsx` already renders reason-driven tooltips from `desktopAccess`; add the Linux reason strings. **i18n: new keys must land in en + es/fr/de + pt-BR in the same PR** (locale-parity CI reds main otherwise).
 
 ### 1.6 Phase 1 result matrix
@@ -130,7 +138,7 @@ if runtime.GOOS == "linux" {
 
 ### 2.1 Ship the helper
 
-Build `breeze-desktop-helper` for linux/amd64 + linux/arm64 (`CGO_ENABLED=0`, same purego X11 package): add to `Makefile` `build-all-desktop-helper`, release.yml matrix, signed release manifest, and `binaries-init`. The agent's verified helper downloader (`helper/manager.go` `downloadFunc` path) already enforces manifest signature + SHA-256; reuse it for desktop-helper delivery like darwin.
+Build `breeze-desktop-helper` for linux/amd64 + linux/arm64 (`CGO_ENABLED=0`, same xgb x11 package): add to `Makefile` `build-all-desktop-helper`, release.yml matrix, signed release manifest, and `binaries-init`. The agent's verified helper downloader (`helper/manager.go` `downloadFunc` path) already enforces manifest signature + SHA-256; reuse it for desktop-helper delivery like darwin.
 
 ### 2.2 Spawn + lifecycle (the Linux branch that's missing today)
 
@@ -161,10 +169,9 @@ Build `breeze-desktop-helper` for linux/amd64 + linux/arm64 (`CGO_ENABLED=0`, sa
 
 | Area | Files |
 |---|---|
-| Agent — x11 purego pkg (new) | `agent/internal/remote/desktop/x11/*` |
-| Agent — capture/cursor/input port | `capture_linux.go` (rewrite, drop cgo split), `cursor_linux.go`, `input_linux.go` |
-| Agent — resolver (new) | `agent/internal/remote/desktop/displayresolve_linux.go` + fixtures/tests |
-| Agent — routing | `heartbeat/handlers_desktop.go`, `handlers_desktop_helper.go` (GOOS gates + Linux branch), `heartbeat.go` (dynamic isHeadless) |
+| Agent — x11 wire pkg (new, jezek/xgb) | `agent/internal/remote/desktop/x11/*` (auth parser, resolver, conn, keysym — parsers untagged for darwin -race coverage) |
+| Agent — capture/cursor/input/monitor port | `capture_linux.go` (rewrite, drop cgo split), `cursor_linux.go`, `input_linux.go`, new `monitor_linux.go` + retag `monitor_other.go` to `!windows && !linux` |
+| Agent — routing | `heartbeat/handlers_desktop.go` (start/stop/stream gates), `handlers_screenshot.go`, `handlers_computer_action.go`, `handlers_desktop_helper.go` (GOOS gates + Linux branch), `heartbeat.go` (dynamic isHeadless, OnSessionStopped unconditional, desktopAccess call-site Linux arm) |
 | Agent — capability | `heartbeat/desktop_access_linux.go` (new), `desktop_access_other.go` (build tags), `userhelper/client.go` (probe) |
 | Agent — Phase 0 bugs | `helper/manager.go`, `helper/install_linux.go` + regression tests |
 | Build/release | `agent/Makefile`, `.github/workflows/release.yml` (Phase 2: helper matrix + manifest) |
