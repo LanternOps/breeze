@@ -257,6 +257,7 @@ import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializeIntentOutboxPublisher, shutdownIntentOutboxPublisher } from './jobs/intentOutboxPublisher';
 import { initializeIntentExpiryReaper, shutdownIntentExpiryReaper } from './jobs/intentExpiryReaper';
+import { initializeIntentReleaseWorker, shutdownIntentReleaseWorker } from './jobs/intentReleaseWorker';
 import { initializeStripeReconcileSweep, shutdownStripeReconcileSweep } from './jobs/stripeReconcileSweep';
 import { initializeQuoteExpiryReaper, shutdownQuoteExpiryReaper } from './jobs/quoteExpiryReaper';
 import { initializeSuppressionExpiryReaper, shutdownSuppressionExpiryReaper } from './jobs/suppressionExpiryReaper';
@@ -1234,6 +1235,7 @@ async function initializeWorkers(): Promise<void> {
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['intentOutboxPublisher', initializeIntentOutboxPublisher],
     ['intentExpiryReaper', initializeIntentExpiryReaper],
+    ['intentReleaseWorker', initializeIntentReleaseWorker],
     ['stripeReconcileSweep', initializeStripeReconcileSweep],
     ['quoteExpiryReaper', initializeQuoteExpiryReaper],
     ['suppressionExpiryReaper', initializeSuppressionExpiryReaper],
@@ -1413,6 +1415,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownApprovalExpiryReaper,
     shutdownIntentOutboxPublisher,
     shutdownIntentExpiryReaper,
+    shutdownIntentReleaseWorker,
     shutdownStripeReconcileSweep,
     shutdownQuoteExpiryReaper,
     shutdownSuppressionExpiryReaper,
