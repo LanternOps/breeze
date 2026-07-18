@@ -35,6 +35,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { dump as dumpYaml } from 'js-yaml';
 import {
@@ -77,8 +78,12 @@ Desired state (edits extensions.yaml on this host):
   install --name <n> --uri <u> [--version <v>] [--digest sha256:<hex>]
           --publisher <p> [--required] [--rollout rolling|replace] [--dry-run]
   upgrade --name <n> [--version <v>] [--digest sha256:<hex>] [--uri <u>]
-          [--required] [--rollout rolling|replace] [--dry-run]
+          [--required|--not-required] [--rollout rolling|replace] [--dry-run]
   verify  --name <n> --archive <path/to/bundle.zip>
+
+  --required / --not-required set the selection's "required" flag. Omitting
+  both carries the current value forward on upgrade (and defaults to false on
+  install); pass --not-required to demote a previously required extension.
 
 Runtime state (calls the platform-admin API):
   list
@@ -102,7 +107,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const BOOLEAN_FLAGS = new Set(['required', 'dry-run']);
+const BOOLEAN_FLAGS = new Set(['required', 'not-required', 'dry-run']);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const positional: string[] = [];
@@ -235,9 +240,16 @@ function assertWritable(configPath: string): void {
   const probe = path.join(path.dirname(configPath), `.breezectl-probe-${process.pid}`);
   try {
     writeFileSync(probe, '');
-    unlinkSync(probe);
   } catch {
     throw immutable();
+  } finally {
+    // Remove the probe even if something between the write and here throws, so
+    // a crashed run cannot litter the config directory with probe files.
+    try {
+      unlinkSync(probe);
+    } catch {
+      /* never created, or already gone */
+    }
   }
 }
 
@@ -284,16 +296,59 @@ function withLock<T>(configPath: string, log: (line: string) => void, fn: () => 
     }
   }
 
+  // Stamp an unguessable nonce into the lockfile. Breaking a stale lock is
+  // unlink-then-create, so two runs that both judge the SAME lock stale can
+  // interleave: the second unlinks the first's FRESH lockfile and creates its
+  // own. Without an owner marker, each run's release would then unlink whatever
+  // lockfile happens to sit at that path — possibly another live run's. The
+  // nonce makes release conditional on still owning the lock.
+  const nonce = randomUUID();
   try {
-    writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+    writeSync(fd, JSON.stringify({ pid: process.pid, nonce, at: new Date().toISOString() }));
+  } finally {
     closeSync(fd);
+  }
+
+  // Confirm the lockfile at the path is still OURS before doing any work. If a
+  // concurrent stale-break replaced it between our create and now, we never held
+  // the lock and must not proceed — otherwise both runs would interleave a
+  // read-modify-write and one selection edit would be silently lost.
+  if (readLockNonce(lockPath) !== nonce) {
+    throw new Error(
+      `lost a race for the lock at ${lockPath} to a concurrent breezectl run; retry the command.`,
+    );
+  }
+
+  try {
     return fn();
   } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* already released */
+    // Only remove a lock we still own.
+    if (readLockNonce(lockPath) === nonce) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* already released */
+      }
+    } else {
+      log(
+        `[breezectl] not releasing ${lockPath}: it is now held by another run ` +
+          '(our lock was broken as stale while we worked).',
+      );
     }
+  }
+}
+
+/** The `nonce` recorded in the lockfile at `lockPath`, or null if unreadable. */
+function readLockNonce(lockPath: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'));
+    if (typeof parsed === 'object' && parsed !== null && 'nonce' in parsed) {
+      const value = (parsed as { nonce: unknown }).nonce;
+      return typeof value === 'string' ? value : null;
+    }
+    return null;
+  } catch {
+    return null; // missing, truncated, or not JSON — treat as not ours.
   }
 }
 
@@ -302,6 +357,23 @@ function commit(configPath: string, text: string): void {
   const tmp = `${configPath}.breezectl-${process.pid}.tmp`;
   writeFileSync(tmp, text, { mode: 0o644 });
   renameSync(tmp, configPath);
+}
+
+/**
+ * Resolve the selection's `required` flag: `--required` promotes,
+ * `--not-required` demotes, and omitting both carries `current` forward.
+ * Without an explicit demote flag an upgrade could only ever set `required`,
+ * never clear it — an operator would have to hand-edit the YAML.
+ */
+function resolveRequired(args: ParsedArgs, current: boolean): boolean {
+  const promote = args.flags.required === true;
+  const demote = args.flags['not-required'] === true;
+  if (promote && demote) {
+    throw new Error('--required and --not-required are mutually exclusive');
+  }
+  if (promote) return true;
+  if (demote) return false;
+  return current;
 }
 
 /**
@@ -341,7 +413,7 @@ function editSelection(
       name,
       uri: optionalFlag(args, 'uri') ?? current?.uri ?? requireFlag(args, 'uri'),
       publisher: optionalFlag(args, 'publisher') ?? current?.publisher ?? requireFlag(args, 'publisher'),
-      required: args.flags.required === true ? true : (current?.required ?? false),
+      required: resolveRequired(args, current?.required ?? false),
       rollout: (optionalFlag(args, 'rollout') ?? current?.rollout ?? 'rolling') as 'rolling' | 'replace',
       ...(optionalFlag(args, 'version') ?? current?.version
         ? { version: optionalFlag(args, 'version') ?? current?.version }

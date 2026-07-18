@@ -123,7 +123,7 @@ describe('ExtensionStateStore — committed cross-connection state (Plan 02, Tas
       expect(ours.map((row) => row.name)).toEqual([extensionName, second]);
       expect(ours[0]).toMatchObject({ configuredVersion: '2.0.0', lifecycleState: 'discovered' });
       // The full record shape the admin surface sanitizes from is present.
-      expect(ours[1].updatedAt).toBeInstanceOf(Date);
+      expect(ours[1]?.updatedAt).toBeInstanceOf(Date);
     } finally {
       await withSystemDbAccessContext(async () => {
         const { db } = await import('../../db');

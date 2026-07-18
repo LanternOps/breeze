@@ -16,6 +16,10 @@ import {
   type ExtensionContributionRegistry,
   type RegistryAiTool,
 } from '../extensions/contributionRegistry';
+import {
+  createExtensionStateStore,
+  type ExtensionStateStore,
+} from '../extensions/stateStore';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -271,6 +275,20 @@ export function hasCoreAiToolName(toolName: string): boolean {
 
 extensionContributionRegistry.configureReservedAiToolNames(hasCoreAiToolName);
 
+/** The state-store surface the extension AI-tool gate needs (injectable for tests). */
+export type AiToolEnabledStore = Pick<ExtensionStateStore, 'isEnabled'>;
+
+/**
+ * The shared, lazily-built store backing the extension AI-tool enable gate.
+ * Built on first extension-tool call so a deployment with no extensions (and
+ * every core-only test) never constructs it.
+ */
+let extensionEnabledStore: AiToolEnabledStore | null = null;
+function defaultExtensionEnabledStore(): AiToolEnabledStore {
+  extensionEnabledStore ??= createExtensionStateStore();
+  return extensionEnabledStore;
+}
+
 function resolveExtensionTool(
   toolName: string,
   registry: ExtensionContributionRegistry,
@@ -367,11 +385,29 @@ export async function executeTool(
   input: Record<string, unknown>,
   auth: AuthContext,
   registry: ExtensionContributionRegistry = extensionContributionRegistry,
+  store: AiToolEnabledStore = defaultExtensionEnabledStore(),
 ): Promise<string> {
   const coreTool = aiTools.get(toolName);
   const extensionTool = resolveExtensionTool(toolName, registry);
   const tool = coreTool ?? extensionTool;
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
+
+  // Cross-replica ENABLED gate for extension-contributed tools, mirroring the
+  // HTTP gateway's per-request check (enabledGate.ts) and the job processor's
+  // per-tick check (jobHost.ts). The registry's in-memory `enabled` flag is
+  // REPLICA-LOCAL: an operator disabling an extension through the admin API on
+  // replica A never invalidates replica B's snapshot, so B would keep running
+  // the extension's handlers indefinitely. Re-reading the durable flag here —
+  // uncached, exactly like the gateway — makes the shutoff fleet-wide for the
+  // extension-CODE-EXECUTION surface too. A now-disabled tool is reported as
+  // unresolvable, the same as a withdrawn one. Core tools never reach this
+  // branch, so the core path takes no extra database read.
+  if (!coreTool && extensionTool) {
+    const owner = registry.findAiToolOwner(toolName);
+    if (!owner || !(await store.isEnabled(owner))) {
+      throw new Error(`Unknown tool: ${toolName}`);
+    }
+  }
 
   // Helper device-scope gate (finding A): force the tool onto the Helper's own
   // device, or deny org-wide tools, before anything else runs.

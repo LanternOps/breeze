@@ -320,6 +320,26 @@ export class ExtensionContributionRegistry {
     return undefined;
   }
 
+  /**
+   * The name of the extension that owns `name`, using the SAME resolution order
+   * and enabled-filter as {@link getAiTool} — so a caller that resolved a tool
+   * here is guaranteed to be naming that tool's owner.
+   *
+   * Exists so `executeTool` can re-check the OWNER's durable `enabled` flag in
+   * the database before running an extension handler. This in-memory `enabled`
+   * flag is replica-local: a disable that lands on another replica never
+   * invalidates it, so it must not be the only gate on extension code
+   * execution. Returning just the owner name (rather than widening `getAiTool`'s
+   * return type) keeps every existing call site untouched.
+   */
+  findAiToolOwner(name: string): string | undefined {
+    for (const snapshot of this.active.values()) {
+      if (!snapshot.enabled) continue;
+      if (snapshot.aiTools.has(name)) return snapshot.name;
+    }
+    return undefined;
+  }
+
   listAiTools(): readonly RegistryAiTool[] {
     const tools: RegistryAiTool[] = [];
     for (const snapshot of this.active.values()) {
