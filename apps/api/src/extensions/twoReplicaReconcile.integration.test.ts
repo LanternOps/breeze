@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { autoMigrate } from '../db/autoMigrate';
 import { buildScenarioFixture, type FixtureExtensionSpec } from './__fixtures__/twoReplica';
 
 /**
@@ -49,10 +50,32 @@ const ALL_FIXTURE_EXTENSION_NAMES = ['happyreq', 'happyopt', 'reqfail', 'optfail
  * `test:docker:down`.
  */
 
-const DATABASE_URL =
+// This test drives the FULL `reconcileExtensions`, whose tenancy phase
+// (`assertNoUnaccountedPublicTables`) sweeps the ENTIRE `public` schema — so it
+// cannot share the standard `breeze_test` database, which accumulates tables
+// from other extensions' integration runs across worktrees (e.g. `workspace_*`)
+// that would read as "unaccounted" and abort every reconcile here. Instead the
+// suite provisions its OWN throwaway database (created + migrated in beforeAll,
+// dropped in afterAll), so the schema contains only core tables plus this
+// test's own accounted-for extension tables. The name matches the test-DB
+// safety allowlist (`/^breeze_test(_[a-z0-9]+)?$/`).
+const THROWAWAY_DB = 'breeze_test_2rep';
+
+const BASE_DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
-const DATABASE_URL_APP =
+const BASE_DATABASE_URL_APP =
   process.env.DATABASE_URL_APP ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test';
+
+function withDbName(connectionUrl: string, databaseName: string): string {
+  const parsed = new URL(connectionUrl);
+  parsed.pathname = `/${databaseName}`;
+  return parsed.toString();
+}
+
+// Children and the parent's `admin` pool all target the throwaway DB; only the
+// create/drop DDL runs against the base DB (via `baseAdmin`).
+const DATABASE_URL = withDbName(BASE_DATABASE_URL, THROWAWAY_DB);
+const DATABASE_URL_APP = withDbName(BASE_DATABASE_URL_APP, THROWAWAY_DB);
 const CHILD_JWT_SECRET = 'test-jwt-secret-for-two-replica-reconcile-min-32-chars';
 
 const CHILD_ENTRY_PATH = fileURLToPath(new URL('./__fixtures__/reconcileChild.ts', import.meta.url));
@@ -132,9 +155,33 @@ function runChild(configPath: string, storeRoot: string, artifactsDir: string): 
 
 describe('two-replica reconcile and failure policy (issue #2619, exit criteria 2 & 3)', () => {
   let admin: Sql;
+  let baseAdmin: Sql;
   let scratchRoot: string;
 
   beforeAll(async () => {
+    // Provision a pristine throwaway database. FORCE-drop first so a prior
+    // interrupted run can't leave stale schema behind (PG 13+; container is 16).
+    baseAdmin = postgres(BASE_DATABASE_URL, { max: 1, onnotice: () => {} });
+    await baseAdmin.unsafe(`DROP DATABASE IF EXISTS ${THROWAWAY_DB} WITH (FORCE)`);
+    await baseAdmin.unsafe(`CREATE DATABASE ${THROWAWAY_DB}`);
+
+    // Migrate the throwaway DB. autoMigrate() (and the ensureAppRole it calls)
+    // read DATABASE_URL / DATABASE_URL_APP from the environment at call time and
+    // open their own short-lived clients, so pointing env at the throwaway for
+    // the duration of this call migrates it — the parent's import-time `db` pool
+    // (bound to the base DB) is untouched. Restore env afterward so nothing else
+    // in the process observes the swap.
+    const prevUrl = process.env.DATABASE_URL;
+    const prevApp = process.env.DATABASE_URL_APP;
+    process.env.DATABASE_URL = DATABASE_URL;
+    process.env.DATABASE_URL_APP = DATABASE_URL_APP;
+    try {
+      await autoMigrate();
+    } finally {
+      process.env.DATABASE_URL = prevUrl;
+      process.env.DATABASE_URL_APP = prevApp;
+    }
+
     admin = postgres(DATABASE_URL, { max: 4, onnotice: () => {} });
     scratchRoot = await mkdtemp(join(tmpdir(), 'breeze-ext-two-replica-'));
   });
@@ -155,9 +202,12 @@ describe('two-replica reconcile and failure policy (issue #2619, exit criteria 2
   }
 
   afterAll(async () => {
-    if (admin) {
-      await resetExtensionState(ALL_FIXTURE_EXTENSION_NAMES);
-      await admin.end({ timeout: 5 });
+    // Close the throwaway pool BEFORE dropping the database — FORCE also
+    // terminates any lingering sessions (e.g. a child's pool that outlived it).
+    if (admin) await admin.end({ timeout: 5 });
+    if (baseAdmin) {
+      await baseAdmin.unsafe(`DROP DATABASE IF EXISTS ${THROWAWAY_DB} WITH (FORCE)`);
+      await baseAdmin.end({ timeout: 5 });
     }
     if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true }).catch(() => {});
   });
