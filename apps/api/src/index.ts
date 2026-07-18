@@ -281,6 +281,11 @@ import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
+import { join as joinPath } from 'node:path';
+import { reconcileExtensions } from './extensions/reconciler';
+import { resolveExtensionsRoot } from './extensions/discovery';
+import { resolveArtifactStoreRoot } from './extensions/artifactStore';
+import { createExtensionStateStore } from './extensions/stateStore';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -1553,6 +1558,19 @@ async function bootstrap(): Promise<void> {
   }
 
   await loadSourceExtensions(extensionContributionRegistry);
+
+  // Reconcile SIGNED runtime-extension bundles declared in extensions.yaml. Core
+  // + legacy-extension migrations already ran (initializeDatabaseForStartup
+  // above). A MISSING extensions.yaml — the common case — is a clean no-op and
+  // must never break startup; a REQUIRED extension that fails any phase throws
+  // and aborts boot on purpose (see reconcileExtensions).
+  await reconcileExtensions({
+    app,
+    configPath: joinPath(resolveExtensionsRoot(), 'extensions.yaml'),
+    storeRoot: resolveArtifactStoreRoot(),
+    registry: extensionContributionRegistry,
+    stateStore: createExtensionStateStore(),
+  });
 
   try {
     await bootstrapPlatformAdmins();
