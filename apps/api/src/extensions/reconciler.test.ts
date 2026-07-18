@@ -1,14 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHash, type KeyObject } from 'node:crypto';
 import {
-  existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
-import { extractVerifiedPayload, reconcileExtensions, type ReconcilePorts } from './reconciler';
+import {
+  extractVerifiedPayload,
+  pruneStaleExtractionDirs,
+  reconcileExtensions,
+  type ReconcilePorts,
+} from './reconciler';
 import { ExtensionIncompatibleError } from './errors';
 import {
   ExtensionContributionRegistry,
@@ -155,7 +160,9 @@ function fakeStaged(): StagedExtensionContributions {
 
 type Phase = 'compatibility' | 'migration' | 'register';
 
-async function reconcileFixture({ required, failAt }: { required: boolean; failAt: Phase }) {
+async function reconcileFixture(
+  { required, failAt, storeRoot }: { required: boolean; failAt?: Phase; storeRoot?: string },
+) {
   const registry = new ExtensionContributionRegistry();
   const stateStore = new ExtensionStateStore(new InMemoryExtensionStateBackend());
   const selection: ExtensionSelection = {
@@ -198,7 +205,7 @@ async function reconcileFixture({ required, failAt }: { required: boolean; failA
   const summary = await reconcileExtensions({
     app: new Hono(),
     configPath: '/tmp/extensions.yaml',
-    storeRoot: '/tmp/store',
+    storeRoot: storeRoot ?? '/tmp/store',
     registry,
     stateStore,
     ports,
@@ -255,6 +262,113 @@ describe('reconcileExtensions', () => {
     });
     expect(summary.activated).toEqual([]);
     expect(summary.failed).toEqual([]);
+  });
+});
+
+/**
+ * Crash-orphaned extraction staging directories.
+ *
+ * `extractVerifiedPayload` stages into `<dest>.tmp-<pid>-<base36>` and renames it
+ * into place. A process that dies mid-extract leaves that temp tree behind and
+ * nothing ever collected it, so they accumulated on the volume. The prune must
+ * claim those and NOTHING else — above all never a committed `sha256-<hex>` tree
+ * — and must never be able to break boot.
+ */
+describe('pruneStaleExtractionDirs', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const DIGEST = 'a'.repeat(64);
+
+  function makeStore(): string {
+    const root = mkdtempSync(path.join(tmpdir(), 'breeze-prune-'));
+    mkdirSync(path.join(root, 'extracted'), { recursive: true });
+    return root;
+  }
+
+  /** Create a directory under `extracted/` and backdate it so it reads as stale. */
+  function makeAgedDir(root: string, name: string, ageMs: number, files: string[] = []): string {
+    const dir = path.join(root, 'extracted', name);
+    mkdirSync(dir, { recursive: true });
+    for (const file of files) writeFileSync(path.join(dir, file), '');
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(dir, when, when);
+    return dir;
+  }
+
+  it('removes a stale temp extraction directory left behind by a crash', async () => {
+    const root = makeStore();
+    const orphan = makeAgedDir(root, `sha256-${DIGEST}.tmp-1234-abc123`, 4 * HOUR_MS, ['partial.js']);
+
+    await expect(pruneStaleExtractionDirs(root)).resolves.toBe(1);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  it('preserves a committed extraction directory that carries a .verified marker', async () => {
+    const root = makeStore();
+    // Old enough to be "stale" by age, but committed: no `.tmp-` infix, so it
+    // cannot match the temp pattern at all.
+    const committed = makeAgedDir(root, `sha256-${DIGEST}`, 90 * 24 * HOUR_MS, ['.verified', 'server.js']);
+    const orphan = makeAgedDir(root, `sha256-${DIGEST}.tmp-99-zzz`, 4 * HOUR_MS);
+
+    await expect(pruneStaleExtractionDirs(root)).resolves.toBe(1);
+
+    expect(existsSync(committed)).toBe(true);
+    expect(existsSync(path.join(committed, '.verified'))).toBe(true);
+    expect(existsSync(path.join(committed, 'server.js'))).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  it('leaves a recent temp directory alone in case a concurrent boot is still extracting', async () => {
+    const root = makeStore();
+    const inFlight = makeAgedDir(root, `sha256-${DIGEST}.tmp-4321-def456`, 30 * 1000);
+
+    await expect(pruneStaleExtractionDirs(root)).resolves.toBe(0);
+    expect(existsSync(inFlight)).toBe(true);
+  });
+
+  it('ignores entries under extracted/ that are not this extractor\'s temp dirs', async () => {
+    const root = makeStore();
+    const foreign = [
+      makeAgedDir(root, 'operator-notes', 4 * HOUR_MS),
+      makeAgedDir(root, `sha256-${DIGEST}.tmp`, 4 * HOUR_MS),
+      makeAgedDir(root, `not-a-digest.tmp-1-abc`, 4 * HOUR_MS),
+    ];
+    const strayFile = path.join(root, 'extracted', `sha256-${DIGEST}.tmp-7-aaa`);
+    writeFileSync(strayFile, 'a file, not a directory');
+
+    await expect(pruneStaleExtractionDirs(root)).resolves.toBe(0);
+    for (const dir of foreign) expect(existsSync(dir)).toBe(true);
+    expect(existsSync(strayFile)).toBe(true);
+  });
+
+  it('is a silent no-op on a store that has never extracted anything', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'breeze-prune-empty-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(pruneStaleExtractionDirs(root)).resolves.toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // Housekeeping must never be able to take startup down with it.
+  it('survives an unreadable extracted root and lets reconcile continue', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'breeze-prune-broken-'));
+    // `extracted` is a FILE, so readdir fails (ENOTDIR).
+    writeFileSync(path.join(root, 'extracted'), 'not a directory');
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(pruneStaleExtractionDirs(root)).resolves.toBe(0);
+      expect(warn).toHaveBeenCalled();
+
+      // The real proof: boot still reconciles to a fully activated extension.
+      const { summary } = await reconcileFixture({ required: true, storeRoot: root });
+      expect(summary.activated).toEqual(['demo']);
+      expect(summary.failed).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
