@@ -2,10 +2,14 @@ import { createHash, randomUUID as nodeRandomUUID, type KeyObject } from 'node:c
 import {
   completeConsentRequestSchema,
   completeConsentResultSchema,
+  readActionRequestSchema,
+  readActionResultSchema,
   retestRequestSchema,
   retestResultSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
+  type ReadActionRequest,
+  type ReadActionResult,
   type RetestRequest,
   type RetestResult,
 } from '@breeze/shared/m365';
@@ -13,9 +17,10 @@ import { importJWK, SignJWT, type CryptoKey, type JWK } from 'jose';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024;
+const READ_ACTION_MAX_RESPONSE_BYTES = 256 * 1024;
 const TOKEN_LIFETIME_SECONDS = 60;
 
-type ExecutorOperation = 'complete-consent' | 'retest';
+type ExecutorOperation = 'complete-consent' | 'retest' | 'read-action';
 
 export class GraphReadExecutorClientError extends Error {
   readonly code = 'executor_unavailable' as const;
@@ -29,6 +34,7 @@ export class GraphReadExecutorClientError extends Error {
 export interface GraphReadExecutorClient {
   completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
   retestCustomerGraphRead(input: RetestRequest): Promise<RetestResult>;
+  executeReadAction(input: ReadActionRequest): Promise<ReadActionResult>;
 }
 
 export interface GraphReadExecutorClientConfig {
@@ -65,8 +71,14 @@ function exactExecutorOrigin(value: string): URL {
   return new URL(parsed.origin);
 }
 
+const OPERATION_ENDPOINT_PATHS: Record<ExecutorOperation, string> = {
+  'complete-consent': '/v1/complete-consent',
+  retest: '/v1/retest',
+  'read-action': '/v1/read-action',
+};
+
 function operationEndpoint(origin: URL, operation: ExecutorOperation): string {
-  const expectedPath = operation === 'complete-consent' ? '/v1/complete-consent' : '/v1/retest';
+  const expectedPath = OPERATION_ENDPOINT_PATHS[operation];
   const endpoint = new URL(expectedPath, origin);
   if (
     endpoint.origin !== origin.origin
@@ -141,11 +153,12 @@ export function createGraphReadExecutorClient(
 
   async function invoke<T>(
     operation: ExecutorOperation,
-    input: CompleteConsentRequest | RetestRequest,
+    input: CompleteConsentRequest | RetestRequest | ReadActionRequest,
     parseResponse: (value: unknown) => T,
+    maxBytes: number = maxResponseBytes,
   ): Promise<T> {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0
-      || !Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
+      || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
       throw unavailable();
     }
 
@@ -179,7 +192,7 @@ export function createGraphReadExecutorClient(
         body: rawBody,
       });
       if (!response.ok || !exactJsonContentType(response)) throw unavailable();
-      const rawResponse = await readBoundedResponse(response, maxResponseBytes);
+      const rawResponse = await readBoundedResponse(response, maxBytes);
       const decoded = new TextDecoder('utf-8', { fatal: true }).decode(rawResponse);
       return parseResponse(JSON.parse(decoded));
     } catch {
@@ -197,6 +210,16 @@ export function createGraphReadExecutorClient(
       const parsed = retestRequestSchema.safeParse(input);
       if (!parsed.success) return Promise.reject(unavailable());
       return invoke('retest', parsed.data, (value) => retestResultSchema.parse(value));
+    },
+    executeReadAction(input) {
+      const parsed = readActionRequestSchema.safeParse(input);
+      if (!parsed.success) return Promise.reject(unavailable());
+      return invoke(
+        'read-action',
+        parsed.data,
+        (value) => readActionResultSchema.parse(value),
+        READ_ACTION_MAX_RESPONSE_BYTES,
+      );
     },
   };
 }

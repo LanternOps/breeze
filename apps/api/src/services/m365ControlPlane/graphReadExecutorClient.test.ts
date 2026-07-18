@@ -224,6 +224,126 @@ describe('Graph-read executor client', () => {
       .rejects.toMatchObject({ code: 'executor_unavailable' });
   });
 
+  it('serializes once and signs the exact read-action body and operation', async () => {
+    const { privateJwk, publicKey } = await signingFixture();
+    const readActionResult = {
+      success: true as const,
+      kind: 'resource' as const,
+      resource: { id: TENANT_ID, displayName: 'Contoso' },
+    };
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body);
+      const token = String(new Headers(init?.headers).get('authorization')).slice('Bearer '.length);
+      const verified = await jwtVerify(token, publicKey, {
+        algorithms: ['EdDSA'],
+        issuer: 'breeze-api',
+        audience: 'm365-graph-read-executor',
+        subject: 'breeze-control-plane',
+        currentDate: new Date('2026-07-14T16:00:00.000Z'),
+      });
+      expect(verified.protectedHeader).toMatchObject({ alg: 'EdDSA', kid: 'api-key-1' });
+      expect(verified.payload).toMatchObject({
+        correlationId: CORRELATION_ID,
+        operation: 'read-action',
+        bodySha256: createHash('sha256').update(body).digest('base64url'),
+      });
+      return new Response(JSON.stringify(readActionResult), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+      now: () => new Date('2026-07-14T16:00:00.000Z'),
+      randomUUID: () => '66666666-6666-4666-8666-666666666666',
+    });
+    const input = {
+      correlationId: CORRELATION_ID,
+      tenantId: TENANT_ID,
+      action: { type: 'm365.org.get' as const },
+    };
+
+    await expect(client.executeReadAction(input)).resolves.toEqual(readActionResult);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://executor.internal.example.test/v1/read-action',
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(input);
+  });
+
+  it('parses a valid executor read-action failure body through', async () => {
+    const { privateJwk } = await signingFixture();
+    const failureResult = {
+      success: false as const,
+      errorCode: 'graph_not_found' as const,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(failureResult), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+
+    await expect(client.executeReadAction({
+      correlationId: CORRELATION_ID,
+      tenantId: TENANT_ID,
+      action: { type: 'm365.org.get' },
+    })).resolves.toEqual(failureResult);
+  });
+
+  it('rejects a read-action 404 from an old executor with executor_unavailable', async () => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+
+    const error = await client.executeReadAction({
+      correlationId: CORRELATION_ID,
+      tenantId: TENANT_ID,
+      action: { type: 'm365.org.get' },
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({ code: 'executor_unavailable' });
+  });
+
+  it('accepts a read-action response larger than the 32 KiB default but under the 256 KiB cap', async () => {
+    const { privateJwk } = await signingFixture();
+    const readActionResult = {
+      success: true as const,
+      kind: 'collection' as const,
+      items: [{ padding: 'x'.repeat(40 * 1024) }],
+      truncated: false,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(readActionResult), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+
+    await expect(client.executeReadAction({
+      correlationId: CORRELATION_ID,
+      tenantId: TENANT_ID,
+      action: { type: 'm365.org.get' },
+    })).resolves.toEqual(readActionResult);
+  });
+
   it('aborts a genuinely stalled executor request at the configured timeout', async () => {
     const { privateJwk } = await signingFixture();
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
