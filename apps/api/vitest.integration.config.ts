@@ -78,6 +78,13 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB integration test for the two-replica runtime
+      // extension reconcile + failure policy (Task 8, issue #2619). Forks two
+      // genuinely separate child processes against the real reconciler/
+      // migrator/state-store; needs the real, already-migrated :5433 database
+      // this config's globalSetup provides. Belongs here, not the unit
+      // runner (no DB, no child-process fork target).
+      'src/extensions/twoReplicaReconcile.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

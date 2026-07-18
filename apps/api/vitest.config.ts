@@ -53,6 +53,11 @@ export default defineConfig({
       // the `src/__tests__/integration/**` glob above — so the no-DB unit runner would
       // fail it on connect. Belongs to vitest.integration.config.ts (already in its include).
       'src/jobs/authEmailWorker.integration.test.ts',
+      // Two-replica runtime extension reconcile + failure policy (Task 8,
+      // issue #2619): imports `__tests__/integration/setup` (real postgres
+      // pool) and forks real child processes against `:5433`. Belongs to
+      // vitest.integration.config.ts (already in its include).
+      'src/extensions/twoReplicaReconcile.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {
