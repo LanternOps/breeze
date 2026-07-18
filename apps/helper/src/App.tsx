@@ -420,8 +420,11 @@ export default function App() {
     }
   }, [connectionState, workspaceAvailable, probeWorkspace]);
 
-  // Listen for tray menu "Device Info" click
+  // Listen for tray menu "Device Info" click. Tray events only exist inside
+  // Tauri; the direct listen() import throws in browser dev mode, so skip it
+  // when the Tauri IPC bridge is absent.
   useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
     let unlisten: (() => void) | undefined;
     listen('show-device-info', () => {
       setShowDeviceInfo(true);
