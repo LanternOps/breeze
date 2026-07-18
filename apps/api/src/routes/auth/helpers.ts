@@ -12,7 +12,7 @@ import {
   verifyPassword,
   getUserEpochs
 } from '../../services';
-import { getImmediatePeerIpOrUndefined } from '../../services/clientIp';
+import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../../services/clientIp';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
@@ -322,28 +322,45 @@ export function isSecureCookieEnvironment(): boolean {
  * #1618: the auth cookies' `Secure` flag MUST track the real transport, not
  * `NODE_ENV`. A production deploy the browser reaches over plain HTTP — ACME
  * failed (port 80 blocked / DNS not pointed), the site is opened via `http://`,
- * or a TLS-terminating front proxy forwards HTTP to Caddy — would otherwise
- * stamp `Secure` on the refresh cookie, which the browser then *silently
- * discards*. Login still "succeeds" (the access token rides back in the JSON
- * body and lives in memory), but every reload 401s because the refresh cookie
- * was never stored. That is exactly the "persistent login" failure reporters
- * hit, with no diagnostic anywhere.
+ * or the browser's path to us has a plain-HTTP hop end-to-end (TLS-stripping
+ * proxy) — would otherwise stamp `Secure` on the refresh cookie, which the
+ * browser then *silently discards*. Login still "succeeds" (the access token
+ * rides back in the JSON body and lives in memory), but every reload 401s
+ * because the refresh cookie was never stored. That is exactly the "persistent
+ * login" failure reporters hit, with no diagnostic anywhere.
  *
- * Resolution order: the reverse proxy's `X-Forwarded-Proto` (Caddy always sets
- * it to the true client-hop scheme) → an `https://` request URL as a positive
- * signal (direct-to-API TLS, no proxy) → `NODE_ENV` as the safe default.
- * Trusting `X-Forwarded-Proto` is safe here: Caddy overwrites any client-supplied
- * value, and a spoofed `https` only makes cookies *more* restrictive.
+ * Resolution order:
+ * 1. `X-Forwarded-Proto` (first, client-facing hop) — but only when the
+ *    immediate TCP peer passes the same TRUST_PROXY_HEADERS /
+ *    TRUSTED_PROXY_CIDRS gate as forwarded-ip headers (`clientIp.ts`).
+ *    Without the gate, any client that can reach the API around the proxy
+ *    could send `X-Forwarded-Proto: http` over genuine TLS and strip `Secure`
+ *    from its own cookies. The stock compose topology trusts Caddy's static
+ *    IP out of the box (locked by `config/proxyTrustCompose.test.ts`). Note
+ *    Caddy REPLACES `X-Forwarded-*` from untrusted clients but PASSES THROUGH
+ *    values from `CADDY_TRUSTED_PROXIES`: in the hosted Cloudflare-Tunnel
+ *    topology the `https` the API sees originates at the Cloudflare edge and
+ *    is passed through by Caddy, whose own inbound hop (cloudflared → Caddy)
+ *    is plain HTTP — the fix *relies* on that passthrough.
+ * 2. An `https://` request URL as a positive-only signal (direct-to-API TLS,
+ *    no proxy in front).
+ * 3. `NODE_ENV` as the safe default, with a throttled production breadcrumb
+ *    (`warnAmbiguousCookieTransport`) because this branch is genuinely blind:
+ *    a proxy that never sends `X-Forwarded-Proto` (or isn't in
+ *    TRUSTED_PROXY_CIDRS) with a browser on plain HTTP lands here and still
+ *    gets `Secure` — the pre-fix #1618 behavior — so we leave a grep-able
+ *    trail instead of failing silently.
  *
- * Note the URL scheme is only ever a POSITIVE signal: in the standard topology
- * `c.req.url` is the internal Caddy→API hop (`http://api:3001/...`), which does
- * NOT reflect the browser's transport. So an `http` URL with no `X-Forwarded-Proto`
- * is ambiguous — we fall back to `NODE_ENV` rather than downgrading a genuinely
- * HTTPS deployment whose proxy happens to strip the header to non-Secure cookies.
+ * The URL scheme is only ever a POSITIVE signal: in the standard topology the
+ * request URL's *scheme* reflects the internal plain-HTTP Caddy→API hop
+ * (`http://<original-host>/...` — Caddy preserves the Host header), which does
+ * NOT reflect the browser's transport. So an `http` URL with no trusted
+ * `X-Forwarded-Proto` is ambiguous — we fall back to `NODE_ENV` rather than
+ * downgrading a genuinely HTTPS deployment whose proxy strips the header.
  */
 export function isRequestConnectionSecure(c: Context): boolean {
   const forwardedProto = c.req.header('x-forwarded-proto');
-  if (forwardedProto) {
+  if (forwardedProto && trustsForwardedHeadersFrom(c)) {
     // A proxy chain may append hops ("https, http"); the first is client-facing.
     return forwardedProto.split(',')[0]?.trim().toLowerCase() === 'https';
   }
@@ -352,8 +369,9 @@ export function isRequestConnectionSecure(c: Context): boolean {
       return true;
     }
   } catch {
-    // Malformed URL — fall through to the NODE_ENV default.
+    // Malformed URL — no positive signal; same ambiguous fall-through below.
   }
+  warnAmbiguousCookieTransport(c, forwardedProto);
   return isSecureCookieEnvironment();
 }
 
@@ -391,57 +409,119 @@ function buildCookieSecuritySuffix(sameSite: SameSiteValue, connectionSecure: bo
   return `; SameSite=${sameSite}${secure}`;
 }
 
-// The build* functions default `connectionSecure` to the NODE_ENV heuristic so
-// any caller without a request context keeps the historical behaviour; the
-// set/clear entry points below always pass the request-derived value.
-export function buildRefreshTokenCookie(refreshToken: string, connectionSecure = isSecureCookieEnvironment()): string {
+// `connectionSecure` is required on every build* function so no caller can
+// silently fall back to the pre-#1618 NODE_ENV heuristic — derive it from the
+// request via isRequestConnectionSecure(c), or use the set/clear entry points
+// below, which also emit the misconfiguration warnings.
+export function buildRefreshTokenCookie(refreshToken: string, connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
 }
 
-export function buildCsrfTokenCookie(csrfToken: string, connectionSecure = isSecureCookieEnvironment()): string {
+export function buildCsrfTokenCookie(csrfToken: string, connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
 }
 
-export function buildClearRefreshTokenCookie(connectionSecure = isSecureCookieEnvironment()): string {
+export function buildClearRefreshTokenCookie(connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
 }
 
-export function buildClearCsrfTokenCookie(connectionSecure = isSecureCookieEnvironment()): string {
+export function buildClearCsrfTokenCookie(connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${CSRF_COOKIE_NAME}=; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
 }
 
-// Throttled warning so a busy HTTP-served deployment logs the misconfiguration
-// periodically without flooding. Module-scoped; resets on process restart.
-let lastInsecureCookieWarnAt = 0;
-const INSECURE_COOKIE_WARN_INTERVAL_MS = 10 * 60 * 1000;
+// Throttled warnings so a busy misconfigured deployment logs periodically
+// without flooding. Keyed per warning kind (a small fixed set — never by
+// host/peer) so one misconfiguration class can't suppress reports of another.
+// Module-scoped; resets on process restart.
+const AUTH_COOKIE_WARN_INTERVAL_MS = 10 * 60 * 1000;
+const authCookieLastWarnAt = new Map<string, number>();
 
-function warnIfInsecureAuthCookie(connectionSecure: boolean): void {
-  // Only actionable when we believe we're deployed (production) yet the browser
-  // reached us over HTTP. Dev-over-http is the normal local flow — stay quiet.
-  if (connectionSecure || !isSecureCookieEnvironment() || forceSecureCookie()) {
-    return;
-  }
+function warnAuthCookieThrottled(kind: string, message: string): void {
   const now = Date.now();
-  if (now - lastInsecureCookieWarnAt < INSECURE_COOKIE_WARN_INTERVAL_MS) {
+  const last = authCookieLastWarnAt.get(kind);
+  if (last !== undefined && now - last < AUTH_COOKIE_WARN_INTERVAL_MS) {
     return;
   }
-  lastInsecureCookieWarnAt = now;
-  console.warn(
-    '[auth] Issuing NON-Secure auth cookies: this production request did not arrive over HTTPS ' +
-    '(no `X-Forwarded-Proto: https`). Persistent login will work over HTTP, but the connection is ' +
-    'not encrypted. If Breeze should be served over HTTPS, fix TLS / your reverse proxy so the ' +
-    'browser reaches it over https and Caddy forwards `X-Forwarded-Proto=https` (see issue #1618). ' +
-    'To force `Secure` regardless, set AUTH_COOKIE_FORCE_SECURE=true.'
+  authCookieLastWarnAt.set(kind, now);
+  console.warn(message);
+}
+
+export function _resetAuthCookieWarnStateForTests(): void {
+  authCookieLastWarnAt.clear();
+}
+
+function describeCookieTransport(c: Context): string {
+  const host = c.req.header('host') ?? 'unknown-host';
+  const observedProto = c.req.header('x-forwarded-proto');
+  return `host "${host}", X-Forwarded-Proto ${observedProto ? `"${observedProto}"` : 'absent'}`;
+}
+
+// Production breadcrumb for the blind NODE_ENV fallback in
+// isRequestConnectionSecure: nothing told us the browser's transport, we are
+// about to assume HTTPS, and if that assumption is wrong the browser discards
+// the Secure cookie with no other diagnostic anywhere (the original #1618).
+function warnAmbiguousCookieTransport(c: Context, forwardedProto: string | undefined): void {
+  if (!isSecureCookieEnvironment()) {
+    return;
+  }
+  const cause = forwardedProto
+    ? `\`X-Forwarded-Proto: ${forwardedProto}\` was IGNORED because the TCP peer is not a trusted proxy (TRUST_PROXY_HEADERS / TRUSTED_PROXY_CIDRS)`
+    : 'no `X-Forwarded-Proto` header was present';
+  warnAuthCookieThrottled(
+    'ambiguous-transport',
+    `[auth] Cannot determine the browser's transport for auth cookies (${describeCookieTransport(c)}): ${cause}, ` +
+    'and the request URL is not https. Assuming HTTPS because NODE_ENV=production, so cookies get `Secure`. ' +
+    'If users cannot stay logged in (issue #1618), the browser is likely reaching Breeze over plain HTTP: ' +
+    'make your reverse proxy forward `X-Forwarded-Proto` and list its IP in TRUSTED_PROXY_CIDRS.'
+  );
+}
+
+// Keyed off the ACTUAL Secure decision, not just the transport: `Secure` can be
+// forced onto an insecure transport (AUTH_COOKIE_FORCE_SECURE / SameSite=None),
+// and that case breaks login outright — the warning must say so, not claim the
+// cookies are non-Secure.
+function warnOnAuthCookieTransportMismatch(c: Context, sameSite: SameSiteValue, connectionSecure: boolean, secure: boolean): void {
+  if (connectionSecure) {
+    return;
+  }
+  if (secure) {
+    // Explicit config forces `Secure` onto a transport the browser will reject
+    // it on. Only reachable via deliberate configuration, so warn in every
+    // environment — this is the #1618 symptom by operator choice.
+    const cause = sameSite === 'None'
+      ? 'AUTH_COOKIE_SAME_SITE=None requires the Secure attribute'
+      : 'AUTH_COOKIE_FORCE_SECURE is set';
+    warnAuthCookieThrottled(
+      'forced-secure-over-http',
+      `[auth] Issuing \`Secure\` auth cookies over a NON-HTTPS request (${describeCookieTransport(c)}) because ${cause}. ` +
+      'The browser WILL silently discard them and persistent login WILL break (issue #1618). Fix TLS so the ' +
+      'browser reaches Breeze over https, or remove that configuration.'
+    );
+    return;
+  }
+  // Non-Secure cookies over HTTP: login works, but credentials transit
+  // unencrypted. Dev-over-http is the normal local flow — only warn when
+  // deployed (production).
+  if (!isSecureCookieEnvironment()) {
+    return;
+  }
+  warnAuthCookieThrottled(
+    'insecure-transport',
+    `[auth] Issuing NON-Secure auth cookies: this production request arrived over HTTP (${describeCookieTransport(c)}). ` +
+    'Persistent login will work, but the connection is not encrypted. If Breeze should be served over HTTPS, ' +
+    'fix TLS / your reverse proxy so the browser reaches it over https and the proxy forwards ' +
+    '`X-Forwarded-Proto: https` (see issue #1618).'
   );
 }
 
 export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
   const connectionSecure = isRequestConnectionSecure(c);
-  warnIfInsecureAuthCookie(connectionSecure);
+  const sameSite = resolveAuthCookieSameSite();
+  warnOnAuthCookieTransportMismatch(c, sameSite, connectionSecure, shouldSetSecureCookie(sameSite, connectionSecure));
   const csrfToken = randomBytes(32).toString('hex');
   c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken, connectionSecure), { append: true });
   c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken, connectionSecure), { append: true });

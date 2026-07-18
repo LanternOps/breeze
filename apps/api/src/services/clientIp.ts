@@ -262,6 +262,19 @@ export function getTrustedClientIpOrUndefined(c: RequestLike): string | undefine
   return ip || undefined;
 }
 
+// Whether forwarded metadata headers (X-Forwarded-Proto, X-Forwarded-For, …)
+// from this request may be honored: proxy-header trust is enabled AND the
+// immediate TCP peer is in TRUSTED_PROXY_CIDRS. This is the same gate
+// getTrustedClientIp applies before reading forwarded-ip headers — use it for
+// any other forwarded header whose value must not be client-controllable
+// (e.g. the auth-cookie Secure flag derives from X-Forwarded-Proto).
+export function trustsForwardedHeadersFrom(c: RequestLike): boolean {
+  if (!shouldTrustProxyHeaders()) {
+    return false;
+  }
+  return isTrustedProxySource(getImmediatePeerIp(c, ''));
+}
+
 // The immediate TCP peer, socket-only — NEVER consults forwarded headers, so
 // it cannot be spoofed at L7. Used as a rate-limit key of last resort when no
 // trusted client IP is available. Unlike getTrustedClientIp this does NOT gate
