@@ -108,3 +108,4 @@ export * from './recoveryKeys';
 export * from './abuseSignals';
 export * from './servicePrincipals';
 export * from './partnerServicePrincipals';
+export * from './extensions';
