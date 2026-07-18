@@ -50,6 +50,8 @@ jobs:
         run: |
           bash scripts/check-guided-setup-compose-rewrites.sh
           bash scripts/check-guided-setup-default-project.sh
+          bash scripts/check-guided-setup-db-urls.sh
+          bash scripts/check-guided-setup-env-roundtrip.sh
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9

@@ -510,7 +510,15 @@ backup_file() {
   local file="$1"
   local backup
   backup="$(backup_path_for "${file}")"
-  cp "${file}" "${backup}"
+  # cp at the process umask can leave a 0644 copy; when the source is .env this
+  # backup carries the same secrets, so create it then tighten to 0600. Both are
+  # guarded because callers may run with errexit disabled (see start_stack).
+  if ! cp "${file}" "${backup}"; then
+    fail "Failed to back up ${file} to ${backup}."
+  fi
+  if ! chmod 600 "${backup}"; then
+    fail "Failed to secure permissions on backup ${backup}; it may contain secrets. Remove it manually."
+  fi
   log "Backed up ${file} to ${backup}"
 }
 
@@ -1521,6 +1529,29 @@ select_proxy_target_host() {
   done
 }
 
+docker_bridge_gateway() {
+  # Docker assigns the .1 address of a user-defined bridge network's subnet as the
+  # gateway; the api container sees that gateway as the source for a same-host
+  # proxy's NAT'd packets. Honor an exported BREEZE_DOCKER_SUBNET override (the
+  # same var docker-compose.yml reads as ${BREEZE_DOCKER_SUBNET:-172.31.0.0/24});
+  # fall back to the compose default when it is unset or not a well-formed
+  # A.B.C.D/NN whose .1 is a valid IPv4 address. Users who override the subnet
+  # only in .env can instead set TRUSTED_PROXY_CIDRS explicitly (honored above).
+  # Parameter expansion, not a regex capture: bash 3.2 (macOS) populates
+  # BASH_REMATCH unreliably for this pattern, so strip the CIDR suffix and the
+  # last octet with ${var%...} instead. is_ipv4_address then validates the result.
+  local subnet base prefix gateway
+  subnet="${BREEZE_DOCKER_SUBNET:-172.31.0.0/24}"
+  base="${subnet%/*}"   # A.B.C.D/NN -> A.B.C.D
+  prefix="${base%.*}"   # A.B.C.D    -> A.B.C  (unchanged if base has no dot)
+  gateway="${prefix}.1"
+  if [[ "${base}" != "${prefix}" ]] && is_ipv4_address "${gateway}"; then
+    printf '%s' "${gateway}"
+    return
+  fi
+  printf '%s' "172.31.0.1"
+}
+
 default_external_proxy_cidrs() {
   local existing target
 
@@ -1536,7 +1567,13 @@ default_external_proxy_cidrs() {
   target="${PROXY_TARGET_HOST}"
   case "${target}" in
     127.*|localhost)
-      printf '%s' "127.0.0.1/32"
+      # In external-proxy mode the API is reached via a PUBLISHED host port, so a
+      # same-host proxy's packets are NAT'd through the breeze bridge network and
+      # the api container sees the bridge GATEWAY as the source — not 127.0.0.1,
+      # which would match nothing and silently disable real-client-IP trust. Use
+      # the gateway (.1) of the breeze network's subnet, honoring a
+      # BREEZE_DOCKER_SUBNET override the same way docker-compose.yml does.
+      printf '%s/32' "$(docker_bridge_gateway)"
       return
       ;;
   esac
@@ -1564,7 +1601,11 @@ proxy_source_to_cidr_default() {
 
   case "${source}" in
     127.*|localhost)
-      printf '%s' "127.0.0.1/32"
+      # A same-host proxy reaches the API via a published port, so the api
+      # container sees the breeze bridge network's gateway (.1 of its subnet,
+      # default 172.31.0.0/24), never loopback. See default_external_proxy_cidrs
+      # and docker_bridge_gateway for the full rationale.
+      printf '%s/32' "$(docker_bridge_gateway)"
       return
       ;;
   esac
@@ -1695,6 +1736,16 @@ is_host_name_or_ipv4() {
   [[ "${value}" == "localhost" ]] && return 0
   is_ipv4_address "${value}" && return 0
   [[ "${value}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
+}
+
+is_postgres_identifier() {
+  # A safe, unquoted Postgres role/database name. Restricting to this keeps BOTH
+  # the .env DATABASE_URL (host tooling) AND the compose-built container URL
+  # (postgresql://${POSTGRES_USER}:...@postgres/${POSTGRES_DB}) well-formed —
+  # the installer cannot encode the value inside the compose file, so validating
+  # here is the only fix that covers both. Max 63 bytes per Postgres identifier.
+  local value="$1"
+  [[ "${value}" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]
 }
 
 is_bind_host() {
@@ -2422,6 +2473,14 @@ strip_wrapping_quotes() {
   if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
     value="${value#\"}"
     value="${value%\"}"
+    # Reverse format_env_value's double-quote escaping of \ " $ `. Protect an
+    # escaped backslash (\\) with a sentinel first so the single-char unescapes
+    # below don't consume a backslash that was itself escaped.
+    value="${value//\\\\/$'\x01'}"
+    value="${value//\\\"/\"}"
+    value="${value//\\\$/\$}"
+    value="${value//\\\`/\`}"
+    value="${value//$'\x01'/\\}"
   elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
     value="${value#\'}"
     value="${value%\'}"
@@ -2443,8 +2502,16 @@ get_env_value() {
     awk -v key="${key}" '
       $0 ~ "^[[:space:]]*" key "=" {
         raw = substr($0, index($0, "=") + 1)
-        sub(/[[:space:]]+#.*$/, "", raw)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", raw)
+        sub(/^[[:space:]]+/, "", raw)
+        # Only strip an inline "# comment" on UNQUOTED values; a quoted value
+        # may legitimately contain " #" (\047 is a single quote). Trailing
+        # whitespace is trimmed either way; strip_wrapping_quotes then removes
+        # the quotes and reverses any escaping.
+        first = substr(raw, 1, 1)
+        if (first != "\"" && first != "\047") {
+          sub(/[[:space:]]+#.*$/, "", raw)
+        }
+        sub(/[[:space:]]+$/, "", raw)
         found = raw
       }
       END {
@@ -2470,8 +2537,24 @@ format_env_value() {
     return
   fi
 
-  value="${value//\'/\'\\\'\'}"
-  printf "'%s'" "${value}"
+  # Values with special characters must be quoted so docker compose's dotenv
+  # parser (and this installer's own read-back) treat them literally.
+  #  - No single quote  -> single-quote it: fully literal in godotenv, no
+  #    interpolation, nothing to escape (covers spaces, #, $, \, ", tabs).
+  #  - Contains a single quote -> godotenv cannot embed one inside a
+  #    single-quoted string, so double-quote and escape the chars it treats
+  #    specially inside double quotes (\ " $ `); the \$ escape also blocks
+  #    $-interpolation. strip_wrapping_quotes is the exact inverse.
+  if [[ "${value}" != *"'"* ]]; then
+    printf "'%s'" "${value}"
+    return
+  fi
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
+  value="${value//\`/\\\`}"
+  printf '"%s"' "${value}"
 }
 
 set_env_value() {
@@ -2481,8 +2564,11 @@ set_env_value() {
   formatted="$(format_env_value "${value}")"
   tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
 
-  if ! awk -v key="${key}" -v value="${formatted}" '
-    BEGIN { seen = 0 }
+  # Pass the formatted value via the environment, not `-v value=`: awk's -v
+  # assignment processes backslash escapes, which would corrupt any value
+  # containing a backslash (e.g. the \" / \$ escapes above, or a literal '\').
+  if ! BREEZE_SET_ENV_VALUE="${formatted}" awk -v key="${key}" '
+    BEGIN { seen = 0; value = ENVIRON["BREEZE_SET_ENV_VALUE"] }
     $0 ~ "^[[:space:]]*" key "=" {
       if (seen == 0) {
         print key "=" value
@@ -2511,7 +2597,9 @@ set_env_value() {
     rm -f "${tmp}"
     fail "Failed to replace ${ENV_FILE} after updating ${key}."
   fi
-  chmod 600 "${ENV_FILE}"
+  if ! chmod 600 "${ENV_FILE}"; then
+    fail "Failed to set secure permissions on ${ENV_FILE}."
+  fi
 }
 
 looks_like_placeholder() {
@@ -2568,8 +2656,16 @@ env_file_value() {
     awk -v key="${key}" '
       $0 ~ "^[[:space:]]*" key "=" {
         raw = substr($0, index($0, "=") + 1)
-        sub(/[[:space:]]+#.*$/, "", raw)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", raw)
+        sub(/^[[:space:]]+/, "", raw)
+        # Only strip an inline "# comment" on UNQUOTED values; a quoted value
+        # may legitimately contain " #" (\047 is a single quote). Trailing
+        # whitespace is trimmed either way; strip_wrapping_quotes then removes
+        # the quotes and reverses any escaping.
+        first = substr(raw, 1, 1)
+        if (first != "\"" && first != "\047") {
+          sub(/[[:space:]]+#.*$/, "", raw)
+        }
+        sub(/[[:space:]]+$/, "", raw)
         found = raw
       }
       END {
@@ -3328,7 +3424,14 @@ apply_reverse_proxy_env() {
   case "${REVERSE_PROXY_MODE}" in
     caddy)
       set_env_value "FORCE_HTTPS" "true"
-      set_env_value "TRUST_PROXY_HEADERS" "false"
+      # The bundled Caddy is the API's only trusted proxy peer and is pinned at BREEZE_CADDY_IP
+      # (172.31.0.10) so the API can derive REAL client IPs from Caddy's forwarded
+      # headers out of the box. This MUST stay true: false makes the API attribute
+      # every request to Caddy's container IP, collapsing per-IP rate limiting,
+      # partner/admin IP allowlists, and audit IP attribution (SR2-16; locked by
+      # apps/api/src/config/proxyTrustCompose.test.ts). Leaving TRUSTED_PROXY_CIDRS
+      # empty lets compose re-default it to ${BREEZE_CADDY_IP:-172.31.0.10}/32.
+      set_env_value "TRUST_PROXY_HEADERS" "true"
       set_env_value "TRUSTED_PROXY_CIDRS" ""
       set_env_value "CADDY_TRUSTED_PROXIES" "127.0.0.1/32 ::1/128"
       set_env_value "CADDY_CLIENT_IP_HEADERS" "CF-Connecting-IP X-Forwarded-For"
@@ -3406,13 +3509,26 @@ configure_core_env() {
 
   section "Database And Redis"
   subsection "Postgres"
-  postgres_user="$(prompt_value "POSTGRES_USER" "Postgres admin user" "breeze" true)"
-  postgres_db="$(prompt_value "POSTGRES_DB" "Postgres database name" "breeze" true)"
+  postgres_user="$(prompt_validated_value "POSTGRES_USER" "Postgres admin user" "breeze" true is_postgres_identifier "a Postgres identifier: letter/underscore then letters, digits, or underscores (max 63)")"
+  postgres_db="$(prompt_validated_value "POSTGRES_DB" "Postgres database name" "breeze" true is_postgres_identifier "a Postgres identifier: letter/underscore then letters, digits, or underscores (max 63)")"
   postgres_port="$(prompt_port "POSTGRES_PORT" "Host Postgres port for local tooling" "5432" true)"
   postgres_password="$(prompt_secret "POSTGRES_PASSWORD" "Postgres password" "hex32" true)"
   postgres_password_url="$(urlencode "${postgres_password}")"
+  # DATABASE_URL here is a HOST-side value (localhost:${postgres_port}) for local
+  # tooling like `pnpm db:studio`/`db:check-drift`. The root docker-compose.yml
+  # ignores it and rebuilds DATABASE_URL as ...@postgres:5432 inside the API
+  # container from POSTGRES_USER/PASSWORD/DB.
   set_env_value "DATABASE_URL" "postgresql://${postgres_user}:${postgres_password_url}@localhost:${postgres_port}/${postgres_db}"
-  set_env_value "DATABASE_URL_APP" "postgresql://breeze_app:${postgres_password_url}@localhost:${postgres_port}/${postgres_db}"
+  # DATABASE_URL_APP MUST be left empty for the bundled Compose: unlike
+  # DATABASE_URL, compose passes DATABASE_URL_APP straight through to the API
+  # container (`${DATABASE_URL_APP:-}`), so a localhost value would make the
+  # unprivileged request pool dial 127.0.0.1 inside the container and fail with
+  # ECONNREFUSED at seed/startup. Empty makes the API derive the breeze_app URL
+  # from the container's ...@postgres DATABASE_URL using POSTGRES_PASSWORD
+  # (see resolveRequestDatabaseConfig / the compose DATABASE_URL_APP comment).
+  # Multi-host/HA deployments that need an explicit request-pool URL set it in
+  # .env by hand after setup.
+  set_env_value "DATABASE_URL_APP" ""
   set_env_value "BREEZE_APP_DB_PASSWORD" ""
 
   subsection "Redis"
@@ -3765,7 +3881,12 @@ scrub_bootstrap_env() {
   if ! cp "${ENV_FILE}" "${backup}"; then
     fail "Failed to back up ${ENV_FILE} before bootstrap cleanup."
   fi
-  chmod 600 "${backup}"
+  # Must be guarded: scrub_bootstrap_env runs under `if start_stack; then`, which
+  # disables errexit, so a bare chmod failure would leave this secrets-bearing
+  # backup world/group-readable while printing a "Backed up..." success line.
+  if ! chmod 600 "${backup}"; then
+    fail "Failed to secure permissions on ${backup}; it contains secrets. Remove it manually."
+  fi
   log "Backed up ${ENV_FILE} to ${backup} before bootstrap cleanup."
 
   tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
@@ -3821,8 +3942,11 @@ start_stack() {
 
   if ! ask_yes_no "Pull Breeze and dependency images now?" "yes"; then
     log "Skipping docker compose pull."
-  else
-    compose pull
+  elif ! compose pull; then
+    # Non-fatal: any images already present locally may still let `up` succeed.
+    # But surface it — start_stack runs under `if start_stack; then`, which
+    # disables set -e, so a swallowed failure would otherwise be invisible.
+    warn "docker compose pull failed (network, registry, or auth). Will still try to start with images already present locally."
   fi
 
   if ! ask_yes_no "Start Breeze with docker compose up -d?" "yes"; then
@@ -3832,7 +3956,12 @@ start_stack() {
     return 1
   fi
 
-  compose up -d
+  if ! compose up -d; then
+    warn "docker compose up -d failed; the stack did not start."
+    print_manual_start_commands
+    print_bootstrap_cleanup_reminder
+    return 1
+  fi
   STACK_STARTED="true"
   if dry_run_enabled; then
     dry_run_log "Simulating a started stack so the guided admin and boot-start prompts can be reviewed."
@@ -3864,6 +3993,14 @@ start_stack() {
 
 on_exit() {
   local exit_status=$?
+  # Remove any leftover atomic-write temp files. Each writer mktemp's
+  # "<file>.tmp.XXXXXX" and rm's/mv's it on its own success/handled-failure
+  # paths, but a signal or a set -e abort between mktemp and that cleanup would
+  # strand one — and the .env temps can hold secrets. Globs stay literal (and
+  # rm -f no-ops) when nothing matches; each is guarded on a non-empty base.
+  [[ -n "${ENV_FILE:-}" ]] && rm -f "${ENV_FILE}".tmp.* 2>/dev/null
+  [[ -n "${COMPOSE_FILE:-}" ]] && rm -f "${COMPOSE_FILE}".tmp.* 2>/dev/null
+  [[ -n "${PROXY_GUIDE_FILE:-}" ]] && rm -f "${PROXY_GUIDE_FILE}".tmp.* 2>/dev/null
   if [[ "${STACK_STARTED}" == "true" && "${BOOTSTRAP_SCRUBBED}" != "true" ]]; then
     warn "Bootstrap admin values may still be present in ${ENV_FILE}. Remove BREEZE_BOOTSTRAP_ADMIN_* after first login."
   fi
