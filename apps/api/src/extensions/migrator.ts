@@ -7,7 +7,11 @@ import {
   recordMigration,
   splitSqlStatements,
 } from '../db/autoMigrate';
-import { readBoundedZipDirectory, type VerifiedExtensionBundle } from './bundleVerifier';
+import {
+  assertVerifiedMemberBytes,
+  readBoundedZipDirectory,
+  type VerifiedExtensionBundle,
+} from './bundleVerifier';
 import type { ExtensionStateStore } from './stateStore';
 
 /**
@@ -226,27 +230,37 @@ export async function reconcileExtensionMigrations(
  * bytes are read from the archive members directly. Selects the direct `*.sql`
  * children of the manifest's `migrationsDir`, sorted by filename.
  *
+ * The member LIST comes from `bundle.files` — the verifier's record — never from
+ * a fresh directory read, and every read's bytes are re-hashed against the
+ * recorded digest before the SQL is used. Re-opening the archive is a
+ * time-of-check/time-of-use window: anyone able to write the artifact-store root
+ * could otherwise swap in extra or altered `*.sql` members between verification
+ * and application, giving them arbitrary DDL on the platform database while the
+ * signature check passed over entirely different bytes.
+ *
  * This is the seam between "a verified bundle on disk" and "SQL to apply": the
  * Task-4 reconciler composes it via {@link toMigratableExtension}.
  */
 export async function readBundleMigrations(
-  bundle: Pick<VerifiedExtensionBundle, 'archivePath' | 'manifest'>,
+  bundle: Pick<VerifiedExtensionBundle, 'archivePath' | 'manifest' | 'files'>,
 ): Promise<ExtensionMigrationFile[]> {
   const prefix = `${bundle.manifest.migrationsDir}/`;
+  const names = [...bundle.files.keys()]
+    .filter(
+      (member) =>
+        member.startsWith(prefix) &&
+        member.endsWith('.sql') &&
+        !member.slice(prefix.length).includes('/'),
+    )
+    .sort((a, b) => a.localeCompare(b));
+  if (names.length === 0) return [];
+
   const archive = await readBoundedZipDirectory(bundle.archivePath);
   try {
-    const names = [...archive.files.keys()]
-      .filter(
-        (member) =>
-          member.startsWith(prefix) &&
-          member.endsWith('.sql') &&
-          !member.slice(prefix.length).includes('/'),
-      )
-      .sort((a, b) => a.localeCompare(b));
-
     const out: ExtensionMigrationFile[] = [];
     for (const member of names) {
       const bytes = await archive.read(member);
+      assertVerifiedMemberBytes(member, bytes, bundle.files.get(member)!.sha256);
       out.push({ filename: member.slice(prefix.length), sql: bytes.toString('utf8') });
     }
     return out;

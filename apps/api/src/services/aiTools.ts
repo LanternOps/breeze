@@ -280,8 +280,13 @@ export type AiToolEnabledStore = Pick<ExtensionStateStore, 'isEnabled'>;
 
 /**
  * The shared, lazily-built store backing the extension AI-tool enable gate.
- * Built on first extension-tool call so a deployment with no extensions (and
- * every core-only test) never constructs it.
+ *
+ * Built once and memoized. Note this is `executeTool`'s DEFAULT PARAMETER, so it
+ * is evaluated on every call — core-tool calls included — not only on the first
+ * extension-tool call. That is deliberate and cheap: construction is a bare
+ * `new` of a store around the shared `db` pool with no I/O, and after the first
+ * call it is a memo read. No database work happens until `isEnabled` runs, which
+ * only the extension branch of `executeTool` reaches.
  */
 let extensionEnabledStore: AiToolEnabledStore | null = null;
 function defaultExtensionEnabledStore(): AiToolEnabledStore {

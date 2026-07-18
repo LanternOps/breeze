@@ -131,4 +131,61 @@ describe('ExtensionStateStore — committed cross-connection state (Plan 02, Tas
       });
     }
   });
+
+  /**
+   * SCOPE ESCALATION FROM INSIDE A REQUEST CONTEXT.
+   *
+   * `withDbAccessContext` short-circuits (`return fn()`) when a context is
+   * already open, so a bare `withSystemDbAccessContext` nested in a TENANT
+   * context does not escalate — it inherits the tenant scope. Under the
+   * FORCE-RLS system-only policy that silently yields ZERO ROWS on reads and
+   * ZERO ROWS MATCHED on writes, with no error either way.
+   *
+   * That is exactly the shape of every real caller on the request path:
+   *   • the agent-route gate (agentAuth wraps `next()` in an organization-scoped
+   *     context, so gateway.ts's enabled check runs inside it) → permanent 503s;
+   *   • the AI-tool gate (aiAgentSdkTools/scriptBuilderTools run executeTool
+   *     inside an org/partner-scoped context) → "Unknown tool", forever;
+   *   • platform-admin enable/disable (authMiddleware opens a context for the
+   *     JWT's scope, which is orthogonal to isPlatformAdmin) → a 200 that
+   *     mutated nothing.
+   *
+   * None of that is reachable by unit tests, which inject a fake store. It needs
+   * real Postgres and a real ambient tenant context, so it lives here.
+   */
+  it('reads and writes correctly when called from INSIDE an ambient tenant DB context', async () => {
+    const { withDbAccessContext } = await import('../../db');
+    const store = new ExtensionStateStore(new DrizzleExtensionStateBackend());
+    const orgId = randomUUID();
+
+    await store.upsertObserved({ name: extensionName, configuredVersion: '2.0.0' });
+    await store.setEnabled(extensionName, true);
+
+    const tenantContext = {
+      scope: 'organization' as const,
+      orgId,
+      accessibleOrgIds: [orgId],
+    };
+
+    // READ: must see the true durable value, not RLS-filtered emptiness.
+    const seen = await withDbAccessContext(tenantContext, async () =>
+      store.isEnabled(extensionName),
+    );
+    expect(seen).toBe(true);
+
+    // WRITE: must actually mutate the row, not match zero rows and "succeed".
+    await withDbAccessContext(tenantContext, async () => {
+      await store.setEnabled(extensionName, false);
+    });
+    expect(await readEnabledUnderSystemScope(extensionName)).toBe(false);
+
+    // ...and the escalated read observes the write from inside the same context.
+    expect(
+      await withDbAccessContext(tenantContext, async () => store.isEnabled(extensionName)),
+    ).toBe(false);
+
+    // The full record is reachable too (the admin list surface's read path).
+    const listed = await withDbAccessContext(tenantContext, async () => store.listAll());
+    expect(listed.some((row) => row.name === extensionName)).toBe(true);
+  });
 });
