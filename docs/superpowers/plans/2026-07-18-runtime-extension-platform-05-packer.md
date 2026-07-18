@@ -454,7 +454,19 @@ Node's module cache makes a second copy of these unobtainable in-process. An in-
 
 Instead: a small entry script that imports and runs `reconcileExtensions` against config supplied by environment, launched twice via `child_process.fork`. Each child gets genuinely separate `db` pools and registries, matching what actually differs between real replicas. Children report outcomes as JSON on stdout plus an exit code; the parent test asserts on both.
 
-Set `DATABASE_URL` and `DATABASE_URL_APP` to `:5433` in the child environment.
+**A full seam map with file:line for every call is at `.superpowers/sdd/task-8-seams.md` — READ IT FIRST.** The load-bearing facts distilled:
+
+- **Parent = the vitest integration test** (runs under `vitest.integration.config.ts`, so `globalSetup` migrates `:5433` once and both forked children connect to the already-migrated shared DB). The parent authors all fixtures (pack+sign via the real CLI, writes `extensions.yaml` + the PEM public key), forks the children, then queries the DB for convergence. Never `test:docker:down -v`.
+
+- **Child entry = the smallest faithful thing: call `reconcileExtensions` DIRECTLY.** No `index.ts` bootstrap, HTTP server, workers, or seeds. It rejects with `RequiredExtensionError` on a required failure (child exits nonzero — the faithful "aborts boot") and resolves with `summary.failed` on an optional failure. Args: `app: new Hono()` (declared but never read by the reconciler), `configPath` (absolute path to the test `extensions.yaml`), `storeRoot` (a tmp extraction dir), `registry: new ExtensionContributionRegistry()`, `stateStore: createExtensionStateStore()` (the REAL Drizzle backend — not the in-memory fake). Do NOT pass `ports`.
+
+- **Env MUST be set before the child imports any `apps/api` module** (the `db` pool opens at import time): `DATABASE_URL` and `DATABASE_URL_APP` → `:5433`, `NODE_ENV=test`, `JWT_SECRET=<32+ chars>`, and `BREEZE_EXTENSIONS_ARTIFACTS_DIR=<tmp>`. Pass them via `fork`'s `env` option.
+
+- **Two DISTINCT roots — do not conflate:** `BREEZE_EXTENSIONS_ARTIFACTS_DIR` (env) is the fetched-bundle cache; `args.storeRoot` is the extraction tree (`<storeRoot>/extracted/...`). Make them sibling tmp dirs per child.
+
+- **Selection `uri` = `pathToFileURL(absSignedBundlePath).href`** (only `file:`/`https:` allowed). Pin `digest: signResult.digest`.
+
+- **TENANCY TRIPWIRE — this silently fails the happy path if ignored.** The `'tenancy'` reconcile phase (`reconciler.ts:636-637`) runs `assertNoUnaccountedPublicTables`; a fixture migration that creates a plain new `public` table fails BOTH extensions regardless of the required/optional scenario. Fixture rule: name any created table `<extensionName>_...` AND declare it in the manifest's `tenancy.nonTenantTables` with no tenant column/FK. Build the happy-path fixture this way from the start, or the "both activate" assertion will never pass and you'll misdiagnose it as a harness bug.
 
 - [ ] **Step 2: Write the happy-path two-replica test**
 
