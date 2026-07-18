@@ -173,6 +173,9 @@ importers:
       jose:
         specifier: ^6.2.3
         version: 6.2.3
+      js-yaml:
+        specifier: ^4.3.0
+        version: 4.3.0
       jspdf:
         specifier: ^4.2.1
         version: 4.2.1
@@ -273,9 +276,6 @@ importers:
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
-      js-yaml:
-        specifier: ^4.3.0
-        version: 4.3.0
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
