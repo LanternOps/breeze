@@ -447,6 +447,7 @@
         "addSection": "Agregar sección",
         "adding": "Añadiendo…",
         "cancel": "Cancelar",
+        "dragSection": "Arrastra para reordenar la sección",
         "fetch": "Buscar",
         "fetchAddImage": "Buscar y agregar imagen",
         "fromUrl": "De URL",
@@ -464,6 +465,7 @@
         "removeLine": "Quitar línea",
         "removeSection": "Eliminar sección",
         "replaceImage": "Reemplazar imagen",
+        "sectionActions": "Acciones de la sección",
         "showCostMargin": "Mostrar costo y margen",
         "uploadAddImage": "Subir y agregar imagen",
         "uploading": "Subiendo…"
@@ -471,6 +473,7 @@
       "addLine": {
         "catalogItem": "Artículo del catálogo",
         "manualLine": "linea manual",
+        "moreWays": "Más formas de agregar (catálogo, búsqueda con IA, detalles)",
         "searchDistributor": "Buscar distribuidor",
         "searchPax8": "Buscar Pax8"
       },
@@ -479,6 +482,7 @@
         "headingPlaceholder": "Texto del encabezado",
         "imageHelp": "PNG, JPEG o WebP, hasta 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Agregar sección",
         "richTextPlaceholder": "Texto de la propuesta…",
         "title": "Agregar sección",
         "uploadFile": "Subir archivo"
@@ -495,7 +499,7 @@
         "label": "Autocompletar:",
         "review": "Revise y ajuste antes de agregar."
       },
-      "autosaveHint": "Los cambios se guardan automáticamente a medida que los edita. Un contorno ámbar marca una edición que aún no se ha guardado.",
+      "autosaveHint": "Los cambios se guardan automáticamente. Un contorno ámbar marca una edición sin guardar.",
       "block": {
         "imageSectionPdf": "Sección de imagen (representada en PDF).",
         "richTextContentAria": "Contenido de texto enriquecido"
@@ -595,6 +599,7 @@
         "short": "Interno"
       },
       "line": {
+        "addDescription": "descripción",
         "billing": "Facturación",
         "billingFrequencyAria": "Frecuencia de facturación",
         "cost": "Costo",
@@ -716,6 +721,11 @@
         "imageLabel": "Imagen de portada",
         "imageHelp": "PNG, JPEG o WebP, hasta 5 MB.",
         "removeImage": "Quitar imagen"
+      },
+      "ghost": {
+        "add": "Agregar",
+        "nameAria": "Nombre de la nueva línea",
+        "placeholder": "Escribe el nombre del ítem…"
       }
     },
     "actions": {
@@ -763,7 +773,8 @@
         "title": "¿Enviar esta propuesta?",
         "toLabel": "Para",
         "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Usa como máximo {{max}} direcciones."
+        "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
+        "zeroTotalWarning": "Esta cotización totaliza $0.00 — verifica que sus ítems tengan precio antes de enviar."
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",

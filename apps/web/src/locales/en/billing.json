@@ -447,6 +447,7 @@
         "addSection": "Add section",
         "adding": "Adding…",
         "cancel": "Cancel",
+        "dragSection": "Drag to reorder section",
         "fetch": "Fetch",
         "fetchAddImage": "Fetch & add image",
         "fromUrl": "From URL",
@@ -464,6 +465,7 @@
         "removeLine": "Remove line",
         "removeSection": "Remove section",
         "replaceImage": "Replace image",
+        "sectionActions": "Section actions",
         "showCostMargin": "Show cost & margin",
         "uploadAddImage": "Upload & add image",
         "uploading": "Uploading…"
@@ -471,6 +473,7 @@
       "addLine": {
         "catalogItem": "Catalog item",
         "manualLine": "Manual line",
+        "moreWays": "More ways to add (catalog, AI lookup, details)",
         "searchDistributor": "Search distributor",
         "searchPax8": "Search Pax8"
       },
@@ -479,6 +482,7 @@
         "headingPlaceholder": "Heading text",
         "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
         "title": "Add section",
         "uploadFile": "Upload file"
@@ -495,7 +499,7 @@
         "label": "Auto-filled:",
         "review": "Review and adjust before adding."
       },
-      "autosaveHint": "Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.",
+      "autosaveHint": "Changes save automatically. An amber outline marks an unsaved edit.",
       "block": {
         "imageSectionPdf": "Image section (rendered in the PDF).",
         "richTextContentAria": "Rich text content"
@@ -595,6 +599,7 @@
         "short": "Internal"
       },
       "line": {
+        "addDescription": "description",
         "billing": "Billing",
         "billingFrequencyAria": "Billing frequency",
         "cost": "Cost",
@@ -716,6 +721,11 @@
         "imageLabel": "Cover image",
         "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
         "removeImage": "Remove image"
+      },
+      "ghost": {
+        "add": "Add",
+        "nameAria": "New line name",
+        "placeholder": "Type an item name…"
       }
     },
     "actions": {
@@ -763,7 +773,8 @@
         "title": "Send this proposal?",
         "toLabel": "To",
         "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Use at most {{max}} addresses."
+        "tooManyRecipients": "Use at most {{max}} addresses.",
+        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",

@@ -447,6 +447,7 @@
         "addSection": "Adicionar seção",
         "adding": "Adicionando…",
         "cancel": "Cancelar",
+        "dragSection": "Arraste para reordenar a seção",
         "fetch": "Buscar",
         "fetchAddImage": "Buscar e adicionar imagem",
         "fromUrl": "Da URL",
@@ -464,6 +465,7 @@
         "removeLine": "Remover linha",
         "removeSection": "Remover seção",
         "replaceImage": "Substituir imagem",
+        "sectionActions": "Ações da seção",
         "showCostMargin": "Mostrar custo e margem",
         "uploadAddImage": "Enviar e adicionar imagem",
         "uploading": "Enviando…"
@@ -471,6 +473,7 @@
       "addLine": {
         "catalogItem": "Item do catálogo",
         "manualLine": "Linha manual",
+        "moreWays": "Mais formas de adicionar (catálogo, busca com IA, detalhes)",
         "searchDistributor": "Pesquisar distribuidor",
         "searchPax8": "Pesquisar Pax8"
       },
@@ -479,6 +482,7 @@
         "headingPlaceholder": "Texto do título",
         "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Adicionar seção",
         "richTextPlaceholder": "Texto da proposta…",
         "title": "Adicionar seção",
         "uploadFile": "Enviar arquivo"
@@ -495,7 +499,7 @@
         "label": "Preenchido automaticamente:",
         "review": "Revise e ajuste antes de adicionar."
       },
-      "autosaveHint": "As alterações são salvas automaticamente enquanto você edita. Um contorno âmbar marca uma edição que ainda não foi salva.",
+      "autosaveHint": "As alterações são salvas automaticamente. Um contorno âmbar marca uma edição não salva.",
       "block": {
         "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
         "richTextContentAria": "Conteúdo de rich text"
@@ -595,6 +599,7 @@
         "short": "Interno"
       },
       "line": {
+        "addDescription": "descrição",
         "billing": "Cobrança",
         "billingFrequencyAria": "Frequência de cobrança",
         "cost": "Custo",
@@ -716,6 +721,11 @@
         "imageLabel": "Imagem de capa",
         "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
         "removeImage": "Remover imagem"
+      },
+      "ghost": {
+        "add": "Adicionar",
+        "nameAria": "Nome da nova linha",
+        "placeholder": "Digite o nome do item…"
       }
     },
     "actions": {
@@ -763,7 +773,8 @@
         "title": "Enviar esta proposta?",
         "toLabel": "Para",
         "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Use no máximo {{max}} endereços."
+        "tooManyRecipients": "Use no máximo {{max}} endereços.",
+        "zeroTotalWarning": "Este orçamento totaliza $0.00 — verifique se os itens têm preço antes de enviar."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",

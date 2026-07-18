@@ -37,7 +37,14 @@ function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
       createdBy: null, createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', ...extra,
     },
     blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
-    lines: [],
+    // Send gates on customer-visible LINES — a sendable fixture needs one.
+    lines: [{
+      id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual',
+      catalogItemId: null, parentLineId: null, unitCost: null, sku: null, partNumber: null,
+      name: 'Support', description: null, quantity: '1.00', unitPrice: '100.00', taxable: false,
+      customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+      billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    }],
   };
 }
 

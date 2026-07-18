@@ -54,6 +54,15 @@ describe('QuoteActions — header variant', () => {
     const withLine: QuoteDetailData = {
       ...draft(),
       blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
+      // Send gates on customer-visible LINES (an empty pricing table must not
+      // arm it), so a sendable fixture needs an actual line.
+      lines: [{
+        id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual',
+        catalogItemId: null, parentLineId: null, unitCost: null, sku: null, partNumber: null,
+        name: 'Support', description: null, quantity: '1.00', unitPrice: '100.00', taxable: false,
+        customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+        billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+      }],
     };
     render(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" />);
     await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
@@ -68,6 +77,15 @@ describe('QuoteActions — header variant', () => {
     const withLine: QuoteDetailData = {
       ...draft(),
       blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
+      // Send gates on customer-visible LINES (an empty pricing table must not
+      // arm it), so a sendable fixture needs an actual line.
+      lines: [{
+        id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual',
+        catalogItemId: null, parentLineId: null, unitCost: null, sku: null, partNumber: null,
+        name: 'Support', description: null, quantity: '1.00', unitPrice: '100.00', taxable: false,
+        customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+        billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+      }],
     };
     const { rerender } = render(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" savePending />);
     await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());

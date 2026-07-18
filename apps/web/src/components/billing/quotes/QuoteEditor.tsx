@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, MoreHorizontal } from 'lucide-react';
+import { Eye, EyeOff, GripVertical, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -159,57 +159,23 @@ function SrSaved({ show, label, testId }: { show: boolean; label?: string; testI
   return <span role="status" className="sr-only" data-testid={testId}>{show ? (label ?? t('quotes.editor.status.saved')) : ''}</span>;
 }
 
-// A field's save-state outline: amber while the edit is unsaved, a brief green
-// pulse when it lands (driven by a ~1.5s saved-flash), nothing at rest. It's a
-// box-shadow (ring), so it NEVER reflows neighbouring content — unlike the inline
-// "Saved" text we tried before, which shifted layout as it appeared/disappeared.
-// Pair with a constant `transition-shadow` on the field so both states fade.
-// The dirty ring is the signal the autosave hint tells users to watch, so it
-// uses the darker warning-strong indicator token at 2px — the bright --warning
-// at 1px measured ~2.3:1 on a light card, below the 3:1 non-text minimum.
+// A field's save-state signal: amber BORDER while the edit is unsaved, a brief
+// green border pulse when it lands, nothing at rest. Border-color (not a ring):
+// the focus ring occupies the box-shadow channel, so a ring-based dirty signal
+// was painted over by focus on exactly the field being edited — the one moment
+// the signal matters. Border-color composes with the focus ring, never reflows
+// (the border is always present, only its color changes), and uses the
+// warning-strong indicator token (>=3:1 non-text on a light card).
 function fieldRing(dirty: boolean, saved: boolean): string {
-  return dirty ? 'ring-2 ring-warning-strong' : saved ? 'ring-2 ring-success' : '';
+  return dirty ? 'border-warning-strong' : saved ? 'border-success' : '';
 }
 
-// Up/down reorder controls: lucide chevrons in 28px targets (clears the WCAG
-// 2.5.8 24×24 minimum) instead of raw glyphs, disabled only at the list ends.
-// When the pressed direction hits an end and self-disables, focus hops to the
-// still-enabled sibling so a keyboard user never drops to <body>.
-function MoveControls({
-  disabledUp, disabledDown, onUp, onDown, labelUp, labelDown, testIdUp, testIdDown,
-}: {
-  disabledUp: boolean;
-  disabledDown: boolean;
-  onUp: () => void;
-  onDown: () => void;
-  labelUp: string;
-  labelDown: string;
-  testIdUp: string;
-  testIdDown: string;
-}) {
-  const upRef = useRef<HTMLButtonElement>(null);
-  const downRef = useRef<HTMLButtonElement>(null);
-  const move = (dir: 'up' | 'down') => {
-    (dir === 'up' ? onUp : onDown)();
-    if (typeof requestAnimationFrame === 'undefined') return;
-    requestAnimationFrame(() => {
-      const pressed = dir === 'up' ? upRef.current : downRef.current;
-      const other = dir === 'up' ? downRef.current : upRef.current;
-      if (pressed && !pressed.disabled) pressed.focus();
-      else other?.focus();
-    });
-  };
-  const cls = 'inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30';
-  return (
-    <>
-      <button ref={upRef} type="button" onClick={() => move('up')} disabled={disabledUp} aria-label={labelUp} data-testid={testIdUp} className={cls}>
-        <ChevronUp className="h-4 w-4" aria-hidden />
-      </button>
-      <button ref={downRef} type="button" onClick={() => move('down')} disabled={disabledDown} aria-label={labelDown} data-testid={testIdDown} className={cls}>
-        <ChevronDown className="h-4 w-4" aria-hidden />
-      </button>
-    </>
-  );
+// Seamless (document-styled) field border: at rest the border is invisible so
+// the value reads as document text; hover/focus reveal the field. A state color
+// (dirty amber / saved green / error red) REPLACES the base set rather than
+// stacking on it, so two border-color utilities never compete.
+function seamless(state: string): string {
+  return state || 'border-transparent hover:border-border focus:border-border';
 }
 
 export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }: Props) {
@@ -303,7 +269,32 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   useEffect(() => () => onPendingEditsChange?.(false), [onPendingEditsChange]);
 
   // ---- add-block form ------------------------------------------------------
+  // Where the add-section form renders: a gap index inserts between blocks
+  // (the created block is reordered into place after the POST); null renders
+  // the form at the canvas foot, as before.
+  const [insertAt, setInsertAt] = useState<number | null>(null);
   const [addType, setAddType] = useState<AddableBlockType>('heading');
+
+  // Per-block arrangement menu (grip + kebab live in the canvas margin, not in
+  // a per-block header bar). One open menu at a time; same keyboard grammar as
+  // every other menu (useMenuKeyboard).
+  const [blockMenu, setBlockMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  const blockMenuWrapRef = useRef<HTMLDivElement>(null);
+  const blockMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const { listRef: blockMenuListRef, onKeyDown: onBlockMenuKeyDown } = useMenuKeyboard(blockMenu !== null, () => setBlockMenu(null));
+  useEffect(() => {
+    if (!blockMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (blockMenuWrapRef.current && !blockMenuWrapRef.current.contains(e.target as Node)) setBlockMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setBlockMenu(null); blockMenuTriggerRef.current?.focus(); }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [blockMenu]);
+
   const [headingText, setHeadingText] = useState('');
   const [richText, setRichText] = useState('');
   const [tableLabel, setTableLabel] = useState('');
@@ -927,6 +918,21 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, [quote.id, saveCover, runScoped, t]);
 
   // ---- add block -----------------------------------------------------------
+  // Reorder a just-created block into the gap the user picked (insertAt).
+  // Best-effort: a failed reorder toasts and the block stays at the end.
+  const positionNewBlock = useCallback(async (created: { id?: string } | undefined) => {
+    if (insertAt == null || !created?.id) return;
+    const ids = sortedBlocks.map((b) => b.id);
+    ids.splice(Math.min(insertAt, ids.length), 0, created.id);
+    try {
+      await runAction({
+        request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+        errorFallback: t('quotes.editor.errors.reorderSections'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+    } catch { /* toasted; the new section simply lands at the end */ }
+  }, [insertAt, sortedBlocks, quote.id, t]);
+
   const submitBlock = useCallback(async () => {
     // Image blocks have no block-update endpoint, so the file must exist before
     // the block: upload it (POST /:id/images → { data: { imageId } }), then add
@@ -957,7 +963,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
-        await runAction({
+        const createdImg = await runAction<{ id?: string }>({
           request: () => addBlock(quote.id, {
             blockType: 'image' as const,
             content: imageCaption.trim()
@@ -967,8 +973,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           errorFallback: t('quotes.editor.errors.imageAddedSectionFailed'),
           // No success toast — the image block visibly appears.
           onUnauthorized: UNAUTHORIZED,
+          parseSuccess: (d) => (d as { data: { id?: string } }).data,
         });
+        await positionNewBlock(createdImg);
         setImageFile(null); setImageCaption(''); setImageUrl('');
+        setInsertAt(null);
         refresh();
       }, t('quotes.editor.errors.addImageSection'));
       return;
@@ -990,8 +999,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       for (const name of manualNames) variableValues[name] = (contractVarValues[name] ?? '').trim();
       setContractVarErrors({});
       await runScoped('add-block', async () => {
+        let createdContract: { id?: string } | undefined;
         try {
-          await runAction({
+          createdContract = await runAction<{ id?: string }>({
             request: () => addBlock(quote.id, {
               blockType: 'contract' as const,
               content: {
@@ -1004,6 +1014,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             errorFallback: t('quotes.editor.errors.addContractSection'),
             // No success toast — the contract block visibly appears.
             onUnauthorized: UNAUTHORIZED,
+            parseSuccess: (d) => (d as { data: { id?: string } }).data,
           });
         } catch (err) {
           // The attach route itself only rejects with INVALID_CONTRACT_TEMPLATE —
@@ -1018,7 +1029,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           }
           throw err;
         }
+        await positionNewBlock(createdContract);
         resetContractForm();
+        setInsertAt(null);
         refresh();
       }, t('quotes.editor.errors.addContractSection'));
       return;
@@ -1038,16 +1051,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       };
     }
     await runScoped('add-block', async () => {
-      await runAction({
+      const created = await runAction<{ id?: string }>({
         request: () => addBlock(quote.id, body),
         errorFallback: t('quotes.editor.errors.addSection'),
         // No success toast — the new section visibly appears in the block list.
         onUnauthorized: UNAUTHORIZED,
+        parseSuccess: (d) => (d as { data: { id?: string } }).data,
       });
+      await positionNewBlock(created);
       setHeadingText(''); setRichText(''); setTableLabel('');
+      setInsertAt(null);
       refresh();
     }, t('quotes.editor.errors.addSection'));
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, quote.id, refresh, runScoped, t]);
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, positionNewBlock, quote.id, refresh, runScoped, t]);
+
 
   // Removing a line_items block cascades to every line under it (server-side), so
   // the card's Remove button opens a confirm step instead of deleting outright.
@@ -1329,6 +1346,41 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, 250);
   }, [sortedBlocks, quote.id, refresh, t]);
 
+  // Drag-to-reorder for blocks (HTML5 DnD on the grip). Drop commits the full
+  // reordered id list through the same optimistic + PATCH path the menu moves
+  // use, so a failed drop reverts identically.
+  const [dragBlockId, setDragBlockId] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const commitBlockDrop = useCallback((targetIdx: number) => {
+    if (!dragBlockId) return;
+    const ids = sortedBlocks.map((b) => b.id);
+    const from = ids.indexOf(dragBlockId);
+    if (from < 0) return;
+    ids.splice(from, 1);
+    const to = targetIdx > from ? targetIdx - 1 : targetIdx;
+    ids.splice(Math.min(to, ids.length), 0, dragBlockId);
+    setDragBlockId(null); setDropIndex(null);
+    if (ids.join() === sortedBlocks.map((b) => b.id).join()) return;
+    blockReorderBase.current = ids;
+    setBlockOrder(ids);
+    void (async () => {
+      try {
+        await runAction({
+          request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+          errorFallback: t('quotes.editor.errors.reorderSections'),
+          onUnauthorized: UNAUTHORIZED,
+        });
+        refresh();
+      } catch (err) {
+        handleActionError(err, t('quotes.editor.errors.reorderSections'));
+        setBlockOrder(null);
+        blockReorderBase.current = null;
+        refresh();
+      }
+    })();
+  }, [dragBlockId, sortedBlocks, quote.id, refresh, t]);
+
+
   const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
     const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
     const idx = currentIds.indexOf(line.id);
@@ -1418,234 +1470,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
   const hasRecurring = Number(railMonthly) > 0 || Number(railAnnual) > 0;
 
-  return (
-    <div className="space-y-6" data-testid="quote-editor">
-      {/* The autosave hint is writer-only, but the cost/margin toggle is offered to
-          everyone who can see the editor: read-only users also have per-line cost
-          bands and deserve the same collapse control (ml-auto keeps it right-aligned
-          whether or not the hint renders). */}
-      <div className="flex flex-wrap items-center gap-2">
-        {canWrite && (
-          <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
-            {t('quotes.editor.autosaveHint')}
-          </p>
-        )}
-        <button
-          type="button"
-          onClick={() => setShowInternal((v) => !v)}
-          aria-pressed={showInternal}
-          data-testid="quote-editor-toggle-internal"
-          className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
-        >
-          {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-          {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
-        </button>
-      </div>
-      {canWrite && (
-        <div className="flex max-w-3xl flex-wrap items-start gap-3">
-          <div className="min-w-64 flex-1">
-            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
-            <input
-              id="quote-title"
-              type="text"
-              value={title}
-              maxLength={200}
-              placeholder={t('quotes.editor.title.placeholder')}
-              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-              onBlur={() => void saveTitle()}
-              disabled={isPending('title')}
-              data-testid="quote-title"
-              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
-            />
-            <SrSaved show={titleSaved} testId="quote-title-saved" />
-          </div>
-          {/* Customer reassignment (drafts only — this editor only mounts for
-              drafts). Selecting a company saves immediately; the server clears
-              the site + bill-to override and applies the new org's tax rate. */}
-          <div className="w-64 max-w-full">
-            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
-            <select
-              id="quote-customer"
-              value={customerOrgId}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id === customerOrgId) return;
-                setPendingCustomer({ id, name: orgOptions.find((o) => o.id === id)?.name ?? '' });
-              }}
-              disabled={isPending('customer')}
-              title={t('quotes.editor.customer.help')}
-              data-testid="quote-customer"
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-            >
-              {orgOptions.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-      )}
-      {canWrite && (
-        <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-cover-page-summary">
-                {cover.enabled ? t('quotes.editor.coverPage.summaryOn') : t('quotes.editor.coverPage.summaryOff')}
-              </p>
-            </div>
-            <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={cover.enabled}
-                onChange={(e) => saveCover({ ...cover, enabled: e.target.checked })}
-                disabled={isPending('cover-page')}
-                data-testid="quote-cover-page-enabled"
-                className="h-4 w-4"
-              />
-              {t('quotes.editor.coverPage.enable')}
-            </label>
-          </div>
-
-          {cover.enabled && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div className="sm:col-span-2">
-                <label htmlFor="quote-cover-page-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.titleLabel')}</label>
-                <input
-                  id="quote-cover-page-title"
-                  type="text"
-                  value={cover.title ?? ''}
-                  maxLength={200}
-                  placeholder={t('quotes.editor.coverPage.titlePlaceholder')}
-                  onChange={(e) => setCover((c) => ({ ...c, title: e.target.value }))}
-                  onBlur={() => saveCover(cover)}
-                  disabled={isPending('cover-page')}
-                  data-testid="quote-cover-page-title"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-                />
-              </div>
-              <div>
-                <label htmlFor="quote-cover-page-prepared-for" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.preparedForLabel')}</label>
-                <input
-                  id="quote-cover-page-prepared-for"
-                  type="text"
-                  value={cover.preparedForName ?? ''}
-                  maxLength={255}
-                  placeholder={t('quotes.editor.coverPage.preparedForPlaceholder')}
-                  onChange={(e) => setCover((c) => ({ ...c, preparedForName: e.target.value }))}
-                  onBlur={() => saveCover(cover)}
-                  disabled={isPending('cover-page')}
-                  data-testid="quote-cover-page-prepared-for"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-                />
-              </div>
-              <div className="flex items-end">
-                <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={cover.showPreparedBy}
-                    onChange={(e) => saveCover({ ...cover, showPreparedBy: e.target.checked })}
-                    disabled={isPending('cover-page')}
-                    data-testid="quote-cover-page-show-prepared-by"
-                    className="h-4 w-4"
-                  />
-                  {t('quotes.editor.coverPage.showPreparedBy')}
-                </label>
-              </div>
-              <div className="sm:col-span-2">
-                <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageLabel')}</span>
-                {cover.coverImageId ? (
-                  <div className="flex items-center gap-3">
-                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} />
-                    <button
-                      type="button"
-                      onClick={() => saveCover({ ...cover, coverImageId: null })}
-                      disabled={isPending('cover-page') || isPending('cover-image')}
-                      data-testid="quote-cover-page-image-remove"
-                      className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                    >
-                      {t('quotes.editor.coverPage.removeImage')}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
-                      disabled={isPending('cover-image')}
-                      data-testid="quote-cover-page-image-file"
-                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageHelp')}</p>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      {/* The rail joins as a second column only at xl: below that the two-column
-          split starves the pricing table (at 1100px the blocks track is ~420px
-          against a ~650px table minimum) and forces sideways scrolling on the
-          most-checked figures. Stacked, the table gets the full content width. */}
-      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
-        {/* ── blocks ─────────────────────────────────────────────────── */}
-        {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
-            inside an overflow-x-auto wrapper. Without min-w-0 the track refuses to
-            shrink below the table's min-content and the whole editor blows out to
-            ~758px on a phone (page-level horizontal scroll). */}
-        <div
-          className="min-w-0 space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          ref={blocksColRef}
-          tabIndex={-1}
-        >
-          {sortedBlocks.length === 0 ? (
-            <div className="rounded-lg border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" data-testid="quote-blocks-empty">
-              {t('quotes.editor.emptyBlocks')}
-            </div>
-          ) : (
-            sortedBlocks.map((block, idx) => (
-              <BlockCard
-                key={block.id}
-                block={block}
-                quoteId={quote.id}
-                lines={linesForBlock(block.id)}
-                currency={currency}
-                taxRate={quote.taxRate}
-                catalog={catalog}
-                catalogLoadFailed={catalogLoadFailed}
-                isPending={isPending}
-                canWrite={canWrite}
-                showInternal={showInternal}
-                depositSelectMode={depositSelectMode}
-                ecActive={ecActive}
-                pax8Active={pax8Active}
-                defaultMarkupPct={defaultMarkupPct}
-                isFirst={idx === 0}
-                isLast={idx === sortedBlocks.length - 1}
-                onAddCatalog={addCatalog}
-                onImportAddDistributor={importAndAddDistributor}
-                onImportAddPax8={importAndAddPax8}
-                onAddManual={addManual}
-                onEditLine={editLine}
-                onEditBlock={editBlock}
-                onMoveBlock={moveBlock}
-                onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
-                onMoveLineToBlock={moveLineTo}
-                moveTargets={
-                  block.blockType === 'line_items'
-                    ? pricingBlocks.filter((b) => b.id !== block.id).map((b) => ({ id: b.id, label: pricingBlockLabel(b) }))
-                    : []
-                }
-                onRemoveLine={setPendingLineRemove}
-                onRemoveBlock={setPendingRemove}
-                onLineDraft={setLineDraft}
-              />
-            ))
-          )}
-
-          {/* Add block */}
-          {canWrite && (
+  // The add-section form is a single instance rendered either at a chosen
+  // insertion gap (insertAt) or at the canvas foot (default) — same testids,
+  // same state, one form.
+  const addSectionForm = (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-add-block">
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.addSection.title')}</h2>
             <div className="mb-3 flex flex-wrap gap-2">
@@ -1879,7 +1707,338 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               </button>
             </div>
           </div>
+  );
+
+  return (
+    <div className="space-y-6" data-testid="quote-editor">
+      {/* The autosave hint is writer-only, but the cost/margin toggle is offered to
+          everyone who can see the editor: read-only users also have per-line cost
+          bands and deserve the same collapse control (ml-auto keeps it right-aligned
+          whether or not the hint renders). */}
+      <div className="flex flex-wrap items-center gap-2">
+        {canWrite && (
+          <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
+            {t('quotes.editor.autosaveHint')}
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowInternal((v) => !v)}
+          aria-pressed={showInternal}
+          data-testid="quote-editor-toggle-internal"
+          className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
+        >
+          {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
+          {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
+        </button>
+      </div>
+      {canWrite && (
+        <div className="flex max-w-3xl flex-wrap items-start gap-3">
+          <div className="min-w-64 flex-1">
+            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
+            <input
+              id="quote-title"
+              type="text"
+              value={title}
+              maxLength={200}
+              placeholder={t('quotes.editor.title.placeholder')}
+              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+              onBlur={() => void saveTitle()}
+              disabled={isPending('title')}
+              data-testid="quote-title"
+              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
+            />
+            <SrSaved show={titleSaved} testId="quote-title-saved" />
+          </div>
+          {/* Customer reassignment (drafts only — this editor only mounts for
+              drafts). Selecting a company saves immediately; the server clears
+              the site + bill-to override and applies the new org's tax rate. */}
+          <div className="w-64 max-w-full">
+            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
+            <select
+              id="quote-customer"
+              value={customerOrgId}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id === customerOrgId) return;
+                setPendingCustomer({ id, name: orgOptions.find((o) => o.id === id)?.name ?? '' });
+              }}
+              disabled={isPending('customer')}
+              title={t('quotes.editor.customer.help')}
+              data-testid="quote-customer"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            >
+              {orgOptions.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+      {canWrite && (
+        <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-cover-page-summary">
+                {cover.enabled ? t('quotes.editor.coverPage.summaryOn') : t('quotes.editor.coverPage.summaryOff')}
+              </p>
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={cover.enabled}
+                onChange={(e) => saveCover({ ...cover, enabled: e.target.checked })}
+                disabled={isPending('cover-page')}
+                data-testid="quote-cover-page-enabled"
+                className="h-4 w-4"
+              />
+              {t('quotes.editor.coverPage.enable')}
+            </label>
+          </div>
+
+          {cover.enabled && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label htmlFor="quote-cover-page-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.titleLabel')}</label>
+                <input
+                  id="quote-cover-page-title"
+                  type="text"
+                  value={cover.title ?? ''}
+                  maxLength={200}
+                  placeholder={t('quotes.editor.coverPage.titlePlaceholder')}
+                  onChange={(e) => setCover((c) => ({ ...c, title: e.target.value }))}
+                  onBlur={() => saveCover(cover)}
+                  disabled={isPending('cover-page')}
+                  data-testid="quote-cover-page-title"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label htmlFor="quote-cover-page-prepared-for" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.preparedForLabel')}</label>
+                <input
+                  id="quote-cover-page-prepared-for"
+                  type="text"
+                  value={cover.preparedForName ?? ''}
+                  maxLength={255}
+                  placeholder={t('quotes.editor.coverPage.preparedForPlaceholder')}
+                  onChange={(e) => setCover((c) => ({ ...c, preparedForName: e.target.value }))}
+                  onBlur={() => saveCover(cover)}
+                  disabled={isPending('cover-page')}
+                  data-testid="quote-cover-page-prepared-for"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                />
+              </div>
+              <div className="flex items-end">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={cover.showPreparedBy}
+                    onChange={(e) => saveCover({ ...cover, showPreparedBy: e.target.checked })}
+                    disabled={isPending('cover-page')}
+                    data-testid="quote-cover-page-show-prepared-by"
+                    className="h-4 w-4"
+                  />
+                  {t('quotes.editor.coverPage.showPreparedBy')}
+                </label>
+              </div>
+              <div className="sm:col-span-2">
+                <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageLabel')}</span>
+                {cover.coverImageId ? (
+                  <div className="flex items-center gap-3">
+                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} />
+                    <button
+                      type="button"
+                      onClick={() => saveCover({ ...cover, coverImageId: null })}
+                      disabled={isPending('cover-page') || isPending('cover-image')}
+                      data-testid="quote-cover-page-image-remove"
+                      className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      {t('quotes.editor.coverPage.removeImage')}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
+                      disabled={isPending('cover-image')}
+                      data-testid="quote-cover-page-image-file"
+                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageHelp')}</p>
+                  </>
+                )}
+              </div>
+            </div>
           )}
+        </div>
+      )}
+      {/* The rail joins as a second column only at xl: below that the two-column
+          split starves the pricing table (at 1100px the blocks track is ~420px
+          against a ~650px table minimum) and forces sideways scrolling on the
+          most-checked figures. Stacked, the table gets the full content width. */}
+      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
+        {/* ── blocks ─────────────────────────────────────────────────── */}
+        {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
+            inside an overflow-x-auto wrapper. Without min-w-0 the track refuses to
+            shrink below the table's min-content and the whole editor blows out to
+            ~758px on a phone (page-level horizontal scroll). */}
+        <div
+          className="min-w-0 space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          ref={blocksColRef}
+          tabIndex={-1}
+        >
+          {/* The paper: one continuous document-shaped surface. Blocks render in
+              document typography inside it; the per-block card chrome is gone.
+              Arrangement controls (grip + kebab) live in the left gutter and
+              appear on hover/focus so the content stays document-clean. */}
+          <div className="rounded-xl border bg-card shadow-xs" data-testid="quote-canvas">
+            <div className="space-y-5 py-5 pl-10 pr-4 sm:py-6 sm:pl-12 sm:pr-7">
+              {sortedBlocks.length === 0 && (
+                <div className="rounded-lg border border-dashed px-6 py-10 text-center text-sm text-muted-foreground" data-testid="quote-blocks-empty">
+                  {t('quotes.editor.emptyBlocks')}
+                </div>
+              )}
+              {sortedBlocks.map((block, idx) => (
+                <Fragment key={block.id}>
+                  {canWrite && (
+                    <InsertGap
+                      index={idx}
+                      active={insertAt === idx}
+                      onToggle={() => setInsertAt((cur) => (cur === idx ? null : idx))}
+                      label={t('quotes.editor.addSection.insertHere')}
+                      dropActive={dragBlockId !== null && dropIndex === idx}
+                      onDragOver={dragBlockId ? (e) => { e.preventDefault(); setDropIndex(idx); } : undefined}
+                      onDrop={dragBlockId ? (e) => { e.preventDefault(); commitBlockDrop(idx); } : undefined}
+                    />
+                  )}
+                  {canWrite && insertAt === idx && addSectionForm}
+                  <div className={`group/block relative ${dragBlockId === block.id ? 'opacity-40' : ''}`}>
+                    {canWrite && (
+                      <div className="absolute -left-7 top-0.5 flex flex-col items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/block:opacity-100">
+                        <button
+                          type="button"
+                          draggable
+                          onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', block.id); setDragBlockId(block.id); }}
+                          onDragEnd={() => { setDragBlockId(null); setDropIndex(null); }}
+                          aria-label={t('quotes.editor.actions.dragSection')}
+                          title={t('quotes.editor.actions.dragSection')}
+                          data-testid={`quote-block-drag-${block.id}`}
+                          className="inline-flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                        >
+                          <GripVertical className="h-4 w-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          ref={blockMenu?.id === block.id ? blockMenuTriggerRef : undefined}
+                          onClick={(e) => {
+                            if (blockMenu?.id === block.id) { setBlockMenu(null); return; }
+                            const r = e.currentTarget.getBoundingClientRect();
+                            setBlockMenu({ id: block.id, top: r.bottom + 4, left: r.left });
+                          }}
+                          aria-haspopup="menu"
+                          aria-expanded={blockMenu?.id === block.id}
+                          aria-label={t('quotes.editor.actions.sectionActions')}
+                          data-testid={`quote-block-actions-${block.id}`}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                        >
+                          <MoreHorizontal className="h-4 w-4" aria-hidden />
+                        </button>
+                      </div>
+                    )}
+                    {canWrite && blockMenu?.id === block.id && (
+                      <div ref={blockMenuWrapRef}>
+                        <div
+                          role="menu"
+                          ref={blockMenuListRef}
+                          onKeyDown={onBlockMenuKeyDown}
+                          aria-label={t('quotes.editor.actions.sectionActions')}
+                          style={{ position: 'fixed', top: blockMenu.top, left: blockMenu.left }}
+                          className="z-50 w-max min-w-40 rounded-md border bg-card py-1 shadow-md"
+                          data-testid={`quote-block-actions-menu-${block.id}`}
+                        >
+                          <button
+                            type="button" role="menuitem" tabIndex={-1} disabled={idx === 0}
+                            onClick={() => { setBlockMenu(null); blockMenuTriggerRef.current?.focus(); moveBlock(block, 'up'); }}
+                            data-testid={`quote-block-move-up-${block.id}`}
+                            className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-40"
+                          >
+                            {t('quotes.editor.actions.moveSectionUp')}
+                          </button>
+                          <button
+                            type="button" role="menuitem" tabIndex={-1} disabled={idx === sortedBlocks.length - 1}
+                            onClick={() => { setBlockMenu(null); blockMenuTriggerRef.current?.focus(); moveBlock(block, 'down'); }}
+                            data-testid={`quote-block-move-down-${block.id}`}
+                            className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-40"
+                          >
+                            {t('quotes.editor.actions.moveSectionDown')}
+                          </button>
+                          <div className="mt-1 border-t pt-1">
+                            <button
+                              type="button" role="menuitem" tabIndex={-1}
+                              onClick={() => { setBlockMenu(null); setPendingRemove(block); }}
+                              data-testid={`quote-block-remove-${block.id}`}
+                              className="block w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 focus:bg-destructive/10 focus:outline-hidden"
+                            >
+                              {t('quotes.editor.actions.removeSection')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <BlockCard
+                key={block.id}
+                block={block}
+                quoteId={quote.id}
+                lines={linesForBlock(block.id)}
+                currency={currency}
+                taxRate={quote.taxRate}
+                catalog={catalog}
+                catalogLoadFailed={catalogLoadFailed}
+                isPending={isPending}
+                canWrite={canWrite}
+                showInternal={showInternal}
+                depositSelectMode={depositSelectMode}
+                ecActive={ecActive}
+                pax8Active={pax8Active}
+                defaultMarkupPct={defaultMarkupPct}
+                onAddCatalog={addCatalog}
+                onImportAddDistributor={importAndAddDistributor}
+                onImportAddPax8={importAndAddPax8}
+                onAddManual={addManual}
+                onEditLine={editLine}
+                onEditBlock={editBlock}
+                onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
+                onMoveLineToBlock={moveLineTo}
+                moveTargets={
+                  block.blockType === 'line_items'
+                    ? pricingBlocks.filter((b) => b.id !== block.id).map((b) => ({ id: b.id, label: pricingBlockLabel(b) }))
+                    : []
+                }
+                onRemoveLine={setPendingLineRemove}
+                onLineDraft={setLineDraft}
+              />
+                  </div>
+                </Fragment>
+              ))}
+              {canWrite && sortedBlocks.length > 0 && dragBlockId !== null && (
+                <InsertGap
+                  index={sortedBlocks.length}
+                  active={false}
+                  onToggle={() => {}}
+                  label={t('quotes.editor.addSection.insertHere')}
+                  dropActive={dropIndex === sortedBlocks.length}
+                  onDragOver={(e) => { e.preventDefault(); setDropIndex(sortedBlocks.length); }}
+                  onDrop={(e) => { e.preventDefault(); commitBlockDrop(sortedBlocks.length); }}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Add section — canvas foot (default position when no gap is chosen) */}
+          {canWrite && insertAt === null && addSectionForm}
         </div>
 
         {/* ── live totals + terms ────────────────────────────────────── */}
@@ -1901,14 +2060,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.oneTime')}</dt>
                 <dd data-testid="quote-total-onetime">{formatMoney(railOneTime, currency)}</dd>
               </div>
-              <div className="flex items-baseline justify-between">
-                <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.monthlyRecurring')}</dt>
-                <dd data-testid="quote-total-monthly">{formatMoney(railMonthly, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perMonth')}</span></dd>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.annualRecurring')}</dt>
-                <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perYear')}</span></dd>
-              </div>
+              {/* Zero-value cadences stay silent — a permanent "$0.00/yr" row is
+                  noise a daily user reads hundreds of times for nothing. */}
+              {Number(railMonthly) > 0 && (
+                <div className="flex items-baseline justify-between">
+                  <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.monthlyRecurring')}</dt>
+                  <dd data-testid="quote-total-monthly">{formatMoney(railMonthly, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perMonth')}</span></dd>
+                </div>
+              )}
+              {Number(railAnnual) > 0 && (
+                <div className="flex items-baseline justify-between">
+                  <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.annualRecurring')}</dt>
+                  <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perYear')}</span></dd>
+                </div>
+              )}
               {Number(railTax) > 0 && (
                 <div className="flex items-baseline justify-between">
                   <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.tax')}</dt>
@@ -2164,9 +2329,176 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   );
 }
 
+// A hover/focus-revealed "+ Add section" affordance in the gap above each
+// block (and, mid-drag, a drop target) — inserting into the middle of a long
+// quote no longer means adding at the bottom and walking the section up.
+function InsertGap({ index, active, onToggle, label, dropActive, onDragOver, onDrop }: {
+  index: number; active: boolean; onToggle: () => void; label: string;
+  dropActive?: boolean;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+}) {
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`group/gap relative -my-2 flex h-5 items-center justify-center rounded ${dropActive ? 'bg-primary/15' : ''}`}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={active}
+        data-testid={`quote-insert-section-${index}`}
+        className={`inline-flex items-center gap-1 rounded-full border bg-card px-2.5 py-0.5 text-[11px] font-medium transition-opacity focus:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+          active ? 'border-primary/40 text-primary opacity-100' : 'text-muted-foreground opacity-0 hover:text-foreground group-hover/gap:opacity-100'
+        }`}
+      >
+        <span aria-hidden="true">+</span> {label}
+      </button>
+    </div>
+  );
+}
+
+// The ghost row: an always-ready entry row at the foot of every pricing table.
+// Type a name, Tab through qty/price/cadence, press Enter — the line commits
+// and focus returns to the name for the next one. This is the fast lane for the
+// daily compose loop; the full picker (catalog / AI lookup / distributor / SKU
+// and cost fields) stays available behind the "More ways to add" disclosure.
+function GhostRow({ blockId, busy, onAdd, colSpan }: {
+  blockId: string;
+  busy: boolean;
+  onAdd: (form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean }) => Promise<boolean>;
+  colSpan: number;
+}) {
+  const { t } = useTranslation('billing');
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('1');
+  const [price, setPrice] = useState('');
+  const [rec, setRec] = useState<QuoteLineRecurrence>('one_time');
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  const commit = async () => {
+    if (!name.trim()) return; // nothing typed — Enter is a no-op, not an error
+    const qtyNum = Number(qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) {
+      setError(t('quotes.editor.errors.quantityWholeGreaterThanZero'));
+      return;
+    }
+    const priceNum = price.trim() === '' ? 0 : Number(price);
+    if (!Number.isFinite(priceNum) || priceNum < 0) {
+      setError(t('quotes.editor.errors.unitPriceZeroOrMore'));
+      return;
+    }
+    setError(null);
+    const ok = await onAdd({
+      name, description: '', quantity: qty, unitPrice: price.trim() === '' ? '0' : price,
+      cost: '', sku: '', partNumber: '', taxable: false, recurrence: rec, saveToCatalog: false,
+    });
+    if (ok) {
+      setName(''); setQty('1'); setPrice(''); setRec('one_time');
+      // Refocus after React re-enables the input: the field is disabled during
+      // the save (which also DROPS focus — disabling the focused element moves
+      // focus to <body>), and the busy=false re-render lands async. Retry over
+      // a few frames until the node is focusable again.
+      const refocus = (tries: number) => {
+        const el = nameRef.current;
+        if (el && !el.disabled) { el.focus(); return; }
+        if (tries > 0) requestAnimationFrame(() => refocus(tries - 1));
+      };
+      requestAnimationFrame(() => refocus(10));
+    }
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); void commit(); }
+  };
+  const ghostField = 'h-9 rounded-md border border-transparent bg-transparent transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60';
+
+  return (
+    <>
+      <tr className="border-t" data-testid={`quote-ghost-row-${blockId}`}>
+        <td className="px-1.5 py-1.5">
+          <input
+            ref={nameRef}
+            type="text"
+            value={name}
+            onChange={(e) => { setName(e.target.value); setError(null); }}
+            onKeyDown={onKeyDown}
+            disabled={busy}
+            placeholder={t('quotes.editor.ghost.placeholder')}
+            aria-label={t('quotes.editor.ghost.nameAria')}
+            data-testid={`quote-ghost-name-${blockId}`}
+            className={`${ghostField} w-full px-2 text-sm placeholder:text-muted-foreground/70`}
+          />
+        </td>
+        <td className="px-1.5 py-1.5 text-right">
+          <input
+            type="number" min="1" step="1"
+            value={qty}
+            onChange={(e) => { setQty(e.target.value); setError(null); }}
+            onKeyDown={onKeyDown}
+            disabled={busy}
+            aria-label={t('quotes.editor.line.quantityAria')}
+            data-testid={`quote-ghost-qty-${blockId}`}
+            className={`${ghostField} w-14 px-2 text-right text-sm tabular-nums`}
+          />
+        </td>
+        <td className="px-1.5 py-1.5 text-right">
+          <input
+            type="number" min="0" step="0.01"
+            value={price}
+            onChange={(e) => { setPrice(e.target.value); setError(null); }}
+            onKeyDown={onKeyDown}
+            disabled={busy}
+            placeholder="0.00"
+            aria-label={t('quotes.editor.table.unitPrice')}
+            data-testid={`quote-ghost-price-${blockId}`}
+            className={`${ghostField} w-24 px-2 text-right text-sm tabular-nums`}
+          />
+          <select
+            value={rec}
+            onChange={(e) => setRec(e.target.value as QuoteLineRecurrence)}
+            onKeyDown={onKeyDown}
+            disabled={busy}
+            aria-label={t('quotes.editor.line.billingFrequencyAria')}
+            data-testid={`quote-ghost-recurrence-${blockId}`}
+            className="ml-auto mt-1 block h-7 w-24 rounded-md border border-transparent bg-transparent py-0 pl-2 pr-6 text-xs text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60"
+          >
+            <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
+            <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
+            <option value="annual">{t('quotes.editor.recurrence.annual')}</option>
+          </select>
+        </td>
+        <td className="px-1.5 py-1.5 text-right align-middle">
+          {name.trim() && (
+            <button
+              type="button"
+              onClick={() => void commit()}
+              disabled={busy}
+              data-testid={`quote-ghost-add-${blockId}`}
+              className="inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {busy && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+              {t('quotes.editor.ghost.add')}
+            </button>
+          )}
+        </td>
+        <td className="px-1.5 py-1.5" />
+      </tr>
+      {error && (
+        <tr className="border-0">
+          <td colSpan={colSpan} className="px-1.5 pb-1.5">
+            <p className="text-xs text-destructive" data-testid={`quote-ghost-error-${blockId}`}>{error}</p>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 // ── A single block, with an inline line builder when it is a pricing table ──
 function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, isFirst, isLast, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveBlock, onMoveLine, onRemoveLine, onRemoveBlock, onLineDraft,
+  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
   moveTargets, onMoveLineToBlock,
 }: {
   block: QuoteBlock;
@@ -2186,8 +2518,6 @@ function BlockCard({
   pax8Active: boolean;
   /** Partner default markup % for pre-pricing AI auto-filled lines; null = unknown. */
   defaultMarkupPct: number | null;
-  isFirst: boolean;
-  isLast: boolean;
   onAddCatalog: (blockId: string, item: CatalogItem) => void;
   onImportAddDistributor: (blockId: string, product: EcProduct, sellPrice: number) => void;
   onImportAddPax8: (blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) => void;
@@ -2197,10 +2527,8 @@ function BlockCard({
   ) => Promise<boolean>;
   onEditLine: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
   onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
-  onMoveBlock: (block: QuoteBlock, direction: 'up' | 'down') => void;
   onMoveLine: (line: QuoteLine, direction: 'up' | 'down') => void;
   onRemoveLine: (line: QuoteLine) => void;
-  onRemoveBlock: (block: QuoteBlock) => void;
   onLineDraft: (lineId: string, draft: QuoteLineForMath | null) => void;
   /** Other pricing panels this block's lines can move to (empty → control hidden). */
   moveTargets: { id: string; label: string }[];
@@ -2212,6 +2540,7 @@ function BlockCard({
   const blockBusy = isPending(`block:${block.id}`);
   const addLineBusy = isPending(`add-line:${block.id}`);
 
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor' | 'pax8'>('catalog');
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
@@ -2378,42 +2707,12 @@ function BlockCard({
   };
 
   return (
-    <div className="rounded-lg border bg-card shadow-xs" data-testid={`quote-block-${block.id}`}>
-      <div className="flex items-center justify-between border-b px-4 py-2">
-        <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {BLOCK_TYPE_LABEL_KEYS[block.blockType] ? t(/* i18n-dynamic */ BLOCK_TYPE_LABEL_KEYS[block.blockType]) : block.blockType}
-          {isTable && tableLabel ? ` · ${tableLabel}` : ''}
-          <SrSaved show={blockSaved} testId={`quote-block-saved-${block.id}`} />
-        </span>
-        {canWrite && (
-          <div className="flex items-center gap-1">
-            <MoveControls
-              disabledUp={isFirst}
-              disabledDown={isLast}
-              onUp={() => onMoveBlock(block, 'up')}
-              onDown={() => onMoveBlock(block, 'down')}
-              labelUp={t('quotes.editor.actions.moveSectionUp')}
-              labelDown={t('quotes.editor.actions.moveSectionDown')}
-              testIdUp={`quote-block-move-up-${block.id}`}
-              testIdDown={`quote-block-move-down-${block.id}`}
-            />
-            <button
-              type="button"
-              onClick={() => onRemoveBlock(block)}
-              disabled={blockBusy}
-              // Distinguishes this from the line rows' "Remove line" menu item —
-              // two controls named bare "Remove" are indistinguishable to AT.
-              aria-label={t('quotes.editor.actions.removeSection')}
-              data-testid={`quote-block-remove-${block.id}`}
-              className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-            >
-              {t('quotes.editor.actions.remove')}
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="p-4">
+    <section data-testid={`quote-block-${block.id}`}>
+      {/* No card chrome, no uppercase type-label bar: on the canvas a block IS
+          its content (a heading looks like a heading, a table like a table).
+          The type is self-evident; arrangement lives in the gutter controls. */}
+      <SrSaved show={blockSaved} testId={`quote-block-saved-${block.id}`} />
+      <div>
         {block.blockType === 'heading' && (
           canWrite ? (
             <input
@@ -2423,7 +2722,7 @@ function BlockCard({
               onBlur={() => void commitHeading()}
               disabled={blockBusy}
               data-testid={`quote-block-heading-input-${block.id}`}
-              className={`w-full rounded-md border bg-background px-2 py-1 text-lg font-semibold transition-shadow disabled:opacity-60 ${fieldRing(headingDraft.trim() !== heading, blockSaved)}`}
+              className={`w-full rounded-md border bg-transparent px-2 py-1 text-lg font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(headingDraft.trim() !== heading, blockSaved))}`}
             />
           ) : (
             <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
@@ -2486,7 +2785,7 @@ function BlockCard({
                 disabled={blockBusy}
                 placeholder={t('quotes.editor.table.labelPlaceholder')}
                 data-testid={`quote-block-table-label-input-${block.id}`}
-                className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
+                className={`h-9 w-full rounded-md border bg-transparent px-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved))}`}
               />
             )}
             {canWrite && (
@@ -2519,9 +2818,9 @@ function BlockCard({
                 </tr>
               </thead>
               <tbody>
-                {lines.length === 0 ? (
+                {lines.length === 0 && !canWrite ? (
                   <tr>
-                    <td colSpan={canWrite ? 5 : 4} className="px-2 py-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={4} className="px-2 py-6 text-center text-sm text-muted-foreground">
                       {t('quotes.editor.table.emptyLines')}
                     </td>
                   </tr>
@@ -2551,13 +2850,37 @@ function BlockCard({
                     ),
                   )
                 )}
+                {/* Ghost row: the fast lane for manual entry — always ready at
+                    the table foot, Enter commits and refocuses for the next. */}
+                {canWrite && (
+                  <GhostRow
+                    blockId={block.id}
+                    busy={addLineBusy}
+                    onAdd={(form) => onAddManual(block.id, form)}
+                    colSpan={5}
+                  />
+                )}
               </tbody>
             </table>
             </div>
 
-            {/* Add line to this pricing table */}
+            {/* The full add-line picker (catalog / AI lookup / distributor /
+                SKU + cost fields) collapses behind a disclosure — the ghost row
+                covers the fast manual path, so this chrome only renders when a
+                tech asks for the heavier modes. */}
             {canWrite && (
-            <div className="mt-3 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
+              <button
+                type="button"
+                onClick={() => setPickerOpen((v) => !v)}
+                aria-expanded={pickerOpen}
+                data-testid={`quote-block-add-line-toggle-${block.id}`}
+                className="mt-2 inline-flex items-center gap-1 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
+              >
+                <span aria-hidden="true">{pickerOpen ? '−' : '+'}</span> {t('quotes.editor.addLine.moreWays')}
+              </button>
+            )}
+            {canWrite && pickerOpen && (
+            <div className="mt-1 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
               <div className="mb-3 flex gap-2">
                 {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : []), ...(pax8Active ? ['pax8'] as const : [])] as const).map((m) => (
                   <button
@@ -2823,7 +3146,7 @@ function BlockCard({
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -2927,6 +3250,11 @@ function EditableLineRow({
   const removeBusy = isPending(`line:${line.id}`);
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
+  // Rest-state density: an EMPTY description renders no textarea — a compact
+  // "+ description" affordance opens it. Lines with prose keep it open (and a
+  // server resync that lands prose re-opens it).
+  const [descOpen, setDescOpen] = useState(Boolean((line.description ?? '').trim()));
+  useEffect(() => { if ((line.description ?? '').trim()) setDescOpen(true); }, [line.description]);
   // Quantity edits/displays in its bare form ('3', not the stored '3.00') so the
   // input matches its own step="1" and the customer-facing rendering.
   const [qty, setQty] = useState(formatQuantity(line.quantity));
@@ -3274,7 +3602,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={fieldBusy('name')}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+              className={`h-9 w-full rounded-md border bg-transparent px-2 py-1 text-sm font-medium transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(nameDirty, saved))}`}
             />
           </div>
         </div>
@@ -3290,7 +3618,7 @@ function EditableLineRow({
           aria-invalid={fieldErrors.qty ? true : undefined}
           aria-describedby={fieldErrors.qty ? `quote-line-qty-error-${line.id}` : undefined}
           data-testid={`quote-line-qty-${line.id}`}
-          className={`h-9 w-14 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldErrors.qty ? 'border-destructive ring-1 ring-destructive' : fieldRing(qtyDirty, saved)}`}
+          className={`h-9 w-14 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.qty ? 'border-destructive' : seamless(fieldRing(qtyDirty, saved))}`}
         />
       </td>
       <td className="px-1.5 py-2 text-right">
@@ -3304,7 +3632,7 @@ function EditableLineRow({
           aria-invalid={fieldErrors.price ? true : undefined}
           aria-describedby={fieldErrors.price ? `quote-line-price-error-${line.id}` : undefined}
           data-testid={`quote-line-price-${line.id}`}
-          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldErrors.price ? 'border-destructive ring-1 ring-destructive' : fieldRing(priceDirty, saved)}`}
+          className={`h-9 w-24 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.price ? 'border-destructive' : seamless(fieldRing(priceDirty, saved))}`}
         />
         {/* Billing cadence belongs with the price ("$1,499.00 /mo"), so its
             select rides directly under the price input instead of claiming a
@@ -3319,7 +3647,7 @@ function EditableLineRow({
           }}
           disabled={fieldBusy('rec')}
           data-testid={`quote-line-recurrence-${line.id}`}
-          className="ml-auto mt-1 block h-7 w-24 rounded-md border bg-background py-0 pl-2 pr-6 text-xs text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="ml-auto mt-1 block h-7 w-24 rounded-md border border-transparent bg-transparent py-0 pl-2 pr-6 text-xs text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60"
         >
           <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
           <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
@@ -3451,18 +3779,21 @@ function EditableLineRow({
             )}
           </div>
         )}
-        <textarea
-          ref={descRef}
-          value={desc}
-          aria-label={t('quotes.editor.line.descriptionAria')}
-          placeholder={t('quotes.editor.line.descriptionOptional')}
-          onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
-          onBlur={commitDesc}
-          rows={2}
-          disabled={fieldBusy('desc')}
-          data-testid={`quote-line-desc-${line.id}`}
-          className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
-        />
+        {descOpen && (
+          <textarea
+            ref={descRef}
+            value={desc}
+            aria-label={t('quotes.editor.line.descriptionAria')}
+            placeholder={t('quotes.editor.line.descriptionOptional')}
+            onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
+            onBlur={commitDesc}
+            rows={2}
+            autoFocus={!(line.description ?? '').trim()}
+            disabled={fieldBusy('desc')}
+            data-testid={`quote-line-desc-${line.id}`}
+            className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-transparent px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(descDirty, saved))}`}
+          />
+        )}
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {/* Taxable moved out of its own table column: it's an editing control,
               not a per-glance figure (the computed tax shows under the Total). */}
@@ -3499,7 +3830,17 @@ function EditableLineRow({
               {t('quotes.editor.deposit.eligibleAria')}
             </label>
           )}
-          {(name.trim() || desc.trim()) && (
+          {!descOpen && (
+            <button
+              type="button"
+              onClick={() => setDescOpen(true)}
+              data-testid={`quote-line-desc-open-${line.id}`}
+              className="inline-flex h-8 items-center rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
+            >
+              <span aria-hidden="true">+</span>&nbsp;{t('quotes.editor.line.addDescription')}
+            </button>
+          )}
+          {descOpen && (name.trim() || desc.trim()) && (
             <PolishButton
               disabled={fieldBusy('polish')}
               idSuffix={`quote-line-${line.id}`}

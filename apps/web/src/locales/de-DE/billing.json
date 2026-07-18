@@ -447,6 +447,7 @@
         "addSection": "Abschnitt hinzufügen",
         "adding": "Hinzufügen…",
         "cancel": "Abbrechen",
+        "dragSection": "Ziehen, um den Abschnitt neu zu ordnen",
         "fetch": "Holen",
         "fetchAddImage": "Bild abrufen und hinzufügen",
         "fromUrl": "Ab URL",
@@ -464,6 +465,7 @@
         "removeLine": "Position entfernen",
         "removeSection": "Abschnitt entfernen",
         "replaceImage": "Bild ersetzen",
+        "sectionActions": "Abschnittsaktionen",
         "showCostMargin": "Kosten und Marge anzeigen",
         "uploadAddImage": "Bild hochladen und hinzufügen",
         "uploading": "Hochladen…"
@@ -471,6 +473,7 @@
       "addLine": {
         "catalogItem": "Katalogartikel",
         "manualLine": "Manuelle Position",
+        "moreWays": "Weitere Wege zum Hinzufügen (Katalog, KI-Suche, Details)",
         "searchDistributor": "Händler suchen",
         "searchPax8": "Pax8 durchsuchen"
       },
@@ -479,6 +482,7 @@
         "headingPlaceholder": "Überschriftentext",
         "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Abschnitt hinzufügen",
         "richTextPlaceholder": "Vorschlagstext…",
         "title": "Abschnitt hinzufügen",
         "uploadFile": "Datei hochladen"
@@ -495,7 +499,7 @@
         "label": "Automatisch ausgefüllt:",
         "review": "Überprüfen und passen Sie es an, bevor Sie es hinzufügen."
       },
-      "autosaveHint": "Änderungen werden beim Bearbeiten automatisch gespeichert. Ein gelber Umriss markiert eine Bearbeitung, die noch nicht gespeichert wurde.",
+      "autosaveHint": "Änderungen werden automatisch gespeichert. Ein bernsteinfarbener Rahmen markiert eine ungespeicherte Änderung.",
       "block": {
         "imageSectionPdf": "Bildausschnitt (gerendert im PDF).",
         "richTextContentAria": "Rich-Text-Inhalt"
@@ -595,6 +599,7 @@
         "short": "Intern"
       },
       "line": {
+        "addDescription": "Beschreibung",
         "billing": "Abrechnung",
         "billingFrequencyAria": "Abrechnungshäufigkeit",
         "cost": "Kosten",
@@ -716,6 +721,11 @@
         "imageLabel": "Deckblattbild",
         "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
         "removeImage": "Bild entfernen"
+      },
+      "ghost": {
+        "add": "Hinzufügen",
+        "nameAria": "Name der neuen Zeile",
+        "placeholder": "Artikelnamen eingeben…"
       }
     },
     "actions": {
@@ -763,7 +773,8 @@
         "title": "Dieses Angebot senden?",
         "toLabel": "An",
         "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen."
+        "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
+        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind."
       },
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",

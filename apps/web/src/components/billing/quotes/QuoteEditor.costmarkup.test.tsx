@@ -93,6 +93,8 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     };
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const markup = screen.getByTestId('quote-line-markup-line-1') as HTMLInputElement;
     expect(markup.value).toBe('30'); // (130-100)/100
@@ -120,6 +122,8 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     };
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     expect(screen.getByTestId('quote-line-net-A')).toHaveTextContent('$60.00');
     expect(screen.getByTestId('quote-line-net-B')).toHaveTextContent('—');
@@ -140,6 +144,8 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     };
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     // The rail Margin panel is governed by the same "Show cost & margin" toggle
     // as the per-line bands — one toggle honestly means "no margin on screen".
@@ -163,6 +169,8 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     };
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     // The add-line panel defaults to catalog mode — switch to the manual line form.
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
@@ -191,6 +199,8 @@ describe('QuoteEditor — add-form two-way markup and auto-fill pricing', () => 
   it('markup% and price stay two-way coupled through cost edits', async () => {
     render(<QuoteEditor detail={emptyDetail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
 
     const costEl = screen.getByTestId('quote-manual-cost-blk-1') as HTMLInputElement;
@@ -252,6 +262,8 @@ describe('QuoteEditor — add-form two-way markup and auto-fill pricing', () => 
 
     render(<QuoteEditor detail={emptyDetail} onChanged={vi.fn()} />);
     await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledWith('/orgs/partners/me'));
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
 
     fireEvent.change(screen.getByTestId('catalog-enrich-input-quote-blk-1'), { target: { value: 'APC UPS' } });
@@ -298,6 +310,8 @@ describe('QuoteEditor — add-form two-way markup and auto-fill pricing', () => 
 
     render(<QuoteEditor detail={emptyDetail} onChanged={vi.fn()} />);
     await waitFor(() => expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledWith('/orgs/partners/me'));
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
 
     // The tech already typed their real numbers before running auto-fill.

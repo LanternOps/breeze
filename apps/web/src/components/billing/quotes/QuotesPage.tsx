@@ -581,7 +581,12 @@ export function QuotesPage() {
                 <span className="font-medium">{q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')}</span>
                 <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
               </span>
-              <span className="shrink-0 tabular-nums text-muted-foreground">{formatMoney(q.total, q.currencyCode)}</span>
+              <span
+                className={`shrink-0 tabular-nums ${Number(q.total) === 0 ? 'font-medium text-warning-foreground dark:text-warning' : 'text-muted-foreground'}`}
+                title={Number(q.total) === 0 ? t('quotes.actions.sendConfirm.zeroTotalWarning') : undefined}
+              >
+                {formatMoney(q.total, q.currencyCode)}
+              </span>
             </li>
           ))}
         </ul>

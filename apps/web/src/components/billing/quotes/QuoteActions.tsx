@@ -120,8 +120,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     };
   }, [menuOpen]);
 
-  // An empty quote (no blocks, no lines) can't be sent.
-  const isEmpty = blocks.length === 0 && lines.length === 0;
+  // A quote with no customer-visible LINE ITEMS can't be sent. Gating on
+  // blocks was defeatable: one empty pricing table (or a lone heading block)
+  // armed Send on a $0.00, item-less quote — the exact embarrassment the
+  // empty-hint exists to prevent, on the highest-stakes action.
+  const isEmpty = !lines.some((l) => l.customerVisible);
+  // A sendable-but-$0 quote (e.g. every line priced at zero) is almost always
+  // a mistake — the composer shows an explicit warning rather than blocking.
+  const zeroTotal = !isEmpty && Number(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal) === 0 && Number(quote.total) === 0;
   const isDraft = quote.status === 'draft';
   // Deposit configured → the composer must warn when Stripe isn't connected,
   // since the customer would have no way to actually pay that deposit online.
@@ -507,6 +513,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
           })}
         </p>
+        {zeroTotal && (
+          <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
+            {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+          </p>
+        )}
 
         {/* Envelope fields: label-left rows in one bordered box, like a mail client. */}
         <div className="mt-4 divide-y rounded-md border">

@@ -91,8 +91,9 @@ describe('QuoteEditor — permission gating', () => {
     // …but none of the write controls.
     expect(screen.queryByTestId('quote-add-block')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-add-block-submit')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('quote-block-remove-blk-1')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('quote-block-add-line-blk-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-actions-blk-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-add-line-toggle-blk-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-ghost-row-blk-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-line-actions-line-1')).not.toBeInTheDocument();
   });
 
@@ -103,7 +104,13 @@ describe('QuoteEditor — permission gating', () => {
 
     expect(screen.getByTestId('quote-add-block')).toBeInTheDocument();
     expect(screen.getByTestId('quote-add-block-submit')).toBeInTheDocument();
+    // Section arrangement (incl. Remove) lives behind the block's gutter menu.
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     expect(screen.getByTestId('quote-block-remove-blk-1')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1')); // close
+    // The ghost row is the always-ready manual entry; the full picker discloses.
+    expect(screen.getByTestId('quote-ghost-row-blk-1')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
     expect(screen.getByTestId('quote-block-add-line-blk-1')).toBeInTheDocument();
     // Row actions (incl. Remove) live behind the line's overflow menu.
     fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));

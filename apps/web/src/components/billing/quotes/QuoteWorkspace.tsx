@@ -133,8 +133,15 @@ export default function QuoteWorkspace({ id }: Props) {
       activeTab={activeTab}
       onTabChange={selectTab}
     >
-      {activeTab === 'editor' && isDraft && (
-        <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
+      {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
+          unmounting discarded any half-typed add-line/add-section input the
+          moment a tech flipped to Preview "just to check" — brutal mid-flow
+          data loss. Hidden-but-mounted also keeps the savePending gate live
+          while previewing. */}
+      {isDraft && (
+        <div className={activeTab === 'editor' ? '' : 'hidden'}>
+          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
+        </div>
       )}
       {activeTab === 'preview' && (
         <QuoteDocumentPreview detail={detail} />

@@ -447,6 +447,7 @@
         "addSection": "Ajouter une section",
         "adding": "Ajout…",
         "cancel": "Annuler",
+        "dragSection": "Glisser pour réordonner la section",
         "fetch": "Récupérer",
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
@@ -464,6 +465,7 @@
         "removeLine": "Supprimer la ligne",
         "removeSection": "Supprimer la section",
         "replaceImage": "Remplacer l'image",
+        "sectionActions": "Actions de la section",
         "showCostMargin": "Afficher coût et marge",
         "uploadAddImage": "Téléverser et ajouter l'image",
         "uploading": "Téléversement…"
@@ -471,6 +473,7 @@
       "addLine": {
         "catalogItem": "Article du catalogue",
         "manualLine": "Ligne manuelle",
+        "moreWays": "Plus de façons d'ajouter (catalogue, recherche IA, détails)",
         "searchDistributor": "Rechercher un distributeur",
         "searchPax8": "Rechercher Pax8"
       },
@@ -479,6 +482,7 @@
         "headingPlaceholder": "Texte du titre",
         "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Ajouter une section",
         "richTextPlaceholder": "Texte de proposition…",
         "title": "Ajouter une section",
         "uploadFile": "Téléverser un fichier"
@@ -495,7 +499,7 @@
         "label": "Renseigné automatiquement :",
         "review": "Vérifiez et ajustez avant d'ajouter."
       },
-      "autosaveHint": "Les modifications sont enregistrées automatiquement pendant l'édition. Un contour orange indique une modification pas encore enregistrée.",
+      "autosaveHint": "Les modifications sont enregistrées automatiquement. Un contour ambre signale une modification non enregistrée.",
       "block": {
         "imageSectionPdf": "Section image (rendue dans le PDF).",
         "richTextContentAria": "Contenu en texte enrichi"
@@ -595,6 +599,7 @@
         "short": "Interne"
       },
       "line": {
+        "addDescription": "description",
         "billing": "Facturation",
         "billingFrequencyAria": "Fréquence de facturation",
         "cost": "Coût",
@@ -716,6 +721,11 @@
         "imageLabel": "Image de couverture",
         "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
         "removeImage": "Supprimer l'image"
+      },
+      "ghost": {
+        "add": "Ajouter",
+        "nameAria": "Nom de la nouvelle ligne",
+        "placeholder": "Saisissez le nom de l'article…"
       }
     },
     "actions": {
@@ -763,7 +773,8 @@
         "title": "Envoyer cette proposition ?",
         "toLabel": "À",
         "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Utilisez au maximum {{max}} adresses."
+        "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
+        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
