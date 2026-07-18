@@ -222,6 +222,43 @@ export async function createActionIntent(
     userId: requesterId,
   };
 
+  // Resolve eligible approvers (org members with approvals:decide, excluding
+  // the requester — spec §4 step 4) BEFORE opening the creation transaction
+  // below. The approver set doesn't depend on the intent row existing, so
+  // there's no reason to hold a pooled connection open across N sequential
+  // getUserPermissions round-trips (the #1105 connection-hold class — see
+  // apps/api/src/db/index.ts). getUserPermissions manages its own db context,
+  // so resolving it here, outside `withDbAccessContext` below, is exactly the
+  // point; only the members read needs the caller's org context. Each
+  // permission lookup is independent, so resolve them in parallel rather than
+  // sequentially. On a genuine idempotency conflict inside the transaction,
+  // this resolved set is simply discarded — cheap relative to the round-trip
+  // savings on the common (non-conflicting) path.
+  const members = await withDbAccessContext(dbContext, () =>
+    db
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(eq(organizationUsers.orgId, orgId)),
+  );
+
+  const approverEligibility = await Promise.all(
+    members.map(async (member) => {
+      const perms = await getUserPermissions(member.userId, { orgId });
+      return { userId: member.userId, eligible: !!perms && userCanDecideApprovals(perms) };
+    }),
+  );
+
+  const eligibleApprovers: string[] = [];
+  let requesterEligible = false;
+  for (const { userId, eligible } of approverEligibility) {
+    if (!eligible) continue;
+    if (userId === requesterId) {
+      requesterEligible = true;
+      continue;
+    }
+    eligibleApprovers.push(userId);
+  }
+
   const creation = await withDbAccessContext(dbContext, async (): Promise<CreationResult> => {
     const [inserted] = await db
       .insert(actionIntents)
@@ -247,7 +284,8 @@ export async function createActionIntent(
     if (!inserted) {
       // Idempotent replay: converge on the existing row instead of creating a
       // duplicate (spec §4 step 3 / §13). No new fan-out, no new outbox row —
-      // the retry is a no-op beyond returning what already exists.
+      // the retry is a no-op beyond returning what already exists. The
+      // approver set resolved above is simply unused on this path.
       const [existing] = await db
         .select()
         .from(actionIntents)
@@ -269,25 +307,6 @@ export async function createActionIntent(
         fanOutUserIds: [],
         isNew: false,
       };
-    }
-
-    // Resolve eligible approvers: org members with approvals:decide, excluding
-    // the requester (spec §4 step 4).
-    const members = await db
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .where(eq(organizationUsers.orgId, orgId));
-
-    const eligibleApprovers: string[] = [];
-    let requesterEligible = false;
-    for (const member of members) {
-      const perms = await getUserPermissions(member.userId, { orgId });
-      if (!perms || !userCanDecideApprovals(perms)) continue;
-      if (member.userId === requesterId) {
-        requesterEligible = true;
-        continue;
-      }
-      eligibleApprovers.push(member.userId);
     }
 
     let approvalRequestIds: string[] = [];

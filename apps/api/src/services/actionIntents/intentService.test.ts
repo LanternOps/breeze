@@ -183,6 +183,7 @@ import {
   ActionIntentAuthorizationError,
   type CreateActionIntentInput,
 } from './intentService';
+import { db, withDbAccessContext } from '../../db';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -436,6 +437,55 @@ describe('createActionIntent — approver fan-out', () => {
         details: expect.objectContaining({ errorCode: 'no_eligible_approvers' }),
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connection-hold regression (#1105 class) — approver resolution must not
+// run inside the write transaction.
+// ---------------------------------------------------------------------------
+
+type MockLike = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
+
+describe('createActionIntent — connection-hold (#1105)', () => {
+  it('resolves every eligible-approver permission check before the write transaction inserts the intent row', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    dbState.selectOrgUsersResults.push([
+      { userId: REQUESTER_ID },
+      { userId: APPROVER_1 },
+      { userId: APPROVER_2 },
+    ]);
+    permState.getUserPermissions.mockImplementation(async (userId: string) => ({ userId, canDecide: true }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }, { id: 'approval-2' }]);
+
+    await createActionIntent(makeAuth(), baseInput());
+
+    // One getUserPermissions call per org member — confirms the approver
+    // resolution actually ran (not vacuously skipped).
+    expect(permState.getUserPermissions).toHaveBeenCalledTimes(3);
+
+    const insertMock = db.insert as unknown as MockLike;
+    const intentInsertIndex = insertMock.mock.calls.findIndex((call) => call[0] === schema.actionIntentsTbl);
+    expect(intentInsertIndex).toBeGreaterThanOrEqual(0);
+    const intentInsertOrder = insertMock.mock.invocationCallOrder[intentInsertIndex]!;
+
+    // invocationCallOrder is a global counter shared across every vi.fn in
+    // the test — safe to compare directly across mocks. Every permission
+    // check's call site must precede the intent-row insert, proving
+    // resolution completed before the write transaction opened (no pooled
+    // connection held across the N sequential round-trips).
+    const permCallOrders = (permState.getUserPermissions as unknown as MockLike).mock.invocationCallOrder;
+    expect(Math.max(...permCallOrders)).toBeLessThan(intentInsertOrder);
+
+    // withDbAccessContext must have opened a distinct (earlier) context for
+    // the members read, separate from the one wrapping the creation write.
+    const wrapMock = withDbAccessContext as unknown as MockLike;
+    expect(wrapMock.mock.invocationCallOrder.length).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...permCallOrders)).toBeLessThan(wrapMock.mock.invocationCallOrder[1]!);
+
+    // Fan-out outcome itself is unchanged by the reordering.
+    const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+    expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
   });
 });
 
