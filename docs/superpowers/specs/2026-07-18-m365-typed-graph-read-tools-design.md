@@ -63,11 +63,15 @@ with a matching operation in `operations.ts`.
 
 Order matters; each step fails closed with a typed code (§8).
 
-1. **Org resolution.** The acting org comes from the AI session context only. The tool
-   input never contains a tenant or org identifier. Partner-scoped sessions act on the
-   session's currently selected org. **Site-scoped sessions are refused** and the tools
-   are also hidden from their registry (both layers, matching the device site-scope
-   contract pattern in `aiTools.deviceAccessSiteScope.contract.test.ts`).
+1. **Org resolution.** The acting org comes from the AI session context. Tool input
+   never contains a Microsoft tenant identifier; an optional `orgId` input exists only
+   for sessions spanning multiple organizations and is validated against the caller's
+   org access (the standard writable-tool org resolution), so it is not a
+   tenant-selection surface. **Site-scoped sessions are refused** by
+   `readActionService` (the authoritative layer); if the chat pipeline has a
+   per-session tool filter, the tools are additionally hidden there as defense in
+   depth (per the device site-scope contract pattern in
+   `aiTools.deviceAccessSiteScope.contract.test.ts`).
 2. **Connection load.** The org's `m365_connections` row with
    `profile = 'customer-graph-read'`. Absent → `connection_not_ready` with guidance to
    run consent.
@@ -79,9 +83,10 @@ Order matters; each step fails closed with a typed code (§8).
 4. **Rate budget.** Per-connection Redis token bucket: 30 actions/minute and 2,000
    actions/day (constants, not env vars). Exceeded → `read_rate_limited` with the
    window. This is the API-side analogue of the executor's cumulative probe budgets.
-5. **Execute.** Call the executor with the connection's `tenantId` (verified),
-   `vaultRef`, `credentialVersion`, and the validated action — the same envelope shape
-   `retest` uses today.
+5. **Execute.** Call the executor with a `correlationId`, the connection's verified
+   `tenantId`, and the validated action — the same envelope shape `retest` uses today.
+   Requests never carry credential references; the executor loads its own pinned
+   certificate from configuration.
 6. **Audit + metrics.** One audit event per action: action id, org, connection id,
    outcome code, item count, truncated flag. **Never response payload contents.**
    Prometheus counter `breeze_m365_graph_read_actions_total{action,outcome}`.
@@ -129,8 +134,8 @@ Notes:
 Additions, following the existing schema style:
 
 - `readActionRequestSchema` — `z.discriminatedUnion('action', [...])` of the 12 actions,
-  each variant with its bounded params, plus the common envelope fields the existing
-  requests carry (tenant id, vault ref, credential version, manifest version).
+  each variant with its bounded params, wrapped in the common envelope the existing
+  requests carry (`correlationId`, `tenantId`).
 - `readActionResultSchema` — union of per-action typed payloads (projected fields only)
   `| { outcome: 'failed', code: ExecutorFailureCode, retryAfterSeconds? }`. Every list
   payload includes `items`, `truncated`.
@@ -146,9 +151,9 @@ not the executor contract — the executor never sees a refused request.
 ## 7. Executor changes (`apps/m365-graph-read-executor/`)
 
 - `app.ts`: `app.post('/v1/read-action', ...)` — same body-size cap, 404-everything-else
-  posture, and internal-auth verification as the existing two ops. The internal JWT
-  gains an `op: 'read-action'` claim; `internalAuth.ts` requires the claim to match the
-  route (as it does today for consent/retest).
+  posture, and internal-auth verification as the existing two ops. The internal JWT's
+  existing `operation` claim gains a `'read-action'` value; `internalAuth.ts` already
+  requires the claim to match the route (as it does today for consent/retest).
 - `operations.ts`: `executeReadAction` — validates against the shared schema, acquires
   an app token via the existing certificate `tokenClient` (client_credentials), builds
   the URL from the dispatch table (URL-encodes path params, validates GUID/UPN shapes
@@ -185,17 +190,20 @@ with the same event as successes (outcome field differs).
   (list+get+members), `m365_query_org` (org+skus), `m365_query_sites` (list+get).
   Tool descriptions state the caps ("returns at most N…") so the model plans queries
   instead of paging forever.
-- Registered in **both** tool gate maps (the known dual-map drift trap) and excluded
-  from site-scoped sessions in the registry; `readActionService` re-checks scope so the
-  service is safe even if a future registration misses the exclusion.
-- Tools are only registered when `M365_GRAPH_READ_TOOLS_ENABLED` is on and the org is
-  allowlisted; an org without an active connection still sees the tool (so the AI can
-  say "connect M365 first") but every call returns `connection_not_ready`.
+- Registered in **both** tool gate maps (the known dual-map drift trap).
+  `readActionService` enforces the site-scope refusal; if a per-session tool filter
+  exists in the chat pipeline, also exclude the tools there as defense in depth.
+- The registry is static at module load, so flag gating happens at execution time:
+  every handler first checks `M365_GRAPH_READ_TOOLS_ENABLED` + the org allowlist and
+  returns a calm "not enabled" result when off (matching the disabled-integration tool
+  pattern). An enabled org without a usable connection gets `connection_not_ready` (so
+  the AI can say "connect M365 first").
 
 ## 10. Rollout
 
 - New env: `M365_GRAPH_READ_TOOLS_ENABLED` (default `false`) +
-  `M365_GRAPH_READ_TOOLS_ORG_ALLOWLIST` (comma-separated org ids, `*` last), parsed in
+  `M365_GRAPH_READ_TOOLS_ORG_IDS` (comma-separated org ids or `*`, mirroring
+  `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS`; `*` last in rollout), parsed in
   `m365ControlPlane/runtimeConfig.ts` beside the onboarding flags. Deliberately separate
   from `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` so consent rollout and tool rollout
   move independently.
