@@ -152,6 +152,37 @@ describe('packExtension', () => {
 
     expect(resultA.digest).toBe(resultB.digest);
   });
+
+  it('reads SOURCE_DATE_EPOCH from the environment so a caller can pin build time', async () => {
+    await writeValidFixtureTree();
+    const original = process.env.SOURCE_DATE_EPOCH;
+    try {
+      process.env.SOURCE_DATE_EPOCH = '0';
+      const zero = await packExtension({ path: sourceDir, out: join(workDir, 'epoch-0.breeze-ext') });
+      process.env.SOURCE_DATE_EPOCH = '1700000000';
+      const later = await packExtension({ path: sourceDir, out: join(workDir, 'epoch-1.breeze-ext') });
+      // A different epoch must change the archive bytes — proof the env value is
+      // actually threaded to the timestamp, not silently ignored.
+      expect(zero.digest).not.toBe(later.digest);
+    } finally {
+      if (original === undefined) delete process.env.SOURCE_DATE_EPOCH;
+      else process.env.SOURCE_DATE_EPOCH = original;
+    }
+  });
+
+  it('rejects a non-integer SOURCE_DATE_EPOCH rather than silently defaulting', async () => {
+    await writeValidFixtureTree();
+    const original = process.env.SOURCE_DATE_EPOCH;
+    try {
+      process.env.SOURCE_DATE_EPOCH = 'not-a-number';
+      await expect(
+        packExtension({ path: sourceDir, out: join(workDir, 'bad-epoch.breeze-ext') }),
+      ).rejects.toThrow(/SOURCE_DATE_EPOCH/);
+    } finally {
+      if (original === undefined) delete process.env.SOURCE_DATE_EPOCH;
+      else process.env.SOURCE_DATE_EPOCH = original;
+    }
+  });
 });
 
 describe('breeze-ext pack CLI', () => {
