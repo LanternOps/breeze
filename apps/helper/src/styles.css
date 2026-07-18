@@ -871,6 +871,261 @@ body {
 }
 
 /* ----------------------------------------------------------
+   Workspace Files View
+   ---------------------------------------------------------- */
+.helper-workspace-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 14px 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.helper-workspace-tab {
+  padding: 6px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.helper-workspace-tab:hover {
+  color: var(--text-primary);
+}
+
+.helper-workspace-tab-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.helper-workspace-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.helper-workspace-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  flex-shrink: 0;
+}
+
+.helper-workspace-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.helper-workspace-search-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.helper-workspace-search-input:focus {
+  border-color: var(--accent);
+}
+
+.helper-workspace-select {
+  max-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  outline: none;
+}
+
+.helper-workspace-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.helper-workspace-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.helper-workspace-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.helper-workspace-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.helper-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+
+.helper-file-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.helper-file-row-dir {
+  cursor: pointer;
+}
+
+.helper-file-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.helper-file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.helper-file-copied {
+  font-size: 11px;
+  color: var(--success);
+}
+
+.helper-workspace-browse {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.helper-workspace-rail {
+  width: 104px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.helper-workspace-rail-item {
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.helper-workspace-rail-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.helper-workspace-rail-item-active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.helper-workspace-rail-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.helper-workspace-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.helper-workspace-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.helper-workspace-crumb {
+  padding: 1px 3px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.helper-workspace-crumb:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.helper-workspace-crumb-sep {
+  color: var(--text-muted);
+}
+
+.helper-workspace-section-title {
+  padding: 10px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+/* ----------------------------------------------------------
    Tool Approval Popup
    ---------------------------------------------------------- */
 .helper-approval-overlay {

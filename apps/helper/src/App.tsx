@@ -5,6 +5,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from './stores/chatStore';
 import type { SessionSummary, PendingApproval, DeviceContext } from './stores/chatStore';
+import { useWorkspaceStore } from './stores/workspaceStore';
+import WorkspacePanel from './components/workspace/WorkspacePanel';
 
 function ToolCallIndicator({ toolName }: { toolName?: string }) {
   const label = toolName
@@ -397,14 +399,26 @@ export default function App() {
     flagSession,
   } = useChatStore();
 
+  const workspaceAvailable = useWorkspaceStore((s) => s.available);
+  const probeWorkspace = useWorkspaceStore((s) => s.probe);
+
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
+  const [showWorkspace, setShowWorkspace] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  // Probe the workspace files capability once the connection is ready.
+  // 404/401 leaves available=false and the Files affordance hidden.
+  useEffect(() => {
+    if (connectionState === 'connected' && workspaceAvailable === null) {
+      probeWorkspace();
+    }
+  }, [connectionState, workspaceAvailable, probeWorkspace]);
 
   // Listen for tray menu "Device Info" click
   useEffect(() => {
@@ -495,6 +509,11 @@ export default function App() {
     return <DeviceInfoView onClose={() => setShowDeviceInfo(false)} />;
   }
 
+  // Workspace files view (only reachable when the backend reports the capability)
+  if (showWorkspace) {
+    return <WorkspacePanel onClose={() => setShowWorkspace(false)} />;
+  }
+
   return (
     <div className="helper-container">
       {/* Header — draggable title bar */}
@@ -514,6 +533,15 @@ export default function App() {
               disabled={isFlagged}
             >
               {isFlagged ? 'Flagged' : 'Flag'}
+            </button>
+          )}
+          {workspaceAvailable === true && (
+            <button
+              onClick={() => setShowWorkspace(true)}
+              className="helper-btn helper-btn-sm"
+              title="Find your company's shared files"
+            >
+              Files
             </button>
           )}
           <button
