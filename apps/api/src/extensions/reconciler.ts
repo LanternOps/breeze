@@ -18,7 +18,7 @@
 //
 // Every dependency is an injectable PORT (mirroring the state-store backend
 // seam) so the failure-policy unit tests need no bundle, filesystem, or DB.
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
@@ -217,13 +217,54 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 /**
+ * Decide whether an ALREADY-EXTRACTED tree may be reused, by re-hashing what is
+ * actually on disk against `bundle.files` — the same signed inventory the
+ * extractor writes from, checked with the same {@link assertVerifiedMemberBytes}.
+ *
+ * The `.verified` marker alone proves only that SOME process once committed this
+ * directory; it says nothing about the bytes there NOW. `<storeRoot>/extracted`
+ * lives on the artifact-store volume named in the threat model (writable by a
+ * compromised sibling container or any non-root process), so an attacker who
+ * cannot forge a signature can simply overwrite the extracted server entry and
+ * wait for the next boot to `import()` it. Re-verifying here is what makes the
+ * reuse shortcut as strong as a fresh extraction.
+ *
+ * Returns false — never throws — for a missing marker, a missing/unreadable
+ * member, a hash mismatch, or an EXTRA file (an extra file is reachable: a
+ * verified member may `require()` a sibling). False means "re-extract", so a
+ * tampered or partial tree self-heals instead of bricking boot. Nothing derived
+ * from the on-disk bytes or from a host path is surfaced.
+ */
+async function isExtractedTreeVerified(
+  bundle: VerifiedExtensionBundle,
+  dest: string,
+): Promise<boolean> {
+  if (!(await pathExists(path.join(dest, '.verified')))) return false;
+  try {
+    for (const [member, expected] of bundle.files) {
+      assertVerifiedMemberBytes(member, await readFile(path.join(dest, member)), expected.sha256);
+    }
+    for (const entry of await readdir(dest, { recursive: true })) {
+      const rel = entry.split(path.sep).join('/');
+      if (rel === '.verified' || bundle.files.has(rel)) continue;
+      // Directories are implied by their members; only a stray FILE is extra.
+      if ((await stat(path.join(dest, entry))).isFile()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Extract a verified bundle's payload members to a content-addressed directory
  * under `<storeRoot>/extracted/sha256-<hex>`. Only members in `bundle.files` are
  * written — i.e. members the verifier already hashed against the signed
  * inventory (integrity.json / signature are excluded and unneeded at runtime).
- * Idempotent: a completed extraction (marked by `.verified`) is reused. The
- * write goes to a temp dir renamed into place so a crash can't leave a partial
- * tree that the `.verified` check would then trust.
+ * Idempotent: a completed extraction is reused, but only after
+ * {@link isExtractedTreeVerified} re-hashes it — the reuse path must not be the
+ * one unverified way into `import()`. The write goes to a temp dir renamed into
+ * place so a crash can't leave a partial tree that would then be trusted.
  *
  * The archive is re-opened here, so every member's bytes are re-hashed against
  * the digest the verifier recorded before being written (see
@@ -232,6 +273,10 @@ async function pathExists(p: string): Promise<boolean> {
  * process then `import()`s, with the signature check having covered other bytes.
  * A mismatch throws, and the failed temp tree is removed, so nothing is
  * committed and no `.verified` marker is ever written.
+ *
+ * Verification happens BEFORE this function returns, and `dest` is the only
+ * handle a consumer (`loadServerEntry`) ever gets, so no caller can read the
+ * tree ahead of the check.
  */
 export async function extractVerifiedPayload(
   bundle: VerifiedExtensionBundle,
@@ -239,7 +284,17 @@ export async function extractVerifiedPayload(
 ): Promise<string> {
   const hex = bundle.artifactDigest.replace(/^sha256:/, '');
   const dest = path.join(storeRoot, 'extracted', `sha256-${hex}`);
-  if (await pathExists(path.join(dest, '.verified'))) return dest;
+  if (await isExtractedTreeVerified(bundle, dest)) return dest;
+  if (await pathExists(dest)) {
+    // Marker present but the bytes no longer match the signed inventory (or a
+    // stray file appeared). Sanitized: name the extension, never the path or the
+    // bytes. Re-extraction below replaces the tree with the verified bytes.
+    console.error(
+      `[extensions] extracted payload for "${
+        bundle.manifest.name || 'unknown'
+      }" failed its integrity re-check; re-extracting from the verified archive`,
+    );
+  }
 
   const tmp = `${dest}.tmp-${process.pid}-${Date.now().toString(36)}`;
   await rm(tmp, { recursive: true, force: true });
@@ -260,12 +315,16 @@ export async function extractVerifiedPayload(
     await archive.close().catch(() => {});
   }
 
+  // Drop the rejected tree only once a good replacement is staged, so a failed
+  // re-extraction above leaves the previous state untouched rather than none.
+  await rm(dest, { recursive: true, force: true }).catch(() => {});
   try {
     await rename(tmp, dest);
   } catch {
-    // A concurrent boot (or a retry) already committed this digest — reuse it.
+    // A concurrent boot (or a retry) already committed this digest — reuse it,
+    // but only on the same re-verification the fast path uses.
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
-    if (await pathExists(path.join(dest, '.verified'))) return dest;
+    if (await isExtractedTreeVerified(bundle, dest)) return dest;
     throw new Error('failed to commit the extracted extension payload');
   }
   return dest;

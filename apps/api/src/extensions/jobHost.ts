@@ -2,7 +2,7 @@
  * BullMQ job host for runtime extensions.
  *
  * One `breeze-extension-jobs` Queue + Worker serves every active extension's
- * cron jobs. Repeatable schedules use stable jobIds (`extension-<name>-<job>`)
+ * cron jobs. Repeatable schedules use stable jobIds (`extension:<name>:<job>`)
  * and BullMQ cron patterns, so scheduling is multi-replica-dedup'd exactly like
  * the audit-retention worker.
  *
@@ -31,41 +31,45 @@ const WORKER_CONCURRENCY = 4;
 const REMOVE_ON_COMPLETE = { count: 50 };
 const REMOVE_ON_FAIL = { count: 100 };
 
-/** Stable, collision-free repeatable id for one (extension, job) pair. */
+/**
+ * Stable, collision-free repeatable id for one (extension, job) pair.
+ *
+ * The separator is ':' because the manifest schema forbids it in BOTH halves —
+ * an extension name matches /^[a-z][a-z0-9-]{1,31}$/ and a job name matches
+ * /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/ (packages/extension-sdk/src/manifest.ts),
+ * so neither can contain ':'. That makes the id EXACTLY splittable.
+ *
+ * The previous 'extension-<name>-<job>' form was not: hyphens are legal in both
+ * halves, so `extension-demo-extra-sweep` parses as ('demo','extra-sweep') or
+ * ('demo-extra','sweep') with no way to choose. Resolving it against the local
+ * registry mis-attributed on a collision — a replica that knows `demo` but not
+ * `demo-extra` read `demo-extra`'s LIVE schedule as its own and deleted it.
+ *
+ * This id is effectively a WIRE FORMAT: it is the key BullMQ persists in Redis.
+ * Changing it costs nothing before merge; after deploy it needs a migration to
+ * reap old-format repeatables.
+ */
 export function extensionJobId(extension: string, job: string): string {
-  return `extension-${extension}-${job}`;
+  return `extension:${extension}:${job}`;
 }
 
-const EXTENSION_JOB_ID_PREFIX = 'extension-';
+const EXTENSION_JOB_ID_PREFIX = 'extension:';
 
 /**
- * Recover the extension name from a repeatable jobId by matching it against
- * names the caller RECOGNIZES, returning null when none match.
+ * Split a repeatable jobId minted by {@link extensionJobId} into its owner, or
+ * null when the id is not ours / not well-formed. Because ':' cannot occur in
+ * either name, this is an EXACT parse rather than a prefix search — it never
+ * needs the registry to disambiguate and therefore cannot mis-attribute.
  *
- * `extension-<name>-<job>` cannot be split naively: BOTH the extension name and
- * the job name may contain hyphens, so `extension-acme-billing-nightly-sweep`
- * has no positional answer. Nor can the job name BullMQ reports be subtracted
- * from the end — a repeatable whose job was renamed keeps its original id, so
- * the id no longer ends with the current name.
- *
- * What is reliable is the set of names this replica knows. Every hyphen boundary
- * after the prefix is a candidate extension name; the first one `isKnown`
- * accepts is the owner. Candidates are tried shortest-first and the final
- * segment is never a candidate on its own, because the job part is non-empty.
- * A jobId whose owner is not recognized yields null — the caller must treat that
- * as "not this replica's to reason about", not as "stale".
+ * The caller decides what an unrecognized owner means; see `sync`.
  */
-export function resolveRepeatableExtensionName(
-  id: string,
-  isKnown: (name: string) => boolean,
-): string | null {
+export function resolveRepeatableExtensionName(id: string): string | null {
   if (!id.startsWith(EXTENSION_JOB_ID_PREFIX)) return null;
   const rest = id.slice(EXTENSION_JOB_ID_PREFIX.length);
-  for (let i = rest.indexOf('-'); i > 0; i = rest.indexOf('-', i + 1)) {
-    const candidate = rest.slice(0, i);
-    if (isKnown(candidate)) return candidate;
-  }
-  return null;
+  const sep = rest.indexOf(':');
+  // Both halves must be non-empty.
+  if (sep <= 0 || sep === rest.length - 1) return null;
+  return rest.slice(0, sep);
 }
 
 /** The payload every extension job carries so the processor can route it. */
@@ -77,8 +81,13 @@ export interface ExtensionJobData {
 /** The registry surface the host needs (injectable for tests). */
 export type JobHostRegistry = Pick<ExtensionContributionRegistry, 'get' | 'listActive'>;
 
-/** The state-store surface the host needs (injectable for tests). */
-export type JobHostStore = Pick<ExtensionStateStore, 'isEnabled'>;
+/**
+ * The state-store surface the host needs (injectable for tests). `listAll` is
+ * OPTIONAL: without it `sync` simply never reaps a repeatable whose owner this
+ * replica does not know (see the removal loop), which is the safe direction.
+ */
+export type JobHostStore =
+  Pick<ExtensionStateStore, 'isEnabled'> & Partial<Pick<ExtensionStateStore, 'listAll'>>;
 
 /** The BullMQ queue surface `sync` needs — the real Queue satisfies it. */
 export interface JobHostQueue {
@@ -167,7 +176,8 @@ export class ExtensionJobHost {
    *
    * REMOVAL is additionally scoped to extensions THIS replica knows about, so a
    * sync here can never delete a schedule owned by an extension that only
-   * another replica activated. See the removal loop for why.
+   * another replica activated — unless the state store POSITIVELY confirms the
+   * owner has no `installed_extensions` row at all. See the removal loop.
    */
   async sync(
     queue: JobHostQueue,
@@ -182,12 +192,30 @@ export class ExtensionJobHost {
       }
     }
 
+    // Lazily-read, fail-closed view of `installed_extensions` used ONLY to reap
+    // repeatables whose owner no replica knows any more. `null` means "could not
+    // confirm" (no listAll port, or the read threw) and always preserves.
+    let installed: Set<string> | null | undefined;
+    const installedNames = async (): Promise<Set<string> | null> => {
+      if (installed === undefined) {
+        try {
+          const rows = this.store.listAll ? await this.store.listAll() : null;
+          installed = rows ? new Set(rows.map((row) => row.name)) : null;
+        } catch {
+          installed = null;
+        }
+      }
+      return installed;
+    };
+
     const existing = await queue.getRepeatableJobs();
     for (const entry of existing) {
       // Only manage repeatables we own; leave every other worker's alone.
       if (!entry.id || !entry.id.startsWith(EXTENSION_JOB_ID_PREFIX)) continue;
+      const owner = resolveRepeatableExtensionName(entry.id);
+      if (owner === null) continue;
 
-      // ...and, among our own, only ones THIS replica can account for. The
+      // Among our own, act only on owners THIS replica can account for. The
       // desired set is derived from this replica's registry, so an extension
       // absent from the registry entirely (never activated here — e.g. it is
       // optional and its `acquire` hit a transient network failure on this
@@ -201,11 +229,17 @@ export class ExtensionJobHost {
       // resolve the definition. Present-but-DISABLED is a different case and
       // still gets removed — it IS in the registry, so this check passes and
       // the desired-set intersection with `enabled` drops it (81819167e).
-      const owner = resolveRepeatableExtensionName(
-        entry.id,
-        (name) => this.registry.get(name) !== undefined,
-      );
-      if (owner === null) continue;
+      //
+      // The one safe exception is a POSITIVE confirmation from the database that
+      // no `installed_extensions` row exists for the owner: the extension was
+      // removed from deployment config fleet-wide, so nobody will ever re-add
+      // the schedule and it would otherwise tick forever. Any uncertainty about
+      // that read preserves.
+      if (this.registry.get(owner) === undefined) {
+        const known = await installedNames();
+        if (known && !known.has(owner)) await queue.removeRepeatableByKey(entry.key);
+        continue;
+      }
 
       const want = desired.get(entry.id);
       const matchesDesiredIdentity = want !== undefined

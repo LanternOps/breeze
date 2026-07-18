@@ -112,7 +112,7 @@ describe('ExtensionJobHost.sync', () => {
     const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
     const { queue, removed, added } = makeFakeQueue([
       // stale: an extension job that is no longer desired
-      { key: 'stale-key', name: 'old', id: 'extension-demo-old' },
+      { key: 'stale-key', name: 'old', id: 'extension:demo:old' },
       // a non-extension repeatable that must be left untouched
       { key: 'core-key', name: 'core', id: 'audit-log-retention' },
     ]);
@@ -125,7 +125,7 @@ describe('ExtensionJobHost.sync', () => {
     if (!scheduled) throw new Error('expected exactly one scheduled repeatable');
     expect(scheduled.name).toBe('sweep');
     expect(scheduled.data).toEqual({ extension: 'demo', job: 'sweep' });
-    expect(scheduled.opts.jobId).toBe('extension-demo-sweep');
+    expect(scheduled.opts.jobId).toBe('extension:demo:sweep');
     expect(scheduled.opts.repeat).toEqual({ pattern: '0 * * * *' });
   });
 
@@ -139,20 +139,20 @@ describe('ExtensionJobHost.sync', () => {
     const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
     const { queue, removed, added } = makeFakeQueue([
       {
-        key: 'sweep:extension-demo-sweep:::0 * * * *',
+        key: 'sweep:extension:demo:sweep:::0 * * * *',
         name: 'sweep',
-        id: 'extension-demo-sweep',
+        id: 'extension:demo:sweep',
         pattern: '0 * * * *',
       },
     ]);
 
     await host.sync(queue);
 
-    expect(removed).toEqual(['sweep:extension-demo-sweep:::0 * * * *']);
+    expect(removed).toEqual(['sweep:extension:demo:sweep:::0 * * * *']);
     expect(added).toHaveLength(1);
     const [scheduled] = added;
     if (!scheduled) throw new Error('expected exactly one scheduled repeatable');
-    expect(scheduled.opts.jobId).toBe('extension-demo-sweep');
+    expect(scheduled.opts.jobId).toBe('extension:demo:sweep');
     expect(scheduled.opts.repeat).toEqual({ pattern: '*/5 * * * *' });
   });
 
@@ -162,7 +162,7 @@ describe('ExtensionJobHost.sync', () => {
     ]);
     const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
     const { queue, removed, added } = makeFakeQueue([
-      { key: 'old-name-key', name: 'sweep-old', id: 'extension-demo-sweep', pattern: '0 * * * *' },
+      { key: 'old-name-key', name: 'sweep-old', id: 'extension:demo:sweep', pattern: '0 * * * *' },
     ]);
 
     await host.sync(queue);
@@ -177,7 +177,7 @@ describe('ExtensionJobHost.sync', () => {
     ]);
     const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
     const { queue, removed } = makeFakeQueue([
-      { key: 'current-key', name: 'sweep', id: 'extension-demo-sweep', pattern: '0 * * * *' },
+      { key: 'current-key', name: 'sweep', id: 'extension:demo:sweep', pattern: '0 * * * *' },
       { key: 'core-key', name: 'audit-log-retention', id: 'audit-log-retention', pattern: '7 * * * *' },
     ]);
 
@@ -203,7 +203,7 @@ describe('ExtensionJobHost.sync', () => {
     const host = new ExtensionJobHost({ registry, store: { isEnabled } });
     const { queue, removed, added } = makeFakeQueue([
       // the disabled extension's repeatable is still in Redis
-      { key: 'stale-key', name: 'sweep', id: 'extension-stale-disabled-sweep', pattern: '0 * * * *' },
+      { key: 'stale-key', name: 'sweep', id: 'extension:stale-disabled:sweep', pattern: '0 * * * *' },
     ]);
 
     await host.sync(queue);
@@ -211,7 +211,7 @@ describe('ExtensionJobHost.sync', () => {
     // Removed, not re-added.
     expect(removed).toEqual(['stale-key']);
     expect(added).toHaveLength(1);
-    expect(added[0]?.opts.jobId).toBe('extension-healthy-tidy');
+    expect(added[0]?.opts.jobId).toBe('extension:healthy:tidy');
   });
 
   // The mirror image of the test above, and it must hold at the same time.
@@ -233,22 +233,21 @@ describe('ExtensionJobHost.sync', () => {
     const host = new ExtensionJobHost({ registry, store: { isEnabled } });
     const { queue, removed, added } = makeFakeQueue([
       // 'x' was never activated on this replica — it is not in the registry at all.
-      { key: 'x-key', name: 'sweep', id: 'extension-x-sweep', pattern: '0 * * * *' },
+      { key: 'x-key', name: 'sweep', id: 'extension:x:sweep', pattern: '0 * * * *' },
       // 'z' IS in the registry but is disabled: its schedule is genuinely stale.
-      { key: 'z-key', name: 'sweep', id: 'extension-z-sweep', pattern: '0 * * * *' },
+      { key: 'z-key', name: 'sweep', id: 'extension:z:sweep', pattern: '0 * * * *' },
     ]);
 
     await host.sync(queue);
 
     expect(removed).toEqual(['z-key']);
-    expect(added.map((a) => a.opts.jobId)).toEqual(['extension-y-tidy']);
+    expect(added.map((a) => a.opts.jobId)).toEqual(['extension:y:tidy']);
   });
 
-  // Extension names AND job names may both contain hyphens, so the extension
-  // name can only be recovered by stripping the known prefix and the known job
-  // name — never by splitting on '-'. A naive split would read the owner of
-  // 'extension-acme-billing-nightly-sweep' as 'acme', miss it in the registry,
-  // and wrongly preserve a genuinely stale schedule forever.
+  // Extension names AND job names may both contain hyphens, which is exactly
+  // why the id separator is ':' (forbidden in both by the manifest schema): the
+  // owner of 'extension:acme-billing:nightly-sweep' is recovered by an exact
+  // split, with no registry lookup needed to disambiguate.
   it('recovers hyphenated extension names so their stale schedules are still removed', async () => {
     const registry = makeRegistry([
       makeSnapshot('acme-billing', {
@@ -261,7 +260,7 @@ describe('ExtensionJobHost.sync', () => {
       {
         key: 'old-cron-key',
         name: 'nightly-sweep',
-        id: 'extension-acme-billing-nightly-sweep',
+        id: 'extension:acme-billing:nightly-sweep',
         pattern: '@daily',
       },
     ]);
@@ -269,6 +268,69 @@ describe('ExtensionJobHost.sync', () => {
     await host.sync(queue);
 
     expect(removed).toEqual(['old-cron-key']);
+  });
+
+  // The prefix-search resolver mis-attributed on a hyphen collision: with 'demo'
+  // known and 'demo-extra' absent, 'extension-demo-extra-sweep' resolved to
+  // owner='demo' (non-null), fell through to `desired.get(id)` === undefined,
+  // and DELETED another replica's live schedule — the exact failure the
+  // absent-extension guard exists to prevent, surviving in the collision case.
+  // An exact ':' split makes the owner 'demo-extra', unknown here, so it is
+  // preserved.
+  it('preserves a foreign repeatable whose extension name shares a hyphen prefix with a known one', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('demo', { sweep: { name: 'sweep', cron: '0 * * * *', handler: vi.fn() } }),
+    ]);
+    const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
+    const { queue, removed } = makeFakeQueue([
+      // owned by 'demo-extra', which this replica does not know at all
+      { key: 'foreign-key', name: 'sweep', id: 'extension:demo-extra:sweep', pattern: '0 * * * *' },
+      // this replica's own, unchanged
+      { key: 'mine-key', name: 'sweep', id: 'extension:demo:sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual([]);
+  });
+
+  // Preserving unknown owners means an extension removed from deployment config
+  // FLEET-WIDE would keep its cron firing forever. The DB is the one authority
+  // that can settle it, and only a POSITIVE absence justifies a removal.
+  it('reaps an unknown owner only when the store confirms it has no installed_extensions row', async () => {
+    const registry = makeRegistry([]);
+    const listAll = vi.fn(async () => [{ name: 'still-installed' } as never]);
+    const host = new ExtensionJobHost({
+      registry,
+      store: { isEnabled: vi.fn(async () => true), listAll },
+    });
+    const { queue, removed } = makeFakeQueue([
+      { key: 'gone-key', name: 'sweep', id: 'extension:long-gone:sweep', pattern: '0 * * * *' },
+      { key: 'other-key', name: 'sweep', id: 'extension:still-installed:sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual(['gone-key']);
+    expect(listAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reaps an unknown owner when the store read fails (uncertainty preserves)', async () => {
+    const registry = makeRegistry([]);
+    const host = new ExtensionJobHost({
+      registry,
+      store: {
+        isEnabled: vi.fn(async () => true),
+        listAll: vi.fn(async () => { throw new Error('db down'); }),
+      },
+    });
+    const { queue, removed } = makeFakeQueue([
+      { key: 'gone-key', name: 'sweep', id: 'extension:long-gone:sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual([]);
   });
 
   it('drives sync from the active registry snapshot when none is passed', async () => {
