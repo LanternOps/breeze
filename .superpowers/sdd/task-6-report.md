@@ -516,3 +516,219 @@ $ pnpm -F @breeze/api test:run src/extensions src/routes/extensionsAdmin.test.ts
 | `NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project tsconfig.json` (apps/api) | **exit 0, 0 errors** |
 | `pnpm exec eslint <changed apps/api files>` | **0 errors** (the three `scripts/breezectl*.ts` files report `File ignored because no matching configuration was supplied` — `scripts/` is outside this package's eslint config, pre-existing) |
 | `pnpm -F @breeze/api build` | **Build success**, `dist/scripts/breezectl.cjs` 37.80 KB (still database-free — the no-DB-import property test passes) |
+
+---
+
+# FINAL-REVIEW FIX (whole-branch review, post-81819167e)
+
+The final whole-branch review returned NOT-READY with 1 Critical + 2 Important —
+all three are CROSS-TASK SEAM bugs, invisible to the six per-task reviews because
+each sits in the gap between two components that were reviewed separately. All
+three are fixed below, each with a regression test verified to FAIL against the
+pre-fix code.
+
+## Critical 1 — RLS scope escalation silently no-ops inside a request context
+
+`withDbAccessContext` (db/index.ts:245) SHORT-CIRCUITS when a DB context is
+already open: `if (dbContextStorage.getStore()) return fn();`. Since
+`withSystemDbAccessContext` is just `withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn)`,
+a bare call to it from inside an ambient TENANT context does **not** set
+`breeze.scope='system'` — it inherits the caller's scope. `installed_extensions`
+is FORCE-RLS with a `system_only` policy, so every read is filtered to ZERO ROWS
+and every write matches ZERO ROWS, **both without erroring**.
+
+`DrizzleExtensionStateBackend` used the bare form in all eight operations. Real
+consequences on the request path:
+
+1. **Extension AI tools permanently unreachable.** `aiAgentSdkTools.ts:337` runs
+   `withDbAccessContext({scope:'organization'|'partner'}, () => executeTool(...))`,
+   so the gate at `services/aiTools.ts:405-410` always saw `isEnabled === false`
+   → `Unknown tool`. Same via `scriptBuilderTools.ts:92-99`.
+2. **Every extension AGENT route 503s forever.** `agentAuth.ts:455-470` wraps
+   `next()` in an organization-scoped context, and the agent wrapper gate
+   (`gateway.ts:172-177`) runs inside it.
+3. **Platform-admin enable/disable silently no-ops.** `authMiddleware` opens a
+   context for the JWT's `scope` (auth.ts:577); `isPlatformAdmin` is orthogonal
+   to `scope`, so a partner/org-scoped admin JWT got `listAll() === []` and a
+   `setEnabled` that updated 0 rows while returning 200.
+
+**Fix** — `apps/api/src/extensions/stateStore.ts`. Added a private helper and
+routed ALL EIGHT operations through it (`upsertObserved`, `setEnabled`, `getRow`,
+`listRows`, `recordFailure`, `recordActive`, `insertSchemaFloor`,
+`listSchemaFloors`):
+
+```ts
+private asSystem<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+```
+
+`runOutsideDbContext` exits BOTH the tx-routing store and the metadata store, so
+the nested `withSystemDbAccessContext` opens a genuinely fresh transaction that
+really does set the GUC. This is the repo's canonical escalation idiom, used at
+~20 sites (`oauth/adapter.ts:26`, `routes/lifecycle.ts:76`,
+`jobs/contractWorker.ts:85`); `services/scriptBuilderTools.ts:86-90` documents
+the exact hazard in a comment. The extension store never adopted it.
+
+`withDbAccessContext` itself was NOT touched — the short-circuit is intentional
+core behavior relied on elsewhere.
+
+Non-agent gateway, boot reconciler, and BullMQ jobHost were already fine (no
+ambient context open). That asymmetry is why 1282 tests passed: every unit test
+injects a fake `isEnabled` or an in-memory backend, and the existing integration
+test opens `withSystemDbAccessContext` itself at top level. No test called the
+real store from inside an ambient tenant context — until now.
+
+## Important 2 — sync() deleted live schedules for extensions this replica doesn't know
+
+`apps/api/src/extensions/jobHost.ts`. The desired set is
+`listActive()` ∩ `isEnabled`, but REMOVAL applied to EVERY `extension-*`
+repeatable in Redis — including extensions this replica never activated.
+
+Scenario: replica A activates optional extension `x` and schedules
+`extension-x-sweep`. On replica B, `x` failed at `acquire` (transient HTTPS 503);
+optional, so B booted fine WITHOUT `x` in its registry. An operator later enables
+unrelated extension `y` on B → `resyncExtensionSchedules()` → B's desired set has
+no `x` → B DELETES `x`'s repeatable. `x` is `enabled=true` in the DB and live on
+A, but its cron never fires again ANYWHERE until A restarts. Nothing converges it.
+
+This is the OPPOSITE direction from 81819167e (which correctly closed
+resurrection of a disabled extension). Both now hold simultaneously.
+
+**Fix** — removal is now scoped to repeatables this replica can account for:
+
+```ts
+const owner = resolveRepeatableExtensionName(
+  entry.id, (name) => this.registry.get(name) !== undefined);
+if (owner === null) continue;   // not ours to reason about — preserve
+```
+
+Present-but-DISABLED still gets removed (it IS in the registry, so the check
+passes and the `enabled` intersection drops it). Only ABSENT-from-registry is
+preserved. A lingering repeatable for an unknown extension is inert — `process()`
+returns early when it cannot resolve the definition — which is strictly safer
+than deleting a live one.
+
+### jobId → extension-name parsing approach
+
+`extension-<name>-<job>` has **no positional answer**: both the extension name
+and the job name may contain hyphens (`extension-acme-billing-nightly-sweep`).
+Two rejected approaches and why:
+
+- *Naive split on `-`* — reads the owner of the above as `acme`, misses it in the
+  registry, and would wrongly PRESERVE a genuinely stale schedule forever.
+- *Subtract the job name from the end* (`id.endsWith('-' + entry.name)`) — looks
+  exact, but **breaks on a renamed job**: a repeatable keeps its original jobId
+  when its BullMQ job name changes, so the id no longer ends with the current
+  name. This was implemented first and immediately failed the pre-existing test
+  `replaces a renamed repeatable that kept the same jobId` (id
+  `extension-demo-sweep`, name `sweep-old`) — caught before commit.
+
+The shipped approach matches against **names the replica actually knows**:
+`resolveRepeatableExtensionName(id, isKnown)` walks each hyphen boundary after
+the `extension-` prefix, shortest-first, and returns the first candidate
+`isKnown` accepts; the final segment is never a candidate alone because the job
+part is non-empty. `extension-acme-billing-nightly-sweep` tries `acme`,
+`acme-billing` → hit. `extension-x-sweep` tries `x` → miss → null → preserved.
+Renames are unaffected because the job name is never consulted.
+
+## Important 3 — verified bytes re-read from disk without re-verification
+
+`verifyExtensionBundle` hashes every member through one `readBoundedZipDirectory`
+handle and then CLOSES it (bundleVerifier.ts:343). BOTH consumers re-opened the
+same path and TRUSTED the fresh read:
+
+- `reconciler.ts` `extractVerifiedPayload` wrote each member to the extracted
+  root without comparing against `bundle.files.get(member).sha256` — and that
+  tree is `import()`ed at reconciler.ts:279.
+- `migrator.ts` `readBundleMigrations` took the member LIST and the SQL bytes
+  from `archive.files.keys()`, not from the verified `bundle.files`.
+
+Anyone able to write the artifact-store root (`/data/extensions/artifacts`, a
+mounted volume — a compromised sibling container, any non-root process with write
+access) can swap the archive between verify and extract: **arbitrary code
+execution and arbitrary DDL with a full signature bypass.**
+
+**Fix** — one shared guard in `bundleVerifier.ts`, matching the existing digest
+form (bare lowercase hex from `sha256Hex`, as stored in `bundle.files`):
+
+```ts
+export function assertVerifiedMemberBytes(member, bytes, expectedSha256): void {
+  if (sha256Hex(bytes) !== expectedSha256) throw new Error(
+    `archive member "${member}" changed on disk after verification — integrity re-check failed`);
+}
+```
+
+- `extractVerifiedPayload` now iterates `bundle.files` ENTRIES and re-hashes each
+  read before writing it. A mismatch throws; the existing `catch` removes the
+  temp tree, so nothing is committed and no `.verified` marker is ever written.
+- `readBundleMigrations` now derives its member list from `bundle.files` (its
+  parameter type widened from `Pick<…,'archivePath'|'manifest'>` to include
+  `'files'`) and re-hashes each read before using the SQL. This closes BOTH
+  tampering directions: altered bytes throw, and an ADDED post-verify `.sql`
+  member is never seen at all.
+
+## Also (cheap, same round)
+
+- `services/aiTools.ts` — the comment claiming the store is "built on first
+  extension-tool call" was inaccurate: `store: AiToolEnabledStore = defaultExtensionEnabledStore()`
+  is a DEFAULT PARAMETER, evaluated on EVERY `executeTool` call including core-tool
+  calls. Comment corrected to state that plainly, and to note why it is harmless
+  (construction is a bare `new` with no I/O, memoized; no DB work happens until
+  `isEnabled` runs, which only the extension branch reaches). Behavior unchanged.
+- `extensions/config.ts` — one-line comment at the NODE_ENV canonicalization
+  noting that `validateConfig()` (validate.ts:546 `z.enum`, called at
+  index.ts:1579 BEFORE `reconcileExtensions` at :1596) is the load-bearing gate
+  rejecting an unknown NODE_ENV before this trust decision. Comment only.
+
+## Regression tests + pre-fix failure evidence
+
+Source fixes were stashed (`git stash push -- <the 5 source files>`), leaving the
+new tests against pre-fix code. Recorded output:
+
+```
+FAIL src/extensions/jobHost.test.ts > ExtensionJobHost.sync > preserves a repeatable for an extension absent from this replica registry, while still removing a present-but-disabled one
+FAIL src/extensions/migrator.test.ts > readBundleMigrations … > rejects a migration whose on-disk bytes no longer match the verified hash
+FAIL src/extensions/migrator.test.ts > readBundleMigrations … > ignores an unverified migration member that only exists on disk
+FAIL src/extensions/reconciler.test.ts > extractVerifiedPayload … > throws and commits nothing when a member no longer matches its verified hash
+  Test Files  3 failed (3)
+       Tests  4 failed | 26 passed (30)
+```
+
+```
+FAIL src/__tests__/integration/extensionState.integration.test.ts > ExtensionStateStore … > reads and writes correctly when called from INSIDE an ambient tenant DB context
+AssertionError: expected false to be true
+ ❯ src/__tests__/integration/extensionState.integration.test.ts:174:18
+    174|     expect(seen).toBe(true);
+  Test Files  1 failed (1)
+       Tests  1 failed | 3 passed (4)
+```
+
+`expected false to be true` is the Critical reproduced exactly: `isEnabled`
+returning the RLS-filtered `row?.enabled ?? false` instead of the true value.
+
+| Fix | Covering test | File |
+|---|---|---|
+| Critical 1 | `reads and writes correctly when called from INSIDE an ambient tenant DB context` | `src/__tests__/integration/extensionState.integration.test.ts` |
+| Important 2 | `preserves a repeatable for an extension absent from this replica registry, while still removing a present-but-disabled one` | `src/extensions/jobHost.test.ts` |
+| Important 2 (parsing) | `recovers hyphenated extension names so their stale schedules are still removed` | `src/extensions/jobHost.test.ts` |
+| Important 3 (extract) | `throws and commits nothing when a member no longer matches its verified hash` + `extracts every verified member when the bytes still match` | `src/extensions/reconciler.test.ts` |
+| Important 3 (migrate) | `rejects a migration whose on-disk bytes no longer match the verified hash` + `ignores an unverified migration member that only exists on disk` | `src/extensions/migrator.test.ts` |
+
+The single integration test pins all THREE Critical failure surfaces at once: the
+read path (agent routes + AI-tool gate) via `isEnabled`, the write path
+(platform-admin enable/disable) via `setEnabled` asserted through a separate
+connection, and the admin list path via `listAll`.
+
+## Verification (post-fix)
+
+| Command | Result |
+|---|---|
+| `pnpm -F @breeze/api test:run src/extensions src/routes/extensionsAdmin.test.ts src/services/aiTools.test.ts scripts/breezectl.test.ts` | **18 files / 230 tests passed** |
+| `pnpm test:integration --run src/__tests__/integration/extensionState.integration.test.ts src/__tests__/integration/extensionMigrator.integration.test.ts` (Docker :5433) | **2 files / 6 tests passed** |
+| `NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project tsconfig.json` (apps/api) | **exit 0, 0 errors** |
+| `pnpm exec eslint <11 changed apps/api files>` | **exit 0, 0 errors** |
+| `pnpm -F @breeze/api build` | **Build success in 262ms** (`dist/index.cjs` 13.34 MB, `dist/scripts/breezectl.cjs` 37.80 KB) |
+
+The shared `breeze-postgres-test` container was reused via the idempotent
+`test:docker:up` path; `test:docker:down -v` was never run.

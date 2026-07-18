@@ -40,6 +40,7 @@ import {
 } from './config';
 import { createArtifactStore, type ArtifactSource } from './artifactStore';
 import {
+  assertVerifiedMemberBytes,
   readBoundedZipDirectory,
   verifyExtensionBundle,
   type TrustedPublisher,
@@ -223,6 +224,14 @@ async function pathExists(p: string): Promise<boolean> {
  * Idempotent: a completed extraction (marked by `.verified`) is reused. The
  * write goes to a temp dir renamed into place so a crash can't leave a partial
  * tree that the `.verified` check would then trust.
+ *
+ * The archive is re-opened here, so every member's bytes are re-hashed against
+ * the digest the verifier recorded before being written (see
+ * {@link assertVerifiedMemberBytes}). Without that, swapping the archive on disk
+ * between verify and extract would put attacker-controlled code into a tree this
+ * process then `import()`s, with the signature check having covered other bytes.
+ * A mismatch throws, and the failed temp tree is removed, so nothing is
+ * committed and no `.verified` marker is ever written.
  */
 export async function extractVerifiedPayload(
   bundle: VerifiedExtensionBundle,
@@ -236,8 +245,9 @@ export async function extractVerifiedPayload(
   await rm(tmp, { recursive: true, force: true });
   const archive = await readBoundedZipDirectory(bundle.archivePath);
   try {
-    for (const member of bundle.files.keys()) {
+    for (const [member, expected] of bundle.files) {
       const bytes = await archive.read(member);
+      assertVerifiedMemberBytes(member, bytes, expected.sha256);
       const target = path.join(tmp, member);
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, bytes);

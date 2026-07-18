@@ -36,6 +36,38 @@ export function extensionJobId(extension: string, job: string): string {
   return `extension-${extension}-${job}`;
 }
 
+const EXTENSION_JOB_ID_PREFIX = 'extension-';
+
+/**
+ * Recover the extension name from a repeatable jobId by matching it against
+ * names the caller RECOGNIZES, returning null when none match.
+ *
+ * `extension-<name>-<job>` cannot be split naively: BOTH the extension name and
+ * the job name may contain hyphens, so `extension-acme-billing-nightly-sweep`
+ * has no positional answer. Nor can the job name BullMQ reports be subtracted
+ * from the end — a repeatable whose job was renamed keeps its original id, so
+ * the id no longer ends with the current name.
+ *
+ * What is reliable is the set of names this replica knows. Every hyphen boundary
+ * after the prefix is a candidate extension name; the first one `isKnown`
+ * accepts is the owner. Candidates are tried shortest-first and the final
+ * segment is never a candidate on its own, because the job part is non-empty.
+ * A jobId whose owner is not recognized yields null — the caller must treat that
+ * as "not this replica's to reason about", not as "stale".
+ */
+export function resolveRepeatableExtensionName(
+  id: string,
+  isKnown: (name: string) => boolean,
+): string | null {
+  if (!id.startsWith(EXTENSION_JOB_ID_PREFIX)) return null;
+  const rest = id.slice(EXTENSION_JOB_ID_PREFIX.length);
+  for (let i = rest.indexOf('-'); i > 0; i = rest.indexOf('-', i + 1)) {
+    const candidate = rest.slice(0, i);
+    if (isKnown(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** The payload every extension job carries so the processor can route it. */
 export interface ExtensionJobData {
   extension: string;
@@ -132,6 +164,10 @@ export class ExtensionJobHost {
    * extension's repeatables on its next sync — permanently, since nothing else
    * converges it. Reading the flag makes any replica's sync produce the same
    * desired set.
+   *
+   * REMOVAL is additionally scoped to extensions THIS replica knows about, so a
+   * sync here can never delete a schedule owned by an extension that only
+   * another replica activated. See the removal loop for why.
    */
   async sync(
     queue: JobHostQueue,
@@ -149,7 +185,28 @@ export class ExtensionJobHost {
     const existing = await queue.getRepeatableJobs();
     for (const entry of existing) {
       // Only manage repeatables we own; leave every other worker's alone.
-      if (!entry.id || !entry.id.startsWith('extension-')) continue;
+      if (!entry.id || !entry.id.startsWith(EXTENSION_JOB_ID_PREFIX)) continue;
+
+      // ...and, among our own, only ones THIS replica can account for. The
+      // desired set is derived from this replica's registry, so an extension
+      // absent from the registry entirely (never activated here — e.g. it is
+      // optional and its `acquire` hit a transient network failure on this
+      // replica while another replica activated it fine) would otherwise be
+      // read as "not desired" and have its LIVE schedule deleted. Nothing
+      // re-creates it until the owning replica restarts, so the extension's
+      // cron would stop firing fleet-wide even though it is enabled in the DB.
+      //
+      // Leaving a foreign repeatable in place is inert by comparison: if the
+      // extension really is gone, `process()` returns early because it cannot
+      // resolve the definition. Present-but-DISABLED is a different case and
+      // still gets removed — it IS in the registry, so this check passes and
+      // the desired-set intersection with `enabled` drops it (81819167e).
+      const owner = resolveRepeatableExtensionName(
+        entry.id,
+        (name) => this.registry.get(name) !== undefined,
+      );
+      if (owner === null) continue;
+
       const want = desired.get(entry.id);
       const matchesDesiredIdentity = want !== undefined
         && entry.name === want.job

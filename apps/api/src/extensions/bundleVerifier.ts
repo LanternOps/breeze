@@ -290,6 +290,33 @@ function verifyPayloadMembers(
   }
 }
 
+/**
+ * Re-check bytes read from a bundle archive AFTER {@link verifyExtensionBundle}
+ * closed its handle, against the hash it recorded in `bundle.files`.
+ *
+ * TIME-OF-CHECK/TIME-OF-USE GUARD. Verification hashes every member through one
+ * handle and then closes it; consumers (payload extraction, migration reading)
+ * re-open the SAME path later. Anything able to write to the artifact-store root
+ * — a compromised sibling container, any non-root process with write access to
+ * the mounted volume — can swap the archive in between, and the second read
+ * would otherwise be trusted purely because a signature check passed over
+ * DIFFERENT bytes. That is arbitrary code execution (the extracted tree is
+ * `import()`ed) and arbitrary DDL (bundle SQL is applied) with a full signature
+ * bypass. Every byte that leaves an archive after verification must come back
+ * through here. Digests are bare lowercase hex, matching `bundle.files`.
+ */
+export function assertVerifiedMemberBytes(
+  member: string,
+  bytes: Buffer,
+  expectedSha256: string,
+): void {
+  if (sha256Hex(bytes) !== expectedSha256) {
+    throw new Error(
+      `archive member "${member}" changed on disk after verification — integrity re-check failed`,
+    );
+  }
+}
+
 export async function verifyExtensionBundle(
   archivePath: string,
   selection: ExtensionSelection,

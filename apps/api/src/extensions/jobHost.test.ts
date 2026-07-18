@@ -214,6 +214,63 @@ describe('ExtensionJobHost.sync', () => {
     expect(added[0]?.opts.jobId).toBe('extension-healthy-tidy');
   });
 
+  // The mirror image of the test above, and it must hold at the same time.
+  // The desired set is derived from THIS replica's registry, so an extension
+  // this replica never activated (optional `x`, whose `acquire` hit a transient
+  // 503 here while replica A activated it fine) is simply absent from `desired`.
+  // If removal keyed on that alone, enabling any UNRELATED extension here would
+  // delete `x`'s live repeatable — `x` is enabled in the DB and running on A,
+  // yet its cron would never fire again anywhere until A restarts. A lingering
+  // foreign repeatable is inert by comparison (`process()` returns early when it
+  // can't resolve the definition), so preserving it is strictly safer.
+  it('preserves a repeatable for an extension absent from this replica registry, while still removing a present-but-disabled one', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('y', { tidy: { name: 'tidy', cron: '5 * * * *', handler: vi.fn() } }),
+      // present in the registry, but disabled in the database
+      makeSnapshot('z', { sweep: { name: 'sweep', cron: '0 * * * *', handler: vi.fn() } }),
+    ]);
+    const isEnabled = vi.fn(async (name: string) => name !== 'z');
+    const host = new ExtensionJobHost({ registry, store: { isEnabled } });
+    const { queue, removed, added } = makeFakeQueue([
+      // 'x' was never activated on this replica — it is not in the registry at all.
+      { key: 'x-key', name: 'sweep', id: 'extension-x-sweep', pattern: '0 * * * *' },
+      // 'z' IS in the registry but is disabled: its schedule is genuinely stale.
+      { key: 'z-key', name: 'sweep', id: 'extension-z-sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual(['z-key']);
+    expect(added.map((a) => a.opts.jobId)).toEqual(['extension-y-tidy']);
+  });
+
+  // Extension names AND job names may both contain hyphens, so the extension
+  // name can only be recovered by stripping the known prefix and the known job
+  // name — never by splitting on '-'. A naive split would read the owner of
+  // 'extension-acme-billing-nightly-sweep' as 'acme', miss it in the registry,
+  // and wrongly preserve a genuinely stale schedule forever.
+  it('recovers hyphenated extension names so their stale schedules are still removed', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('acme-billing', {
+        'nightly-sweep': { name: 'nightly-sweep', cron: '0 * * * *', handler: vi.fn() },
+      }),
+    ]);
+    const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
+    const { queue, removed } = makeFakeQueue([
+      // same (extension, job) pair, but an outdated cron → stale identity
+      {
+        key: 'old-cron-key',
+        name: 'nightly-sweep',
+        id: 'extension-acme-billing-nightly-sweep',
+        pattern: '@daily',
+      },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual(['old-cron-key']);
+  });
+
   it('drives sync from the active registry snapshot when none is passed', async () => {
     const registry = makeRegistry([
       makeSnapshot('demo', { sweep: { name: 'sweep', cron: '*/5 * * * *', handler: vi.fn() } }),

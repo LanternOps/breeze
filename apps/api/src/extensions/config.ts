@@ -169,6 +169,10 @@ export function loadExtensionDeploymentConfig(configPath: string): ExtensionDepl
   const resolvedPath = path.resolve(configPath);
   const yamlText = readFileSync(resolvedPath, 'utf8');
 
+  // An UNKNOWN NODE_ENV can never reach here and quietly canonicalize to
+  // non-production: `validateConfig()` (validate.ts, a `z.enum` over the allowed
+  // values) runs at index.ts startup BEFORE `reconcileExtensions`, so a typo'd
+  // NODE_ENV aborts boot rather than downgrading this trust decision.
   const production = canonicalNodeEnv(process.env.NODE_ENV ?? 'development') === 'production';
   const allowUnsigned = process.env.BREEZE_EXTENSIONS_ALLOW_UNSIGNED === 'true';
 
