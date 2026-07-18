@@ -72,6 +72,18 @@ export function createQuote(body: CreateQuoteInput): Promise<Response> {
 /** Clone a quote into a new draft. Optional body retargets it to another
  *  organization (same partner) and/or renames it — omitted fields fall back to
  *  the source quote (matches `cloneQuoteSchema` in shared). */
+/** Schedule the delayed (undo-able) send: the server enqueues the real send
+ *  ~30s out and stamps sendScheduledAt on the quote. Body matches /send. */
+export function scheduleQuoteSend(id: string, body: Record<string, unknown>): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/schedule-send`, { method: 'POST', body: JSON.stringify(body) });
+}
+
+/** Undo a scheduled send. `canceled:false` in the response means the window
+ *  had already elapsed. */
+export function cancelScheduledSend(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/schedule-send`, { method: 'DELETE' });
+}
+
 export function cloneQuote(id: string, body?: { orgId?: string; title?: string }): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/clone`, {
     method: 'POST',

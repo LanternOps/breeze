@@ -691,7 +691,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         'flex h-full flex-col border-r bg-card transition-all duration-200',
         // Hide completely on mobile — the overlay handles it
         isMobile && 'hidden',
-        effectiveMode === 'hover' && 'absolute inset-y-0 left-0 z-20',
+        // z-30: app-chrome overlay band. In-page sticky chrome (e.g. the quote/
+        // invoice workspace header at z-20) must slide UNDER the popped-out
+        // sidebar, not over it; page content < in-page sticky (10–20) <
+        // chrome overlays (30–40) < modals/menus (50).
+        effectiveMode === 'hover' && 'absolute inset-y-0 left-0 z-30',
         effectiveMode === 'hover' && hovered && 'shadow-xl',
         showLabels ? 'w-64' : 'w-16'
       )}

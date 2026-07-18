@@ -5,6 +5,7 @@ import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
+import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
@@ -256,33 +257,19 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       const note = sendMessage.trim();
       if (note) opts.message = note;
       if (!includePdf) opts.includePdf = false;
-      const result = await runAction<{ data?: { emailed?: boolean; emailReason?: QuoteSendEmailReason } }>({
-        request: () => sendQuote(quote.id, opts),
+      // Undo-send window: the composer confirm SCHEDULES the dispatch ~30s out
+      // rather than emailing immediately — the quote stays a draft with the
+      // window stamped, and the header offers Undo until it fires. The real
+      // send (and its emailed:false honesty path) runs in the worker.
+      await runAction<{ data?: { sendScheduledAt?: string } }>({
+        request: () => scheduleQuoteSend(quote.id, opts as Record<string, unknown>),
         errorFallback: t('quotes.actions.sendError'),
         onUnauthorized: UNAUTHORIZED,
       });
       setSendOpen(false);
       setSendMessage('');
       refresh();
-      if (result?.data?.emailed === false) {
-        // The send committed but NO email went out (the API's email step is
-        // best-effort) — a plain success toast here would hide that the
-        // customer never received anything. Say so, with the why.
-        const warnByReason: Record<QuoteSendEmailReason, string> = {
-          no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
-          no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
-          pdf_render_failed: t('quotes.actions.sendEmailWarning.pdfRenderFailed'),
-          send_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
-        };
-        showToast({
-          message: (result.data.emailReason && warnByReason[result.data.emailReason]) ?? warnByReason.send_failed,
-          type: 'warning',
-        });
-      } else {
-        // Tell the seller what happens next: the quote advances to Viewed and
-        // Accepted on its own as the customer engages — no further action here.
-        showToast({ message: t('quotes.actions.sendSuccess', { orgName }), type: 'success' });
-      }
+      showToast({ message: t('quotes.actions.sendScheduled', { orgName }), type: 'success' });
     } catch (err) {
       handleActionError(err, t('quotes.actions.sendError'));
     } finally {
@@ -346,6 +333,86 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
+  // ---- undo-send window state ---------------------------------------------
+  // A future sendScheduledAt on a draft = a live undo window. The countdown is
+  // client-side; at zero we poll the detail until the worker's status flip
+  // (draft→sent) lands. A PAST sendScheduledAt on a still-draft quote means
+  // the job was lost or rejected at fire time — treated as "not scheduled",
+  // which quietly restores the normal Send button.
+  const scheduledAtMs = quote.sendScheduledAt ? new Date(quote.sendScheduledAt).getTime() : null;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const scheduleLive = isDraft && scheduledAtMs != null && scheduledAtMs > nowMs;
+  useEffect(() => {
+    if (!isDraft || scheduledAtMs == null) return;
+    const tick = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [isDraft, scheduledAtMs]);
+  // At window end, re-pull every 2.5s until the flip lands. BullMQ promotes
+  // delayed jobs on a ~5s scan, so the flip routinely lands 5-10s AFTER the
+  // nominal fire time — a short fixed retry burst misses it (verified live).
+  // The effect is keyed on the stable boolean (not nowMs/refresh) so the 1s
+  // ticker and detail reloads can't cancel the interval mid-poll; the flip
+  // turns windowElapsed false, which is what cleans it up. Bounded at 12
+  // polls (~30s) in case the job was lost and no flip ever comes.
+  const windowElapsed = isDraft && scheduledAtMs != null && scheduledAtMs <= nowMs;
+  const refreshRef = useRef(refresh);
+  useEffect(() => { refreshRef.current = refresh; }, [refresh]);
+  const firedRef = useRef(false);
+  useEffect(() => {
+    if (!windowElapsed) { firedRef.current = false; return; }
+    if (firedRef.current) return;
+    firedRef.current = true;
+    refreshRef.current();
+    let polls = 0;
+    const iv = setInterval(() => {
+      if (++polls > 12) { clearInterval(iv); return; }
+      refreshRef.current();
+    }, 2500);
+    return () => clearInterval(iv);
+  }, [windowElapsed]);
+  // Post-flip honesty: the worker persisted the email outcome; when the
+  // countdown's reload lands the draft→sent flip, surface the same honest
+  // success/warning the synchronous send used to toast directly.
+  const prevStatusRef = useRef(quote.status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = quote.status;
+    if (prev !== 'draft' || quote.status !== 'sent') return;
+    const reason = quote.sendEmailReason;
+    if (reason) {
+      const warnByReason: Record<string, string> = {
+        no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
+        no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
+        pdf_render_failed: t('quotes.actions.sendEmailWarning.pdfRenderFailed'),
+        send_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
+      };
+      showToast({ message: warnByReason[reason] ?? warnByReason.send_failed, type: 'warning' });
+    } else {
+      showToast({ message: t('quotes.actions.sendSuccess', { orgName }), type: 'success' });
+    }
+  }, [quote.status, quote.sendEmailReason, orgName, t]);
+
+  const [undoing, setUndoing] = useState(false);
+  const undoSend = useCallback(async () => {
+    if (undoing) return;
+    setUndoing(true);
+    try {
+      const result = await runAction<{ data?: { canceled?: boolean } }>({
+        request: () => cancelScheduledSend(quote.id),
+        errorFallback: t('quotes.actions.undoError'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      showToast(result?.data?.canceled
+        ? { message: t('quotes.actions.undoSuccess'), type: 'success' }
+        : { message: t('quotes.actions.undoTooLate'), type: 'warning' });
+      refresh();
+    } catch (err) {
+      handleActionError(err, t('quotes.actions.undoError'));
+    } finally {
+      setUndoing(false);
+    }
+  }, [undoing, quote.id, refresh, t]);
+
   // justify-end matters: the full-basis reason hints stretch this container
   // to full width, and without it the buttons drift LEFT whenever a hint shows.
   const layout = header ? 'flex flex-wrap items-center justify-end gap-2' : 'space-y-2';
@@ -367,7 +434,28 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             the PDF + a public accept link, and flips draft→sent. (The quote
             number already exists — it's minted at creation, by contract.)
             Gated on quotes:send; only a draft can be sent. An empty quote can't. */}
-        {canSend && (
+        {canSend && scheduleLive && (
+          <>
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm font-medium text-warning-foreground dark:text-warning"
+              data-testid="quote-send-countdown"
+              role="status"
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              {t('quotes.actions.sendingIn', { seconds: Math.max(0, Math.ceil(((scheduledAtMs ?? 0) - nowMs) / 1000)) })}
+            </span>
+            <button
+              type="button"
+              onClick={() => void undoSend()}
+              disabled={undoing}
+              data-testid="quote-send-undo"
+              className={`${btnBase} border font-medium hover:bg-muted disabled:opacity-50`}
+            >
+              {t('quotes.actions.undoSend')}
+            </button>
+          </>
+        )}
+        {canSend && !scheduleLive && (
           <button
             type="button"
             onClick={() => {

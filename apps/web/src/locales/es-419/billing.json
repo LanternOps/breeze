@@ -787,8 +787,14 @@
       },
       "sendError": "No se pudo enviar la propuesta.",
       "sendProposal": "Enviar propuesta",
+      "sendScheduled": "Enviando a {{orgName}} en 30 segundos — todavía puedes deshacerlo.",
       "sendSuccess": "Propuesta enviada: la marcaremos como vista y aceptada cuando {{orgName}} abra y firme.",
-      "sending": "Enviando…"
+      "sending": "Enviando…",
+      "sendingIn": "Enviando en {{seconds}}s…",
+      "undoError": "No se pudo cancelar el envío.",
+      "undoSend": "Deshacer envío",
+      "undoSuccess": "Envío cancelado — la cotización sigue siendo un borrador.",
+      "undoTooLate": "Demasiado tarde para deshacer — la propuesta ya se envió."
     },
     "detail": {
       "addContentInEditor": "Agregar contenido en el Editor",
@@ -944,7 +950,10 @@
         "genericError": "No se pudo crear la cotización.",
         "noSpecificSite": "Ningún sitio específico",
         "selectOrganization": "Seleccione una organización...",
+        "siteClearedOnClone": "El sitio se limpia al comenzar desde una cotización existente.",
         "siteOptional": "Sitio (opcional)",
+        "startBlank": "Cotización en blanco",
+        "startFrom": "Comenzar desde (opcional)",
         "submit": "Crear borrador",
         "success": "Borrador de cotización creado",
         "title": "Nueva cotización",
@@ -957,6 +966,9 @@
         "paid": "Depósito pagado",
         "unpaid": "Depósito impago"
       },
+      "duplicate": "Duplicar cotización",
+      "duplicateAria": "Duplicar cotización {{quote}}",
+      "duplicateError": "No se pudo duplicar la cotización.",
       "empty": {
         "clearFilters": "Limpiar filtros",
         "description": "Redacte una propuesta con títulos, texto enriquecido y una tabla de precios, luego envíela para su aceptación.",

@@ -5,6 +5,7 @@ import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote } from '../../services/quoteLifecycle';
+import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
@@ -75,6 +76,55 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
       subject: emailOpts.subject || undefined,
       includePdf: emailOpts.includePdf,
     }) });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// POST /:id/schedule-send — the undo-send window. Validates like a send-open
+// (draft + at least one customer-visible line) then schedules the REAL send as
+// a delayed job; the quote stays a draft with the window stamped so the UI can
+// offer Undo. Deep send-time gates (contract variables etc.) run when the job
+// fires — a fire-time rejection leaves the quote a draft with the schedule
+// cleared, never a half-sent state. Same quotes:send permission as /send.
+const scheduleSendSchema = sendBodySchema.extend({
+  delaySeconds: z.number().int().min(5).max(300).optional(),
+});
+quoteLifecycleRoutes.post('/:id/schedule-send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  let body: z.infer<typeof scheduleSendSchema> = {};
+  if ((c.req.header('content-type') ?? '').includes('application/json')) {
+    const raw = await c.req.text().catch(() => '');
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = scheduleSendSchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid send options' }, 400);
+      body = parsed.data;
+    }
+  }
+  try {
+    const actor = quoteActorFrom(c);
+    const { quote, lines } = await getQuote(id, actor); // org-access 404
+    if (quote.status !== 'draft') return c.json({ error: 'Only a draft can be sent', code: 'INVALID_STATE' }, 409);
+    if (!lines.some((l) => l.customerVisible)) return c.json({ error: 'Add at least one item before sending', code: 'QUOTE_EMPTY' }, 422);
+    const { sendScheduledAt } = await scheduleQuoteSend(id, actor, {
+      message: body.message || undefined,
+      to: body.to,
+      cc: body.cc,
+      subject: body.subject || undefined,
+      includePdf: body.includePdf,
+    }, (body.delaySeconds ?? 30) * 1000);
+    return c.json({ data: { sendScheduledAt: sendScheduledAt.toISOString() } });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// DELETE /:id/schedule-send — Undo. Clears the schedule; `canceled: false`
+// means the window had already elapsed (the send fired or is firing).
+quoteLifecycleRoutes.delete('/:id/schedule-send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  try {
+    await getQuote(id, quoteActorFrom(c)); // org-access 404
+    const canceled = await cancelQuoteSend(id);
+    return c.json({ data: { canceled } });
   } catch (err) { return handleServiceError(c, err); }
 });
 

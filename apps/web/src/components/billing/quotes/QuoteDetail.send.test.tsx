@@ -29,7 +29,7 @@ vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
 
 vi.mock('../../../lib/api/quotes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/api/quotes')>();
-  return { ...actual, sendQuote: vi.fn() };
+  return { ...actual, sendQuote: vi.fn(), scheduleQuoteSend: vi.fn(), cancelScheduledSend: vi.fn() };
 });
 
 const resp = (payload: unknown, ok = true): Response =>
@@ -74,6 +74,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [{ resource: 'quotes', action: 'send' }];
   state.tokens = null;
+  vi.mocked(quotesApi.scheduleQuoteSend).mockResolvedValue(
+    resp({ data: { sendScheduledAt: new Date(Date.now() + 30_000).toISOString() } }),
+  );
   // The composer's prefill/support fetches, routed by URL (not call order).
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/orgs/organizations/')) return resp({ billingContact: { email: 'ap@customer.example' } });
@@ -99,20 +102,19 @@ describe('QuoteDetail — send proposal', () => {
     expect(screen.getByTestId('quote-send-empty-hint')).toBeInTheDocument();
   });
 
-  it('does not send on the first click — it opens a confirm step first', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
+  it('does not schedule on the first click — it opens a confirm step first', async () => {
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('quote-send'));
     await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
-    // Critical: the irreversible email must NOT have fired from the first click.
-    expect(sendQuote).not.toHaveBeenCalled();
+    // Critical: nothing irreversible may start from the first click.
+    expect(quotesApi.scheduleQuoteSend).not.toHaveBeenCalled();
+    expect(quotesApi.sendQuote).not.toHaveBeenCalled();
   });
 
-  it('sends only after the confirm step and refreshes the quote', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    sendQuote.mockResolvedValue(resp({ data: null }));
+  it('confirm SCHEDULES the delayed send (not an immediate email) and refreshes', async () => {
+    const scheduleQuoteSend = vi.mocked(quotesApi.scheduleQuoteSend);
     const onChanged = vi.fn();
 
     render(<QuoteDetail detail={filledDraft} onChanged={onChanged} />);
@@ -124,17 +126,14 @@ describe('QuoteDetail — send proposal', () => {
     await waitFor(() => {
       // Untouched composer → only the (prefilled, user-visible) To list goes out;
       // blank subject/message and the default includePdf are omitted.
-      expect(sendQuote).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'] });
+      expect(scheduleQuoteSend).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'] });
       expect(onChanged).toHaveBeenCalled();
     });
+    // The undo window means the direct-send endpoint is never hit from here.
+    expect(quotesApi.sendQuote).not.toHaveBeenCalled();
   });
 
-  it('shows a WARNING toast (not success) when the send committed but no email went out', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    // The API's email step is best-effort: emailed:false means the quote
-    // flipped to Sent but the customer received nothing (e.g. the org has no
-    // billing contact email — the black hole this regression-guards).
-    sendQuote.mockResolvedValue(resp({ data: { emailed: false, emailReason: 'no_billing_contact' } }));
+  it('confirm shows the "you can still undo" toast, not a sent-success toast', async () => {
     const { showToast } = await import('../../shared/Toast');
 
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
@@ -142,6 +141,31 @@ describe('QuoteDetail — send proposal', () => {
 
     await openComposer();
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'success',
+        message: expect.stringContaining('undo'),
+      }));
+    });
+  });
+
+  it('the draft→sent flip surfaces a WARNING toast when the worker recorded an email failure', async () => {
+    const { showToast } = await import('../../shared/Toast');
+
+    // Simulate the countdown's reload landing the flip: same component, quote
+    // now Sent with the worker-persisted outcome (e.g. no billing contact —
+    // the black hole this regression-guards).
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    rerender(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, status: 'sent', sentAt: '2026-06-01T00:01:00Z', sendEmailReason: 'no_billing_contact' },
+      }}
+      onChanged={vi.fn()}
+    />);
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
@@ -156,16 +180,19 @@ describe('QuoteDetail — send proposal', () => {
     ['no_email_service', 'not configured'],
     ['send_failed', 'could not be delivered'],
     ['pdf_render_failed', 'PDF could not be generated'],
-  ])('shows a distinct WARNING toast for emailReason %s', async (reason, fragment) => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    sendQuote.mockResolvedValue(resp({ data: { emailed: false, emailReason: reason } }));
+  ])('the flip shows a distinct WARNING toast for sendEmailReason %s', async (reason, fragment) => {
     const { showToast } = await import('../../shared/Toast');
 
-    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
-    await openComposer();
-    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    rerender(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, status: 'sent', sentAt: '2026-06-01T00:01:00Z', sendEmailReason: reason },
+      }}
+      onChanged={vi.fn()}
+    />);
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
@@ -176,16 +203,19 @@ describe('QuoteDetail — send proposal', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it('shows the success toast when the email actually went out', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    sendQuote.mockResolvedValue(resp({ data: { emailed: true } }));
+  it('the flip shows the success toast when the email actually went out', async () => {
     const { showToast } = await import('../../shared/Toast');
 
-    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
-    await openComposer();
-    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    rerender(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, status: 'sent', sentAt: '2026-06-01T00:01:00Z', sendEmailReason: null },
+      }}
+      onChanged={vi.fn()}
+    />);
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
@@ -193,9 +223,46 @@ describe('QuoteDetail — send proposal', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
   });
 
-  it('forwards a typed personal message to the send call', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    sendQuote.mockResolvedValue(resp({ data: null }));
+  it('a scheduled draft shows the countdown + Undo instead of Send, and Undo cancels', async () => {
+    const cancelScheduledSend = vi.mocked(quotesApi.cancelScheduledSend);
+    cancelScheduledSend.mockResolvedValue(resp({ data: { canceled: true } }));
+    const onChanged = vi.fn();
+
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, sendScheduledAt: new Date(Date.now() + 25_000).toISOString() },
+      }}
+      onChanged={onChanged}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('quote-send')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-countdown')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('quote-send-undo'));
+    await waitFor(() => {
+      expect(cancelScheduledSend).toHaveBeenCalledWith('q-1');
+      expect(onChanged).toHaveBeenCalled();
+    });
+  });
+
+  it('a PAST sendScheduledAt on a draft is treated as not scheduled (plain Send shows)', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, sendScheduledAt: new Date(Date.now() - 5_000).toISOString() },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-send')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-send-undo')).not.toBeInTheDocument();
+  });
+
+  it('forwards a typed personal message to the schedule call', async () => {
+    const scheduleQuoteSend = vi.mocked(quotesApi.scheduleQuoteSend);
 
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
@@ -205,13 +272,12 @@ describe('QuoteDetail — send proposal', () => {
 
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
     await waitFor(() =>
-      expect(sendQuote).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'], message: 'Thanks for your business!' }),
+      expect(scheduleQuoteSend).toHaveBeenCalledWith('q-1', { to: ['ap@customer.example'], message: 'Thanks for your business!' }),
     );
   });
 
-  it('forwards To/Cc/Subject/includePdf overrides to the send call', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-    sendQuote.mockResolvedValue(resp({ data: null }));
+  it('forwards To/Cc/Subject/includePdf overrides to the schedule call', async () => {
+    const scheduleQuoteSend = vi.mocked(quotesApi.scheduleQuoteSend);
 
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
@@ -227,7 +293,7 @@ describe('QuoteDetail — send proposal', () => {
 
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
     await waitFor(() =>
-      expect(sendQuote).toHaveBeenCalledWith('q-1', {
+      expect(scheduleQuoteSend).toHaveBeenCalledWith('q-1', {
         to: ['a@x.com', 'b@x.com'],
         cc: ['c@x.com'],
         subject: 'Custom subject',
@@ -236,9 +302,7 @@ describe('QuoteDetail — send proposal', () => {
     );
   });
 
-  it('an invalid To keeps the inline error, and clicking Send focuses the field instead of sending', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-
+  it('an invalid To keeps the inline error, and clicking Send focuses the field instead of scheduling', async () => {
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
@@ -246,18 +310,16 @@ describe('QuoteDetail — send proposal', () => {
     fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: 'not-an-email' } });
 
     // Send stays ENABLED — its click performs the prerequisite (focus the To
-    // field) rather than sitting dead; nothing is sent while invalid.
+    // field) rather than sitting dead; nothing is scheduled while invalid.
     const confirm = screen.getByTestId('quote-send-confirm');
     expect(confirm).not.toBeDisabled();
     expect(screen.getByTestId('quote-send-to-error')).toHaveTextContent('not-an-email');
     fireEvent.click(confirm);
-    expect(sendQuote).not.toHaveBeenCalled();
+    expect(quotesApi.scheduleQuoteSend).not.toHaveBeenCalled();
     expect(screen.getByTestId('quote-send-to')).toHaveFocus();
   });
 
   it('an EMPTY To gets a visible reason on Send click (no silent dead button)', async () => {
-    const sendQuote = vi.mocked(quotesApi.sendQuote);
-
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
 
@@ -265,7 +327,7 @@ describe('QuoteDetail — send proposal', () => {
     fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: '' } });
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
 
-    expect(sendQuote).not.toHaveBeenCalled();
+    expect(quotesApi.scheduleQuoteSend).not.toHaveBeenCalled();
     expect(screen.getByTestId('quote-send-to-missing')).toBeInTheDocument();
     expect(screen.getByTestId('quote-send-to')).toHaveFocus();
   });

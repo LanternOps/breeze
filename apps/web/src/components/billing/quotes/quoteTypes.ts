@@ -106,6 +106,12 @@ export interface Quote {
   convertedAt: string | null;
   convertedInvoiceId: string | null;
   sentAt: string | null;
+  /** Undo-send window: set while a delayed send is pending (quote stays a
+   *  draft until the job fires). Optional — older payloads/fixtures omit it. */
+  sendScheduledAt?: string | null;
+  /** Email outcome of a delayed dispatch: null = delivered; a reason code when
+   *  the send committed but the email step failed (surfaced post-flip). */
+  sendEmailReason?: string | null;
   viewedAt: string | null;
   createdBy: string | null;
   createdAt: string;

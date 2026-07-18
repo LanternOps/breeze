@@ -787,8 +787,14 @@
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",
       "sendProposal": "Vorschlag senden",
+      "sendScheduled": "Senden an {{orgName}} in 30 Sekunden — Sie können noch rückgängig machen.",
       "sendSuccess": "Angebot gesendet – wir markieren es als „Gesehen“ und „Angenommen“, da {{orgName}} geöffnet und unterzeichnet wird.",
-      "sending": "Senden…"
+      "sending": "Senden…",
+      "sendingIn": "Senden in {{seconds}}s…",
+      "undoError": "Das Senden konnte nicht abgebrochen werden.",
+      "undoSend": "Senden rückgängig",
+      "undoSuccess": "Senden abgebrochen — das Angebot bleibt ein Entwurf.",
+      "undoTooLate": "Zu spät zum Rückgängigmachen — das Angebot wurde bereits gesendet."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -944,7 +950,10 @@
         "genericError": "Das Angebot konnte nicht erstellt werden.",
         "noSpecificSite": "Keine bestimmte Standort",
         "selectOrganization": "Wählen Sie eine Organisation aus…",
+        "siteClearedOnClone": "Der Standort wird beim Start von einem bestehenden Angebot zurückgesetzt.",
         "siteOptional": "Standort (optional)",
+        "startBlank": "Leeres Angebot",
+        "startFrom": "Ausgehend von (optional)",
         "submit": "Entwurf erstellen",
         "success": "Angebotsentwurf erstellt",
         "title": "Neues Angebot",
@@ -957,6 +966,9 @@
         "paid": "Anzahlung geleistet",
         "unpaid": "Anzahlung unbezahlt"
       },
+      "duplicate": "Angebot duplizieren",
+      "duplicateAria": "Angebot {{quote}} duplizieren",
+      "duplicateError": "Das Angebot konnte nicht dupliziert werden.",
       "empty": {
         "clearFilters": "Filter zurücksetzen",
         "description": "Entwerfen Sie ein Angebot mit Überschriften, Rich-Text und einer Preistabelle und senden Sie es dann zur Annahme.",

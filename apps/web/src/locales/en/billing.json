@@ -787,8 +787,14 @@
       },
       "sendError": "Could not send the proposal.",
       "sendProposal": "Send proposal",
+      "sendScheduled": "Sending to {{orgName}} in 30 seconds — you can still undo.",
       "sendSuccess": "Proposal sent — we'll mark it Viewed and Accepted as {{orgName}} opens and signs.",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "sendingIn": "Sending in {{seconds}}s…",
+      "undoError": "Could not cancel the send.",
+      "undoSend": "Undo send",
+      "undoSuccess": "Send canceled — the quote is still a draft.",
+      "undoTooLate": "Too late to undo — the proposal was already sent."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -944,7 +950,10 @@
         "genericError": "Could not create the quote.",
         "noSpecificSite": "No specific site",
         "selectOrganization": "Select an organization…",
+        "siteClearedOnClone": "Site is cleared when starting from an existing quote.",
         "siteOptional": "Site (optional)",
+        "startBlank": "Blank quote",
+        "startFrom": "Start from (optional)",
         "submit": "Create draft",
         "success": "Draft quote created",
         "title": "New quote",
@@ -957,6 +966,9 @@
         "paid": "Deposit paid",
         "unpaid": "Deposit unpaid"
       },
+      "duplicate": "Duplicate quote",
+      "duplicateAria": "Duplicate quote {{quote}}",
+      "duplicateError": "Could not duplicate the quote.",
       "empty": {
         "clearFilters": "Clear filters",
         "description": "Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.",

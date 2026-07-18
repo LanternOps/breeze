@@ -787,8 +787,14 @@
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",
+      "sendScheduled": "Envoi à {{orgName}} dans 30 secondes — vous pouvez encore annuler.",
       "sendSuccess": "Proposition envoyée — nous la marquerons Vue et Acceptée lorsque {{orgName}} l'ouvrira et la signera.",
-      "sending": "Envoi…"
+      "sending": "Envoi…",
+      "sendingIn": "Envoi dans {{seconds}}s…",
+      "undoError": "Impossible d'annuler l'envoi.",
+      "undoSend": "Annuler l'envoi",
+      "undoSuccess": "Envoi annulé — le devis reste un brouillon.",
+      "undoTooLate": "Trop tard pour annuler — la proposition a déjà été envoyée."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -944,7 +950,10 @@
         "genericError": "Impossible de créer le devis.",
         "noSpecificSite": "Aucun site spécifique",
         "selectOrganization": "Sélectionner une organisation…",
+        "siteClearedOnClone": "Le site est réinitialisé lorsqu'on part d'un devis existant.",
         "siteOptional": "Site (facultatif)",
+        "startBlank": "Devis vierge",
+        "startFrom": "Partir de (facultatif)",
         "submit": "Créer le brouillon",
         "success": "Devis brouillon créé",
         "title": "Nouveau devis",
@@ -957,6 +966,9 @@
         "paid": "Acompte payé",
         "unpaid": "Acompte impayé"
       },
+      "duplicate": "Dupliquer le devis",
+      "duplicateAria": "Dupliquer le devis {{quote}}",
+      "duplicateError": "Impossible de dupliquer le devis.",
       "empty": {
         "clearFilters": "Effacer les filtres",
         "description": "Rédigez une proposition avec des titres, du texte enrichi et un tableau de prix, puis envoyez-la pour acceptation.",

@@ -6,8 +6,9 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 
 // The post-send success toast should tell the seller "what happens next" — that
 // the proposal will move to Viewed and Accepted on its own as the customer opens
-// and signs — instead of a bare "Proposal sent". Since the emailed=false warning
-// branch, the success copy goes through showToast (not runAction's successMessage).
+// and signs — instead of a bare "Proposal sent". Since the undo-send window, the
+// composer confirm only SCHEDULES (with its own undo-hint toast); the lifecycle
+// copy fires when the draft→sent flip lands in a reload.
 const runAction = vi.hoisted(() => vi.fn(async (opts: { request: () => Promise<unknown> }) => opts.request()));
 const showToast = vi.hoisted(() => vi.fn());
 vi.mock('../../../lib/runAction', () => ({ runAction, handleActionError: vi.fn() }));
@@ -23,7 +24,13 @@ vi.mock('../../../stores/auth', () => ({
     ({ ok: true, json: async () => ({ billingContact: { email: 'ap@customer.example' } }) }) as unknown as Response),
   useAuthStore: { getState: () => ({ tokens: null }) },
 }));
-vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn().mockResolvedValue({ data: { emailed: true } }), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
+vi.mock('../../../lib/api/quotes', () => ({
+  sendQuote: vi.fn(),
+  scheduleQuoteSend: vi.fn().mockResolvedValue({ data: { sendScheduledAt: '2099-01-01T00:00:00Z' } }),
+  cancelScheduledSend: vi.fn(),
+  deleteQuote: vi.fn(),
+  quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf'),
+}));
 
 function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
   return {
@@ -51,7 +58,7 @@ function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
 beforeEach(() => vi.clearAllMocks());
 
 describe('QuoteActions — post-send success copy', () => {
-  it('the success toast advertises the auto Viewed/Accepted lifecycle with the customer name', async () => {
+  it('confirm shows the undo-window toast with the customer name', async () => {
     render(<QuoteActions detail={draft()} onChanged={vi.fn()} variant="rail" />);
     fireEvent.click(screen.getByTestId('quote-send'));
     // Send unlocks once the billing-contact prefill lands in To.
@@ -59,6 +66,23 @@ describe('QuoteActions — post-send success copy', () => {
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
 
     await waitFor(() => expect(runAction).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: 'success',
+        message: 'Sending to Acme Inc. in 30 seconds — you can still undo.',
+      }),
+    );
+  });
+
+  it('the draft→sent flip advertises the auto Viewed/Accepted lifecycle with the customer name', async () => {
+    const { rerender } = render(<QuoteActions detail={draft()} onChanged={vi.fn()} variant="rail" />);
+
+    rerender(<QuoteActions
+      detail={draft({ status: 'sent', sentAt: '2026-06-01T00:01:00Z', sendEmailReason: null })}
+      onChanged={vi.fn()}
+      variant="rail"
+    />);
+
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith({
         type: 'success',

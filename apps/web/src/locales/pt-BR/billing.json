@@ -787,8 +787,14 @@
       },
       "sendError": "Não foi possível enviar a proposta.",
       "sendProposal": "Enviar proposta",
+      "sendScheduled": "Enviando para {{orgName}} em 30 segundos — ainda dá para desfazer.",
       "sendSuccess": "Proposta enviada — ela será marcada como Visualizada e Aceita quando {{orgName}} abrir e assinar.",
-      "sending": "Enviando…"
+      "sending": "Enviando…",
+      "sendingIn": "Enviando em {{seconds}}s…",
+      "undoError": "Não foi possível cancelar o envio.",
+      "undoSend": "Desfazer envio",
+      "undoSuccess": "Envio cancelado — o orçamento continua um rascunho.",
+      "undoTooLate": "Tarde demais para desfazer — a proposta já foi enviada."
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -944,7 +950,10 @@
         "genericError": "Não foi possível criar a cotação.",
         "noSpecificSite": "Nenhum site específico",
         "selectOrganization": "Selecione uma organização…",
+        "siteClearedOnClone": "O site é limpo ao iniciar a partir de um orçamento existente.",
         "siteOptional": "Site (opcional)",
+        "startBlank": "Orçamento em branco",
+        "startFrom": "Começar a partir de (opcional)",
         "submit": "Criar rascunho",
         "success": "Cotação em rascunho criada",
         "title": "Nova cotação",
@@ -957,6 +966,9 @@
         "paid": "Entrada paga",
         "unpaid": "Entrada não paga"
       },
+      "duplicate": "Duplicar orçamento",
+      "duplicateAria": "Duplicar orçamento {{quote}}",
+      "duplicateError": "Não foi possível duplicar o orçamento.",
       "empty": {
         "clearFilters": "Limpar filtros",
         "description": "Crie uma proposta com títulos, texto rico e uma tabela de preços e envie-a para aceitação.",

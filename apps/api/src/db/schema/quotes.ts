@@ -64,6 +64,14 @@ export const quotes = pgTable('quotes', {
   pdfDocumentRef: text('pdf_document_ref'),
   pdfSha256: char('pdf_sha256', { length: 64 }),
   sentAt: timestamp('sent_at'),
+  // Undo-send window (delayed dispatch): when a send is scheduled, the fire
+  // time + BullMQ job id live here so the UI can offer Undo and the worker can
+  // detect a cancel/reschedule race. Cleared on fire, failure, or cancel.
+  sendScheduledAt: timestamp('send_scheduled_at', { withTimezone: true }),
+  sendJobId: text('send_job_id'),
+  // Delayed-dispatch email outcome: null = delivered/not-sent-yet; an
+  // emailReason code when the send committed but the email step failed.
+  sendEmailReason: text('send_email_reason'),
   firstViewedAt: timestamp('first_viewed_at'),
   viewedAt: timestamp('viewed_at'),
   createdBy: uuid('created_by').references(() => users.id),
