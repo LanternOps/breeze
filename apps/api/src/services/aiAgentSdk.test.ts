@@ -694,9 +694,13 @@ describe('createSessionPreToolUse', () => {
       const postToolUse = createSessionPostToolUse(session);
       await postToolUse('execute_command', {}, JSON.stringify({ error: 'boom' }), true, 10);
 
+      // error_code is a stable, categorized short code (matches the durable
+      // release worker's vocabulary) — never the raw, unbounded tool error
+      // text. The raw message still lands in `result` for diagnosis.
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-7', 'executing', 'failed', expect.objectContaining({
         executedAt: expect.any(Date),
-        errorCode: 'boom',
+        errorCode: 'tool_execution_failed',
+        result: expect.objectContaining({ error: 'boom' }),
       }));
     });
 

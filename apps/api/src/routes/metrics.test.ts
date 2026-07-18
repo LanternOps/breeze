@@ -130,6 +130,17 @@ describe('metrics routes', () => {
     expect(body).toContain('agent_heartbeat_total{status="success"} 0');
   });
 
+  it('registers the action-intents counter on the live registry', async () => {
+    const res = await app.request('/metrics', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('# HELP breeze_action_intents_total');
+    expect(body).toContain('# TYPE breeze_action_intents_total counter');
+  });
+
   it('requires auth for metrics endpoints', async () => {
     const res = await app.request('/metrics');
     expect(res.status).toBe(401);

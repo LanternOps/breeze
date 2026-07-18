@@ -778,6 +778,7 @@ function serialize(
     decidedAt: r.decidedAt?.toISOString() ?? null,
     decisionReason: r.decisionReason ?? null,
     executionId: r.executionId ?? null,
+    intentId: r.intentId ?? null,
     isRecursive: r.isRecursive,
     createdAt: r.createdAt.toISOString(),
   };

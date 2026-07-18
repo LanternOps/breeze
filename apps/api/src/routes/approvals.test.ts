@@ -368,6 +368,36 @@ describe('GET /approvals/:id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.approval.id).toBe('a1');
+    // Task 9: intentId defaults to null when the row has no intent link.
+    expect(body.approval.intentId).toBeNull();
+  });
+
+  it('serializes intentId so a consumer can correlate an approval row to its intent', async () => {
+    const approval = {
+      id: 'a1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'MCP API client',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'Reboot devices',
+      actionToolName: 'breeze.devices.reboot',
+      actionArguments: {},
+      riskTier: 'low',
+      riskSummary: 'Low risk operation.',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      intentId: 'intent-42',
+      createdAt: new Date(),
+    };
+    mockSelectResolves([approval]);
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.intentId).toBe('intent-42');
   });
 });
 

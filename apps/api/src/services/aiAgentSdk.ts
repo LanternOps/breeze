@@ -45,6 +45,17 @@ const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
  */
 const pendingIntentBySession = new WeakMap<ActiveSession, string>();
 
+/**
+ * Categorized `action_intents.error_code` for the inline (chat-session)
+ * completion CAS below, matching the durable release worker's short-code
+ * style (`tier_escalated`, `execution_lost`, `digest_mismatch`,
+ * `actor_invalid`, `execution_error` — jobs/intentReleaseWorker.ts,
+ * jobs/intentExpiryReaper.ts). `error_code` must stay a stable, bounded
+ * vocabulary a dashboard can group on; the raw tool error text (unbounded,
+ * free-form) goes in `result` instead, never in `error_code`.
+ */
+const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
+
 function stripMcpPrefix(toolName: string): string {
   if (!toolName.startsWith('mcp__')) return toolName;
   const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
@@ -933,8 +944,11 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         try {
           await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
             executedAt: new Date(),
+            // error_code is always the stable short code (matches the
+            // release worker's vocabulary); the raw tool error text is
+            // unbounded free-form and belongs in `result`, not `error_code`.
             ...(isError
-              ? { errorCode: typeof parsedOutput.error === 'string' ? parsedOutput.error.slice(0, 255) : 'tool_execution_failed' }
+              ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: parsedOutput as Record<string, unknown> }
               : { result: parsedOutput as Record<string, unknown> }),
           });
         } catch (err) {
