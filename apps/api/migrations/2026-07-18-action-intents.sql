@@ -87,7 +87,12 @@ BEGIN
      OR NEW.action_version IS DISTINCT FROM OLD.action_version
      OR NEW.arguments IS DISTINCT FROM OLD.arguments
      OR NEW.argument_digest IS DISTINCT FROM OLD.argument_digest
+     OR NEW.target_summary IS DISTINCT FROM OLD.target_summary
+     OR NEW.impact_summary IS DISTINCT FROM OLD.impact_summary
+     OR NEW.reason IS DISTINCT FROM OLD.reason
      OR NEW.risk_tier IS DISTINCT FROM OLD.risk_tier
+     OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+     OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
      OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
      OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
      OR NEW.created_at IS DISTINCT FROM OLD.created_at
@@ -141,6 +146,11 @@ CREATE TABLE IF NOT EXISTS intent_outbox (
 
 CREATE INDEX IF NOT EXISTS intent_outbox_unpublished_idx
   ON intent_outbox (created_at) WHERE published_at IS NULL;
+-- Matches the Drizzle `intentIdIdx` declaration in actionIntents.ts. Needed
+-- for cascade/join lookups by intent_id (e.g. approval-decision workers
+-- resolving outbox rows for a given intent) on an otherwise-unbounded table.
+CREATE INDEX IF NOT EXISTS intent_outbox_intent_id_idx
+  ON intent_outbox (intent_id);
 
 ALTER TABLE intent_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE intent_outbox FORCE ROW LEVEL SECURITY;
@@ -159,6 +169,26 @@ CREATE INDEX IF NOT EXISTS approval_requests_intent_id_idx
 -- against the shipped migration set) — this is a net-new CHECK, not an
 -- extension of an existing one. All-NULL rows (plain MCP step-up / dev-seed
 -- approvals with no source link) must remain legal.
+--
+-- Preflight: count (never mutate) any pre-existing approval_requests rows
+-- that already violate the at-most-one-source rule, so a constraint-add
+-- failure on a populated table is diagnosable from the migration log instead
+-- of a bare 23514 with no context. Warn-only per the repo's cleanup-statement
+-- convention — no rows are touched here.
+DO $$
+DECLARE
+  n INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO n
+  FROM approval_requests
+  WHERE (execution_id IS NOT NULL)::int
+      + (elevation_request_id IS NOT NULL)::int
+      + (intent_id IS NOT NULL)::int > 1;
+  IF n > 0 THEN
+    RAISE WARNING 'approval_requests_one_source_chk preflight found % row(s) already violating the at-most-one-source rule', n;
+  END IF;
+END $$;
+
 ALTER TABLE approval_requests DROP CONSTRAINT IF EXISTS approval_requests_one_source_chk;
 ALTER TABLE approval_requests ADD CONSTRAINT approval_requests_one_source_chk
   CHECK (
