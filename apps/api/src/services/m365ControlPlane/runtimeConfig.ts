@@ -266,4 +266,12 @@ export function validateM365CustomerGraphReadRuntimeConfigAtBoot(
   ) {
     loadM365CustomerGraphReadRuntimeConfig(source);
   }
+  if (flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)) {
+    // loadM365CustomerGraphReadRuntimeConfig() above does not validate the
+    // tools allowlist (M365_GRAPH_READ_TOOLS_ORG_IDS) — it's read lazily on
+    // the hot tool-registration path via isM365GraphReadToolsEnabledForOrg.
+    // Validate it explicitly here so a missing/malformed allowlist fails
+    // boot instead of every subsequent tool call.
+    parseGraphReadToolsOrgIds(source);
+  }
 }

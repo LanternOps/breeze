@@ -1812,7 +1812,7 @@ export function createBreezeMcpServer(
 
     tool(
       'm365_query_users',
-      'Query Microsoft 365 users (list or get one). Returns at most 50 users per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
       {
         mode: z.enum(['list', 'get']),
         search: z.string().max(120).optional(),
@@ -1827,7 +1827,7 @@ export function createBreezeMcpServer(
 
     tool(
       'm365_query_signins',
-      'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns at most 50 sign-ins per call, covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
+      'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
       {
         userPrincipalName: z.string().min(1).max(320).optional(),
         sinceHours: z.number().int().min(1).max(168).optional(),
@@ -1839,7 +1839,7 @@ export function createBreezeMcpServer(
 
     tool(
       'm365_query_intune_devices',
-      'Query Intune-managed devices (list or get one). Returns at most 50 devices per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
       {
         mode: z.enum(['list', 'get']),
         // Named intuneDeviceId (not deviceId) — this is a foreign Microsoft
@@ -1856,7 +1856,7 @@ export function createBreezeMcpServer(
 
     tool(
       'm365_query_groups',
-      'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns at most 50 groups or 100 members per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
       {
         mode: z.enum(['list', 'get', 'members']),
         groupId: z.string().min(1).max(300).optional(),

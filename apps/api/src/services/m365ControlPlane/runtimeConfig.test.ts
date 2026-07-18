@@ -292,6 +292,28 @@ describe('M365 customer Graph-read runtime config', () => {
         M365_CUSTOMER_GRAPH_READ_CLIENT_ID: undefined,
       })).toThrow(/CLIENT_ID/);
     });
+
+    it('throws at boot when the tools flag is enabled without an org allowlist configured', () => {
+      const env = validEnv({
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+        M365_GRAPH_READ_TOOLS_ORG_IDS: undefined,
+      });
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot(env)).toThrow(
+        /M365_GRAPH_READ_TOOLS_ORG_IDS is required/,
+      );
+    });
+
+    it('throws at boot when the tools allowlist contains a malformed org id', () => {
+      const env = validEnv({
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+        M365_GRAPH_READ_TOOLS_ORG_IDS: `${ORG_ID},not-a-uuid`,
+      });
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot(env)).toThrow(
+        /M365_GRAPH_READ_TOOLS_ORG_IDS must be literal \* or comma-separated canonical UUIDs/,
+      );
+    });
   });
 });
 

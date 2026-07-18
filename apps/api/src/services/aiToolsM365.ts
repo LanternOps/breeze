@@ -360,7 +360,7 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'm365_query_users',
-      description: 'Query Microsoft 365 users (list or get one). Returns at most 50 users per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      description: 'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -396,7 +396,7 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'm365_query_signins',
-      description: 'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns at most 50 sign-ins per call, covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
+      description: 'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -426,7 +426,7 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'm365_query_intune_devices',
-      description: 'Query Intune-managed devices (list or get one). Returns at most 50 devices per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      description: 'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -465,7 +465,7 @@ export function registerM365Tools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'm365_query_groups',
-      description: 'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns at most 50 groups or 100 members per call. Data is read live from the customer\'s Microsoft 365 tenant.',
+      description: 'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
       input_schema: {
         type: 'object' as const,
         properties: {
