@@ -51,6 +51,53 @@ describe('breeze-ext CLI surface', () => {
   });
 });
 
+describe('breeze-ext sign key source', () => {
+  // The private key must be supplied as EITHER a file path (--key) or the NAME
+  // of an environment variable holding it (--key-env). Exactly one is required.
+  // The key value itself is never accepted on argv, because process arguments
+  // are world-readable via `ps`; --key-env carries the variable name, not the
+  // key. The action stub throws "not implemented yet"; reaching that error is
+  // proof the option surface accepted the input, whereas an option-parsing
+  // rejection surfaces as a distinct commander error before the action runs.
+  async function runSignArgs(args: string[]): Promise<unknown> {
+    const program = createProgram();
+    program.exitOverride();
+    for (const command of program.commands) command.exitOverride();
+    try {
+      await program.parseAsync(['node', 'breeze-ext', 'sign', ...args]);
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  it('accepts --key alone', async () => {
+    const error = await runSignArgs(['bundle.breeze-ext', '--key', '/tmp/key.pem']);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('not implemented yet');
+  });
+
+  it('accepts --key-env alone', async () => {
+    const error = await runSignArgs(['bundle.breeze-ext', '--key-env', 'BREEZE_SIGNING_KEY']);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('not implemented yet');
+  });
+
+  it('rejects supplying both --key and --key-env', async () => {
+    const error = await runSignArgs([
+      'bundle.breeze-ext', '--key', '/tmp/key.pem', '--key-env', 'BREEZE_SIGNING_KEY',
+    ]);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/exactly one of --key or --key-env/i);
+  });
+
+  it('rejects supplying neither --key nor --key-env', async () => {
+    const error = await runSignArgs(['bundle.breeze-ext']);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/exactly one of --key or --key-env/i);
+  });
+});
+
 describe('module load purity', () => {
   it('importing src/index.ts performs no filesystem or network work at module load', async () => {
     // Structural assertion, not a global fs/network mock: a mock here would

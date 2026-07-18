@@ -6,8 +6,8 @@
  */
 
 export interface InspectOptions {
-  /** Path to the `.breeze-ext` bundle to inspect. */
-  bundle: string;
+  /** Path to the `.breeze-ext` artifact to inspect. */
+  artifact: string;
   /** Emit machine-readable JSON instead of human-readable text. */
   json?: boolean;
 }

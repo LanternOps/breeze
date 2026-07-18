@@ -7,10 +7,19 @@
  */
 
 export interface SignOptions {
-  /** Path to the `.breeze-ext` bundle to sign. */
-  bundle: string;
-  /** Path to the Ed25519 private key used to sign the bundle. */
-  key: string;
+  /** Path to the `.breeze-ext` artifact to sign. */
+  artifact: string;
+  /**
+   * Path to a file holding the Ed25519 private key. Mutually exclusive with
+   * {@link keyEnv}; exactly one is supplied.
+   */
+  key?: string;
+  /**
+   * Name of an environment variable holding the Ed25519 private key. The key
+   * value is never accepted on argv, which is world-readable via `ps`.
+   * Mutually exclusive with {@link key}; exactly one is supplied.
+   */
+  keyEnv?: string;
   /** Output path for the signed bundle. Defaults to signing in place. */
   out?: string;
 }
