@@ -61,6 +61,29 @@ describe('writeDeterministicZip: determinism', () => {
   });
 });
 
+describe('writeDeterministicZip: output stream errors', () => {
+  it('rejects (does not crash the process) when the output directory does not exist', async () => {
+    // A missing --out directory makes createWriteStream emit ENOENT. The error
+    // must surface as a rejection of THIS promise — never as an orphaned
+    // unhandled rejection, which Node's default --unhandled-rejections=throw
+    // turns into a hard process crash that the CLI's top-level catch can't see.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const missing = join(workDir, 'does', 'not', 'exist', 'out.zip');
+      await expect(
+        writeDeterministicZip(MEMBERS, missing, { sourceDateEpoch: 0 }),
+      ).rejects.toThrow();
+      // Give any orphaned rejection a tick to surface before asserting.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});
+
 describe('writeDeterministicZip: path safety', () => {
   async function expectRejected(members: DeterministicZipMember[]): Promise<string> {
     const destination = destinationPath();
