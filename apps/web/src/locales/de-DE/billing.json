@@ -452,6 +452,7 @@
         "fetchAddImage": "Bild abrufen und hinzufügen",
         "fromUrl": "Ab URL",
         "hideCostMargin": "Kosten und Marge ausblenden",
+        "imageFromUrl": "Bild per URL hinzufügen…",
         "lineActions": "Zeilenaktionen",
         "moveLineDown": "Position nach unten verschieben",
         "moveLineTo": "Position verschieben nach",
@@ -551,6 +552,7 @@
         "percentOfDue": "Prozentsatz des fälligen Betrags",
         "selectedLines": "Ausgewählte Positionen",
         "selectedLinesHelp": "Überprüfen Sie die einzahlungsberechtigten einmaligen Positionen in jeder Preistabelle.",
+        "selectedLinesStagedHint": "Markieren Sie unten mindestens eine Einmal-Position als anzahlungsfähig — der Modus wird gespeichert, sobald eine markiert ist.",
         "short": "Anzahlung"
       },
       "emptyBlocks": "Noch kein Inhalt. Fügen Sie unten eine Überschrift, Rich-Text oder eine Preistabelle hinzu.",
@@ -764,15 +766,16 @@
         "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
         "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
         "paymentEnabled": "Online-Zahlung ist aktiviert – der Kunde kann nach der Annahme per Karte zahlen.",
-        "paymentNoteNoStripe": "Nach der Annahme wird keine Online-Zahlung angeboten. Verbinden Sie Stripe unter Einstellungen → Integrationen, um sie zu aktivieren.",
+        "paymentNoteNoStripe": "Bei Annahme hat der Kunde keine Online-Zahlungsoption. Verbinden Sie Stripe unter Einstellungen → Integrationen, um eine anzubieten.",
         "paymentWarningDeposit": "Für dieses Angebot ist eine Anzahlung konfiguriert, aber Kunden können noch nicht online zahlen – verbinden Sie Stripe unter Einstellungen → Integrationen, damit die Anzahlung bei Annahme eingezogen werden kann.",
+        "recipientRequired": "Geben Sie mindestens einen Empfänger ein, um zu senden.",
         "signaturePreviewLabel": "Signatur (festgelegt unter Einstellungen → Branding):",
         "subjectLabel": "Betreff",
         "subjectPlaceholder": "Angebot {{number}} von Ihrem Unternehmen",
         "subjectPlaceholderNoNumber": "Angebot von Ihrem Unternehmen",
         "title": "Dieses Angebot senden?",
         "toLabel": "An",
-        "toPlaceholder": "billing@customer.example.com",
+        "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
         "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind."
       },
@@ -982,10 +985,11 @@
       "table": {
         "created": "Erstellt",
         "draftQuote": "Angebotsentwurf",
+        "firstPeriodSuffix": "erster Zeitraum",
         "number": "Nummer",
         "selectAll": "Wählen Sie alle Angebote aus",
         "selectQuote": "Angebot {{quote}} auswählen",
-        "total": "Erster Zeitraum"
+        "total": "Gesamt"
       },
       "title": "Angebote",
       "tryAgain": "Versuchen Sie es erneut"

@@ -539,7 +539,15 @@ export function QuotesPage() {
                           })()}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {formatMoney(qt.total, qt.currencyCode)}
+                        {/* The list payload carries only the first-period total; on
+                            recurring quotes that differs from the due-on-acceptance
+                            figure every other surface anchors, so qualify it. */}
+                        {(Number(qt.monthlyRecurringTotal) > 0 || Number(qt.annualRecurringTotal) > 0) && (
+                          <span className="text-xs text-muted-foreground"> /{t('quotes.page.table.firstPeriodSuffix')}</span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-muted-foreground">{formatDate(qt.createdAt)}</td>
                     </tr>
                   ))}
@@ -586,6 +594,9 @@ export function QuotesPage() {
                 title={Number(q.total) === 0 ? t('quotes.actions.sendConfirm.zeroTotalWarning') : undefined}
               >
                 {formatMoney(q.total, q.currencyCode)}
+                {(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && (
+                  <span className="text-xs"> /{t('quotes.page.table.firstPeriodSuffix')}</span>
+                )}
               </span>
             </li>
           ))}
@@ -616,7 +627,9 @@ export function QuotesPage() {
                 <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
               </span>
               <span className="shrink-0 text-xs text-muted-foreground">
-                {q.status === 'draft' ? formatMoney(q.total, q.currencyCode) : t('quotes.page.bulkDelete.skippedNotDraft')}
+                {q.status === 'draft'
+                  ? <>{formatMoney(q.total, q.currencyCode)}{(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && <> /{t('quotes.page.table.firstPeriodSuffix')}</>}</>
+                  : t('quotes.page.bulkDelete.skippedNotDraft')}
               </span>
             </li>
           ))}

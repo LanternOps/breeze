@@ -452,6 +452,7 @@
         "fetchAddImage": "Fetch & add image",
         "fromUrl": "From URL",
         "hideCostMargin": "Hide cost & margin",
+        "imageFromUrl": "Add image from URL…",
         "lineActions": "Line actions",
         "moveLineDown": "Move line down",
         "moveLineTo": "Move line to",
@@ -551,6 +552,7 @@
         "percentOfDue": "Percent of amount due",
         "selectedLines": "Selected lines",
         "selectedLinesHelp": "Check the deposit-eligible one-time lines in each pricing table.",
+        "selectedLinesStagedHint": "Flag at least one one-time line below as deposit-eligible — the mode saves once one is flagged.",
         "short": "Deposit"
       },
       "emptyBlocks": "No content yet. Add a heading, rich text, or a pricing table below.",
@@ -764,15 +766,16 @@
         "messageLabel": "Add a personal message (optional)",
         "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
         "paymentEnabled": "Online payment is enabled — the customer can pay by card after accepting.",
-        "paymentNoteNoStripe": "Online payment won't be offered after acceptance. Connect Stripe in Settings → Integrations to enable it.",
+        "paymentNoteNoStripe": "When the customer accepts, they won't have an online payment option. Connect Stripe in Settings → Integrations to offer one.",
         "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in Settings → Integrations so the deposit can be collected on acceptance.",
+        "recipientRequired": "Enter at least one recipient to send.",
         "signaturePreviewLabel": "Signature (set in Settings → Branding):",
         "subjectLabel": "Subject",
         "subjectPlaceholder": "Proposal {{number}} from your company",
         "subjectPlaceholderNoNumber": "Proposal from your company",
         "title": "Send this proposal?",
         "toLabel": "To",
-        "toPlaceholder": "billing@customer.example.com",
+        "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
         "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending."
       },
@@ -982,10 +985,11 @@
       "table": {
         "created": "Created",
         "draftQuote": "Draft quote",
+        "firstPeriodSuffix": "first period",
         "number": "Number",
         "selectAll": "Select all quotes",
         "selectQuote": "Select quote {{quote}}",
-        "total": "First period"
+        "total": "Total"
       },
       "title": "Quotes",
       "tryAgain": "Try again"

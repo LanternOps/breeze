@@ -175,7 +175,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
                       <div className="min-w-0">
                         <span className="font-medium">{lineTitle(l)}</span>
                         {tag && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
                             {tag}
                           </span>
                         )}

@@ -144,22 +144,21 @@ describe('QuoteEditor', () => {
       // reader isn't handed the sentence before the totals settle.
       expect(sr.textContent).toBe('');
 
-      // After the settle window the initial sentence lands (server totals are $0).
+      // The mount-time sentence is deliberately never announced — an SR user
+      // who hasn't edited anything shouldn't be handed the initial totals.
       act(() => { vi.advanceTimersByTime(800); });
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
-      expect(sr).not.toHaveTextContent('tax');
+      expect(sr.textContent).toBe('');
 
       // Editing a line qty recomputes the VISIBLE figures immediately (2 × $100
       // taxable at the committed 10% rate → $220 due)…
       fireEvent.change(screen.getByTestId('quote-line-qty-l-1'), { target: { value: '2' } });
       expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$220.00');
-      // …but the SR announcement still shows the previous settled sentence.
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
-      expect(sr).not.toHaveTextContent('tax');
+      // …but the SR announcement stays silent until the edit settles.
+      expect(sr.textContent).toBe('');
 
-      // Before the settle window closes, still the old sentence.
+      // Before the settle window closes, still silent.
       act(() => { vi.advanceTimersByTime(700); });
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
+      expect(sr.textContent).toBe('');
 
       // Once the window closes, the announcement catches up to the settled totals.
       act(() => { vi.advanceTimersByTime(100); });

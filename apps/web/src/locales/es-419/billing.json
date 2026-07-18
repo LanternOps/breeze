@@ -452,6 +452,7 @@
         "fetchAddImage": "Buscar y agregar imagen",
         "fromUrl": "De URL",
         "hideCostMargin": "Ocultar costo y margen",
+        "imageFromUrl": "Agregar imagen desde URL…",
         "lineActions": "Acciones de la línea",
         "moveLineDown": "Mover línea hacia abajo",
         "moveLineTo": "Mover línea a",
@@ -551,6 +552,7 @@
         "percentOfDue": "Porcentaje del monto adeudado",
         "selectedLines": "Líneas seleccionadas",
         "selectedLinesHelp": "Consulte las líneas únicas elegibles para depósito en cada tabla de precios.",
+        "selectedLinesStagedHint": "Marca al menos una línea única abajo como elegible para depósito; el modo se guarda cuando marques una.",
         "short": "Depósito"
       },
       "emptyBlocks": "Aún no hay contenido. Agregue un encabezado, texto enriquecido o una tabla de precios a continuación.",
@@ -764,15 +766,16 @@
         "messageLabel": "Agregar un mensaje personal (opcional)",
         "messagePlaceholder": "Incluye una nota breve: aparecerá en el correo, encima del enlace para aceptar.",
         "paymentEnabled": "El pago en línea está habilitado: el cliente puede pagar con tarjeta después de aceptar.",
-        "paymentNoteNoStripe": "No se ofrecerá pago en línea después de la aceptación. Conecta Stripe en Configuración → Integraciones para habilitarlo.",
+        "paymentNoteNoStripe": "Cuando el cliente acepte, no tendrá una opción de pago en línea. Conecta Stripe en Configuración → Integraciones para ofrecerla.",
         "paymentWarningDeposit": "Esta propuesta solicita un depósito, pero los clientes aún no pueden pagar en línea: conecta Stripe en Configuración → Integraciones para poder cobrar el depósito al aceptar.",
+        "recipientRequired": "Ingresa al menos un destinatario para enviar.",
         "signaturePreviewLabel": "Firma (configurada en Configuración → Marca):",
         "subjectLabel": "Asunto",
         "subjectPlaceholder": "Propuesta {{number}} de tu empresa",
         "subjectPlaceholderNoNumber": "Propuesta de tu empresa",
         "title": "¿Enviar esta propuesta?",
         "toLabel": "Para",
-        "toPlaceholder": "billing@customer.example.com",
+        "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza $0.00 — verifica que sus ítems tengan precio antes de enviar."
       },
@@ -982,10 +985,11 @@
       "table": {
         "created": "Creado",
         "draftQuote": "Borrador de cotización",
+        "firstPeriodSuffix": "primer período",
         "number": "Número",
         "selectAll": "Seleccionar todas las cotizaciones",
         "selectQuote": "Seleccionar cotización {{quote}}",
-        "total": "Primer período"
+        "total": "Total"
       },
       "title": "Cotizaciones",
       "tryAgain": "Intentar otra vez"

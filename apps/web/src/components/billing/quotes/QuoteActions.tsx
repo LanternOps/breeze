@@ -67,7 +67,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
-  const { quote, blocks, lines } = detail;
+  const { quote, lines } = detail;
   const currency = quote.currencyCode;
 
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
@@ -101,6 +101,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Focus-on-open + arrow-key cycling for the menu items (Tab closes).
   const { listRef: menuListRef, onKeyDown: onMenuListKeyDown } = useMenuKeyboard(menuOpen, () => setMenuOpen(false));
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
+  // A Send click that lands while edits are settling queues the composer to
+  // open on quiescence (see the header Send onClick).
+  const [openWhenQuiet, setOpenWhenQuiet] = useState(false);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -204,6 +207,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSendMessage('');
   }, [sending]);
 
+  useEffect(() => {
+    if (!openWhenQuiet || savePending) return;
+    setOpenWhenQuiet(false);
+    openSend();
+  }, [openWhenQuiet, savePending, openSend]);
+
   const toParsed = useMemo(() => parseAddressList(sendTo), [sendTo]);
   const ccParsed = useMemo(() => parseAddressList(sendCc), [sendCc]);
   const toError =
@@ -220,8 +229,22 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         : null;
   const composerValid = toParsed.emails.length > 0 && !toError && !ccError;
 
+  // Set when a Send click finds no valid recipients — renders the inline
+  // reason under the To field (the same visible-reason pattern the header
+  // button uses) instead of a silently dead disabled button.
+  const [toMissing, setToMissing] = useState(false);
+  const toInputRef = useRef<HTMLInputElement>(null);
+
   const send = useCallback(async () => {
-    if (sending || !composerValid) return;
+    if (sending) return;
+    // The prerequisite IS the click's job: no valid recipients → focus the To
+    // field and say why, rather than sitting disabled with no explanation.
+    if (!composerValid) {
+      setToMissing(toParsed.emails.length === 0 && !toError);
+      toInputRef.current?.focus();
+      return;
+    }
+    setToMissing(false);
     setSending(true);
     try {
       // The To list is always sent (the user saw and confirmed it); the other
@@ -344,8 +367,15 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         {canSend && (
           <button
             type="button"
-            onClick={openSend}
-            disabled={sending || isEmpty || savePending}
+            onClick={() => {
+              // During savePending the click's job is the prerequisite: the
+              // click itself blurs the dirty field (starting its save); queue
+              // the composer to open the moment the editor goes quiescent —
+              // one click to the money moment, never a dead one.
+              if (savePending) { setOpenWhenQuiet(true); return; }
+              openSend();
+            }}
+            disabled={sending || isEmpty}
             // Tie the disabled button to the visible hint below (rendered in both
             // variants) so AT announces the reason when the button takes focus.
             aria-describedby={
@@ -526,10 +556,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               {t('quotes.actions.sendConfirm.toLabel')}
             </label>
             <input
+              ref={toInputRef}
               id="quote-send-to"
               type="text"
               value={sendTo}
-              onChange={(e) => setSendTo(e.target.value)}
+              onChange={(e) => { setSendTo(e.target.value); setToMissing(false); }}
               disabled={sending}
               placeholder={t('quotes.actions.sendConfirm.toPlaceholder')}
               aria-invalid={toError != null}
@@ -588,7 +619,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           </div>
         </div>
         {toError && (
-          <p className="mt-1 text-xs text-destructive" data-testid="quote-send-to-error">{toError}</p>
+          <p id="quote-send-to-error" className="mt-1 text-xs text-destructive" data-testid="quote-send-to-error">{toError}</p>
+        )}
+        {toMissing && !toError && (
+          <p id="quote-send-to-missing" className="mt-1 text-xs text-destructive" data-testid="quote-send-to-missing">
+            {t('quotes.actions.sendConfirm.recipientRequired')}
+          </p>
         )}
         {ccError && (
           <p className="mt-1 text-xs text-destructive" data-testid="quote-send-cc-error">{ccError}</p>
@@ -634,7 +670,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             (still loading / org scope / fetch failed) shows neither. */}
         {hasDeposit && stripeStatus === 'disconnected' && (
           <div
-            className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+            className="mt-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning-foreground dark:text-warning"
             data-testid="quote-send-payment-warning"
           >
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -664,7 +700,8 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           <button
             type="button"
             onClick={() => void send()}
-            disabled={sending || !composerValid}
+            disabled={sending}
+            aria-describedby={toMissing ? 'quote-send-to-missing' : toError ? 'quote-send-to-error' : undefined}
             data-testid="quote-send-confirm"
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
           >

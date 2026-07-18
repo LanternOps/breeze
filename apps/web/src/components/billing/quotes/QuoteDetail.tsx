@@ -244,8 +244,14 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.oneTime')}</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.monthlyRecurring')}</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perMonth')}</span></dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.annualRecurring')}</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perYear')}</span></dd></div>
+              {/* Zero-value cadences stay silent — parity with the editor rail
+                  and the customer document, which both suppress $0.00 rows. */}
+              {Number(quote.monthlyRecurringTotal) > 0 && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.monthlyRecurring')}</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perMonth')}</span></dd></div>
+              )}
+              {Number(quote.annualRecurringTotal) > 0 && (
+                <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.annualRecurring')}</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perYear')}</span></dd></div>
+              )}
               {showTax && (
                 <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.tax')}{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
@@ -426,7 +432,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                   <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(l.quantity)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                   <td className="px-3 py-2">
-                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+                    <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
                       {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
                     </span>
                   </td>

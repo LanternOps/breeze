@@ -417,6 +417,8 @@ describe('QuoteEditor — inline line editing', () => {
     // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
     fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
+    // Image actions live in the line's ⋯ menu now.
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-remove-line-1'));
     await waitFor(() =>
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: null }),

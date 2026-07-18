@@ -236,7 +236,7 @@ describe('QuoteDetail — send proposal', () => {
     );
   });
 
-  it('disables Send and shows an inline error while To has an invalid address', async () => {
+  it('an invalid To keeps the inline error, and clicking Send focuses the field instead of sending', async () => {
     const sendQuote = vi.mocked(quotesApi.sendQuote);
 
     render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
@@ -245,11 +245,29 @@ describe('QuoteDetail — send proposal', () => {
     await openComposer();
     fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: 'not-an-email' } });
 
+    // Send stays ENABLED — its click performs the prerequisite (focus the To
+    // field) rather than sitting dead; nothing is sent while invalid.
     const confirm = screen.getByTestId('quote-send-confirm');
-    expect(confirm).toBeDisabled();
+    expect(confirm).not.toBeDisabled();
     expect(screen.getByTestId('quote-send-to-error')).toHaveTextContent('not-an-email');
     fireEvent.click(confirm);
     expect(sendQuote).not.toHaveBeenCalled();
+    expect(screen.getByTestId('quote-send-to')).toHaveFocus();
+  });
+
+  it('an EMPTY To gets a visible reason on Send click (no silent dead button)', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    await openComposer();
+    fireEvent.change(screen.getByTestId('quote-send-to'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    expect(sendQuote).not.toHaveBeenCalled();
+    expect(screen.getByTestId('quote-send-to-missing')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-to')).toHaveFocus();
   });
 
   it('warns when a deposit is configured but Stripe is not connected', async () => {

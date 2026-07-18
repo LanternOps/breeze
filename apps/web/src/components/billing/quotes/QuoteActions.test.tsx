@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteActions from './QuoteActions';
@@ -11,7 +11,14 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 vi.mock('../../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('../../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: [] }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../../stores/auth', () => ({
+  fetchWithAuth: vi.fn().mockResolvedValue(
+    { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
+  ),
+  // Opening the composer reads scope claims (Stripe-status gate) via
+  // useAuthStore.getState().tokens — a null-token store keeps it quiet.
+  useAuthStore: Object.assign(() => null, { getState: () => ({ tokens: null }) }),
+}));
 vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn(), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
 vi.mock('../../shared/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
 
@@ -73,7 +80,7 @@ describe('QuoteActions — header variant', () => {
     expect(screen.queryByTestId('quote-send-empty-hint')).not.toBeInTheDocument();
   });
 
-  it('savePending holds Send with a visible "Saving changes" hint until quiescent', async () => {
+  it('savePending keeps Send ENABLED; a click queues the composer to open on quiescence', async () => {
     const withLine: QuoteDetailData = {
       ...draft(),
       blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
@@ -91,20 +98,20 @@ describe('QuoteActions — header variant', () => {
     await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
 
     const send = screen.getByTestId('quote-send');
-    expect(send).toBeDisabled();
-    // The label stays "Send proposal" while edits settle (a spinner marks the
-    // wait) — swapping to "Saving…" resized the button and read as send-in-progress.
+    // The button is NOT disabled while edits settle: the click's job is the
+    // prerequisite (it blurs the dirty field, starting its save) and queues the
+    // composer to open at quiescence — never a dead click at the money moment.
+    expect(send).not.toBeDisabled();
     expect(send).toHaveTextContent('Send proposal');
-    expect(send).toBeDisabled();
-    expect(send).toHaveAttribute('aria-describedby', 'quote-send-saving-hint-header');
     const hint = screen.getByTestId('quote-send-saving-hint');
-    expect(hint).not.toHaveClass('sr-only');
     expect(hint).toHaveTextContent('Saving changes… Send unlocks when everything is saved.');
 
-    // Saves settle → the money-button unlocks and the hint drops.
+    fireEvent.click(send);
+    // Still pending — the composer hasn't opened yet.
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+
+    // Quiescence arrives → the queued composer opens without another click.
     rerender(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" savePending={false} />);
-    expect(screen.getByTestId('quote-send')).not.toBeDisabled();
-    expect(screen.getByTestId('quote-send')).toHaveTextContent('Send proposal');
-    expect(screen.queryByTestId('quote-send-saving-hint')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
   });
 });

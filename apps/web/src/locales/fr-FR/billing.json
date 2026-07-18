@@ -452,6 +452,7 @@
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
         "hideCostMargin": "Masquer coût et marge",
+        "imageFromUrl": "Ajouter une image depuis une URL…",
         "lineActions": "Actions de la ligne",
         "moveLineDown": "Descendre la ligne",
         "moveLineTo": "Déplacer la ligne vers",
@@ -551,6 +552,7 @@
         "percentOfDue": "Pourcentage du montant dû",
         "selectedLines": "Lignes sélectionnées",
         "selectedLinesHelp": "Cochez les lignes ponctuelles éligibles à l'acompte dans chaque tableau de prix.",
+        "selectedLinesStagedHint": "Marquez au moins une ligne ponctuelle ci-dessous comme éligible à l'acompte — le mode est enregistré dès qu'une ligne l'est.",
         "short": "Acompte"
       },
       "emptyBlocks": "Aucun contenu pour le moment. Ajoutez un titre, du texte enrichi ou un tableau de prix ci-dessous.",
@@ -764,15 +766,16 @@
         "messageLabel": "Ajouter un message personnel (facultatif)",
         "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans l'e-mail, au-dessus du lien d'acceptation.",
         "paymentEnabled": "Le paiement en ligne est activé — le client peut payer par carte après acceptation.",
-        "paymentNoteNoStripe": "Aucun paiement en ligne ne sera proposé après l'acceptation. Connectez Stripe dans Paramètres → Intégrations pour l'activer.",
+        "paymentNoteNoStripe": "À l'acceptation, le client n'aura pas d'option de paiement en ligne. Connectez Stripe dans Paramètres → Intégrations pour en proposer une.",
         "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans Paramètres → Intégrations pour encaisser l'acompte à l'acceptation.",
+        "recipientRequired": "Saisissez au moins un destinataire pour envoyer.",
         "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
         "subjectLabel": "Objet",
         "subjectPlaceholder": "Proposition {{number}} de votre entreprise",
         "subjectPlaceholderNoNumber": "Proposition de votre entreprise",
         "title": "Envoyer cette proposition ?",
         "toLabel": "À",
-        "toPlaceholder": "billing@customer.example.com",
+        "toPlaceholder": "Ajouter un destinataire…",
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
         "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi."
       },
@@ -982,10 +985,11 @@
       "table": {
         "created": "Créé",
         "draftQuote": "Devis brouillon",
+        "firstPeriodSuffix": "première période",
         "number": "Numéro",
         "selectAll": "Sélectionner tous les devis",
         "selectQuote": "Sélectionner le devis {{quote}}",
-        "total": "Première période"
+        "total": "Total"
       },
       "title": "Devis",
       "tryAgain": "Réessayer"
