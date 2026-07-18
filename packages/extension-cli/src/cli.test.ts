@@ -56,9 +56,11 @@ describe('breeze-ext sign key source', () => {
   // of an environment variable holding it (--key-env). Exactly one is required.
   // The key value itself is never accepted on argv, because process arguments
   // are world-readable via `ps`; --key-env carries the variable name, not the
-  // key. The action stub throws "not implemented yet"; reaching that error is
-  // proof the option surface accepted the input, whereas an option-parsing
-  // rejection surfaces as a distinct commander error before the action runs.
+  // key. `sign.test.ts` covers the fully-implemented signing behavior; here we
+  // only need proof the option surface accepted the input and reached the
+  // action -- i.e. failed on trying to read a nonexistent artifact file,
+  // rather than on option parsing (a distinct commander error raised before
+  // the action ever runs).
   async function runSignArgs(args: string[]): Promise<unknown> {
     const program = createProgram();
     program.exitOverride();
@@ -74,13 +76,15 @@ describe('breeze-ext sign key source', () => {
   it('accepts --key alone', async () => {
     const error = await runSignArgs(['bundle.breeze-ext', '--key', '/tmp/key.pem']);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('not implemented yet');
+    expect((error as Error).message).not.toMatch(/exactly one of --key or --key-env/i);
+    expect((error as { code?: string }).code?.startsWith('commander.')).not.toBe(true);
   });
 
   it('accepts --key-env alone', async () => {
     const error = await runSignArgs(['bundle.breeze-ext', '--key-env', 'BREEZE_SIGNING_KEY']);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('not implemented yet');
+    expect((error as Error).message).not.toMatch(/exactly one of --key or --key-env/i);
+    expect((error as { code?: string }).code?.startsWith('commander.')).not.toBe(true);
   });
 
   it('rejects supplying both --key and --key-env', async () => {

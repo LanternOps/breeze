@@ -52,7 +52,7 @@ export interface PackResult {
  * a caller who sets `SOURCE_DATE_EPOCH` expects it honored, and quietly
  * ignoring a typo would produce a differently-timestamped artifact than intended.
  */
-function resolveSourceDateEpoch(explicit: number | undefined): number {
+export function resolveSourceDateEpoch(explicit: number | undefined): number {
   if (explicit !== undefined) return explicit;
   const raw = process.env.SOURCE_DATE_EPOCH;
   if (raw === undefined || raw === '') return 0;
