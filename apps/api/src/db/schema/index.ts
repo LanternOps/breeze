@@ -1,4 +1,5 @@
 export * from './accountDeletion';
+export * from './actionIntents';
 export * from './approvals';
 export * from './elevations';
 export * from './pam';

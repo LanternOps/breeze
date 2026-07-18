@@ -1,8 +1,9 @@
-import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean, smallint } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, varchar, timestamp, jsonb, pgEnum, index, foreignKey, boolean, smallint, char } from 'drizzle-orm/pg-core';
 import type { AssuranceLevel } from '@breeze/shared';
 import { users } from './users';
 import { oauthClients, oauthSessions } from './oauth';
 import { aiToolExecutions } from './ai';
+import { actionIntents } from './actionIntents';
 
 export const approvalRiskTierEnum = pgEnum('approval_risk_tier', [
   'low',
@@ -66,6 +67,29 @@ export const approvalRequests = pgTable(
     elevationRequestId: uuid('elevation_request_id'),
 
     /**
+     * Action intents & durable approval layer (spec 2026-07-18): links this
+     * fanned-out approval row back to the `action_intents` row it decides.
+     * One intent fans out to N approver rows, all carrying the same
+     * intent_id; the first approver to decide mirrors the decision onto the
+     * intent (first-wins CAS). Nullable — non-intent approvals (PAM,
+     * legacy AI agent, dev seed) never set it. ON DELETE CASCADE (unlike
+     * execution_id/elevation_request_id's SET NULL) — intent-linked approval
+     * rows have no independent audit meaning once their intent is gone.
+     * Enforced mutually exclusive with execution_id/elevation_request_id by
+     * approval_requests_one_source_chk.
+     */
+    intentId: uuid('intent_id').references(() => actionIntents.id, { onDelete: 'cascade' }),
+
+    /**
+     * What content this decision approved: SHA-256 hex digest bound at
+     * fan-out time to the intent's argument_digest. Recorded on the decision
+     * row itself (rather than re-read from the intent) so the approval
+     * ledger is self-describing even if the intent's digest were ever
+     * disputed. Nullable — only set for intent-linked rows.
+     */
+    boundArgumentDigest: char('bound_argument_digest', { length: 64 }),
+
+    /**
      * Server-issued: TRUE when the requesting OAuth client is the user's
      * own mobile app AND the request targets that same user (i.e. the phone
      * is approving its own action). Replaces the mobile client's
@@ -99,6 +123,7 @@ export const approvalRequests = pgTable(
     elevationRequestIdIdx: index('approval_requests_elevation_request_id_idx').on(
       t.elevationRequestId,
     ),
+    intentIdIdx: index('approval_requests_intent_id_idx').on(t.intentId),
     // FK to elevation_requests(id) ON DELETE SET NULL is declared in the
     // migration only (2026-06-27-pam-approval-elevation-link.sql). Modeling it
     // in Drizzle would force an `import { elevationRequests } from
