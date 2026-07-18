@@ -1,4 +1,10 @@
-import { createPrivateKey, sign as cryptoSign, type KeyObject } from 'node:crypto';
+import {
+  createPrivateKey,
+  createPublicKey,
+  sign as cryptoSign,
+  verify as cryptoVerify,
+  type KeyObject,
+} from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -70,5 +76,44 @@ export function signEd25519(privateKey: KeyObject, payload: Buffer): Buffer {
   } catch {
     // Never surface a raw crypto exception.
     throw new Error('failed to sign payload');
+  }
+}
+
+/**
+ * Load a public key from a PEM file at `path` and require that it be
+ * Ed25519. Used by `breeze-ext inspect --public-key` -- an author-side,
+ * opt-in check, distinct from the host's trust-policy public keys
+ * (`apps/api/src/extensions/bundleVerifier.ts`'s `TrustedPublisher`).
+ */
+export async function loadEd25519PublicKey(path: string): Promise<KeyObject> {
+  const material = await readFile(path);
+
+  let publicKey: KeyObject;
+  try {
+    publicKey = createPublicKey(material);
+  } catch {
+    throw new Error('failed to load public key: not a valid public key');
+  }
+
+  if (publicKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error(
+      `public key must be Ed25519, got "${publicKey.asymmetricKeyType ?? 'unknown'}"`,
+    );
+  }
+
+  return publicKey;
+}
+
+/**
+ * Verify a RAW Ed25519 `signature` over `payload` under `publicKey`. Returns
+ * `false` rather than throwing on malformed input (e.g. a wrong-length
+ * signature) -- an inspection tool reports "invalid", it does not crash on
+ * adversarial or corrupted archive bytes.
+ */
+export function verifyEd25519(publicKey: KeyObject, payload: Buffer, signature: Buffer): boolean {
+  try {
+    return cryptoVerify(null, payload, publicKey, signature);
+  } catch {
+    return false;
   }
 }
