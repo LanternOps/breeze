@@ -20,7 +20,9 @@
 - Do not change the behavior of `probeTenant`, `complete-consent`, or `retest` — additive changes only.
 - Rate budget constants: 30 actions/minute, 2,000 actions/day per connection. Fail closed (`read_rate_limited`) if Redis is unavailable.
 - Reads execute for connections in `active` and `degraded` status only.
-- Site-scoped AI sessions (`auth.canAccessSite` defined) are refused.
+- Site-restricted AI sessions are refused. The restriction signal is
+  `auth.allowedSiteIds` being defined (undefined = unrestricted) — NOT
+  `auth.canAccessSite`, which is always a defined closure for org-scope contexts.
 - Run repo commands with the pinned Node version (`node_pinned_version` memory: Node 22.20.0 via nvm); wrong Node causes false test failures.
 - Never edit the two shipped consent/retest contract schemas' existing fields; extending files is fine.
 
@@ -897,7 +899,7 @@ export async function executeM365ReadAction(
 ```
 
 **Ladder (exact order):**
-1. `if (auth.canAccessSite) return { ok: false, code: 'site_scope_denied', message: 'Microsoft 365 tools are not available to site-restricted sessions.' };`
+1. `if (auth.allowedSiteIds) return { ok: false, code: 'site_scope_denied', message: 'Microsoft 365 tools are not available to site-restricted sessions.' };` (`allowedSiteIds` defined = site-restricted; `canAccessSite` is always defined for org scope and must NOT be used as the signal)
 2. Resolve org via `resolveWritableToolOrgId(auth, inputOrgId)`; error → `org_context_required` with the returned message.
 3. `if (!isM365GraphReadToolsEnabledForOrg(orgId)) return { ok: false, code: 'tools_disabled', message: 'Microsoft 365 Graph read tools are not enabled for this organization.' };`
 4. Load connection: `db.select().from(m365Connections).where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.profile, 'customer-graph-read'))).limit(1)` — request-path query, runs under the caller's RLS context (do NOT use a system context). Absent row, or `status` not in `('active','degraded')`, or `tenantId === null` → `connection_not_ready` with a message naming the state and next step ("Connect Microsoft 365 in Integrations settings" / "Run Retest on the Microsoft 365 card").
@@ -969,7 +971,8 @@ Site-scope defense in depth: the authoritative refusal lives in `readActionServi
 (Task 8, ladder step 1). Additionally, grep for where the chat pipeline narrows the
 `aiTools` map per session (e.g. tier/guardrail filtering before tools are handed to the
 model). If such a per-session filter exists, exclude the six `m365_*` tools there for
-sessions with `auth.canAccessSite` defined, and add one test for it. If no such filter
+sessions with `auth.allowedSiteIds` defined (the site-restriction signal), and add
+one test for it. If no such filter
 exists, skip this — do NOT invent a new filtering layer for this feature.
 
 - [ ] **Step 1: Failing tests** (`aiToolsM365.test.ts`, mocking `./m365ControlPlane/readActionService`): each tool maps its inputs to the exact expected action variant; `limit` clamps to the per-action max; a refusal result serializes `{ error, code }`; registration test asserts all 6 names exist in the `aiTools` map with `tier: 1`.
