@@ -105,4 +105,30 @@ describe('ExtensionStateStore — committed cross-connection state (Plan 02, Tas
       expect(rows).toEqual([]);
     }
   });
+
+  // `listAll` powers the platform-admin list endpoint (Plan 02, Task 6). Unit
+  // tests exercise it against an in-memory backend, which cannot catch a broken
+  // ORDER BY or a system-scope wrapper that RLS would filter to zero rows — so
+  // assert the real SQL here.
+  it('listAll returns every row under system scope, ordered by name', async () => {
+    const store = new ExtensionStateStore(new DrizzleExtensionStateBackend());
+    const second = `${extensionName}-b`;
+    try {
+      await store.upsertObserved({ name: extensionName, configuredVersion: '2.0.0' });
+      await store.upsertObserved({ name: second, configuredVersion: '3.0.0' });
+
+      const all = await store.listAll();
+      const ours = all.filter((row) => row.name.startsWith(extensionName));
+
+      expect(ours.map((row) => row.name)).toEqual([extensionName, second]);
+      expect(ours[0]).toMatchObject({ configuredVersion: '2.0.0', lifecycleState: 'discovered' });
+      // The full record shape the admin surface sanitizes from is present.
+      expect(ours[1].updatedAt).toBeInstanceOf(Date);
+    } finally {
+      await withSystemDbAccessContext(async () => {
+        const { db } = await import('../../db');
+        await db.delete(installedExtensions).where(eq(installedExtensions.name, second));
+      });
+    }
+  });
 });
