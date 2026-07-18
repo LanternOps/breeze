@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
-import { requestLikeFromSnapshot } from '../auditEvents';
+import { requestLikeFromSnapshot, type RequestLike } from '../auditEvents';
 import { resolveWritableToolOrgId } from '../aiTools';
 import {
   createGraphReadExecutorClient,
@@ -104,8 +104,9 @@ export async function executeM365ReadAction(
   auth: AuthContext,
   action: M365ReadAction,
   inputOrgId?: string,
+  auditRequest?: RequestLike,
 ): Promise<M365ReadActionServiceResult> {
-  if (auth.canAccessSite) {
+  if (auth.allowedSiteIds) {
     return {
       ok: false,
       code: 'site_scope_denied',
@@ -141,15 +142,18 @@ export async function executeM365ReadAction(
   const connection = rows[0];
 
   const notReady = connectionNotReadyState(connection);
-  if (notReady || !connection) {
+  if (notReady) {
     return {
       ok: false,
       code: 'connection_not_ready',
-      message: connectionNotReadyMessage(notReady ?? 'missing'),
+      message: connectionNotReadyMessage(notReady),
     };
   }
+  // connectionNotReadyState returns 'missing' whenever `connection` is
+  // undefined, so reaching here guarantees it is defined.
+  const readyConnection = connection as M365ConnectionRow;
 
-  const budget = await consumeM365ReadActionBudget(connection.id);
+  const budget = await consumeM365ReadActionBudget(readyConnection.id);
   if (!budget.allowed) {
     return {
       ok: false,
@@ -159,10 +163,10 @@ export async function executeM365ReadAction(
     };
   }
 
-  const request = requestLikeFromSnapshot({});
+  const request = auditRequest ?? requestLikeFromSnapshot({});
   const auditBase = {
     orgId,
-    connectionId: connection.id,
+    connectionId: readyConnection.id,
     actionType: action.type,
     actorId: auth.user.id,
   };
@@ -175,7 +179,7 @@ export async function executeM365ReadAction(
       correlationId: randomUUID(),
       // connection.tenantId is non-null here: connectionNotReadyState above
       // already refused the 'no-tenant' case.
-      tenantId: connection.tenantId as string,
+      tenantId: readyConnection.tenantId as string,
       action,
     });
   } catch (error) {

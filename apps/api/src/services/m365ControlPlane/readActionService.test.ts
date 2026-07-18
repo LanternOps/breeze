@@ -104,6 +104,7 @@ vi.mock('../auditEvents', async (importActual) => {
 import { executeM365ReadAction } from './readActionService';
 import { GraphReadExecutorClientError } from './graphReadExecutorClient';
 import type { AuthContext } from '../../middleware/auth';
+import type { RequestLike } from '../auditEvents';
 
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
@@ -124,6 +125,13 @@ const RUNTIME_CONFIG = {
   onboardingOrgIds: '*' as const,
 };
 
+// Structurally matches production (apps/api/src/middleware/auth.ts:527-554):
+// `canAccessSite` is ALWAYS a defined, permissive-by-default closure for
+// organization-scope AuthContexts — it is `allowedSiteIds` being defined
+// (not undefined) that signals a site-restricted caller. Defaulting
+// `canAccessSite` to an always-true closure and `allowedSiteIds` to
+// undefined here means overriding only `canAccessSite` (the old, wrong
+// signal) in a test can never look like it produces a site-scope denial.
 function auth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
     user: { id: ACTOR_ID, email: 'actor@example.test', name: 'Actor', isPlatformAdmin: false },
@@ -134,6 +142,8 @@ function auth(overrides: Partial<AuthContext> = {}): AuthContext {
     accessibleOrgIds: [ORG_ID],
     orgCondition: () => undefined,
     canAccessOrg: () => true,
+    allowedSiteIds: undefined,
+    canAccessSite: () => true,
     ...overrides,
   } as AuthContext;
 }
@@ -162,7 +172,7 @@ describe('executeM365ReadAction', () => {
 
   it('refuses site-restricted sessions before any DB access', async () => {
     const result = await executeM365ReadAction(
-      auth({ canAccessSite: () => true }),
+      auth({ allowedSiteIds: ['site-1'] }),
       ORG_GET_ACTION,
     );
 
@@ -174,6 +184,19 @@ describe('executeM365ReadAction', () => {
     expect(dbMocks.selectSpy).not.toHaveBeenCalled();
     expect(orgMocks.resolveWritableToolOrgId).not.toHaveBeenCalled();
     expect(auditMocks.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('proceeds past site-scope gate for an unrestricted org auth even though canAccessSite is defined', async () => {
+    // Regression for the wrong-signal bug: production org-scope AuthContexts
+    // ALWAYS carry a defined `canAccessSite` closure (see auth.ts:527-554),
+    // even when unrestricted. Only `allowedSiteIds` being defined signals a
+    // real site restriction. auth() defaults `canAccessSite` to a defined,
+    // permissive closure and `allowedSiteIds` to undefined — asserting this
+    // reaches org resolution (and beyond) proves the gate reads the right field.
+    const result = await executeM365ReadAction(auth(), ORG_GET_ACTION);
+
+    expect(orgMocks.resolveWritableToolOrgId).toHaveBeenCalled();
+    expect(result).not.toMatchObject({ code: 'site_scope_denied' });
   });
 
   it('surfaces org_context_required when org resolution fails', async () => {
@@ -267,6 +290,22 @@ describe('executeM365ReadAction', () => {
     expect(Object.keys(event.details)).not.toContain('items');
     expect(JSON.stringify(event)).not.toContain('"a"');
     expect(JSON.stringify(event)).not.toContain('"b"');
+  });
+
+  it('threads a provided auditRequest through to writeAuditEvent instead of the empty snapshot', async () => {
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({
+      success: true, kind: 'collection', items: [{ id: 'a' }], truncated: false,
+    });
+    const providedRequest: RequestLike = {
+      req: { header: (name: string) => (name === 'x-test' ? 'present' : undefined) },
+    };
+
+    await executeM365ReadAction(auth(), ORG_GET_ACTION, undefined, providedRequest);
+
+    expect(auditMocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    const [requestArg] = auditMocks.writeAuditEvent.mock.calls[0]!;
+    expect(requestArg).toBe(providedRequest);
   });
 
   it('returns a single resource on the executor resource happy path', async () => {
