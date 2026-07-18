@@ -17,10 +17,14 @@ export type GraphClientErrorCode =
   | 'graph_response_invalid'
   | 'graph_provider_rejected'
   | 'organization_probe_failed'
-  | 'application_token_invalid';
+  | 'application_token_invalid'
+  | 'graph_permission_missing'
+  | 'graph_license_required'
+  | 'graph_not_found'
+  | 'graph_throttled';
 
 export class GraphClientError extends Error {
-  constructor(readonly code: GraphClientErrorCode) {
+  constructor(readonly code: GraphClientErrorCode, readonly retryAfterSeconds?: number) {
     super(code);
     this.name = 'GraphClientError';
   }
@@ -38,6 +42,19 @@ export interface MicrosoftGraphClient {
     tenantId: string;
     accessToken: OpaqueAccessToken;
   }): Promise<GraphTenantObservation>;
+  readResource(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;
+    select: readonly string[];
+  }): Promise<Record<string, unknown>>;
+  readCollection(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;
+    query: Record<string, string>;
+    consistencyLevelEventual?: boolean;
+    maxItems: number;
+    maxPages: number;
+  }): Promise<{ items: Record<string, unknown>[]; truncated: boolean }>;
 }
 
 interface GraphClientConfig {
@@ -167,6 +184,37 @@ function graphUrl(path: string, query?: Record<string, string>): string {
   return url.href;
 }
 
+const LICENSE_ERROR_CODE = 'Authentication_RequestFromNonPremiumTenantOrB2CTenant';
+
+function retryAfterSecondsFromHeader(response: Response): number {
+  const raw = response.headers.get('retry-after');
+  const parsed = raw !== null && /^[0-9]{1,4}$/.test(raw) ? Number(raw) : 60;
+  return Math.min(300, Math.max(1, parsed));
+}
+
+function graphErrorCode(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.code === 'string') {
+      return parsed.error.code;
+    }
+  } catch { /* not JSON */ }
+  return undefined;
+}
+
+function readFailure(response: Response, body: string): GraphClientError {
+  if (response.status === 403) {
+    return failure(graphErrorCode(body) === LICENSE_ERROR_CODE
+      ? 'graph_license_required'
+      : 'graph_permission_missing');
+  }
+  if (response.status === 404) return failure('graph_not_found');
+  if (response.status === 429) {
+    return new GraphClientError('graph_throttled', retryAfterSecondsFromHeader(response));
+  }
+  return failure('graph_provider_rejected');
+}
+
 export function createMicrosoftGraphClient(
   config: GraphClientConfig,
   dependencies: GraphClientDependencies = {},
@@ -200,6 +248,40 @@ export function createMicrosoftGraphClient(
       });
       const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
       if (!response.ok) throw failure('graph_provider_rejected');
+      return parseJson(responseBody);
+    } catch (error) {
+      if (error instanceof GraphClientError) throw error;
+      if (timedOut) throw failure('graph_request_timeout');
+      throw failure('graph_transport_failed');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Status-aware single request used only by the read methods.
+  async function readRequest(
+    url: string,
+    accessToken: OpaqueAccessToken,
+    budget: RequestBudget,
+    headers?: Record<string, string>,
+  ): Promise<unknown> {
+    if (budget.requests >= maxRequestCount) throw failure('graph_response_too_large');
+    budget.requests += 1;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        redirect: 'error',
+        headers: { authorization: `Bearer ${accessToken}`, ...headers },
+        signal: controller.signal,
+      });
+      const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
+      if (!response.ok) throw readFailure(response, responseBody);
       return parseJson(responseBody);
     } catch (error) {
       if (error instanceof GraphClientError) throw error;
@@ -378,6 +460,62 @@ export function createMicrosoftGraphClient(
         organizationDisplayName,
         observedGrants,
       };
+    },
+
+    async readResource(input) {
+      if (!configValid
+        || typeof input.accessToken !== 'string'
+        || !input.accessToken
+        || !input.path.startsWith('/')) {
+        throw failure('graph_request_invalid');
+      }
+      const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
+      const body = await readRequest(
+        graphUrl(input.path, { '$select': input.select.join(',') }),
+        input.accessToken,
+        budget,
+      );
+      if (!isRecord(body)) throw failure('graph_response_invalid');
+      return body;
+    },
+
+    async readCollection(input) {
+      if (!configValid
+        || typeof input.accessToken !== 'string'
+        || !input.accessToken
+        || !input.path.startsWith('/')
+        || !positiveInteger(input.maxItems)
+        || !positiveInteger(input.maxPages)) {
+        throw failure('graph_request_invalid');
+      }
+      const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
+      const headers = input.consistencyLevelEventual ? { ConsistencyLevel: 'eventual' } : undefined;
+      const expectedPath = `/v1.0${input.path}`;
+      const items: Record<string, unknown>[] = [];
+      let truncated = false;
+      let url: string | undefined = graphUrl(input.path, input.query);
+      let pages = 0;
+      while (url !== undefined) {
+        pages += 1;
+        const page = parseCollectionPage(await readRequest(url, input.accessToken, budget, headers));
+        for (const value of page.value) {
+          if (!isRecord(value)) throw failure('graph_response_invalid');
+          if (items.length >= input.maxItems) {
+            truncated = true;
+            break;
+          }
+          items.push(value);
+        }
+        if (truncated) break;
+        if (page.nextLink !== undefined && pages >= input.maxPages) {
+          truncated = true;
+          break;
+        }
+        url = page.nextLink === undefined
+          ? undefined
+          : fixedCollectionNextLink(page.nextLink, expectedPath);
+      }
+      return { items, truncated };
     },
   };
 }

@@ -15,7 +15,11 @@ function dependencies(observation: Record<string, unknown> = {}) {
       acquireGraphAppToken: vi.fn().mockResolvedValue('access-token'),
     }),
     verifyIdentity: vi.fn().mockResolvedValue({ tenantId: TENANT_ID, administratorObjectId: '55555555-5555-4555-8555-555555555555' }),
-    graphClient: { probeTenant: vi.fn().mockResolvedValue({ tenantId: TENANT_ID, applicationId: CLIENT_ID, organizationDisplayName: 'Example', observedGrants: null, ...observation }) },
+    graphClient: {
+      probeTenant: vi.fn().mockResolvedValue({ tenantId: TENANT_ID, applicationId: CLIENT_ID, organizationDisplayName: 'Example', observedGrants: null, ...observation }),
+      readResource: vi.fn(),
+      readCollection: vi.fn(),
+    },
   };
 }
 
