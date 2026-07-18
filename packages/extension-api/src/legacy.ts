@@ -274,9 +274,14 @@ export interface LegacyExtensionContext {
    * Registers a cron job the BullMQ job host will schedule and run. The job's
    * `name` MUST match a `jobs[].name` the manifest declares (the staging
    * session enforces declared-vs-registered parity), and `cron` is a standard
-   * cron pattern. Optional: an extension that declares no jobs never calls this.
+   * cron pattern. An extension that declares no jobs never calls this.
+   *
+   * OPTIONAL on the type so that adding it does not break the typecheck of
+   * out-of-repo extensions that construct a `LegacyExtensionContext` literal
+   * (e.g. in their own tests). The core loader ALWAYS provides it; an extension
+   * that wants to register a job must therefore guard the call itself.
    */
-  registerJob: (job: ExtensionJobDefinition) => void;
+  registerJob?: (job: ExtensionJobDefinition) => void;
   /** Core auth middleware, injected so the extension need not import @breeze/api. */
   authMiddleware: MiddlewareHandler;
   /** Core agent auth middleware; sets `c.get('agent')` and opens the org RLS context. */

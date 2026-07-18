@@ -115,10 +115,15 @@ async function stageLegacyExtension(
 
   const context: ExtensionContext = {
     mountRoute: (subApp) => session.registrar.mountRoute(subApp),
-    // Source-dir legacy extensions synthesize `jobs: []`, so a registration here
-    // would fail the session's declared-vs-registered check — but the channel is
-    // wired for shape parity with the signed-bundle context.
-    registerJob: (job) => session.registrar.registerJob(job),
+    // Source-dir legacy extensions synthesize `jobs: []`, so there is no manifest
+    // declaration a registration could match. Fail LOUDLY and immediately rather
+    // than passing through to a declared-vs-registered mismatch that only
+    // surfaces later — the author needs a signed bundle with declared `jobs`.
+    registerJob: () => {
+      throw new Error(
+        `[extensions] source-dir extensions cannot register jobs (extension "${extension.name}"); package it as a signed bundle with declared manifest jobs`,
+      );
+    },
     authMiddleware: legacyExtensionAuthMiddleware,
     agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
     helperAuthMiddleware: legacyExtensionHelperAuthMiddleware,
