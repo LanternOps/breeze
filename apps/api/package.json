@@ -93,6 +93,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@breeze/extension-cli": "workspace:*",
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.9.3",
