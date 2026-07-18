@@ -26,6 +26,12 @@ export interface PackOptions {
    * `<name>-<version>.breeze-ext`, taken from the manifest.
    */
   out: string;
+  /**
+   * Unix timestamp (seconds) baked into every archive entry so identical
+   * source trees produce byte-identical artifacts. When omitted, resolved from
+   * the `SOURCE_DATE_EPOCH` environment variable, falling back to `0`.
+   */
+  sourceDateEpoch?: number;
 }
 
 export interface PackResult {
@@ -36,12 +42,25 @@ export interface PackResult {
 }
 
 /**
- * Pinned to the Unix epoch rather than the current time so that packing the
- * same source tree twice — on any machine, at any time — produces
- * byte-identical archives. `writeDeterministicZip` bakes this into every
- * entry's timestamp.
+ * Resolve the timestamp baked into every archive entry. Precedence: an explicit
+ * `options.sourceDateEpoch`, then the `SOURCE_DATE_EPOCH` environment variable
+ * (the reproducible-builds convention), then `0`. Pinning it — rather than
+ * using the current time — is what makes packing the same source tree twice, on
+ * any machine at any time, produce byte-identical archives.
+ *
+ * A present-but-unparseable env value is an error, not a silent fallback to 0:
+ * a caller who sets `SOURCE_DATE_EPOCH` expects it honored, and quietly
+ * ignoring a typo would produce a differently-timestamped artifact than intended.
  */
-const SOURCE_DATE_EPOCH = 0;
+function resolveSourceDateEpoch(explicit: number | undefined): number {
+  if (explicit !== undefined) return explicit;
+  const raw = process.env.SOURCE_DATE_EPOCH;
+  if (raw === undefined || raw === '') return 0;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds');
+  }
+  return Number(raw);
+}
 
 async function sha256File(filePath: string): Promise<string> {
   const hash = createHash('sha256');
@@ -77,11 +96,12 @@ export async function packExtension(options: PackOptions): Promise<PackResult> {
 
   const integrityBytes = buildIntegrityDocument(members);
   const artifactPath = await resolveArtifactPath(options.out, manifest.name, manifest.version);
+  const sourceDateEpoch = resolveSourceDateEpoch(options.sourceDateEpoch);
 
   await writeDeterministicZip(
     [...members, { path: 'integrity.json', bytes: integrityBytes }],
     artifactPath,
-    { sourceDateEpoch: SOURCE_DATE_EPOCH },
+    { sourceDateEpoch },
   );
 
   const digest = `sha256:${await sha256File(artifactPath)}`;
