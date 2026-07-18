@@ -438,15 +438,35 @@ git commit -m "feat(extensions): artifact inspection"
 
 **Exit criteria 2 and 3 of issue #2619.**
 
-- [ ] **Step 1: Build the two-replica harness**
+- [ ] **Step 1: Build the two-replica harness as two CHILD PROCESSES**
 
-Two independent reconciler instances against the same `:5433` database, each with its own artifact-store root and its own state-store connection, run concurrently. The harness must be able to (a) start both and await convergence, and (b) observe how many times each migration actually applied.
+**Do not attempt an in-process harness.** This was investigated before the task was written, and two `reconcileExtensions()` calls in one Node process are not two replicas. The reconciler's DI covers only the bundle/verify/migration path; these are hardwired process-global singletons that both "replicas" would silently share:
 
-Read `reconciler.ts`, `migrator.ts`, and `stateStore.ts` first and build the harness against their real seams. If those seams do not permit two genuinely independent instances in one process, report that as a BLOCKED finding rather than faking concurrency — a harness where both "replicas" share a lock manager proves nothing about advisory-lock serialization.
+| Shared state | Location |
+|---|---|
+| the single `postgres()` pool backing the state store and every extension `context.db` | `apps/api/src/db/index.ts:31`, consumed at `reconciler.ts:75,497` and `stateStore.ts:3` |
+| `DrizzleExtensionStateBackend` — no constructor seam to point at another pool | `stateStore.ts:188-338,341-343` |
+| `cache` and `runtimeTenancy[]` | `tenancyRegistry.ts:4,14` |
+| `extractedRoots` Map | `faultAttribution.ts:35` |
+| `skipPrefixes[]` | `middleware/globalRateLimit.ts:25` |
+
+Node's module cache makes a second copy of these unobtainable in-process. An in-process test would prove "one process reconciling twice" while claiming to prove replica convergence — precisely the false end-to-end guarantee issue #2619 exists to prevent.
+
+Instead: a small entry script that imports and runs `reconcileExtensions` against config supplied by environment, launched twice via `child_process.fork`. Each child gets genuinely separate `db` pools and registries, matching what actually differs between real replicas. Children report outcomes as JSON on stdout plus an exit code; the parent test asserts on both.
+
+Set `DATABASE_URL` and `DATABASE_URL_APP` to `:5433` in the child environment.
 
 - [ ] **Step 2: Write the happy-path two-replica test**
 
-One **required** and one **optional** signed extension, both packed and signed by the real CLI. Assert: both replicas activate both extensions; each migration is applied exactly once (advisory-lock serialized, verified against the migration ledger, not by counting log lines); both replicas converge on the same active set.
+One **required** and one **optional** signed extension, both packed and signed by the real CLI. Assert: both replicas activate both extensions; each migration is applied exactly once; both replicas converge on the same active set.
+
+**Exactly-once needs two pieces of evidence, not one.** The ledger is `breeze_migrations` (`autoMigrate.ts:18`, schema at `:300-305`), with extension rows namespaced `<extension>/<filename>` (`migrator.ts:196`). But `recordMigration` inserts `ON CONFLICT (filename) DO NOTHING` (`autoMigrate.ts:322-330`), so a row count of 1 cannot by itself distinguish "applied once" from "applied twice, second insert absorbed." Therefore:
+1. assert `SELECT count(*) FROM breeze_migrations WHERE filename = '<ext>/<file>'` is exactly 1, **and**
+2. make the fixture migration deliberately **non-idempotent** (`CREATE TABLE ...` with no `IF NOT EXISTS`) so a genuine second execution of the DDL throws.
+
+The existing `apps/api/src/__tests__/integration/extensionMigrator.integration.test.ts:149-194` uses exactly this pairing — follow it.
+
+The lock is session-scoped `pg_advisory_lock` (`migrator.ts:114,119`, rationale at `:25-37`), taken on a dedicated `sql.reserve()` connection (`migrator.ts:190-219`). Separate processes give separate sessions, so contention is real.
 
 - [ ] **Step 3: Write the failure-policy tests**
 
@@ -454,6 +474,11 @@ One **required** and one **optional** signed extension, both packed and signed b
 - A failing **optional** extension leaves **both** replicas booting, with the extension recorded failed and withdrawn from the active set.
 
 Induce failure through a genuinely failing extension (e.g. a migration that violates a constraint), not by stubbing the reconciler's error path.
+
+Observable outcomes, confirmed against the code (the branch is `reconciler.ts:657-674`):
+- Both paths first call `recordSanitizedFailure` (`reconciler.ts:658`, impl `:178-190`), setting `installed_extensions.lifecycle_state` to `'incompatible'` for an `ExtensionIncompatibleError` and `'failed'` otherwise. Full state set: `discovered | verified | migrated | active | disabled | failed | incompatible` (`db/schema/extensions.ts:18-26`). Both then `registry.withdraw(name)` and `clearExtensionRoot(name)` (`:659-660`).
+- **Optional**: no throw, loop continues (`:661-666`); extension appears in `summary.failed`.
+- **Required**: throws `RequiredExtensionError` (`:667-673`, class at `errors.ts:23-34` — it deliberately carries no `cause`, so do not assert on one). In production this reaches `bootstrap().catch` at `index.ts:1712-1714` → `process.exit(1)`. In the child-process harness, assert the **child's nonzero exit code**, which is the faithful analogue of aborted boot.
 
 - [ ] **Step 4: Run verification**
 
