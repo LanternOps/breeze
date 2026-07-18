@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
@@ -130,7 +130,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
       .delete(softwareInventory)
       .where(eq(softwareInventory.deviceId, device.id));
 
-    let inserted: { id: string; name: string; vendor: string | null }[] = [];
+    let replacementRows: { id: string; name: string; vendor: string | null }[] = [];
     if (data.software.length > 0) {
       const now = new Date();
       const rows = data.software.map((item) => ({
@@ -146,20 +146,28 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
         hashAlgorithm: item.hashAlgorithm || null,
         lastSeen: now
       }));
-      // .returning() serializes up to 10k rows back over the wire — only pay
-      // for it when there are findings to re-link.
+      await tx.insert(softwareInventory).values(rows);
+      // .returning() on the insert would serialize up to 10k rows back over
+      // the wire when only the handful of names carried by linked findings
+      // matter — select just the candidate replacement rows instead,
+      // normalized the same way the re-link match below is.
       if (linkedFindings.length > 0) {
-        inserted = await tx.insert(softwareInventory).values(rows).returning({
-          id: softwareInventory.id,
-          name: softwareInventory.name,
-          vendor: softwareInventory.vendor,
-        });
-      } else {
-        await tx.insert(softwareInventory).values(rows);
+        const findingNames = [...new Set(linkedFindings.map((f) => f.name.trim().toLowerCase()))];
+        replacementRows = await tx
+          .select({
+            id: softwareInventory.id,
+            name: softwareInventory.name,
+            vendor: softwareInventory.vendor,
+          })
+          .from(softwareInventory)
+          .where(and(
+            eq(softwareInventory.deviceId, device.id),
+            inArray(sql`lower(trim(${softwareInventory.name}))`, findingNames)
+          ));
       }
     }
 
-    if (linkedFindings.length > 0 && inserted.length > 0) {
+    if (linkedFindings.length > 0 && data.software.length > 0) {
       // Match by (name, vendor), normalized the same way the correlation
       // layer matches products (lower(trim(...)) — see the
       // softwareProductResolutions join in vulnerabilityCorrelation.ts), so a
@@ -172,7 +180,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
         JSON.stringify([name.trim().toLowerCase(), (vendor ?? '').trim().toLowerCase()]);
 
       const newRowByKey = new Map<string, string>();
-      for (const row of inserted) {
+      for (const row of replacementRows) {
         const key = relinkKey(row.name, row.vendor);
         if (!newRowByKey.has(key)) newRowByKey.set(key, row.id);
       }
@@ -208,7 +216,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
       }
     }
 
-    if (linkedFindings.length > 0 && inserted.length === 0) {
+    if (linkedFindings.length > 0 && data.software.length === 0) {
       // An empty report against a device with linked findings just severed
       // every link in one statement. Legitimate only if all software was
       // actually removed — it is also the signature of a truncated agent-side

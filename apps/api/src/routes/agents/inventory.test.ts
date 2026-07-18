@@ -196,19 +196,21 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
 
   function mockSoftwareTx(opts: {
     linkedFindings: Array<{ findingId: string; name: string; vendor: string | null }>;
-    insertedRows: Array<{ id: string; name: string; vendor: string | null }>;
+    replacementRows: Array<{ id: string; name: string; vendor: string | null }>;
   }) {
     const updateCalls: TxUpdateCall[] = [];
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
-    const insertValues = vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue(opts.insertedRows),
-    });
+    const insertValues = vi.fn().mockResolvedValue(undefined);
     const tx = {
+      // Two select shapes: the linked-findings join
+      // (select().from().innerJoin().where()) and the post-insert replacement
+      // row lookup (select().from().where()).
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue(opts.linkedFindings),
           }),
+          where: vi.fn().mockResolvedValue(opts.replacementRows),
         }),
       }),
       delete: vi.fn().mockReturnValue({ where: deleteWhere }),
@@ -253,7 +255,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
         { findingId: 'finding-2', name: 'Google Chrome', vendor: 'Google LLC' },
         { findingId: 'finding-3', name: '7-Zip', vendor: null },
       ],
-      insertedRows: [
+      replacementRows: [
         { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
         { id: 'sw-new-2', name: '7-Zip', vendor: null },
       ],
@@ -279,7 +281,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
       linkedFindings: [
         { findingId: 'finding-1', name: 'GOOGLE Chrome ', vendor: 'GOOGLE LLC' },
       ],
-      insertedRows: [
+      replacementRows: [
         { id: 'sw-new-1', name: 'Google Chrome', vendor: ' Google LLC' },
       ],
     });
@@ -299,7 +301,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
       linkedFindings: [
         { findingId: 'finding-1', name: 'Agent', vendor: 'Vendor A' },
       ],
-      insertedRows: [
+      replacementRows: [
         { id: 'sw-new-1', name: 'Agent', vendor: 'Vendor B' },
       ],
     });
@@ -316,7 +318,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
       linkedFindings: [
         { findingId: 'finding-1', name: 'Old App', vendor: 'Gone Inc.' },
       ],
-      insertedRows: [
+      replacementRows: [
         { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
       ],
     });
@@ -333,7 +335,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
     mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
     const { tx, updateCalls } = mockSoftwareTx({
       linkedFindings: [],
-      insertedRows: [{ id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' }],
+      replacementRows: [{ id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' }],
     });
 
     const res = await putSoftware(makeApp(), [
@@ -351,7 +353,7 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
       linkedFindings: [
         { findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' },
       ],
-      insertedRows: [],
+      replacementRows: [],
     });
 
     const res = await putSoftware(makeApp(), []);
