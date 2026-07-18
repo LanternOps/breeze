@@ -92,9 +92,14 @@ describe('Action intents migration', () => {
     }
   });
 
-  it('forces RLS on intent_outbox with no permissive policies (system-scoped)', () => {
-    expect(sql).toMatch(/ALTER TABLE intent_outbox ENABLE ROW LEVEL SECURITY/);
-    expect(sql).toMatch(/ALTER TABLE intent_outbox FORCE ROW LEVEL SECURITY/);
+  it('leaves intent_outbox truly unscoped, with no RLS and no policies (matches device_commands)', () => {
+    // FORCE ROW LEVEL SECURITY with zero policies is default-DENY for every
+    // access path — breeze_app is NOSUPERUSER NOBYPASSRLS and
+    // withSystemDbAccessContext only sets the breeze.scope GUC, it does not
+    // bypass RLS. So intent_outbox must carry NO ENABLE/FORCE ROW LEVEL
+    // SECURITY at all, same as device_commands, or every INSERT 42501s.
+    expect(sql).not.toMatch(/ALTER TABLE intent_outbox ENABLE ROW LEVEL SECURITY/);
+    expect(sql).not.toMatch(/ALTER TABLE intent_outbox FORCE ROW LEVEL SECURITY/);
     expect(sql).not.toMatch(/CREATE POLICY[^\n]*ON intent_outbox/i);
   });
 

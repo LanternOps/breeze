@@ -130,10 +130,10 @@ CREATE POLICY breeze_org_isolation_update ON action_intents
 CREATE POLICY breeze_org_isolation_delete ON action_intents
   FOR DELETE USING (public.breeze_has_org_access(org_id));
 
--- intent_outbox: transactional outbox. System-scoped — no RLS policies are
--- created, so under FORCE ROW LEVEL SECURITY only the system DB context
--- (which bypasses RLS via withSystemDbAccessContext) can read/write it, same
--- as device_commands. Workers claim rows under withSystemDbAccessContext.
+-- intent_outbox: transactional outbox, deliberately WITHOUT row level
+-- security (see the comment below the table, after the FK/indexes, for the
+-- full rationale). Written under the creating request's org context,
+-- drained under withSystemDbAccessContext — same as device_commands.
 CREATE TABLE IF NOT EXISTS intent_outbox (
   id BIGSERIAL PRIMARY KEY,
   intent_id UUID NOT NULL REFERENCES action_intents(id) ON DELETE CASCADE,
@@ -152,8 +152,29 @@ CREATE INDEX IF NOT EXISTS intent_outbox_unpublished_idx
 CREATE INDEX IF NOT EXISTS intent_outbox_intent_id_idx
   ON intent_outbox (intent_id);
 
-ALTER TABLE intent_outbox ENABLE ROW LEVEL SECURITY;
-ALTER TABLE intent_outbox FORCE ROW LEVEL SECURITY;
+-- No ALTER TABLE ... ROW LEVEL SECURITY here, intentionally. intent_outbox is
+-- truly unscoped, matching device_commands (see apps/api/src/db/schema/devices.ts
+-- and its migration — grep confirms no ENABLE/FORCE ROW LEVEL SECURITY there
+-- either). Reasoning:
+--   * breeze_app is NOSUPERUSER NOBYPASSRLS, and withSystemDbAccessContext
+--     only sets the breeze.scope GUC — it does NOT escalate role or bypass
+--     RLS. So FORCE ROW LEVEL SECURITY with zero policies is default-DENY
+--     for every access path, including the system context, and would 42501
+--     on every INSERT.
+--   * The row is written inside createActionIntent's transaction, which runs
+--     under the CALLING REQUEST's org-scoped context (breeze.scope=
+--     'organization'), while the publisher worker (later task) reads/updates
+--     it under breeze.scope='system'. No single scoped policy can cover both
+--     access paths without either leaking to orgs or blocking the worker.
+--   * The payload is ids-only (intent id + event type; no tenant data), and
+--     no route ever exposes this table directly — it is purely a
+--     worker-internal delivery queue, drained by trusted background code.
+--     Tenant isolation is enforced one hop away, on action_intents itself
+--     (Shape 1, org_id, ENABLE+FORCE+policies above) and via the ON DELETE
+--     CASCADE FK from intent_id, so org erasure still cleans this table up
+--     for free.
+-- Documented as INTENTIONAL_UNSCOPED in rls-coverage.integration.test.ts,
+-- mirroring device_commands exactly.
 
 -- approval_requests: new nullable intent_id link (one intent fans out to N
 -- approver rows) + bound_argument_digest (what content the decision approved).
