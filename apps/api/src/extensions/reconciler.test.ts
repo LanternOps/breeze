@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { KeyObject } from 'node:crypto';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 import { reconcileExtensions, type ReconcilePorts } from './reconciler';
+import { ExtensionIncompatibleError } from './errors';
 import {
   ExtensionContributionRegistry,
   type StagedExtensionContributions,
@@ -140,7 +141,7 @@ function fakeStaged(): StagedExtensionContributions {
   };
 }
 
-type Phase = 'migration' | 'register';
+type Phase = 'compatibility' | 'migration' | 'register';
 
 async function reconcileFixture({ required, failAt }: { required: boolean; failAt: Phase }) {
   const registry = new ExtensionContributionRegistry();
@@ -164,7 +165,11 @@ async function reconcileFixture({ required, failAt }: { required: boolean; failA
     acquire: async () => '/tmp/demo.breeze-ext',
     trustFor: () => ({ publisher: 'breeze', publicKey: {} as KeyObject }),
     verify: async () => fakeBundle(),
-    assertCompatible: () => {},
+    assertCompatible: () => {
+      if (failAt === 'compatibility') {
+        throw new ExtensionIncompatibleError(['simulated host incompatibility']);
+      }
+    },
     extractVerifiedPayload: async () => '/tmp/extracted/demo',
     loadServerEntry: async () => ({ register: async () => {} }),
     runMigrations: async () => {
@@ -209,6 +214,21 @@ describe('reconcileExtensions', () => {
     expect(row?.lifecycleState).toBe('failed');
     expect(row?.lastErrorMessage).not.toContain('simulated migration failure');
     expect(row?.lastErrorCategory).toBeTruthy();
+  });
+
+  it('persists an incompatible lifecycle when a first-time extension fails compatibility', async () => {
+    // Regression: observe now runs BEFORE the compatibility gate, so a
+    // never-before-seen extension that fails compatibility still gets an
+    // installed_extensions row for recordSanitizedFailure's UPDATE to land on.
+    const { summary, stateStore } = await reconcileFixture({
+      required: false,
+      failAt: 'compatibility',
+    });
+    expect(summary.failed).toEqual(['demo']);
+    const row = await stateStore.get('demo');
+    expect(row?.lifecycleState).toBe('incompatible');
+    expect(row?.lastErrorCategory).toBe('incompatible');
+    expect(row?.lastErrorMessage).not.toContain('simulated host incompatibility');
   });
 
   it('is a no-op when the deployment config is absent', async () => {
