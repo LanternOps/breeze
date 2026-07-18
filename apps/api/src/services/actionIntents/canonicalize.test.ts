@@ -43,6 +43,38 @@ describe('canonicalizeArguments', () => {
     expect(() => canonicalizeArguments(obj)).toThrow('circular argument structure');
   });
 
+  it('should allow a shared (non-circular) object instance reused at sibling keys', () => {
+    const shared = { m: 1, n: 2 };
+    const obj = { x: shared, y: shared };
+    const canonical = canonicalizeArguments(obj);
+    const parsed = JSON.parse(canonical);
+    expect(parsed.x).toEqual({ m: 1, n: 2 });
+    expect(parsed.y).toEqual({ m: 1, n: 2 });
+    expect(canonicalizeArguments({ x: shared })).toBe(
+      JSON.stringify({ x: { m: 1, n: 2 } })
+    );
+  });
+
+  it('should allow a shared (non-circular) object instance reused within an array', () => {
+    const shared = { a: 1 };
+    const obj = { arr: [shared, shared] };
+    const canonical = canonicalizeArguments(obj);
+    const parsed = JSON.parse(canonical);
+    expect(parsed.arr).toEqual([{ a: 1 }, { a: 1 }]);
+  });
+
+  it('should allow a deep shared reference reused across sibling subtrees', () => {
+    const sharedLeaf = { id: 'leaf', value: 42 };
+    const obj = {
+      branchA: { nested: { leaf: sharedLeaf } },
+      branchB: { otherNested: { leaf: sharedLeaf } },
+    };
+    expect(() => canonicalizeArguments(obj)).not.toThrow();
+    const parsed = JSON.parse(canonicalizeArguments(obj));
+    expect(parsed.branchA.nested.leaf).toEqual({ id: 'leaf', value: 42 });
+    expect(parsed.branchB.otherNested.leaf).toEqual({ id: 'leaf', value: 42 });
+  });
+
   it('should throw on functions', () => {
     const obj = { fn: () => {} };
     expect(() => canonicalizeArguments(obj as Record<string, unknown>)).toThrow(TypeError);
