@@ -137,13 +137,15 @@ function checkIntegrity(
   const actualPaths = new Set([...members.keys()].filter((path) => !RESERVED_MEMBERS.has(path)));
   const committedPaths = new Set(Object.keys(committed.members));
 
-  for (const path of committedPaths) {
+  // Iterate entries (not keys) so `expected` is narrowed to the member shape
+  // rather than `... | undefined` under `noUncheckedIndexedAccess` — the value
+  // always exists here, but the compiler can't know that from a keyed lookup.
+  for (const [path, expected] of Object.entries(committed.members)) {
     if (!actualPaths.has(path)) {
       findings.push({ code: 'integrity_mismatch', path, reason: 'missing_from_archive' });
       continue;
     }
     const bytes = members.get(path)!;
-    const expected = committed.members[path];
     if (sha256Hex(bytes) !== expected.sha256 || bytes.length !== expected.size) {
       findings.push({ code: 'integrity_mismatch', path, reason: 'digest_mismatch' });
     }
