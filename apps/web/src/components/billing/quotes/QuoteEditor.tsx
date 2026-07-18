@@ -32,6 +32,7 @@ import { computeQuoteTotals, computeQuoteProfit, toQuoteDepositConfig, type Quot
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import RichTextEditor from '../../common/RichTextEditor';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, useSavedFlash } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';

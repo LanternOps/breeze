@@ -8,6 +8,7 @@ import { Loader2 } from 'lucide-react';
 import '../../../lib/i18n';
 import { markupPct, priceFromMarkup, type QuoteLineForMath } from '@breeze/shared';
 import { quoteImageUrl } from '../../../lib/api/quotes';
+import { fetchWithAuth } from '../../../stores/auth';
 import { type CatalogItem } from '../../../lib/api/catalog';
 import { type EcProduct, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import RichTextEditor from '../../common/RichTextEditor';
