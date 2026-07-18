@@ -61,6 +61,12 @@ class InMemoryExtensionStateBackend implements ExtensionStateBackend {
     return row ? { ...row } : null;
   }
 
+  async listRows(): Promise<ExtensionStateRecord[]> {
+    return [...this.rows.values()]
+      .map((row) => ({ ...row }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   async recordFailure(
     name: string,
     state: Extract<ExtensionLifecycleState, 'failed' | 'incompatible'>,

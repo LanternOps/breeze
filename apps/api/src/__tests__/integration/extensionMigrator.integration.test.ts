@@ -50,6 +50,9 @@ class InMemoryBackend implements ExtensionStateBackend {
     const r = this.rows.get(name);
     return r ? { ...r } : null;
   }
+  async listRows(): Promise<ExtensionStateRecord[]> {
+    return [...this.rows.values()].map((r) => ({ ...r }));
+  }
   async recordFailure(): Promise<void> {}
   async recordActive(name: string, activeVersion: string | null): Promise<void> {
     const r = this.rows.get(name);

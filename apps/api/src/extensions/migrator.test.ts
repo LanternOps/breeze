@@ -65,6 +65,10 @@ class InMemoryBackend implements ExtensionStateBackend {
     return row ? { ...row } : null;
   }
 
+  async listRows(): Promise<ExtensionStateRecord[]> {
+    return [...this.rows.values()].map((row) => ({ ...row }));
+  }
+
   async recordFailure(): Promise<void> {}
 
   async recordActive(name: string, activeVersion: string | null): Promise<void> {

@@ -84,6 +84,11 @@ export interface ExtensionStateBackend {
   setEnabled(name: string, enabled: boolean): Promise<void>;
   getRow(name: string): Promise<ExtensionStateRecord | null>;
   /**
+   * Every persisted row, ordered by name. Powers the platform-admin list
+   * endpoint; system-scoped like every other backend read.
+   */
+  listRows(): Promise<ExtensionStateRecord[]>;
+  /**
    * Record a failure: set lifecycle_state to the given failure state, the error
    * category/message, and updated_at. Does NOT touch `enabled`. No-op if absent.
    */
@@ -126,6 +131,16 @@ export class ExtensionStateStore {
   /** Full persisted record, or null when the extension is unknown. */
   async get(name: string): Promise<ExtensionStateRecord | null> {
     return this.backend.getRow(name);
+  }
+
+  /**
+   * Every persisted record, ordered by name. Read-only enumeration for the
+   * platform-admin surface; it performs no mutation and no filtering, so an
+   * operator sees failed and disabled extensions too (exactly the rows they
+   * need to diagnose).
+   */
+  async listAll(): Promise<ExtensionStateRecord[]> {
+    return this.backend.listRows();
   }
 
   /** Record a lifecycle failure (mapped to 'incompatible' or 'failed'). */
@@ -221,6 +236,15 @@ export class DrizzleExtensionStateBackend implements ExtensionStateBackend {
         .where(eq(installedExtensions.name, name))
         .limit(1);
       return row ?? null;
+    });
+  }
+
+  async listRows(): Promise<ExtensionStateRecord[]> {
+    return withSystemDbAccessContext(async () => {
+      return db
+        .select()
+        .from(installedExtensions)
+        .orderBy(installedExtensions.name);
     });
   }
 
