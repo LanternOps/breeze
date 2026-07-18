@@ -83,6 +83,9 @@ function validateMembers(members: readonly DeterministicZipMember[]): void {
     }
     seenExact.add(member.path);
 
+    // toLowerCase (NOT toLocaleLowerCase): case folding here must be
+    // locale-independent so the same member set is accepted or rejected
+    // identically on every machine, matching the determinism contract.
     const folded = member.path.toLowerCase();
     if (seenCaseFold.has(folded)) {
       throw new Error(`deterministic zip rejected: case-fold collision for member path "${member.path}"`);
@@ -149,6 +152,12 @@ export async function writeDeterministicZip(
     });
   }
 
-  await archive.finalize();
-  await finished;
+  // Await BOTH promises together. If we awaited `finalize()` first and it
+  // rejected (e.g. the output stream failed with ENOENT on a missing --out
+  // directory), `finished` — which also rejects on that same stream error —
+  // would be left with no awaiter: an orphaned unhandled rejection that Node's
+  // default --unhandled-rejections=throw turns into a hard process crash the
+  // CLI's top-level catch never sees. Promise.all attaches a handler to both
+  // up front, so either failure surfaces as a clean rejection of this call.
+  await Promise.all([archive.finalize(), finished]);
 }
