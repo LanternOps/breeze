@@ -292,6 +292,23 @@ describe('mountExtensions', () => {
     vi.unstubAllEnvs();
   });
 
+  it('throws immediately when a source-dir extension calls ctx.registerJob', async () => {
+    scaffoldRuntimeExtension(root, {}, `import { Hono } from 'hono';
+     const ext = {
+       register(ctx) {
+         const app = new Hono();
+         app.get('/health', (c) => c.json({ ok: true }));
+         ctx.mountRoute(app);
+         ctx.registerJob({ name: 'sweep', cron: '0 * * * *', handler: async () => {} });
+       },
+     };
+     export default ext;`);
+    const app = new Hono();
+    await expect(mountExtensions(app, root)).rejects.toThrow(
+      /source-dir extensions cannot register jobs/,
+    );
+  });
+
   it('throws on AI tool name collision', async () => {
     scaffoldRuntimeExtension(root);
     const { aiTools } = await import('../services/aiTools');

@@ -88,7 +88,9 @@ describe('ExtensionJobHost.process', () => {
 });
 
 describe('ExtensionJobHost.sync', () => {
-  function makeFakeQueue(existing: Array<{ key: string; name: string; id: string | null }>) {
+  function makeFakeQueue(
+    existing: Array<{ key: string; name: string; id: string | null; pattern?: string | null }>,
+  ) {
     const removed: string[] = [];
     const added: Array<{ name: string; data: unknown; opts: any }> = [];
     const queue: JobHostQueue = {
@@ -125,6 +127,63 @@ describe('ExtensionJobHost.sync', () => {
     expect(scheduled.data).toEqual({ extension: 'demo', job: 'sweep' });
     expect(scheduled.opts.jobId).toBe('extension-demo-sweep');
     expect(scheduled.opts.repeat).toEqual({ pattern: '0 * * * *' });
+  });
+
+  // BullMQ keys a repeatable by its FULL option set (name:jobId:endDate:tz:pattern),
+  // so a cron change mints a new key while the old entry keeps firing. Matching on
+  // jobId alone left both schedules live — the job then ran on both patterns forever.
+  it('replaces a same-id repeatable whose cron pattern changed instead of duplicating it', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('demo', { sweep: { name: 'sweep', cron: '*/5 * * * *', handler: vi.fn() } }),
+    ]);
+    const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
+    const { queue, removed, added } = makeFakeQueue([
+      {
+        key: 'sweep:extension-demo-sweep:::0 * * * *',
+        name: 'sweep',
+        id: 'extension-demo-sweep',
+        pattern: '0 * * * *',
+      },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual(['sweep:extension-demo-sweep:::0 * * * *']);
+    expect(added).toHaveLength(1);
+    const [scheduled] = added;
+    if (!scheduled) throw new Error('expected exactly one scheduled repeatable');
+    expect(scheduled.opts.jobId).toBe('extension-demo-sweep');
+    expect(scheduled.opts.repeat).toEqual({ pattern: '*/5 * * * *' });
+  });
+
+  it('replaces a renamed repeatable that kept the same jobId', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('demo', { sweep: { name: 'sweep', cron: '0 * * * *', handler: vi.fn() } }),
+    ]);
+    const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
+    const { queue, removed, added } = makeFakeQueue([
+      { key: 'old-name-key', name: 'sweep-old', id: 'extension-demo-sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual(['old-name-key']);
+    expect(added).toHaveLength(1);
+  });
+
+  it('keeps an unchanged owned repeatable and never touches foreign ones', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('demo', { sweep: { name: 'sweep', cron: '0 * * * *', handler: vi.fn() } }),
+    ]);
+    const host = new ExtensionJobHost({ registry, store: { isEnabled: vi.fn(async () => true) } });
+    const { queue, removed } = makeFakeQueue([
+      { key: 'current-key', name: 'sweep', id: 'extension-demo-sweep', pattern: '0 * * * *' },
+      { key: 'core-key', name: 'audit-log-retention', id: 'audit-log-retention', pattern: '7 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    expect(removed).toEqual([]);
   });
 
   it('drives sync from the active registry snapshot when none is passed', async () => {

@@ -49,10 +49,12 @@ export type JobHostStore = Pick<ExtensionStateStore, 'isEnabled'>;
 
 /** The BullMQ queue surface `sync` needs — the real Queue satisfies it. */
 export interface JobHostQueue {
-  // `id` is widened to include `undefined` because that is what BullMQ's
-  // `RepeatableJob` actually carries; narrowing it here would make the real
-  // Queue unassignable to this port.
-  getRepeatableJobs(): Promise<Array<{ key: string; name: string; id?: string | null }>>;
+  // `id`/`pattern` are widened to include `undefined`/`null` because that is
+  // what BullMQ's `RepeatableJob` actually carries; narrowing them here would
+  // make the real Queue unassignable to this port.
+  getRepeatableJobs(): Promise<
+    Array<{ key: string; name: string; id?: string | null; pattern?: string | null }>
+  >;
   removeRepeatableByKey(key: string): Promise<boolean>;
   add(name: string, data: unknown, opts: unknown): Promise<unknown>;
 }
@@ -67,21 +69,17 @@ export interface ExtensionJobHostDeps {
     outcome: 'success' | 'failure',
     durationSeconds: number,
   ) => void;
-  /** Clock seam for duration measurement (tests). */
-  now?: () => number;
 }
 
 export class ExtensionJobHost {
   private readonly registry: JobHostRegistry;
   private readonly store: JobHostStore;
   private readonly recordJob: NonNullable<ExtensionJobHostDeps['recordJob']>;
-  private readonly now: () => number;
 
   constructor(deps: ExtensionJobHostDeps) {
     this.registry = deps.registry;
     this.store = deps.store;
     this.recordJob = deps.recordJob ?? recordExtensionJob;
-    this.now = deps.now ?? (() => Date.now());
   }
 
   /**
@@ -102,13 +100,13 @@ export class ExtensionJobHost {
     // Cross-replica enable check. A disabled extension SKIPS: no handler call.
     if (!(await this.store.isEnabled(extension))) return;
 
-    const startedAt = this.now();
+    const startedAt = Date.now();
     try {
       await definition.handler();
-      this.recordJob(extension, jobName, 'success', (this.now() - startedAt) / 1000);
+      this.recordJob(extension, jobName, 'success', (Date.now() - startedAt) / 1000);
     } catch (error) {
       // Record the failure, then let it reach BullMQ retry handling untouched.
-      this.recordJob(extension, jobName, 'failure', (this.now() - startedAt) / 1000);
+      this.recordJob(extension, jobName, 'failure', (Date.now() - startedAt) / 1000);
       throw error;
     }
   }
@@ -118,6 +116,14 @@ export class ExtensionJobHost {
    * from the active extensions' declared jobs: remove OUR stale repeatables,
    * then (re)add every currently-desired one. Non-extension repeatables (other
    * workers sharing Redis) are never touched.
+   *
+   * Staleness is decided on the FULL repeatable identity `(name, id, pattern)`,
+   * not on the jobId alone. BullMQ keys a repeatable by its whole option set
+   * (`name:jobId:endDate:tz:pattern`), so a cron-pattern change or a job rename
+   * produces a NEW key while the old entry keeps firing — matching on jobId
+   * alone would leave the old schedule in place and `add` a second one, so the
+   * job would run on both patterns forever, accumulating one more schedule per
+   * change. Same rationale as `jobs/auditRetention.ts`.
    */
   async sync(
     queue: JobHostQueue,
@@ -135,7 +141,11 @@ export class ExtensionJobHost {
     for (const entry of existing) {
       // Only manage repeatables we own; leave every other worker's alone.
       if (!entry.id || !entry.id.startsWith('extension-')) continue;
-      if (!desired.has(entry.id)) {
+      const want = desired.get(entry.id);
+      const matchesDesiredIdentity = want !== undefined
+        && entry.name === want.job
+        && entry.pattern === want.cron;
+      if (!matchesDesiredIdentity) {
         await queue.removeRepeatableByKey(entry.key);
       }
     }

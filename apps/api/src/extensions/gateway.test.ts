@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
@@ -40,9 +40,12 @@ vi.mock('../middleware/agentAuth', () => ({
 }));
 
 import {
+  EXTENSION_ROUTE_LABEL_OTHER,
+  EXTENSION_ROUTE_LABEL_UNAVAILABLE,
   legacyExtensionAgentAuthMiddleware,
   mountExtensionGateway,
 } from './gateway';
+import { setExtensionMetricsRecorder } from './metrics';
 import { authMiddleware } from '../middleware/auth';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 
@@ -346,5 +349,114 @@ describe('mountExtensionGateway', () => {
 
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ outerError: 'extension exploded' });
+  });
+});
+
+describe('extension gateway route metric labels', () => {
+  function captureRouteLabels() {
+    const requests: Array<{ extension: string; route: string; status: number }> = [];
+    setExtensionMetricsRecorder({
+      onRequest: (extension, route, status) => { requests.push({ extension, route, status }); },
+      onJob: () => {},
+    });
+    return {
+      requests,
+      routes: () => new Set(requests.map((entry) => entry.route)),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    setExtensionMetricsRecorder(null);
+  });
+
+  // The point of the bounding fix: the `route` label must be drawn from the
+  // extension's registered route patterns, never from the request URL, so an
+  // unauthenticated attacker cannot mint one Prometheus series per random path.
+  it('collapses arbitrary unmatched paths to a single bounded route label', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    const attackPaths = Array.from(
+      { length: 50 },
+      (_unused, index) => `/api/v1/ext/demo/aaa${index.toString(36)}${'x'.repeat(index % 7)}`,
+    );
+    for (const path of attackPaths) {
+      expect((await app.request(path)).status).toBe(404);
+    }
+
+    expect(metrics.requests).toHaveLength(attackPaths.length);
+    // Bounded — NOT one label per distinct path.
+    expect(metrics.routes().size).toBeLessThanOrEqual(2);
+    expect([...metrics.routes()]).toEqual([EXTENSION_ROUTE_LABEL_OTHER]);
+  });
+
+  it('never leaks a raw path segment (PII) into the route label', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    await app.request('/api/v1/ext/demo/customers/todd@lanternops.io/sync');
+
+    expect([...metrics.routes()]).toEqual([EXTENSION_ROUTE_LABEL_OTHER]);
+  });
+
+  it('labels matched requests with the registered pattern, not the concrete path', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    expect((await app.request('/api/v1/ext/demo/items/item-42')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/items/item-99')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
+
+    expect(metrics.requests.map((entry) => entry.route)).toEqual([
+      '/items/:id',
+      '/items/:id',
+      '/health',
+    ]);
+  });
+
+  it('bounds the label the same way on the legacy alias mount', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'legacy-demo' }),
+    });
+
+    expect((await app.request('/api/v1/legacy-demo/items/item-42')).status).toBe(200);
+    for (let index = 0; index < 20; index += 1) {
+      await app.request(`/api/v1/legacy-demo/zz${index}`);
+    }
+
+    expect(metrics.routes()).toEqual(new Set(['/items/:id', EXTENSION_ROUTE_LABEL_OTHER]));
+  });
+
+  it('bounds agent-namespace labels including unauthenticated rejections', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    for (let index = 0; index < 20; index += 1) {
+      expect((await app.request(`/api/v1/ext/demo/agent/dev-${index}/config`)).status).toBe(401);
+    }
+    const authed = await app.request('/api/v1/ext/demo/agent/device-1/config', {
+      headers: { Authorization: 'Bearer agent-test' },
+    });
+    expect(authed.status).toBe(200);
+
+    expect(metrics.routes()).toEqual(
+      new Set([EXTENSION_ROUTE_LABEL_OTHER, '/agent/:id/config']),
+    );
+  });
+
+  it('records a 503 with a bounded label when the extension is disabled', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture({ isEnabled: async () => false });
+
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
+
+    expect(metrics.requests).toEqual([
+      { extension: 'demo', route: EXTENSION_ROUTE_LABEL_UNAVAILABLE, status: 503 },
+    ]);
   });
 });
