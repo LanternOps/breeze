@@ -32,8 +32,35 @@ vi.mock('../db/schema/approvals', () => ({
   approvalRequests: {
     id: 'id',
     elevationRequestId: 'elevation_request_id',
+    intentId: 'intent_id',
     status: 'status',
   },
+}));
+
+vi.mock('../db/schema/actionIntents', () => ({
+  actionIntents: {
+    id: 'id',
+    orgId: 'org_id',
+    status: 'status',
+  },
+  intentOutbox: {
+    id: 'id',
+    intentId: 'intent_id',
+    eventType: 'event_type',
+    payload: 'payload',
+  },
+}));
+
+// Task 5: decide-handler extension mirrors the CAS onto the linked
+// action_intents row. Mocked as a collaborator (like assertApprovalAssurance)
+// so these route tests exercise decideHandler's own wiring, not
+// transitionIntent's internals (covered by intentService.test.ts).
+vi.mock('../services/actionIntents/intentService', () => ({
+  transitionIntent: vi.fn(async () => true),
+}));
+
+vi.mock('../services/actionIntents/metrics', () => ({
+  recordActionIntentEvent: vi.fn(),
 }));
 
 vi.mock('../db/schema/elevations', () => ({
@@ -158,6 +185,8 @@ import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } fro
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
+import { transitionIntent } from '../services/actionIntents/intentService';
+import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 
 function buildApp() {
   const app = new Hono();
@@ -251,6 +280,10 @@ beforeEach(() => {
   // Re-establish the default "password ok" (null = no error) after clearAllMocks
   // wipes the factory implementation; per-case overrides set their own.
   vi.mocked(requireCurrentPasswordStepUp).mockResolvedValue(null);
+  // Task 5: default the intent CAS to "won the race" so non-race-focused
+  // tests don't have to wire it explicitly; the first-wins test overrides
+  // this to false.
+  vi.mocked(transitionIntent).mockResolvedValue(true);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -1110,6 +1143,241 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('Task 5: decide-handler bound to action_intents', () => {
+  // Wires the decideHandler flow for an intent-linked approval row:
+  //   1) pre-fetch select (approval_requests, carries intentId + boundArgumentDigest)
+  //   2) intent load select (action_intents, by id, system context)
+  //   3) approval_requests CAS update
+  // transitionIntent (the intent CAS) is mocked at the module level, not
+  // wired through db — see the collaborator-mock comment at the top of the
+  // file. requestedByUserId defaults to someone OTHER than TEST_USER so the
+  // sole-operator gate doesn't fire unless a test opts in.
+  function mockDecideWithIntent(opts: {
+    riskTier?: string;
+    requestedByUserId?: string;
+    boundArgumentDigest?: string | null;
+    intentDigest?: string;
+  }) {
+    const approvalRow = {
+      id: 'appr-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'MCP API client',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'x',
+      actionToolName: 'y',
+      actionArguments: {},
+      riskTier: opts.riskTier ?? 'high',
+      riskSummary: 'z',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: 'intent-1',
+      boundArgumentDigest:
+        opts.boundArgumentDigest === undefined ? 'digest-abc' : opts.boundArgumentDigest,
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+
+    const intentRow = {
+      id: 'intent-1',
+      orgId: 'org-9',
+      actionName: 'y',
+      argumentDigest: opts.intentDigest ?? 'digest-abc',
+      source: 'mcp_api',
+      status: 'pending_approval',
+      requestedByUserId: opts.requestedByUserId ?? 'requester-1',
+    };
+
+    // 1) pre-fetch select
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([approvalRow]),
+      }),
+    } as any);
+    // 2) intent load select (system context, by id)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([intentRow]),
+      }),
+    } as any);
+
+    // 3) approval_requests CAS update
+    const casReturning = vi.fn().mockResolvedValue([{ ...approvalRow, status: 'approved' }]);
+    const casSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: casReturning }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set: casSet } as any);
+
+    return { approvalRow, intentRow, casSet };
+  }
+
+  // The post-CAS fan-in (sibling expiry + intent_approved outbox insert)
+  // runs inside `db.transaction` under system context. Captures both calls.
+  function mockIntentFanInTx() {
+    const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const outboxValues = vi.fn().mockResolvedValue(undefined);
+    const tx = {
+      update: vi.fn(() => ({ set: siblingSet }) as any),
+      insert: vi.fn(() => ({ values: outboxValues }) as any),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return { siblingSet, outboxValues, tx };
+  }
+
+  it('approving an intent-linked row transitions the intent, writes an intent_approved outbox row, and expires siblings', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    const { siblingSet, outboxValues, tx } = mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+
+    expect(transitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'pending_approval',
+      'approved',
+      expect.objectContaining({ decidedByUserId: TEST_USER.id }),
+    );
+    expect(siblingSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'expired' }),
+    );
+    expect(outboxValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentId: 'intent-1',
+        eventType: 'intent_approved',
+        payload: { intentId: 'intent-1', orgId: 'org-9' },
+      }),
+    );
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-9', intentId: 'intent-1', outcome: 'approved' }),
+    );
+  });
+
+  it('denying an intent-linked row transitions the intent to rejected, expires siblings, and writes NO outbox row', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    const { siblingSet, tx } = mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'not needed' }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(transitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'pending_approval',
+      'rejected',
+      expect.anything(),
+    );
+    expect(siblingSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'expired' }),
+    );
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'rejected' }),
+    );
+  });
+
+  it('sole-operator self-approval below L3 assurance is refused with step_up_required and never touches the intent', async () => {
+    // Default assurance mock resolves decidedAssuranceLevel: 1 (session_tap).
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    expect(body.requiredLevel).toBe(3);
+    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('sole-operator self-approval at L3+ assurance succeeds and audits self_approved_sole_operator', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(transitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'pending_approval',
+      'approved',
+      expect.objectContaining({ decidedAssuranceLevel: 3 }),
+    );
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'self_approved_sole_operator' }),
+    );
+  });
+
+  it('refuses the decision when bound_argument_digest no longer matches the intent (digest_mismatch)', async () => {
+    mockDecideWithIntent({ boundArgumentDigest: 'stale-digest', intentDigest: 'digest-abc' });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('digest_mismatch');
+    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('first-wins: a decide arriving after the intent already moved is a no-op but still 200s for this row', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    vi.mocked(transitionIntent).mockResolvedValueOnce(false);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('a non-intent-linked decide never touches the intent transition path (regression)', async () => {
+    const plainRow = {
+      id: 'a1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Claude Desktop',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'x',
+      actionToolName: 'y',
+      actionArguments: {},
+      riskTier: 'low',
+      riskSummary: 'z',
+      status: 'approved',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: new Date(),
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: null,
+      createdAt: new Date(),
+    };
+    const set = mockDecideFlow({
+      existing: { ...plainRow, status: 'pending' },
+      updateReturns: [plainRow],
+    });
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalled();
+    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).not.toHaveBeenCalled();
+    // Only the pre-fetch + CAS selects/updates ran — no intent load select.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 });
 
