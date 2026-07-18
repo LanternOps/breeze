@@ -11,18 +11,25 @@
 /**
  * A REQUIRED extension failed to reconcile. Thrown by the reconciler to abort
  * boot. The message contains `required extension <name>` (the failure-policy
- * contract) and nothing else — the underlying error rides on `cause` only.
+ * contract) plus the COARSE pipeline phase, and nothing else.
+ *
+ * Deliberately carries NO `cause`: the raw underlying error is consumed at the
+ * catch site to produce the sanitized DB failure record, and must never ride
+ * along here. Node's default error printer walks the `[cause]` chain, so a raw
+ * cause on this error would let a migration SQL string, a public-key file path
+ * (ENOENT), or an exception stack reach the boot logger — a Global-Constraint
+ * violation. Only the extension name + coarse `phase` are exposed.
  */
 export class RequiredExtensionError extends Error {
   readonly extensionName: string;
+  /** Coarse pipeline phase at which the extension failed. NEVER the raw error. */
+  readonly phase: string;
 
-  constructor(extensionName: string, options?: { cause?: unknown }) {
-    super(
-      `required extension ${extensionName} failed to reconcile and could not be activated`,
-      options,
-    );
+  constructor(extensionName: string, phase: string) {
+    super(`required extension ${extensionName} failed during ${phase}`);
     this.name = 'RequiredExtensionError';
     this.extensionName = extensionName;
+    this.phase = phase;
   }
 }
 

@@ -1,7 +1,7 @@
 // The startup reconciler for SIGNED runtime-extension bundles.
 //
 // For each configured extension it runs an explicit phase pipeline —
-// acquire → trust → verify → compatibility → observe → extract → load →
+// acquire → trust → verify → observe → compatibility → extract → load →
 // migrate → publish-tenancy → stage → validate → activate — under a strict
 // failure policy:
 //
@@ -85,8 +85,8 @@ type ReconcilePhase =
   | 'acquire'
   | 'trust'
   | 'verify'
-  | 'compatibility'
   | 'observe'
+  | 'compatibility'
   | 'extract'
   | 'load'
   | 'migration'
@@ -455,11 +455,16 @@ export async function reconcileExtensions(
           throw new Error('verified manifest name does not match the configured extension name');
         }
 
-        phase = 'compatibility';
-        ports.assertCompatible(bundle.manifest, ports.hostDescriptor);
-
+        // Observe BEFORE the compatibility gate so a first-time extension that
+        // fails compatibility still has an `installed_extensions` row for
+        // recordSanitizedFailure's UPDATE to land on (otherwise it hits 0 rows
+        // and the operator sees neither a row nor an 'incompatible' lifecycle).
+        // Only the verified bundle + selection are needed, so this is safe here.
         phase = 'observe';
         await stateStore.upsertObserved(observed(bundle, selection));
+
+        phase = 'compatibility';
+        ports.assertCompatible(bundle.manifest, ports.hostDescriptor);
 
         phase = 'extract';
         const extractedRoot = await ports.extractVerifiedPayload(bundle, storeRoot);
@@ -505,7 +510,11 @@ export async function reconcileExtensions(
           })`,
         );
         if (selection.required) {
-          throw new RequiredExtensionError(selection.name, { cause: error });
+          // Pass only the coarse phase — NEVER the raw `error` as `cause`. The
+          // raw error was already consumed above to write the sanitized DB
+          // record; threading it onto the thrown error would let Node's
+          // cause-chain printer leak it to the boot logger (index.ts).
+          throw new RequiredExtensionError(selection.name, phase);
         }
       }
     }
