@@ -65,8 +65,9 @@ export function createProgram(): Command {
     .description('Print a .breeze-ext artifact\'s manifest, integrity inventory, and signature status')
     .argument('<artifact>', 'path to the .breeze-ext artifact to inspect')
     .option('--json', 'emit machine-readable JSON output')
-    .action(async (artifact: string, options: { json?: boolean }) => {
-      await runInspect({ artifact, json: options.json });
+    .option('--public-key <path>', 'path to an Ed25519 public key file to check the signature against')
+    .action(async (artifact: string, options: { json?: boolean; publicKey?: string }) => {
+      await runInspect({ artifact, json: options.json, publicKey: options.publicKey });
     });
 
   return program;

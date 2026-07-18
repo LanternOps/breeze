@@ -3,7 +3,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadEd25519PrivateKey, signEd25519 } from './signature';
+import {
+  loadEd25519PrivateKey,
+  loadEd25519PublicKey,
+  signEd25519,
+  verifyEd25519,
+} from './signature';
 
 let workDir: string;
 
@@ -99,5 +104,75 @@ describe('signEd25519', () => {
     const signature = signEd25519(privateKey, payload);
 
     expect(cryptoVerify(null, payload, otherPublicKey, signature)).toBe(false);
+  });
+});
+
+describe('loadEd25519PublicKey', () => {
+  it('loads a key from a file path', async () => {
+    const { publicKey } = generateEd25519Pem();
+    const keyPath = join(workDir, 'key.pub.pem');
+    await writeFile(keyPath, publicKey);
+
+    const loaded = await loadEd25519PublicKey(keyPath);
+
+    expect(loaded.asymmetricKeyType).toBe('ed25519');
+  });
+
+  it('rejects a non-Ed25519 (RSA) key with a clear message', async () => {
+    const { publicKey } = generateRsaPem();
+    const keyPath = join(workDir, 'rsa-key.pub.pem');
+    await writeFile(keyPath, publicKey);
+
+    await expect(loadEd25519PublicKey(keyPath)).rejects.toThrow(/ed25519/i);
+  });
+
+  it('rejects a file that is not a valid public key', async () => {
+    const keyPath = join(workDir, 'not-a-key.pem');
+    await writeFile(keyPath, 'not a key at all');
+
+    await expect(loadEd25519PublicKey(keyPath)).rejects.toThrow(/not a valid public key/i);
+  });
+});
+
+describe('verifyEd25519', () => {
+  it('returns true for a signature that verifies under the matching public key', async () => {
+    const { privateKey: privateKeyPem, publicKey: publicKeyPem } = generateEd25519Pem();
+    const keyPath = join(workDir, 'key.pem');
+    await writeFile(keyPath, privateKeyPem);
+    const privateKey = await loadEd25519PrivateKey({ key: keyPath });
+    const publicKeyPath = join(workDir, 'key.pub.pem');
+    await writeFile(publicKeyPath, publicKeyPem);
+    const publicKey = await loadEd25519PublicKey(publicKeyPath);
+    const payload = Buffer.from('hello world');
+
+    const signature = signEd25519(privateKey, payload);
+
+    expect(verifyEd25519(publicKey, payload, signature)).toBe(true);
+  });
+
+  it('returns false under a mismatched public key', async () => {
+    const { privateKey: privateKeyPem } = generateEd25519Pem();
+    const { publicKey: otherPublicKeyPem } = generateEd25519Pem();
+    const keyPath = join(workDir, 'key.pem');
+    await writeFile(keyPath, privateKeyPem);
+    const privateKey = await loadEd25519PrivateKey({ key: keyPath });
+    const otherPublicKeyPath = join(workDir, 'other-key.pub.pem');
+    await writeFile(otherPublicKeyPath, otherPublicKeyPem);
+    const otherPublicKey = await loadEd25519PublicKey(otherPublicKeyPath);
+    const payload = Buffer.from('hello world');
+
+    const signature = signEd25519(privateKey, payload);
+
+    expect(verifyEd25519(otherPublicKey, payload, signature)).toBe(false);
+  });
+
+  it('returns false (does not throw) for a malformed signature', async () => {
+    const { publicKey: publicKeyPem } = generateEd25519Pem();
+    const publicKeyPath = join(workDir, 'key.pub.pem');
+    await writeFile(publicKeyPath, publicKeyPem);
+    const publicKey = await loadEd25519PublicKey(publicKeyPath);
+    const payload = Buffer.from('hello world');
+
+    expect(verifyEd25519(publicKey, payload, Buffer.from('too short'))).toBe(false);
   });
 });
