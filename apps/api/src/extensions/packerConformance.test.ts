@@ -13,9 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // package's source, same as any other in-repo cross-package test import.
 // This does NOT create a runtime dependency of the CLI package on apps/api;
 // the arrow still points app -> package, one file, test-only.
-import { packExtension } from '../../../../packages/extension-cli/src/commands/pack';
-import { signArtifact } from '../../../../packages/extension-cli/src/commands/sign';
-import { signingPayload } from '../../../../packages/extension-cli/src/artifact/integrity';
+import { packExtension, signArtifact, signingPayload } from '@breeze/extension-cli';
 import type { ExtensionSelection } from './config';
 import {
   canonicalSigningPayload,

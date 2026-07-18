@@ -11,6 +11,13 @@
 export { createProgram } from './cli';
 
 export { runInspect, type InspectOptions } from './commands/inspect';
-export { runPack, type PackOptions } from './commands/pack';
-export { runSign, type SignOptions } from './commands/sign';
+export { packExtension, runPack, type PackOptions, type PackResult } from './commands/pack';
+export { runSign, signArtifact, type SignOptions, type SignResult } from './commands/sign';
 export { runValidate, type ValidateOptions } from './commands/validate';
+
+// Artifact-building primitives, exposed so conformance tests and downstream
+// tooling can drive the same functions the CLI commands use — notably
+// `signingPayload`, which must stay byte-identical to the host verifier's
+// canonical signing payload.
+export { buildIntegrityDocument, signingPayload } from './artifact/integrity';
+export { canonicalJson } from './artifact/canonicalJson';
