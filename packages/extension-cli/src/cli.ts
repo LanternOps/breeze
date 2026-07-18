@@ -44,20 +44,29 @@ export function createProgram(): Command {
   program
     .command('sign')
     .description('Sign a .breeze-ext bundle with an Ed25519 private key')
-    .argument('<bundle>', 'path to the .breeze-ext bundle to sign')
-    .requiredOption('-k, --key <path>', 'path to the Ed25519 private key')
+    .argument('<artifact>', 'path to the .breeze-ext artifact to sign')
+    // The key value is NEVER accepted on argv — process arguments are
+    // world-readable via `ps`. Supply the key as a file path (--key) or as the
+    // NAME of an environment variable holding it (--key-env). Exactly one is
+    // required; Commander cannot express "exactly one of" natively, so it is
+    // enforced in the action.
+    .option('-k, --key <path>', 'path to the Ed25519 private key file')
+    .option('--key-env <var>', 'name of an environment variable holding the Ed25519 private key')
     .option('-o, --out <file>', 'output path for the signed bundle (defaults to signing in place)')
-    .action(async (bundle: string, options: { key: string; out?: string }) => {
-      await runSign({ bundle, key: options.key, out: options.out });
+    .action(async (artifact: string, options: { key?: string; keyEnv?: string; out?: string }) => {
+      if ((options.key === undefined) === (options.keyEnv === undefined)) {
+        throw new Error('breeze-ext sign: provide exactly one of --key or --key-env');
+      }
+      await runSign({ artifact, key: options.key, keyEnv: options.keyEnv, out: options.out });
     });
 
   program
     .command('inspect')
-    .description('Print a .breeze-ext bundle\'s manifest, integrity inventory, and signature status')
-    .argument('<bundle>', 'path to the .breeze-ext bundle to inspect')
+    .description('Print a .breeze-ext artifact\'s manifest, integrity inventory, and signature status')
+    .argument('<artifact>', 'path to the .breeze-ext artifact to inspect')
     .option('--json', 'emit machine-readable JSON output')
-    .action(async (bundle: string, options: { json?: boolean }) => {
-      await runInspect({ bundle, json: options.json });
+    .action(async (artifact: string, options: { json?: boolean }) => {
+      await runInspect({ artifact, json: options.json });
     });
 
   return program;
