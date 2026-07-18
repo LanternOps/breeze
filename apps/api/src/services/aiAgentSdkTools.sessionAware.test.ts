@@ -20,12 +20,16 @@ vi.mock('./aiToolOutput', () => ({
 
 // The M365 handlers are imported by the module under test; stub them out — we
 // inject our own sessionHandler into makeSessionAwareHandler.
+// registerM365Tools is also imported transitively (by ./aiTools, which this
+// file's `./aiTools` import pulls in) — stub it as a no-op so aiTools.ts's
+// top-level registration call doesn't crash on an undefined mock export.
 vi.mock('./aiToolsM365', () => ({
   m365LookupUserHandler: vi.fn(),
   m365RecentSigninsHandler: vi.fn(),
   m365ListGroupMembershipsHandler: vi.fn(),
   m365DisableUserHandler: vi.fn(),
   m365ResetPasswordHandler: vi.fn(),
+  registerM365Tools: vi.fn(),
 }));
 
 import { __test__ } from './aiAgentSdkTools';
