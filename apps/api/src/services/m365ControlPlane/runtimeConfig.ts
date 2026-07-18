@@ -172,6 +172,21 @@ function parseOnboardingOrgIds(source: Environment): '*' | readonly string[] {
   return [...new Set(ids)];
 }
 
+function parseGraphReadToolsOrgIds(source: Environment): '*' | readonly string[] {
+  const raw = source.M365_GRAPH_READ_TOOLS_ORG_IDS?.trim();
+  if (!raw) {
+    if (!flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)) return [];
+    throw new Error('M365_GRAPH_READ_TOOLS_ORG_IDS is required when M365 Graph read tools are enabled');
+  }
+  if (raw === '*') return '*';
+
+  const ids = raw.split(',').map((value) => value.trim());
+  if (ids.some((value) => !CANONICAL_UUID.test(value))) {
+    throw new Error('M365_GRAPH_READ_TOOLS_ORG_IDS must be literal * or comma-separated canonical UUIDs');
+  }
+  return [...new Set(ids)];
+}
+
 /**
  * Loads the secret-bearing API-to-executor signing key and the non-secret,
  * fixed Graph-read descriptor at call time. Nothing is parsed at import time.
@@ -226,10 +241,29 @@ export function isM365CustomerGraphReadOnboardingEnabledForOrg(
   return allowlist === '*' || allowlist.includes(orgId);
 }
 
+/**
+ * Cheap, side-effect-free gate for whether the M365 Graph read AI tools are
+ * enabled for an org. Deliberately does NOT call
+ * loadM365CustomerGraphReadRuntimeConfig (which requires all executor envs) —
+ * this is called on hot AI-tool-registration paths, not just at boot.
+ */
+export function isM365GraphReadToolsEnabledForOrg(
+  orgId: string,
+  source: Environment = process.env,
+): boolean {
+  if (!flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)) return false;
+  if (!CANONICAL_UUID.test(orgId)) return false;
+  const allowlist = parseGraphReadToolsOrgIds(source);
+  return allowlist === '*' || allowlist.includes(orgId);
+}
+
 export function validateM365CustomerGraphReadRuntimeConfigAtBoot(
   source: Environment = process.env,
 ): void {
-  if (flagEnabled(source.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED)) {
+  if (
+    flagEnabled(source.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED)
+    || flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)
+  ) {
     loadM365CustomerGraphReadRuntimeConfig(source);
   }
 }

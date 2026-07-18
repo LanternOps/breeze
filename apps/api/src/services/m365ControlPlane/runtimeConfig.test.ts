@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isM365CustomerGraphReadOnboardingEnabledForOrg,
+  isM365GraphReadToolsEnabledForOrg,
   loadM365CustomerGraphReadRuntimeConfig,
+  validateM365CustomerGraphReadRuntimeConfigAtBoot,
 } from './runtimeConfig';
 
 vi.mock('node:fs', { spy: true });
@@ -257,5 +259,86 @@ describe('M365 customer Graph-read runtime config', () => {
     expect(isM365CustomerGraphReadOnboardingEnabledForOrg(ORG_ID, {
       M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
     })).toBe(false);
+  });
+
+  describe('validateM365CustomerGraphReadRuntimeConfigAtBoot', () => {
+    it('is a no-op when neither rollout flag is enabled', () => {
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot({
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_GRAPH_READ_TOOLS_ENABLED: 'false',
+      })).not.toThrow();
+      expect(fs.openSync).not.toHaveBeenCalled();
+    });
+
+    it('loads the full executor config when only the onboarding flag is enabled', () => {
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot(validEnv({
+        M365_GRAPH_READ_TOOLS_ENABLED: 'false',
+      }))).not.toThrow();
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot(validEnv({
+        M365_GRAPH_READ_TOOLS_ENABLED: 'false',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: undefined,
+      }))).toThrow(/CLIENT_ID/);
+    });
+
+    it('loads the full executor config when only the tools flag is enabled', () => {
+      const env = validEnv({
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+        M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID,
+      });
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot(env)).not.toThrow();
+      expect(() => validateM365CustomerGraphReadRuntimeConfigAtBoot({
+        ...env,
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: undefined,
+      })).toThrow(/CLIENT_ID/);
+    });
+  });
+});
+
+describe('M365 Graph read tools rollout flag', () => {
+  it('is off by default', () => {
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, {})).toBe(false);
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'false',
+      M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID,
+    })).toBe(false);
+  });
+
+  it('enables any canonical org id when the allowlist is the literal star', () => {
+    const env = {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+      M365_GRAPH_READ_TOOLS_ORG_IDS: '*',
+    };
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, env)).toBe(true);
+    expect(isM365GraphReadToolsEnabledForOrg(OTHER_ORG_ID, env)).toBe(true);
+  });
+
+  it('restricts to allowlist membership when the allowlist is a UUID list', () => {
+    const env = {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+      M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID,
+    };
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, env)).toBe(true);
+    expect(isM365GraphReadToolsEnabledForOrg(OTHER_ORG_ID, env)).toBe(false);
+  });
+
+  it('rejects a non-canonical org id even with a star allowlist', () => {
+    expect(isM365GraphReadToolsEnabledForOrg('not-a-uuid', {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+      M365_GRAPH_READ_TOOLS_ORG_IDS: '*',
+    })).toBe(false);
+  });
+
+  it('throws when enabled without an org allowlist configured', () => {
+    expect(() => isM365GraphReadToolsEnabledForOrg(ORG_ID, {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+    })).toThrow(/M365_GRAPH_READ_TOOLS_ORG_IDS is required/);
+  });
+
+  it('never requires executor settings to evaluate (no executor envs provided)', () => {
+    expect(() => isM365GraphReadToolsEnabledForOrg(ORG_ID, {
+      M365_GRAPH_READ_TOOLS_ENABLED: 'true',
+      M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID,
+    })).not.toThrow();
   });
 });
