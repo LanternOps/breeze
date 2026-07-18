@@ -451,6 +451,7 @@
         "fetchAddImage": "Bild abrufen und hinzufügen",
         "fromUrl": "Ab URL",
         "hideCostMargin": "Kosten und Marge ausblenden",
+        "lineActions": "Zeilenaktionen",
         "moveLineDown": "Position nach unten verschieben",
         "moveLineTo": "Position verschieben nach",
         "moveLineToAnotherTable": "Position in eine andere Preistabelle verschieben",
@@ -529,17 +530,21 @@
         "removeSectionWithLines": "Dadurch werden die Preistabelle und ihre Positionen entfernt. Dies kann nicht rückgängig gemacht werden."
       },
       "customer": {
+        "confirmLabel": "Angebot verschieben",
+        "confirmMessage": "Dieses Angebot zu {{name}} verschieben? Dadurch werden die Standort-Zuordnung und die abweichende Rechnungsadresse entfernt und der Steuersatz des neuen Unternehmens angewendet.",
+        "confirmTitle": "Kunde ändern?",
         "help": "Wird ein Entwurf einem anderen Unternehmen zugewiesen, wird die Standort-Zuordnung entfernt und der Steuersatz dieses Unternehmens angewendet.",
         "label": "Kunde",
         "success": "Angebot zu {{name}} verschoben."
       },
       "deposit": {
         "due": "Anzahlung fällig",
+        "dueUpFront": "Anzahlung vorab fällig",
         "eligibleAria": "Anzahlung möglich",
         "label": "Anzahlung",
         "none": "Keine Anzahlung",
         "percent": "Prozent",
-        "percentOfDue": "Prozentsatz der Fälligkeit bei Annahme",
+        "percentOfDue": "Prozentsatz des fälligen Betrags",
         "selectedLines": "Ausgewählte Positionen",
         "selectedLinesHelp": "Überprüfen Sie die einzahlungsberechtigten einmaligen Positionen in jeder Preistabelle.",
         "short": "Anzahlung"
@@ -547,12 +552,14 @@
       "emptyBlocks": "Noch kein Inhalt. Fügen Sie unten eine Überschrift, Rich-Text oder eine Preistabelle hinzu.",
       "errors": {
         "addCatalogItem": "Das Katalogelement konnte nicht hinzugefügt werden.",
+        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
         "addDistributorItem": "Der Händlerartikel konnte nicht hinzugefügt werden.",
         "addImageSection": "Der Bildabschnitt konnte nicht hinzugefügt werden.",
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
         "addPax8Product": "Das Pax8-Produkt konnte nicht hinzugefügt werden.",
         "addSection": "Der Abschnitt konnte nicht hinzugefügt werden.",
         "costZeroOrMore": "Geben Sie einen Preis von 0 oder mehr ein.",
+        "depositPercentRange": "Geben Sie einen Prozentsatz zwischen 0.01 und 99.99 ein.",
         "fetchImageFromUrl": "Das Bild von diesem URL konnte nicht abgerufen werden.",
         "imageAddedSectionFailed": "Bild hinzugefügt, aber das Hinzufügen des Abschnitts ist fehlgeschlagen.",
         "imageTooLarge": "Das Bild muss maximal 5 MB groß sein.",
@@ -560,6 +567,7 @@
         "importPax8Product": "Das Pax8-Produkt konnte nicht importiert werden.",
         "lineAddedCatalogSaveFailed": "Position hinzugefügt, aber das Speichern im Katalog ist fehlgeschlagen.",
         "lineNeedsNameOrDescription": "Eine Position benötigt einen Namen oder eine Beschreibung.",
+        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
         "moveLine": "Die Position konnte nicht verschoben werden.",
         "quantityWholeGreaterThanZero": "Geben Sie eine ganzzahlige Menge größer als 0 ein.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
@@ -567,6 +575,7 @@
         "reorderBlocks": "Blöcke konnten nicht neu angeordnet werden.",
         "reorderLines": "Positionen konnten nicht neu angeordnet werden.",
         "reorderSections": "Abschnitte konnten nicht neu angeordnet werden.",
+        "saveCoverPage": "Das Deckblatt konnte nicht gespeichert werden",
         "saveCustomer": "Kunde konnte nicht geändert werden.",
         "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
         "saveTitle": "Der Titel konnte nicht gespeichert werden.",
@@ -575,10 +584,7 @@
         "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
-        "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
-        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
-        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
-        "saveCoverPage": "Das Deckblatt konnte nicht gespeichert werden"
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -657,9 +663,10 @@
         "notTaxable": "Nicht steuerpflichtig",
         "qty": "Menge",
         "recurrence": "Wiederholung",
-        "scrollAria": "Preistabelle – scrollen Sie seitwärts für Steuer-, Gesamt- und Zeilenaktionen",
+        "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen",
         "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
+        "taxSuffix": "+ {{amount}} Steuer",
         "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
         "taxable": "Steuerpflichtig",
         "total": "Insgesamt",
@@ -880,10 +887,13 @@
       "totals": {
         "annualRecurring": "Jährlich wiederkehrend",
         "depositDue": "Anzahlung fällig",
+        "depositDueNow": "Anzahlung jetzt fällig",
         "dueOnAcceptance": "Fällig bei Abnahme",
+        "firstPeriodSubtotal": "Zwischensumme erster Zeitraum",
+        "firstPeriodTotal": "Gesamtsumme erster Zeitraum",
         "monthlyRecurring": "Monatlich wiederkehrend",
         "recurringNote": "Wenn Sie diesen Vorschlag annehmen, werden die einmaligen Kosten jetzt in Rechnung gestellt. Wiederkehrende Positionen werden nach ihrem eigenen Zeitplan abgerechnet.",
-        "remainingBalance": "Restguthaben",
+        "remainingBalance": "Restbetrag (gemäß Bedingungen)",
         "subtotal": "Zwischensumme",
         "tax": "Steuer"
       },
@@ -902,12 +912,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "{{count}} ausgewählte Angebote löschen? Nur DRAFT-Angebote werden gelöscht; dies kann nicht rückgängig gemacht werden.",
+        "message_one": "Das ausgewählte Angebot löschen? Nur ENTWÜRFE werden gelöscht; dies kann nicht rückgängig gemacht werden.",
+        "message_other": "{{count}} ausgewählte Angebote löschen? Nur ENTWÜRFE werden gelöscht; dies kann nicht rückgängig gemacht werden.",
+        "skippedNotDraft": "Kein Entwurf (übersprungen)",
         "title": "Angebotsentwürfe löschen"
       },
       "bulkSend": {
-        "message": "{{count}} ausgewählte(s) Angebot(e) per E-Mail an ihre Kunden senden? Dies kann nicht rückgängig gemacht werden.",
-        "title": "Senden Sie Angebote"
+        "message_one": "Das ausgewählte Angebot per E-Mail an den Kunden senden? Dies kann nicht rückgängig gemacht werden.",
+        "message_other": "{{count}} ausgewählte Angebote per E-Mail an die Kunden senden? Dies kann nicht rückgängig gemacht werden.",
+        "recipients": "Jedes Angebot wird per E-Mail an den Rechnungskontakt der Organisation gesendet und als Gesendet markiert.",
+        "title": "Senden Sie Angebote",
+        "unnumbered": "Entwurf"
       },
       "create": {
         "description": "Wählen Sie den Kunden aus, für den dieses Angebot bestimmt ist. Als nächstes können Sie Blöcke und Preise hinzufügen.",
@@ -959,7 +974,7 @@
         "number": "Nummer",
         "selectAll": "Wählen Sie alle Angebote aus",
         "selectQuote": "Angebot {{quote}} auswählen",
-        "total": "Insgesamt"
+        "total": "Erster Zeitraum"
       },
       "title": "Angebote",
       "tryAgain": "Versuchen Sie es erneut"

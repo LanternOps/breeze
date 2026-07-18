@@ -119,7 +119,11 @@ describe('QuoteEditor — reorder', () => {
   it('disables move-up on the first line and move-down on the last line', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // Move items live in each line's overflow menu (one at a time).
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     expect(screen.getByTestId('quote-line-move-up-l-1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1')); // close l-1's menu
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-2'));
     expect(screen.getByTestId('quote-line-move-down-l-2')).toBeDisabled();
   });
 
@@ -127,6 +131,7 @@ describe('QuoteEditor — reorder', () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-down-l-1'));
     await waitFor(() => expect(reorderLinesMock).toHaveBeenCalledWith('q-1', 'blk-1', { lineIds: ['l-2', 'l-1'] }));
   });

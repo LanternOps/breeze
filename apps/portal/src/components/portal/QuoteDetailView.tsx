@@ -190,7 +190,12 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
             {showTax && (
               <>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Subtotal</span>
+                  {/* `subtotal` sums ALL lines (one-time + first period of each
+                      recurring cadence), so with recurring lines a bare
+                      "Subtotal" invites the reader to reconcile it against the
+                      due-on-acceptance figures below — which never add up. The
+                      qualifier names the basis. */}
+                  <span className="text-muted-foreground">{hasRecurring ? 'First period subtotal' : 'Subtotal'}</span>
                   <span className="tabular-nums text-foreground">{money(quote.subtotal ?? 0, currency)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -229,8 +234,15 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
             )}
             {depositDue != null ? (
               <>
-                <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }} data-testid="quote-deposit-due">
-                  <span className="text-sm font-semibold text-foreground">Deposit due on acceptance</span>
+                {/* Anchor row: the deposit stays the hero (it's what's payable
+                    now), but the three figures must visibly sum — due on
+                    acceptance = deposit due now + remaining balance. */}
+                <div className="flex justify-between border-t pt-3 text-sm" style={{ borderColor: 'var(--doc-accent)' }} data-testid="quote-due-on-acceptance">
+                  <span className="font-medium text-foreground">Due on acceptance</span>
+                  <span className="font-medium tabular-nums text-foreground">{money(dueOnAcceptance, currency)}</span>
+                </div>
+                <div className="flex items-baseline justify-between" data-testid="quote-deposit-due">
+                  <span className="text-sm font-semibold text-foreground">Deposit due now</span>
                   <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
                     {money(depositDue, currency)}
                   </span>

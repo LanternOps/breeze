@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Eye, EyeOff } from 'lucide-react';
 import '../../../lib/i18n';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
@@ -16,6 +17,7 @@ import {
   stripHtml,
   formatDate,
   formatMoney,
+  formatQuantity,
   lineTaxAmount,
   lineTitle,
   lineBlurb,
@@ -42,6 +44,22 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   // sees it. Gating on read (not write) keeps cost visibility consistent with the
   // editor's read-only line rows, which show the cost band to read users too.
   const canSeeMargin = can('quotes', 'read');
+  // Same persisted preference the editor's "Show cost & margin" toggle writes.
+  // That toggle's contract is "no margin on screen" — it must hold when a
+  // screen-sharing tech switches tabs, so Detail reads (and can flip) the same
+  // key. Detail needs its own control anyway: for non-draft quotes the editor
+  // tab (and its toggle) doesn't exist.
+  const SHOW_INTERNAL_KEY = 'breeze:quote-editor-show-margin';
+  const [showMargin, setShowMargin] = useState(
+    () => typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_INTERNAL_KEY) === '1',
+  );
+  const toggleMargin = useCallback(() => {
+    setShowMargin((v) => {
+      const next = !v;
+      try { localStorage.setItem(SHOW_INTERNAL_KEY, next ? '1' : '0'); } catch { /* private mode — session-only */ }
+      return next;
+    });
+  }, []);
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
@@ -101,7 +119,9 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
 
   return (
     <div className="space-y-6" data-testid="quote-detail">
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {/* xl (not lg): matches the editor tab — below xl the rail stacks under the
+          content so the line tables aren't starved into sideways scrolling. */}
+      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── rendered blocks + lines ───────────────────────────────────── */}
         {/* min-w-0 lets this 1fr track shrink below its tables' content width so
             the page doesn't scroll horizontally on a phone. */}
@@ -207,7 +227,21 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
 
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.title')}</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.title')}</h3>
+              {canSeeMargin && (
+                <button
+                  type="button"
+                  onClick={toggleMargin}
+                  aria-pressed={showMargin}
+                  data-testid="quote-detail-toggle-margin"
+                  className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors hover:bg-muted ${showMargin ? 'border-primary/40 bg-primary/10 text-primary' : 'text-muted-foreground'}`}
+                >
+                  {showMargin ? <EyeOff className="h-3 w-3" aria-hidden="true" /> : <Eye className="h-3 w-3" aria-hidden="true" />}
+                  {showMargin ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
+                </button>
+              )}
+            </div>
             <dl className="space-y-1 text-sm tabular-nums">
               <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.oneTime')}</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.monthlyRecurring')}</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perMonth')}</span></dd></div>
@@ -216,9 +250,20 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.tax')}{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
             </dl>
-            <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.dueOnAcceptance')}</span>
-              <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
+            <div className="mt-3 border-t pt-3">
+              <div className="flex items-end justify-between gap-2">
+                <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.dueOnAcceptance')}</span>
+                <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
+              </div>
+              {/* Deposit as a child of Due on acceptance — the same shape the editor
+                  rail uses, and the row the Totals card previously dropped even
+                  though the editor and the customer document both showed it. */}
+              {quote.depositDueTotal != null && Number(quote.depositDueTotal) > 0 && (
+                <div className="mt-1 flex items-baseline justify-between gap-2 pl-3 text-sm" data-testid="quote-detail-deposit-due">
+                  <span className="text-muted-foreground">{t('quotes.editor.deposit.dueUpFront')}</span>
+                  <span className="font-medium tabular-nums">{formatMoney(quote.depositDueTotal, currency)}</span>
+                </div>
+              )}
             </div>
             {hasRecurring && (
               <>
@@ -231,8 +276,9 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             )}
             {/* Internal cost / profit — same shared panel and figures as the editor
                 rail, so profitability survives past draft when the Editor tab is
-                hidden for non-draft quotes. */}
-            {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
+                hidden for non-draft quotes. Gated on the SAME persisted toggle as
+                the editor so "hide cost & margin" holds across tabs. */}
+            {canSeeMargin && showMargin && <MarginPanel profit={profit} currency={currency} />}
           </div>
 
           {/* Seller From block */}
@@ -377,7 +423,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                     <div className="font-medium text-foreground">{lineTitle(l)}</div>
                     {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{l.quantity}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(l.quantity)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">

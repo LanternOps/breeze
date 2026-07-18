@@ -647,7 +647,7 @@
     "catalog": {
       "CatalogEnrichButton": {
         "aiEstimate": "KI-Schätzung: {{guidance}}{{suffix}}",
-        "autoFill": "✨ Automatisch aus dem Web ausfüllen",
+        "autoFill": "Produkt nachschlagen",
         "busyMessage": "Produktdetails werden gesucht – dies dauert in der Regel 5–15 Sekunden.",
         "defaultGuidanceSuffix": "– geben Sie unten Ihren Preis ein.",
         "errors": {
@@ -670,7 +670,7 @@
         "actions": {
           "applyChanges": "Änderungen übernehmen"
         },
-        "defaultLabel": "✨ Mit KI optimieren",
+        "defaultLabel": "Beschreibung überarbeiten",
         "empty": "leer",
         "errors": {
           "enterText": "Geben Sie zunächst einen Namen oder eine Beschreibung zur Optimierung ein.",

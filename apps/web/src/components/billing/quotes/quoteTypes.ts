@@ -308,6 +308,16 @@ export function stripHtml(html: string): string {
     .trim();
 }
 
+/** Display form of a stored quantity. The API normalizes quantities to
+ *  numeric(12,2) strings ('3.00'), which reads as a pricing artifact on a money
+ *  document ("3.00 laptops"). Whole quantities render bare ('3'); genuinely
+ *  fractional ones keep their significant decimals ('2.5'). Non-numeric input
+ *  (defensive: fixtures/legacy payloads) passes through untouched. */
+export function formatQuantity(quantity: string | number): string {
+  const n = Number(quantity);
+  return Number.isFinite(n) ? String(n) : String(quantity);
+}
+
 /** Compact recurrence suffix for a line: 'one-time' | '/mo' | '/yr'. */
 export function formatRecurrence(recurrence: QuoteLineRecurrence): string {
   switch (recurrence) {

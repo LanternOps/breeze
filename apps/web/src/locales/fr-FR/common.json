@@ -647,7 +647,7 @@
     "catalog": {
       "CatalogEnrichButton": {
         "aiEstimate": "Estimation IA : {{guidance}}{{suffix}}",
-        "autoFill": "✨ Remplissage automatique à partir du web",
+        "autoFill": "Rechercher le produit",
         "busyMessage": "Chercher les détails du produit — généralement 5 à 15 secondes.",
         "defaultGuidanceSuffix": "— saisissez votre prix ci-dessous.",
         "errors": {
@@ -670,7 +670,7 @@
         "actions": {
           "applyChanges": "Appliquer les changements"
         },
-        "defaultLabel": "✨ Polir avec l’IA",
+        "defaultLabel": "Améliorer la description",
         "empty": "vide",
         "errors": {
           "enterText": "Entrez d’abord un nom ou une description à polir.",

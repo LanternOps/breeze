@@ -284,6 +284,15 @@ export function QuotesPage() {
     return out;
   }, [quotes, search, sort, orgName]);
 
+  // The quotes staged for a bulk send, resolved from the loaded list so the
+  // confirm can show WHAT is about to go out (number, customer, amount) rather
+  // than a blind count — bulk send is the page's highest-stakes action and the
+  // single-send flow makes its recipient explicit; this is the bulk equivalent.
+  const selectedQuotes = useMemo(
+    () => quotes.filter((q) => bulk.selectedIds.has(q.id)),
+    [quotes, bulk.selectedIds],
+  );
+
   const runBulkQuotes = useCallback(
     async (path: string, verb: string) => {
       const ids = Array.from(bulk.selectedIds);
@@ -559,7 +568,25 @@ export function QuotesPage() {
         variant="warning"
         confirmLabel={t('quotes.page.bulk.send')}
         confirmTestId="quotes-bulk-send-confirm"
-      />
+      >
+        {/* Reviewable manifest of what's about to go out — number, customer,
+            amount per quote — so bulk send is never a blind count. */}
+        <ul
+          className="max-h-48 space-y-1 overflow-y-auto rounded-md border bg-muted/30 p-2 text-sm"
+          data-testid="quotes-bulk-send-review"
+        >
+          {selectedQuotes.map((q) => (
+            <li key={q.id} className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')}</span>
+                <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
+              </span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">{formatMoney(q.total, q.currencyCode)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-xs text-muted-foreground">{t('quotes.page.bulkSend.recipients')}</p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deleteOpen}
@@ -569,7 +596,27 @@ export function QuotesPage() {
         message={t('quotes.page.bulkDelete.message', { count: bulk.size })}
         confirmLabel={t('quotes.page.bulk.deleteDrafts')}
         confirmTestId="quotes-bulk-delete-confirm"
-      />
+      >
+        {/* Same reviewable manifest as bulk send — both dialogs are destructive
+            and deserve the same rigor. Non-draft rows in the selection are
+            skipped server-side; the pill marks which rows will actually delete. */}
+        <ul
+          className="max-h-48 space-y-1 overflow-y-auto rounded-md border bg-muted/30 p-2 text-sm"
+          data-testid="quotes-bulk-delete-review"
+        >
+          {selectedQuotes.map((q) => (
+            <li key={q.id} className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')}</span>
+                <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {q.status === 'draft' ? formatMoney(q.total, q.currencyCode) : t('quotes.page.bulkDelete.skippedNotDraft')}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
 
       {/* New-quote dialog */}
       <Dialog

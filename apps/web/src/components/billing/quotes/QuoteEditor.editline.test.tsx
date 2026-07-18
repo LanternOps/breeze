@@ -91,7 +91,9 @@ describe('QuoteEditor — inline line editing', () => {
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
     expect((screen.getByTestId('quote-line-desc-line-1') as HTMLTextAreaElement).value).toBe('Managed support');
-    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('1.00');
+    // Quantity shows its bare form ('1', not the stored '1.00') — matching the
+    // input's step="1" and the customer-facing rendering.
+    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('1');
     expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('50.00');
     expect(screen.getByTestId('quote-line-recurrence-line-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-line-taxable-line-1')).toBeInTheDocument();
@@ -99,14 +101,14 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-line-desc-line-1').tagName).toBe('TEXTAREA');
   });
 
-  it('renders a per-line Tax cell: "—" when not taxable, the computed amount when taxable', async () => {
-    // Non-taxable line + no rate → dash.
+  it('renders per-line tax under the Total: empty when not taxable, the computed amount when taxable', async () => {
+    // Non-taxable line + no rate → no tax sub-line.
     const { unmount } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('—');
+    expect(screen.getByTestId('quote-line-tax-line-1')).toBeEmptyDOMElement();
     unmount();
 
-    // Taxable line ($50 line total) at 10% → $5.00 in the Tax cell.
+    // Taxable line ($50 line total) at 10% → "+ $5.00 tax" under the Total.
     const taxed: QuoteDetailData = {
       ...detail,
       quote: { ...detail.quote, taxRate: '0.1' },
@@ -114,7 +116,7 @@ describe('QuoteEditor — inline line editing', () => {
     };
     render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('$5.00');
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('+ $5.00 tax');
   });
 
   it('editing the description and blurring PATCHes the line, then refreshes', async () => {
@@ -267,7 +269,7 @@ describe('QuoteEditor — inline line editing', () => {
     expect(rate).toHaveTextContent('8.95%');
   });
 
-  it('rejects a fractional quantity with a cue and no PATCH', async () => {
+  it('rejects a fractional quantity with an inline error, keeps the input, and PATCHes nothing', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
@@ -275,14 +277,18 @@ describe('QuoteEditor — inline line editing', () => {
     fireEvent.change(qtyEl, { target: { value: '2.5' } });
     fireEvent.blur(qtyEl);
 
+    // The error renders inline under the row (not a bottom-corner toast), the
+    // input keeps the user's entry to correct, and nothing is PATCHed.
     await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+      expect(screen.getByTestId('quote-line-qty-error-line-1')).toHaveTextContent('whole-number quantity'),
     );
+    expect(qtyEl).toHaveAttribute('aria-invalid', 'true');
+    expect(showToast).not.toHaveBeenCalled();
     expect(updateLineMock).not.toHaveBeenCalled();
-    expect(qtyEl.value).toBe('1.00'); // snapped back to the persisted qty
+    expect(qtyEl.value).toBe('2.5');
   });
 
-  it('surfaces a cue (and reverts) when an invalid quantity is committed', async () => {
+  it('an invalid quantity error clears once a valid value is committed', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
@@ -290,12 +296,15 @@ describe('QuoteEditor — inline line editing', () => {
     fireEvent.change(qtyEl, { target: { value: '0' } });
     fireEvent.blur(qtyEl);
 
-    await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
-    );
-    // No PATCH for the rejected value, and the field snaps back to the persisted qty.
+    await waitFor(() => expect(screen.getByTestId('quote-line-qty-error-line-1')).toBeInTheDocument());
     expect(updateLineMock).not.toHaveBeenCalled();
-    expect(qtyEl.value).toBe('1.00');
+
+    // Correcting the value clears the error on keystroke and commits on blur.
+    fireEvent.change(qtyEl, { target: { value: '3' } });
+    expect(screen.queryByTestId('quote-line-qty-error-line-1')).not.toBeInTheDocument();
+    fireEvent.blur(qtyEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { quantity: 3 }));
+    expect(qtyEl).not.toHaveAttribute('aria-invalid');
   });
 
   it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {

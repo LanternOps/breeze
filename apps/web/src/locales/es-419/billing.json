@@ -451,6 +451,7 @@
         "fetchAddImage": "Buscar y agregar imagen",
         "fromUrl": "De URL",
         "hideCostMargin": "Ocultar costo y margen",
+        "lineActions": "Acciones de la línea",
         "moveLineDown": "Mover línea hacia abajo",
         "moveLineTo": "Mover línea a",
         "moveLineToAnotherTable": "Mover línea a otra tabla de precios",
@@ -529,17 +530,21 @@
         "removeSectionWithLines": "Esto elimina la tabla de precios y sus líneas. Esto no se puede deshacer."
       },
       "customer": {
+        "confirmLabel": "Mover cotización",
+        "confirmMessage": "¿Mover esta cotización a {{name}}? Esto quita la asignación de sitio y la dirección de facturación personalizada, y aplica la tasa de impuestos de la nueva empresa.",
+        "confirmTitle": "¿Cambiar cliente?",
         "help": "Mover un borrador a otra empresa quita la asignación de sitio y aplica la tasa de impuestos de esa empresa.",
         "label": "Cliente",
         "success": "Cotización movida a {{name}}."
       },
       "deposit": {
         "due": "Depósito adeudado",
+        "dueUpFront": "Depósito adeudado por adelantado",
         "eligibleAria": "Depósito elegible",
         "label": "Depósito",
         "none": "Sin depósito",
         "percent": "Por ciento",
-        "percentOfDue": "Porcentaje de vencimiento al momento de la aceptación",
+        "percentOfDue": "Porcentaje del monto adeudado",
         "selectedLines": "Líneas seleccionadas",
         "selectedLinesHelp": "Consulte las líneas únicas elegibles para depósito en cada tabla de precios.",
         "short": "Depósito"
@@ -547,12 +552,14 @@
       "emptyBlocks": "Aún no hay contenido. Agregue un encabezado, texto enriquecido o una tabla de precios a continuación.",
       "errors": {
         "addCatalogItem": "No se pudo agregar el elemento del catálogo.",
+        "addContractSection": "No se pudo agregar la sección de contrato",
         "addDistributorItem": "No se pudo agregar el artículo del distribuidor.",
         "addImageSection": "No se pudo agregar la sección de imagen.",
         "addLine": "No se pudo agregar la línea.",
         "addPax8Product": "No se pudo agregar el producto Pax8.",
         "addSection": "No se pudo agregar la sección.",
         "costZeroOrMore": "Introduzca un coste de 0 o más.",
+        "depositPercentRange": "Ingresa un porcentaje entre 0.01 y 99.99.",
         "fetchImageFromUrl": "No se pudo recuperar la imagen de ese URL.",
         "imageAddedSectionFailed": "Imagen agregada, pero no se pudo agregar la sección.",
         "imageTooLarge": "La imagen debe tener un tamaño de 5 MB o menos.",
@@ -560,6 +567,7 @@
         "importPax8Product": "No se pudo importar el producto Pax8.",
         "lineAddedCatalogSaveFailed": "Se agregó la línea, pero no se pudo guardar en el catálogo.",
         "lineNeedsNameOrDescription": "Una línea necesita un nombre o una descripción.",
+        "loadContractTemplates": "No se pudieron cargar las plantillas de contrato",
         "moveLine": "No se pudo mover la línea.",
         "quantityWholeGreaterThanZero": "Ingrese una cantidad de número entero mayor que 0.",
         "removeLine": "No se pudo eliminar la línea.",
@@ -567,6 +575,7 @@
         "reorderBlocks": "No se pudieron reordenar los bloques.",
         "reorderLines": "No se pudieron reordenar las líneas.",
         "reorderSections": "No se pudieron reordenar las secciones.",
+        "saveCoverPage": "No se pudo guardar la portada",
         "saveCustomer": "No se pudo cambiar el cliente.",
         "saveTerms": "No se pudieron guardar los términos.",
         "saveTitle": "No se pudo guardar el título.",
@@ -575,10 +584,7 @@
         "updateDeposit": "No se pudo actualizar el depósito.",
         "updateLine": "No se pudo actualizar la línea.",
         "updateSection": "No se pudo actualizar la sección.",
-        "uploadImage": "No se pudo cargar la imagen.",
-        "loadContractTemplates": "No se pudieron cargar las plantillas de contrato",
-        "addContractSection": "No se pudo agregar la sección de contrato",
-        "saveCoverPage": "No se pudo guardar la portada"
+        "uploadImage": "No se pudo cargar la imagen."
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -657,9 +663,10 @@
         "notTaxable": "No sujeto a impuestos",
         "qty": "Cantidad",
         "recurrence": "Recurrencia",
-        "scrollAria": "Tabla de precios: desplácese hacia los lados para ver las acciones de impuestos, totales y filas",
+        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila",
         "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
+        "taxSuffix": "+ {{amount}} de impuesto",
         "taxTitle": "Impuesto por línea. El encabezado Total de impuestos es determinante y puede diferir en un centavo redondeado.",
         "taxable": "Imponible",
         "total": "Total",
@@ -880,10 +887,13 @@
       "totals": {
         "annualRecurring": "Recurrente anual",
         "depositDue": "Depósito adeudado",
+        "depositDueNow": "Depósito a pagar ahora",
         "dueOnAcceptance": "Vencimiento al momento de la aceptación",
+        "firstPeriodSubtotal": "Subtotal del primer período",
+        "firstPeriodTotal": "Total del primer período",
         "monthlyRecurring": "Recurrente mensual",
         "recurringNote": "Al aceptar esta propuesta se facturan los cargos únicos ahora. Las líneas recurrentes facturan según su propio horario.",
-        "remainingBalance": "Saldo restante",
+        "remainingBalance": "Saldo restante (según los términos)",
         "subtotal": "Total parcial",
         "tax": "Impuesto"
       },
@@ -902,12 +912,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "¿Eliminar las cotizaciones seleccionadas de {{count}}? Sólo se eliminarán las comillas DRAFT; esto no se puede deshacer.",
+        "message_one": "¿Eliminar la cotización seleccionada? Solo se eliminan los BORRADORES; esto no se puede deshacer.",
+        "message_other": "¿Eliminar {{count}} cotizaciones seleccionadas? Solo se eliminan los BORRADORES; esto no se puede deshacer.",
+        "skippedNotDraft": "No es borrador (omitida)",
         "title": "Eliminar borradores de cotizaciones"
       },
       "bulkSend": {
-        "message": "¿Enviar por correo electrónico {{count}} las propuestas seleccionadas a sus clientes? Esto no se puede deshacer.",
-        "title": "Enviar cotizaciones"
+        "message_one": "¿Enviar por correo la propuesta seleccionada a su cliente? Esto no se puede deshacer.",
+        "message_other": "¿Enviar por correo {{count}} propuestas seleccionadas a sus clientes? Esto no se puede deshacer.",
+        "recipients": "Cada propuesta se envía por correo al contacto de facturación de su organización y se marca como Enviada.",
+        "title": "Enviar cotizaciones",
+        "unnumbered": "Borrador"
       },
       "create": {
         "description": "Elija el cliente para el que es esta propuesta. Puede agregar bloques y precios a continuación.",
@@ -959,7 +974,7 @@
         "number": "Número",
         "selectAll": "Seleccionar todas las cotizaciones",
         "selectQuote": "Seleccionar cotización {{quote}}",
-        "total": "Total"
+        "total": "Primer período"
       },
       "title": "Cotizaciones",
       "tryAgain": "Intentar otra vez"

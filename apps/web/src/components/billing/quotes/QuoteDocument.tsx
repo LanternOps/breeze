@@ -14,6 +14,7 @@ import {
   statusLabel,
   formatDate,
   formatMoney,
+  formatQuantity,
   lineTaxAmount,
   lineTitle,
   lineBlurb,
@@ -184,7 +185,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
                       </div>
                     </div>
                   </td>
-                  <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
+                  <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatQuantity(l.quantity)}</td>
                   <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
                     {formatMoney(l.unitPrice, currency)}{suffix && <span className="text-xs">{suffix}</span>}
                   </td>
@@ -433,7 +434,11 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
           <section className="flex justify-end">
             <div className="w-full max-w-xs space-y-2.5">
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">{t('quotes.document.totals.subtotal')}</span>
+                {/* `subtotal` sums ALL lines (one-time + first period of each
+                    recurring cadence) — with recurring lines a bare "Subtotal"
+                    never reconciles against the due-on-acceptance figures below,
+                    so the qualifier names the basis. Mirrors both portal views. */}
+                <span className="text-muted-foreground">{hasRecurring ? t('quotes.document.totals.firstPeriodSubtotal') : t('quotes.document.totals.subtotal')}</span>
                 <span className="tabular-nums text-foreground">{formatMoney(quote.subtotal, currency)}</span>
               </div>
               {showTax && (
@@ -462,12 +467,20 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
               )}
               {depositDue != null ? (
                 <>
+                  {/* Anchor row: the deposit stays the hero (it's what's payable
+                      now), but the three figures must visibly sum — due on
+                      acceptance = deposit due now + remaining balance. Same
+                      presentation contract as the portal views and the PDF. */}
                   <div
-                    className="flex items-baseline justify-between border-t pt-3"
+                    className="flex justify-between border-t pt-3 text-sm"
                     style={{ borderColor: 'var(--doc-accent)' }}
-                    data-testid="quote-document-deposit-due"
+                    data-testid="quote-document-due"
                   >
-                    <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.depositDue')}</span>
+                    <span className="font-medium text-foreground">{t('quotes.document.totals.dueOnAcceptance')}</span>
+                    <span className="font-medium tabular-nums text-foreground">{formatMoney(dueOnAcceptance, currency)}</span>
+                  </div>
+                  <div className="flex items-baseline justify-between" data-testid="quote-document-deposit-due">
+                    <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.depositDueNow')}</span>
                     <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
                       {formatMoney(depositDue, currency)}
                     </span>
@@ -495,6 +508,13 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
 
               {hasRecurring && (
                 <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
+                  {/* First-period total row (matches both portal views + the PDF):
+                      the recurring-inclusive figure, clearly boxed apart from the
+                      invoiced-now amounts above. */}
+                  <div className="flex justify-between" data-testid="quote-document-first-period">
+                    <span className="text-muted-foreground">{t('quotes.document.totals.firstPeriodTotal')}</span>
+                    <span className="tabular-nums text-foreground">{formatMoney(quote.total, currency)}</span>
+                  </div>
                   {Number(quote.monthlyRecurringTotal) > 0 && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">{t('quotes.document.totals.monthlyRecurring')}</span>

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, MoreHorizontal } from 'lucide-react';
+import { AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
+import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { showToast } from '../../shared/Toast';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
@@ -96,6 +97,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // stable two-buttons-plus-kebab instead of a wrapping four-button row.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  // Focus-on-open + arrow-key cycling for the menu items (Tab closes).
+  const { listRef: menuListRef, onKeyDown: onMenuListKeyDown } = useMenuKeyboard(menuOpen, () => setMenuOpen(false));
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
 
   useEffect(() => {
@@ -103,7 +107,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     const onPointerDown = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
     };
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    // Escape closes AND returns focus to the trigger — focus was moved into the
+    // menu on open, so without the refocus it would drop to <body>.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setMenuOpen(false); menuTriggerRef.current?.focus(); }
+    };
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
     return () => {
@@ -345,9 +353,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 : undefined
             }
             data-testid="quote-send"
-            className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
+            className={`${btnBase} inline-flex items-center justify-center gap-1.5 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
           >
-            {sending ? t('quotes.actions.sending') : savePending ? t('common:states.saving') : t('quotes.actions.sendProposal')}
+            {/* The label stays "Send proposal" while edits settle — a spinner
+                marks the wait instead. Swapping the label to "Saving…" resized
+                the button (shifting the sticky header cluster) and made the
+                SEND button read as if a send were already in progress. The
+                spinner's slot is always reserved (invisible at rest) so its
+                appearance never shifts the cluster either. */}
+            <Loader2 className={`h-3.5 w-3.5 ${sending || savePending ? 'animate-spin' : 'invisible'}`} aria-hidden="true" />
+            {sending ? t('quotes.actions.sending') : t('quotes.actions.sendProposal')}
           </button>
         )}
         {/* In the rail the secondary actions stack as full-width buttons; in the
@@ -391,6 +406,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         {header && (canClone || canDelete) && (
           <div className="relative" ref={menuRef}>
             <button
+              ref={menuTriggerRef}
               type="button"
               onClick={() => setMenuOpen((v) => !v)}
               aria-haspopup="menu"
@@ -405,6 +421,8 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {menuOpen && (
               <div
                 role="menu"
+                ref={menuListRef}
+                onKeyDown={onMenuListKeyDown}
                 data-testid="quote-actions-menu-list"
                 className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border bg-card py-1 shadow-lg"
               >
@@ -412,11 +430,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                   <button
                     type="button"
                     role="menuitem"
+                    tabIndex={-1}
                     onClick={openClone}
                     disabled={cloning || savePending}
                     title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
                     data-testid="quote-clone"
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted disabled:opacity-50"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
                   >
                     {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneQuote')}
                   </button>
@@ -425,9 +444,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                   <button
                     type="button"
                     role="menuitem"
+                    tabIndex={-1}
                     onClick={() => { setMenuOpen(false); setDelOpen(true); }}
                     data-testid="quote-delete-open"
-                    className="block w-full px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    className="block w-full px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10 focus:bg-destructive/10 focus:outline-hidden"
                   >
                     {t('quotes.actions.deleteDraft')}
                   </button>

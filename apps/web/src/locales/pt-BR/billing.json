@@ -451,6 +451,7 @@
         "fetchAddImage": "Buscar e adicionar imagem",
         "fromUrl": "Da URL",
         "hideCostMargin": "Ocultar custo e margem",
+        "lineActions": "Ações da linha",
         "moveLineDown": "Mover linha para baixo",
         "moveLineTo": "Mover linha para",
         "moveLineToAnotherTable": "Mover linha para outra tabela de preços",
@@ -529,17 +530,21 @@
         "removeSectionWithLines": "Remover seção com linhas"
       },
       "customer": {
+        "confirmLabel": "Mover orçamento",
+        "confirmMessage": "Mover este orçamento para {{name}}? Isso remove a atribuição de site e a substituição de cobrança, e aplica a alíquota de imposto da nova empresa.",
+        "confirmTitle": "Alterar cliente?",
         "help": "Mover um rascunho para outra empresa remove a atribuição de site e aplica a alíquota de imposto dessa empresa.",
         "label": "Cliente",
         "success": "Orçamento movido para {{name}}."
       },
       "deposit": {
         "due": "Depósito devido",
+        "dueUpFront": "Depósito devido antecipadamente",
         "eligibleAria": "Elegível para depósito",
         "label": "Depósito",
         "none": "Sem depósito",
         "percent": "Percentual",
-        "percentOfDue": "Percentual do valor devido na aceitação",
+        "percentOfDue": "Percentual do valor devido",
         "selectedLines": "Linhas selecionadas",
         "selectedLinesHelp": "Marque as linhas únicas elegíveis para depósito em cada tabela de preços.",
         "short": "Depósito"
@@ -547,12 +552,14 @@
       "emptyBlocks": "Ainda não há conteúdo. Adicione um título, rich text ou uma tabela de preços abaixo.",
       "errors": {
         "addCatalogItem": "Não foi possível adicionar o item do catálogo.",
+        "addContractSection": "Não foi possível adicionar a seção de contrato",
         "addDistributorItem": "Não foi possível adicionar o item do distribuidor.",
         "addImageSection": "Não foi possível adicionar a seção de imagem.",
         "addLine": "Não foi possível adicionar a linha.",
         "addPax8Product": "Não foi possível adicionar o produto Pax8.",
         "addSection": "Não foi possível adicionar a seção.",
         "costZeroOrMore": "Informe um custo de 0 ou mais.",
+        "depositPercentRange": "Informe um percentual entre 0.01 e 99.99.",
         "fetchImageFromUrl": "Não foi possível buscar a imagem dessa URL.",
         "imageAddedSectionFailed": "Imagem adicionada, mas a adição da seção falhou.",
         "imageTooLarge": "A imagem deve ter 5 MB ou menos.",
@@ -560,6 +567,7 @@
         "importPax8Product": "Não foi possível importar o produto Pax8.",
         "lineAddedCatalogSaveFailed": "Linha adicionada, mas o salvamento no catálogo falhou.",
         "lineNeedsNameOrDescription": "Uma linha precisa de um nome ou uma descrição.",
+        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
         "moveLine": "Não foi possível mover a linha.",
         "quantityWholeGreaterThanZero": "Informe uma quantidade inteira maior que 0.",
         "removeLine": "Não foi possível remover a linha.",
@@ -567,6 +575,7 @@
         "reorderBlocks": "Não foi possível reordenar os blocos.",
         "reorderLines": "Não foi possível reordenar as linhas.",
         "reorderSections": "Não foi possível reordenar as seções.",
+        "saveCoverPage": "Não foi possível salvar a página de capa",
         "saveCustomer": "Não foi possível alterar o cliente.",
         "saveTerms": "Não foi possível salvar os termos.",
         "saveTitle": "Não foi possível salvar o título.",
@@ -575,10 +584,7 @@
         "updateDeposit": "Não foi possível atualizar o depósito.",
         "updateLine": "Não foi possível atualizar a linha.",
         "updateSection": "Não foi possível atualizar a seção.",
-        "uploadImage": "Não foi possível enviar a imagem.",
-        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
-        "addContractSection": "Não foi possível adicionar a seção de contrato",
-        "saveCoverPage": "Não foi possível salvar a página de capa"
+        "uploadImage": "Não foi possível enviar a imagem."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -657,9 +663,10 @@
         "notTaxable": "Não tributável",
         "qty": "Qtd.",
         "recurrence": "Recorrência",
-        "scrollAria": "Tabela de preços — role lateralmente para imposto, total e ações da linha",
+        "scrollAria": "Tabela de preços — role lateralmente em telas estreitas para ver totais e ações da linha",
         "showSubtotal": "Mostrar linha de subtotal",
         "tax": "Imposto",
+        "taxSuffix": "+ {{amount}} de imposto",
         "taxTitle": "Imposto por linha. O total de imposto do cabeçalho é autoritativo e pode diferir por um centavo de arredondamento.",
         "taxable": "Tributável",
         "total": "Total",
@@ -880,10 +887,13 @@
       "totals": {
         "annualRecurring": "Recorrência anual",
         "depositDue": "Entrada devida",
+        "depositDueNow": "Depósito devido agora",
         "dueOnAcceptance": "Devido na aceitação",
+        "firstPeriodSubtotal": "Subtotal do primeiro período",
+        "firstPeriodTotal": "Total do primeiro período",
         "monthlyRecurring": "Recorrência mensal",
         "recurringNote": "Aceitar esta proposta fatura agora os encargos únicos. As linhas recorrentes são faturadas conforme sua própria programação.",
-        "remainingBalance": "Saldo restante",
+        "remainingBalance": "Saldo restante (conforme os termos)",
         "subtotal": "Subtotal",
         "tax": "Imposto"
       },
@@ -902,12 +912,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "Excluir {{count}} cotação(ões) selecionada(s)? Somente cotações em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",
+        "message_one": "Excluir o orçamento selecionado? Apenas RASCUNHOS são excluídos; isso não pode ser desfeito.",
+        "message_other": "Excluir {{count}} orçamentos selecionados? Apenas RASCUNHOS são excluídos; isso não pode ser desfeito.",
+        "skippedNotDraft": "Não é rascunho (ignorado)",
         "title": "Excluir cotações em rascunho"
       },
       "bulkSend": {
-        "message": "Enviar por e-mail {{count}} proposta(s) selecionada(s) aos clientes? Esta ação não pode ser desfeita.",
-        "title": "Enviar cotações"
+        "message_one": "Enviar por e-mail a proposta selecionada ao cliente? Isso não pode ser desfeito.",
+        "message_other": "Enviar por e-mail {{count}} propostas selecionadas aos clientes? Isso não pode ser desfeito.",
+        "recipients": "Cada proposta é enviada por e-mail ao contato de cobrança da organização e marcada como Enviada.",
+        "title": "Enviar cotações",
+        "unnumbered": "Rascunho"
       },
       "create": {
         "description": "Escolha o cliente desta proposta. Em seguida, você poderá adicionar blocos e preços.",
@@ -959,7 +974,7 @@
         "number": "Número",
         "selectAll": "Selecionar todas as cotações",
         "selectQuote": "Selecionar cotação {{quote}}",
-        "total": "Total"
+        "total": "Primeiro período"
       },
       "title": "Cotações",
       "tryAgain": "Tentar novamente"

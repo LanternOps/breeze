@@ -69,7 +69,9 @@ describe('QuoteEditor customer reassignment', () => {
     fetchMock.mockImplementation(async () => json({ data: {} }));
   });
 
-  it('changing the customer PATCHes { orgId } and refreshes the detail', async () => {
+  // Reassignment clears site + bill-to and swaps the tax basis, so a select
+  // change stages a confirm step — the PATCH only fires after the user confirms.
+  it('changing the customer confirms, then PATCHes { orgId } and refreshes the detail', async () => {
     const onChanged = vi.fn();
     render(<QuoteEditor detail={detail()} onChanged={onChanged} />);
 
@@ -77,9 +79,26 @@ describe('QuoteEditor customer reassignment', () => {
     expect(select).toHaveValue('org-1');
     fireEvent.change(select, { target: { value: 'org-2' } });
 
+    // Nothing saved yet — the select still shows the current customer.
+    expect(customerPatchCalls()).toHaveLength(0);
+    expect(select).toHaveValue('org-1');
+
+    fireEvent.click(screen.getByTestId('quote-customer-confirm'));
     await waitFor(() => expect(customerPatchCalls()).toHaveLength(1));
     expect(JSON.parse(String((customerPatchCalls()[0]![1] as RequestInit).body))).toEqual({ orgId: 'org-2' });
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('cancelling the confirm leaves the customer unchanged and PATCHes nothing', async () => {
+    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+
+    const select = screen.getByTestId('quote-customer');
+    fireEvent.change(select, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByText('Cancel'));
+
+    await waitFor(() => expect(screen.queryByTestId('quote-customer-confirm')).not.toBeInTheDocument());
+    expect(customerPatchCalls()).toHaveLength(0);
+    expect(select).toHaveValue('org-1');
   });
 
   it('re-selecting the current customer is a no-op', () => {
@@ -87,6 +106,7 @@ describe('QuoteEditor customer reassignment', () => {
 
     fireEvent.change(screen.getByTestId('quote-customer'), { target: { value: 'org-1' } });
 
+    expect(screen.queryByTestId('quote-customer-confirm')).not.toBeInTheDocument();
     expect(customerPatchCalls()).toHaveLength(0);
   });
 
@@ -101,7 +121,9 @@ describe('QuoteEditor customer reassignment', () => {
 
     const select = screen.getByTestId('quote-customer');
     fireEvent.change(select, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('quote-customer-confirm'));
 
+    await waitFor(() => expect(customerPatchCalls()).toHaveLength(1));
     await waitFor(() => expect(select).toHaveValue('org-1'));
   });
 });

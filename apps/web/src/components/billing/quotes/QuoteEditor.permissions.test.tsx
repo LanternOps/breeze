@@ -71,6 +71,9 @@ const detail: QuoteDetailData = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The cost/margin toggle persists to localStorage — clear it so every test
+  // starts from the collapsed default regardless of what a prior test toggled.
+  localStorage.clear();
   state.permissions = [];
 });
 
@@ -90,7 +93,7 @@ describe('QuoteEditor — permission gating', () => {
     expect(screen.queryByTestId('quote-add-block-submit')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-block-remove-blk-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-block-add-line-blk-1')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('quote-line-remove-line-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-line-actions-line-1')).not.toBeInTheDocument();
   });
 
   it('quotes:write reveals the add-block form, block remove, add-line builder and line remove', async () => {
@@ -102,6 +105,8 @@ describe('QuoteEditor — permission gating', () => {
     expect(screen.getByTestId('quote-add-block-submit')).toBeInTheDocument();
     expect(screen.getByTestId('quote-block-remove-blk-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-block-add-line-blk-1')).toBeInTheDocument();
+    // Row actions (incl. Remove) live behind the line's overflow menu.
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     expect(screen.getByTestId('quote-line-remove-line-1')).toBeInTheDocument();
   });
 
@@ -118,25 +123,29 @@ describe('QuoteEditor — permission gating', () => {
     // The toggle is offered to readers (unlike the write-only autosave hint).
     const toggle = screen.getByTestId('quote-editor-toggle-internal');
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    // Rail margin panel is visible to readers (gated on quotes:read, not write).
-    expect(screen.getByTestId('quote-margin-cost')).toHaveTextContent('$30.00');
-    // Internal per-line band starts collapsed, then expands on toggle.
+    // ALL margin surfaces start hidden — the rail panel is governed by the same
+    // toggle as the per-line bands, so "off" honestly means no margin on screen.
+    expect(screen.queryByTestId('quote-margin-cost')).not.toBeInTheDocument();
     expect(screen.getByTestId('quote-line-internal-line-1')).toHaveClass('hidden');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // Rail margin panel is visible to readers once toggled (gated on quotes:read,
+    // not write) alongside the expanded per-line band.
+    expect(screen.getByTestId('quote-margin-cost')).toHaveTextContent('$30.00');
     expect(screen.getByTestId('quote-line-internal-line-1')).not.toHaveClass('hidden');
     expect(screen.getByTestId('quote-line-cost-line-1')).toHaveTextContent('$30.00');
-    // The non-taxable line's cell announces its state via the sr-only label.
-    expect(screen.getByTestId('quote-line-taxable-line-1')).toHaveTextContent('Not taxable');
+    // A non-taxable line renders no tax sub-line under its Total.
+    expect(screen.getByTestId('quote-line-tax-line-1')).toBeEmptyDOMElement();
   });
 
-  // ReadonlyLineRow replaced the taxable checkbox with a glyph + sr-only label;
-  // the glyph is aria-hidden, so the accessible name must come from the label.
-  it('read-only Taxable cell announces a taxable line via an sr-only label', async () => {
+  // Tax state lives in the Total cell's sub-line (the dedicated Taxable/Tax
+  // columns were folded away): a taxable line with no rate set still announces
+  // "Taxable" so read-only users can tell the states apart.
+  it('read-only taxable line announces its taxable state under the Total', async () => {
     state.permissions = [{ resource: 'quotes', action: 'read' }];
     const taxed: QuoteDetailData = { ...detail, lines: [{ ...line, taxable: true }] };
     render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-line-taxable-line-1')).toHaveTextContent('Taxable');
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('Taxable');
   });
 });

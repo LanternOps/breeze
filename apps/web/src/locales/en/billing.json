@@ -451,6 +451,7 @@
         "fetchAddImage": "Fetch & add image",
         "fromUrl": "From URL",
         "hideCostMargin": "Hide cost & margin",
+        "lineActions": "Line actions",
         "moveLineDown": "Move line down",
         "moveLineTo": "Move line to",
         "moveLineToAnotherTable": "Move line to another pricing table",
@@ -529,17 +530,21 @@
         "removeSectionWithLines": "This removes the pricing table and its lines. This can't be undone."
       },
       "customer": {
+        "confirmLabel": "Move quote",
+        "confirmMessage": "Move this quote to {{name}}? This clears the site assignment and bill-to override, and applies the new company's tax rate.",
+        "confirmTitle": "Change customer?",
         "help": "Moving a draft to another company clears the site assignment and applies that company’s tax rate.",
         "label": "Customer",
         "success": "Quote moved to {{name}}."
       },
       "deposit": {
         "due": "Deposit due",
+        "dueUpFront": "Deposit due up front",
         "eligibleAria": "Deposit eligible",
         "label": "Deposit",
         "none": "No deposit",
         "percent": "Percent",
-        "percentOfDue": "Percent of due-on-acceptance",
+        "percentOfDue": "Percent of amount due",
         "selectedLines": "Selected lines",
         "selectedLinesHelp": "Check the deposit-eligible one-time lines in each pricing table.",
         "short": "Deposit"
@@ -547,12 +552,14 @@
       "emptyBlocks": "No content yet. Add a heading, rich text, or a pricing table below.",
       "errors": {
         "addCatalogItem": "Could not add the catalog item.",
+        "addContractSection": "Couldn't add the contract section",
         "addDistributorItem": "Could not add the distributor item.",
         "addImageSection": "Could not add the image section.",
         "addLine": "Could not add the line.",
         "addPax8Product": "Could not add the Pax8 product.",
         "addSection": "Could not add the section.",
         "costZeroOrMore": "Enter a cost of 0 or more.",
+        "depositPercentRange": "Enter a percent between 0.01 and 99.99.",
         "fetchImageFromUrl": "Could not fetch the image from that URL.",
         "imageAddedSectionFailed": "Image added, but adding the section failed.",
         "imageTooLarge": "Image must be 5 MB or smaller.",
@@ -560,6 +567,7 @@
         "importPax8Product": "Could not import the Pax8 product.",
         "lineAddedCatalogSaveFailed": "Line added, but saving it to the catalog failed.",
         "lineNeedsNameOrDescription": "A line needs a name or a description.",
+        "loadContractTemplates": "Couldn't load contract templates",
         "moveLine": "Could not move the line.",
         "quantityWholeGreaterThanZero": "Enter a whole-number quantity greater than 0.",
         "removeLine": "Could not remove the line.",
@@ -567,6 +575,7 @@
         "reorderBlocks": "Could not reorder blocks.",
         "reorderLines": "Could not reorder lines.",
         "reorderSections": "Could not reorder sections.",
+        "saveCoverPage": "Couldn't save the cover page",
         "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
         "saveTitle": "Could not save the title.",
@@ -575,10 +584,7 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image.",
-        "loadContractTemplates": "Couldn't load contract templates",
-        "addContractSection": "Couldn't add the contract section",
-        "saveCoverPage": "Couldn't save the cover page"
+        "uploadImage": "Could not upload the image."
       },
       "image": {
         "alt": "Quote image",
@@ -657,9 +663,10 @@
         "notTaxable": "Not taxable",
         "qty": "Qty",
         "recurrence": "Recurrence",
-        "scrollAria": "Pricing table — scroll sideways for tax, total and row actions",
+        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions",
         "showSubtotal": "Show subtotal row",
         "tax": "Tax",
+        "taxSuffix": "+ {{amount}} tax",
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
         "total": "Total",
@@ -880,10 +887,13 @@
       "totals": {
         "annualRecurring": "Annual recurring",
         "depositDue": "Deposit due",
+        "depositDueNow": "Deposit due now",
         "dueOnAcceptance": "Due on acceptance",
+        "firstPeriodSubtotal": "First period subtotal",
+        "firstPeriodTotal": "First-period total",
         "monthlyRecurring": "Monthly recurring",
         "recurringNote": "Accepting this proposal bills the one-time charges now. Recurring lines bill on their own schedule.",
-        "remainingBalance": "Remaining balance",
+        "remainingBalance": "Remaining balance (due per terms)",
         "subtotal": "Subtotal",
         "tax": "Tax"
       },
@@ -902,12 +912,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "Delete {{count}} selected quote(s)? Only DRAFT quotes will be deleted; this cannot be undone.",
+        "message_one": "Delete the selected quote? Only DRAFT quotes are deleted; this cannot be undone.",
+        "message_other": "Delete {{count}} selected quotes? Only DRAFT quotes are deleted; this cannot be undone.",
+        "skippedNotDraft": "Not a draft (skipped)",
         "title": "Delete draft quotes"
       },
       "bulkSend": {
-        "message": "Email {{count}} selected proposal(s) to their customers? This can't be undone.",
-        "title": "Send quotes"
+        "message_one": "Email the selected proposal to its customer? This can't be undone.",
+        "message_other": "Email {{count}} selected proposals to their customers? This can't be undone.",
+        "recipients": "Each proposal is emailed to its organization's billing contact and marked Sent.",
+        "title": "Send quotes",
+        "unnumbered": "Draft"
       },
       "create": {
         "description": "Pick the customer this proposal is for. You can add blocks and pricing next.",
@@ -959,7 +974,7 @@
         "number": "Number",
         "selectAll": "Select all quotes",
         "selectQuote": "Select quote {{quote}}",
-        "total": "Total"
+        "total": "First period"
       },
       "title": "Quotes",
       "tryAgain": "Try again"

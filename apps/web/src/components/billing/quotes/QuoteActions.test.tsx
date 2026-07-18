@@ -74,7 +74,10 @@ describe('QuoteActions — header variant', () => {
 
     const send = screen.getByTestId('quote-send');
     expect(send).toBeDisabled();
-    expect(send).toHaveTextContent('Saving…');
+    // The label stays "Send proposal" while edits settle (a spinner marks the
+    // wait) — swapping to "Saving…" resized the button and read as send-in-progress.
+    expect(send).toHaveTextContent('Send proposal');
+    expect(send).toBeDisabled();
     expect(send).toHaveAttribute('aria-describedby', 'quote-send-saving-hint-header');
     const hint = screen.getByTestId('quote-send-saving-hint');
     expect(hint).not.toHaveClass('sr-only');

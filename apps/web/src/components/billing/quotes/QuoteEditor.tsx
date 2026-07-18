@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, FolderInput } from 'lucide-react';
+import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -42,6 +42,7 @@ import PolishButton from '../../catalog/PolishButton';
 import DistributorLookup from './DistributorLookup';
 import Pax8ProductLookup from './Pax8ProductLookup';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import { useAuthedImage } from './useQuoteImage';
 import {
@@ -51,6 +52,7 @@ import {
   type QuoteLineRecurrence,
   type ContractBlockContent,
   formatMoney,
+  formatQuantity,
   pctFromFraction,
   lineTaxAmount,
   lineTitle,
@@ -162,8 +164,11 @@ function SrSaved({ show, label, testId }: { show: boolean; label?: string; testI
 // box-shadow (ring), so it NEVER reflows neighbouring content — unlike the inline
 // "Saved" text we tried before, which shifted layout as it appeared/disappeared.
 // Pair with a constant `transition-shadow` on the field so both states fade.
+// The dirty ring is the signal the autosave hint tells users to watch, so it
+// uses the darker warning-strong indicator token at 2px — the bright --warning
+// at 1px measured ~2.3:1 on a light card, below the 3:1 non-text minimum.
 function fieldRing(dirty: boolean, saved: boolean): string {
-  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
+  return dirty ? 'ring-2 ring-warning-strong' : saved ? 'ring-2 ring-success' : '';
 }
 
 // Up/down reorder controls: lucide chevrons in 28px targets (clears the WCAG
@@ -216,10 +221,22 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // Margin summary is gated the same way QuoteDetail gates it — on quotes:read —
   // rather than on write, which would hide the aggregate while showing the parts.
   const canSeeMargin = can('quotes', 'read');
-  // The per-line internal cost/markup/profit strip duplicates the rail's Margin
-  // summary and roughly doubles the height of every line, so it's collapsed by
-  // default; the rail summary stays always-on. Threaded down to each line row.
-  const [showInternal, setShowInternal] = useState(false);
+  // "Show cost & margin" governs EVERY internal-economics surface — the per-line
+  // cost/markup bands AND the rail's Margin panel — so one toggle honestly means
+  // "no margin on screen" (a tech screen-sharing with a client must be able to
+  // trust it). Collapsed by default; the choice persists per browser so daily
+  // margin-watchers aren't re-toggling on every quote.
+  const SHOW_INTERNAL_KEY = 'breeze:quote-editor-show-margin';
+  const [showInternal, setShowInternalState] = useState(
+    () => typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_INTERNAL_KEY) === '1',
+  );
+  const setShowInternal = useCallback((updater: (v: boolean) => boolean) => {
+    setShowInternalState((v) => {
+      const next = updater(v);
+      try { localStorage.setItem(SHOW_INTERNAL_KEY, next ? '1' : '0'); } catch { /* private mode — session-only */ }
+      return next;
+    });
+  }, []);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
   // Focus anchor: after a confirmed block/line removal the triggering button is
@@ -320,6 +337,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // mid-edit; both resync from the server after each blur-save's refresh().
   const [depositType, setDepositType] = useState<QuoteDepositType>(quote.depositType ?? 'none');
   const [depositPercentDraft, setDepositPercentDraft] = useState<string>(quote.depositPercent ?? '');
+  // Inline error for an out-of-range/non-numeric percent — the same error
+  // contract the line qty/price/cost fields follow (aria-invalid + message +
+  // input preserved), instead of a corner toast while the field silently
+  // reverts itself. Cleared on the next keystroke. Server-side DEPOSIT_*
+  // rejections (business rules the client can't know) still toast + resync.
+  const [depositPctError, setDepositPctError] = useState<string | null>(null);
   useEffect(() => { setDepositType(quote.depositType ?? 'none'); }, [quote.depositType]);
   useEffect(() => { setDepositPercentDraft(quote.depositPercent ?? ''); }, [quote.depositPercent]);
 
@@ -407,6 +430,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // as the deposit controls); resyncs from the server after each refresh().
   const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
   useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
+  // Reassignment is destructive in effect (site + bill-to cleared, tax rate
+  // re-resolved), so a select change stages here and a confirm step commits it —
+  // a mis-click in the dropdown must not silently rewrite the quote's tax basis.
+  const [pendingCustomer, setPendingCustomer] = useState<{ id: string; name: string } | null>(null);
 
   // Reassign the draft to another company. The server clears the site + bill-to
   // override and re-resolves the org's tax rate, so refresh() re-pulls the whole
@@ -465,30 +492,46 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     setDepositPercentDraft(quote.depositPercent ?? '');
   }, [quote.depositType, quote.depositPercent]);
 
+  // Client-side range gate (mirrors the API's 0.01–99.99 constraint) so an
+  // out-of-range entry gets an inline error with the input preserved instead of
+  // a doomed PATCH. Returns null for "no percent entered yet".
+  const parseDepositPercent = useCallback((raw: string): { pct: number | null; error: string | null } => {
+    if (raw.trim() === '') return { pct: null, error: null };
+    const pct = Number(raw);
+    if (!Number.isFinite(pct) || pct < 0.01 || pct > 99.99) {
+      return { pct: null, error: t('quotes.editor.errors.depositPercentRange') };
+    }
+    return { pct, error: null };
+  }, [t]);
+
   const onDepositTypeChange = useCallback((next: QuoteDepositType) => {
     setDepositType(next);
+    if (next !== 'percent') setDepositPctError(null);
     if (next === 'percent') {
       // Saving type='percent' with a null percent would 400 DEPOSIT_PERCENT_INVALID,
-      // so defer the PATCH until a percent exists — persist immediately only when one
-      // is already entered (the percent input's onBlur handles the first entry).
-      const pct = depositPercentDraft.trim() === '' ? null : Number(depositPercentDraft);
-      if (pct != null && Number.isFinite(pct)) {
+      // so defer the PATCH until a valid percent exists — persist immediately only
+      // when one is already entered (the percent input's onBlur handles the first
+      // entry; an out-of-range leftover surfaces its inline error instead).
+      const { pct, error } = parseDepositPercent(depositPercentDraft);
+      setDepositPctError(error);
+      if (pct != null) {
         void saveDeposit({ depositType: 'percent', depositPercent: pct }).then((ok) => { if (!ok) revertDepositMirrors(); });
       }
     } else {
       void saveDeposit({ depositType: next }).then((ok) => { if (!ok) revertDepositMirrors(); });
     }
-  }, [depositPercentDraft, saveDeposit, revertDepositMirrors]);
+  }, [depositPercentDraft, parseDepositPercent, saveDeposit, revertDepositMirrors]);
 
   const onDepositPercentBlur = useCallback(() => {
     if (depositType !== 'percent') return;
-    const pct = depositPercentDraft.trim() === '' ? null : Number(depositPercentDraft);
-    if (pct == null || !Number.isFinite(pct)) return;
+    const { pct, error } = parseDepositPercent(depositPercentDraft);
+    setDepositPctError(error);
+    if (pct == null) return; // empty (defer) or invalid (inline error shown, input kept)
     // Only fire when it actually differs from the persisted value (avoids a
     // redundant PATCH on a focus-through).
     if (quote.depositType === 'percent' && quote.depositPercent != null && Number(quote.depositPercent) === pct) return;
     void saveDeposit({ depositType: 'percent', depositPercent: pct }).then((ok) => { if (!ok) revertDepositMirrors(); });
-  }, [depositType, depositPercentDraft, quote.depositType, quote.depositPercent, saveDeposit, revertDepositMirrors]);
+  }, [depositType, depositPercentDraft, parseDepositPercent, quote.depositType, quote.depositPercent, saveDeposit, revertDepositMirrors]);
 
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
@@ -655,8 +698,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const depositConfig = useMemo<QuoteDepositConfig>(
     // A blank percent draft normalizes to NaN, which computeQuoteTotals treats
     // as "no deposit" — the live rail simply shows no deposit row mid-edit.
-    () => toQuoteDepositConfig(depositType, depositPercentDraft.trim()),
-    [depositType, depositPercentDraft],
+    // An OUT-OF-RANGE draft (kept in the field with its inline error) is fed
+    // through as blank too, so the rail never computes a deposit from a value
+    // that can't be saved (e.g. 150% showing 1.5× the due figure).
+    () => toQuoteDepositConfig(depositType, parseDepositPercent(depositPercentDraft).pct != null ? depositPercentDraft.trim() : ''),
+    [depositType, depositPercentDraft, parseDepositPercent],
   );
   const liveDepositTotals = useMemo(
     () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig),
@@ -919,7 +965,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               : { imageId: uploaded.imageId },
           }),
           errorFallback: t('quotes.editor.errors.imageAddedSectionFailed'),
-          successMessage: t('quotes.editor.success.imageSectionAdded'),
+          // No success toast — the image block visibly appears.
           onUnauthorized: UNAUTHORIZED,
         });
         setImageFile(null); setImageCaption(''); setImageUrl('');
@@ -956,7 +1002,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               },
             } as QuoteBlockInput),
             errorFallback: t('quotes.editor.errors.addContractSection'),
-            successMessage: t('quotes.editor.success.contractSectionAdded'),
+            // No success toast — the contract block visibly appears.
             onUnauthorized: UNAUTHORIZED,
           });
         } catch (err) {
@@ -995,7 +1041,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       await runAction({
         request: () => addBlock(quote.id, body),
         errorFallback: t('quotes.editor.errors.addSection'),
-        successMessage: t('quotes.editor.success.sectionAdded'),
+        // No success toast — the new section visibly appears in the block list.
         onUnauthorized: UNAUTHORIZED,
       });
       setHeadingText(''); setRichText(''); setTableLabel('');
@@ -1030,7 +1076,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
       errorFallback: t('quotes.editor.errors.addCatalogItem'),
-      successMessage: t('quotes.editor.success.itemAdded'),
+      // No success toast: the new row visibly appears and the totals move —
+      // toasting on top of that was noise that covered the rail's deposit
+      // control. Failures still toast.
       onUnauthorized: UNAUTHORIZED,
     });
     refresh();
@@ -1166,7 +1214,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           depositEligible: false,
         }),
         errorFallback: t('quotes.editor.errors.addLine'),
-        successMessage: t('quotes.editor.success.lineAdded'),
+        // No success toast — the appended row is the feedback (see addCatalog).
         onUnauthorized: UNAUTHORIZED,
       });
       // Optionally persist the manual line to the product catalog for reuse.
@@ -1349,7 +1397,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         await runAction({
           request: () => moveLineApi(quote.id, line.id, { blockId: targetBlockId }),
           errorFallback: t('quotes.editor.errors.moveLine'),
-          successMessage: t('quotes.editor.success.lineMoved'),
+          // No success toast — the line visibly lands in the target table.
           onUnauthorized: UNAUTHORIZED,
         });
         refresh();
@@ -1419,7 +1467,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             <select
               id="quote-customer"
               value={customerOrgId}
-              onChange={(e) => saveCustomer(e.target.value)}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id === customerOrgId) return;
+                setPendingCustomer({ id, name: orgOptions.find((o) => o.id === id)?.name ?? '' });
+              }}
               disabled={isPending('customer')}
               title={t('quotes.editor.customer.help')}
               data-testid="quote-customer"
@@ -1436,7 +1488,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h3>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h2>
               <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-cover-page-summary">
                 {cover.enabled ? t('quotes.editor.coverPage.summaryOn') : t('quotes.editor.coverPage.summaryOff')}
               </p>
@@ -1532,7 +1584,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           )}
         </div>
       )}
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {/* The rail joins as a second column only at xl: below that the two-column
+          split starves the pricing table (at 1100px the blocks track is ~420px
+          against a ~650px table minimum) and forces sideways scrolling on the
+          most-checked figures. Stacked, the table gets the full content width. */}
+      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
             inside an overflow-x-auto wrapper. Without min-w-0 the track refuses to
@@ -1591,7 +1647,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           {/* Add block */}
           {canWrite && (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-add-block">
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.addSection.title')}</h3>
+            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.addSection.title')}</h2>
             <div className="mb-3 flex flex-wrap gap-2">
               {ADD_BLOCK_OPTIONS.map((o) => (
                 <button
@@ -1631,11 +1687,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             )}
             {addType === 'image' && (
               <div className="mb-3 space-y-2">
-                <div className="inline-flex rounded-md border p-0.5 text-xs" role="tablist">
+                {/* Same aria-pressed segmented-control vocabulary as the add-block
+                    chips above — NOT a tablist (tab semantics promise arrow-key
+                    behavior these two buttons don't have). */}
+                <div className="inline-flex rounded-md border p-0.5 text-xs">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={imageSource === 'file'}
+                    aria-pressed={imageSource === 'file'}
                     onClick={() => { setImageSource('file'); setImageUrl(''); }}
                     data-testid="quote-block-image-source-file"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'file' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
@@ -1644,8 +1702,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   </button>
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={imageSource === 'url'}
+                    aria-pressed={imageSource === 'url'}
                     onClick={() => { setImageSource('url'); setImageFile(null); }}
                     data-testid="quote-block-image-source-url"
                     className={`rounded px-3 py-1 font-medium ${imageSource === 'url' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
@@ -1718,7 +1775,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 </div>
 
                 {contractNoPublished && (
-                  <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground" data-testid="quote-block-contract-no-version">
+                  <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-block-contract-no-version">
                     {t('quotes.editor.contract.noPublishedVersion')}
                   </p>
                 )}
@@ -1826,11 +1883,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         </div>
 
         {/* ── live totals + terms ────────────────────────────────────── */}
-        {/* Sticky on lg so the totals you're building against stay visible while
-            scrolling the blocks; on narrow widths this column stacks below. */}
-        <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
+        {/* Sticky on xl so the totals you're building against stay visible while
+            scrolling the blocks; below xl this column stacks under the blocks. */}
+        <div className="space-y-4 xl:sticky xl:top-4 xl:self-start">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-live-totals">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.title')}</h3>
+            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.title')}</h2>
             {/* One concise SR announcement covering every figure, so editing a
                 recurring line (which doesn't move "due on acceptance") still tells
                 a screen-reader user the totals recomputed. Debounced to settle-time
@@ -1878,7 +1935,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 ))}
               </div>
             )}
-            {canSeeMargin && <MarginPanel profit={profit} currency={currency} />}
+            {canSeeMargin && showInternal && <MarginPanel profit={profit} currency={currency} />}
             {/* Read-only: the rate is resolved at quote creation (org tax settings,
                 falling back to the partner default) and isn't editable per-quote. */}
             <div className="mt-2 border-t pt-2">
@@ -1913,46 +1970,60 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   </select>
                 </div>
                 {depositType === 'percent' && (
-                  <div className="flex items-center justify-between gap-2">
-                    <label htmlFor="quote-deposit-percent" className="text-sm text-muted-foreground">{t('quotes.editor.deposit.percent')}</label>
-                    <div className="flex items-center gap-1">
-                      <input
-                        id="quote-deposit-percent"
-                        type="number" min={0.01} max={99.99} step={0.01}
-                        value={depositPercentDraft}
-                        onChange={(e) => setDepositPercentDraft(e.target.value)}
-                        onBlur={onDepositPercentBlur}
-                        disabled={isPending('deposit')}
-                        data-testid="deposit-percent-input"
-                        className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-                      />
-                      <span className="text-sm text-muted-foreground">{t('quotes.editor.symbols.percent')}</span>
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <label htmlFor="quote-deposit-percent" className="text-sm text-muted-foreground">{t('quotes.editor.deposit.percent')}</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          id="quote-deposit-percent"
+                          type="number" min={0.01} max={99.99} step={0.01}
+                          value={depositPercentDraft}
+                          onChange={(e) => { setDepositPercentDraft(e.target.value); setDepositPctError(null); }}
+                          onBlur={onDepositPercentBlur}
+                          disabled={isPending('deposit')}
+                          aria-invalid={depositPctError ? true : undefined}
+                          aria-describedby={depositPctError ? 'quote-deposit-percent-error' : undefined}
+                          data-testid="deposit-percent-input"
+                          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${depositPctError ? 'border-destructive ring-1 ring-destructive' : ''}`}
+                        />
+                        <span className="text-sm text-muted-foreground">{t('quotes.editor.symbols.percent')}</span>
+                      </div>
                     </div>
-                  </div>
+                    {depositPctError && (
+                      <p id="quote-deposit-percent-error" className="text-xs text-destructive" data-testid="deposit-percent-error">
+                        {depositPctError}
+                      </p>
+                    )}
+                  </>
                 )}
                 {depositType === 'selected_lines' && (
                   <p className="text-xs text-muted-foreground">
                     {t('quotes.editor.deposit.selectedLinesHelp')}
                   </p>
                 )}
-                {railDeposit != null && Number(railDeposit) > 0 && (
-                  <div className="flex items-baseline justify-between gap-2 text-sm font-medium" data-testid="deposit-due-figure">
-                    <span>{t('quotes.editor.deposit.due')}</span>
-                    <span className="tabular-nums">{formatMoney(railDeposit, currency)}</span>
-                  </div>
-                )}
               </div>
             )}
-            <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.dueOnAcceptance')}</span>
-              {/* Visual figure only; the SR-only summary node above announces the
-                  full set of totals on any change. */}
-              <span
-                className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums"
-                data-testid="quote-total-due-on-acceptance"
-              >
-                {formatMoney(railDue, currency)}
-              </span>
+            <div className="mt-3 border-t pt-3">
+              <div className="flex items-end justify-between gap-2">
+                <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.dueOnAcceptance')}</span>
+                {/* Visual figure only; the SR-only summary node above announces the
+                    full set of totals on any change. */}
+                <span
+                  className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums"
+                  data-testid="quote-total-due-on-acceptance"
+                >
+                  {formatMoney(railDue, currency)}
+                </span>
+              </div>
+              {/* Deposit renders as a child of Due on acceptance (not a free-floating
+                  figure) so the relationship between the two amounts is stated, and
+                  the same shape repeats on the Detail totals card. */}
+              {railDeposit != null && Number(railDeposit) > 0 && (
+                <div className="mt-1 flex items-baseline justify-between gap-2 pl-3 text-sm" data-testid="deposit-due-figure">
+                  <span className="text-muted-foreground">{t('quotes.editor.deposit.dueUpFront')}</span>
+                  <span className="font-medium tabular-nums">{formatMoney(railDeposit, currency)}</span>
+                </div>
+              )}
             </div>
             {hasRecurring && (
               <>
@@ -1967,7 +2038,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.terms.title')}</h3>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.terms.title')}</h2>
               <span className="flex items-center gap-2">
                 <UnsavedBadge show={termsDirty} />
               </span>
@@ -1986,6 +2057,56 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           </div>
         </div>
       </div>
+
+      {/* Below xl the full totals rail stacks under all blocks, which would break
+          the edit→see-total loop mid-task — so a slim summary stays pinned to the
+          viewport bottom while the rail's natural position is below the fold
+          (sticky bottom releases once you scroll down to the real rail).
+          aria-hidden: purely a visual affordance; the rail's live region is the
+          canonical announcement and double-announcing the same figures is noise. */}
+      <div
+        aria-hidden="true"
+        data-testid="quote-totals-sticky"
+        className="sticky bottom-2 z-10 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm shadow-md xl:hidden"
+      >
+        <span className="flex items-baseline gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.dueOnAcceptance')}</span>
+          <span className="text-base font-semibold tabular-nums">{formatMoney(railDue, currency)}</span>
+        </span>
+        {Number(railMonthly) > 0 && (
+          <span className="text-muted-foreground">
+            {formatMoney(railMonthly, currency)}<span className="text-xs">{t('quotes.editor.units.perMonth')}</span>
+          </span>
+        )}
+        {Number(railAnnual) > 0 && (
+          <span className="text-muted-foreground">
+            {formatMoney(railAnnual, currency)}<span className="text-xs">{t('quotes.editor.units.perYear')}</span>
+          </span>
+        )}
+        {railDeposit != null && Number(railDeposit) > 0 && (
+          <span className="text-muted-foreground">
+            {t('quotes.editor.deposit.short')} <span className="font-medium tabular-nums text-foreground">{formatMoney(railDeposit, currency)}</span>
+          </span>
+        )}
+      </div>
+
+      {/* Customer reassignment confirm — warning (guarded, not destructive-red):
+          the move is recoverable by moving back, but it clears site + bill-to and
+          swaps the tax basis, so it must never ride on a single dropdown click. */}
+      <ConfirmDialog
+        open={pendingCustomer !== null}
+        onClose={() => setPendingCustomer(null)}
+        onConfirm={() => {
+          const next = pendingCustomer;
+          setPendingCustomer(null);
+          if (next) saveCustomer(next.id);
+        }}
+        variant="warning"
+        title={t('quotes.editor.customer.confirmTitle')}
+        message={t('quotes.editor.customer.confirmMessage', { name: pendingCustomer?.name ?? '' })}
+        confirmLabel={t('quotes.editor.customer.confirmLabel')}
+        confirmTestId="quote-customer-confirm"
+      />
 
       <ConfirmDialog
         open={pendingRemove !== null}
@@ -2229,7 +2350,23 @@ function BlockCard({
     if (await onEditBlock(block, lineItemsContent(tableLabel, next))) flashSaved();
   };
 
+  // Inline errors for the manual-line form's qty/price/cost — same contract as
+  // the edit-row fields (aria-invalid + destructive ring + text under the input).
+  // The parent's addManual gates stay as a backstop, but validating here means
+  // the message lands next to the field, not in a bottom-corner toast.
+  const [manualErrors, setManualErrors] = useState<{ qty?: string; price?: string; cost?: string }>({});
+  const clearManualError = (field: 'qty' | 'price' | 'cost') =>
+    setManualErrors((e) => { if (!(field in e)) return e; const n = { ...e }; delete n[field]; return n; });
+
   const submitManual = async () => {
+    const errs: { qty?: string; price?: string; cost?: string } = {};
+    const qtyNum = Number(qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0 || !Number.isInteger(qtyNum)) errs.qty = t('quotes.editor.errors.quantityWholeGreaterThanZero');
+    const priceNum = Number(price);
+    if (!Number.isFinite(priceNum) || priceNum < 0) errs.price = t('quotes.editor.errors.unitPriceZeroOrMore');
+    if (cost.trim() !== '' && (!Number.isFinite(Number(cost)) || Number(cost) < 0)) errs.cost = t('quotes.editor.errors.costZeroOrMore');
+    setManualErrors(errs);
+    if (Object.keys(errs).length > 0) return;
     const ok = await onAddManual(block.id, { name, description: desc, quantity: qty, unitPrice: price, cost, sku, partNumber, taxable, recurrence, saveToCatalog });
     // Only clear the form on success, so a rejected add (e.g. qty 0) keeps the
     // user's input to correct rather than wiping it.
@@ -2264,6 +2401,9 @@ function BlockCard({
               type="button"
               onClick={() => onRemoveBlock(block)}
               disabled={blockBusy}
+              // Distinguishes this from the line rows' "Remove line" menu item —
+              // two controls named bare "Remove" are indistinguishable to AT.
+              aria-label={t('quotes.editor.actions.removeSection')}
               data-testid={`quote-block-remove-${block.id}`}
               className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
             >
@@ -2361,34 +2501,27 @@ function BlockCard({
                 {t('quotes.editor.table.showSubtotal')}
               </label>
             )}
-            {/* The 7-column row (description + 4 inline controls + total + actions)
-                can't compress gracefully on a tablet, so the table keeps a sensible
-                min width and the wrapper scrolls horizontally below that. */}
+            {/* Four data columns (Item flexes, Qty/Price/Total are content-sized) so
+                the per-line Total — the most-checked figure on a quote — is always
+                visible without sideways scrolling at desktop widths. Billing cadence
+                rides in the Price cell; Taxable moved to each line's controls row;
+                per-line tax renders as a sub-line under the Total. The wrapper still
+                scrolls on genuinely narrow screens (phone), without a sticky column. */}
             <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[800px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            <table className="w-full min-w-[36rem] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="min-w-[13rem] px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
-                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
-                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
-                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.recurrence')}</th>
-                  <th className="px-2 py-2 text-center font-medium">{t('quotes.editor.table.taxable')}</th>
-                  <th
-                    className="px-2 py-2 text-right font-medium"
-                    title={t('quotes.editor.table.taxTitle')}
-                  >
-                    {t('quotes.editor.table.tax')}
-                  </th>
-                  <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
-                  {/* Row-actions column is pinned to the right edge so Up/Down/Remove
-                      stay reachable when the wide table scrolls horizontally. */}
-                  <th className="sticky right-0 border-l bg-card px-2 py-2" />
+                  <th className="min-w-[12rem] px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
+                  {canWrite && <th className="px-1.5 py-2" />}
                 </tr>
               </thead>
               <tbody>
                 {lines.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-2 py-6 text-center text-sm text-muted-foreground">
+                    <td colSpan={canWrite ? 5 : 4} className="px-2 py-6 text-center text-sm text-muted-foreground">
                       {t('quotes.editor.table.emptyLines')}
                     </td>
                   </tr>
@@ -2560,19 +2693,33 @@ function BlockCard({
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.qty')}</span>
                       <input
                         type="number" min="1" step="1" value={qty}
-                        onChange={(e) => setQty(e.target.value)}
+                        onChange={(e) => { setQty(e.target.value); clearManualError('qty'); }}
+                        aria-invalid={manualErrors.qty ? true : undefined}
+                        aria-describedby={manualErrors.qty ? `quote-manual-qty-error-${block.id}` : undefined}
                         data-testid={`quote-manual-qty-${block.id}`}
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${manualErrors.qty ? 'border-destructive' : ''}`}
                       />
+                      {manualErrors.qty && (
+                        <span id={`quote-manual-qty-error-${block.id}`} className="mt-0.5 block text-xs text-destructive" data-testid={`quote-manual-qty-error-${block.id}`}>
+                          {manualErrors.qty}
+                        </span>
+                      )}
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.table.unitPrice')}</span>
                       <input
                         type="number" min="0" step="0.01" value={price}
-                        onChange={(e) => onPriceChange(e.target.value)}
+                        onChange={(e) => { onPriceChange(e.target.value); clearManualError('price'); }}
+                        aria-invalid={manualErrors.price ? true : undefined}
+                        aria-describedby={manualErrors.price ? `quote-manual-price-error-${block.id}` : undefined}
                         data-testid={`quote-manual-price-${block.id}`}
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${manualErrors.price ? 'border-destructive' : ''}`}
                       />
+                      {manualErrors.price && (
+                        <span id={`quote-manual-price-error-${block.id}`} className="mt-0.5 block text-xs text-destructive" data-testid={`quote-manual-price-error-${block.id}`}>
+                          {manualErrors.price}
+                        </span>
+                      )}
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.billing')}</span>
@@ -2615,10 +2762,17 @@ function BlockCard({
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.unitCost')}</span>
                       <input
                         type="number" min="0" step="0.01" value={cost}
-                        onChange={(e) => onCostChange(e.target.value)}
+                        onChange={(e) => { onCostChange(e.target.value); clearManualError('cost'); }}
+                        aria-invalid={manualErrors.cost ? true : undefined}
+                        aria-describedby={manualErrors.cost ? `quote-manual-cost-error-${block.id}` : undefined}
                         data-testid={`quote-manual-cost-${block.id}`}
-                        className="h-9 w-full rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        className={`h-9 w-full rounded-md border bg-background px-3 text-right text-sm tabular-nums focus:outline-hidden focus:ring-2 focus:ring-ring ${manualErrors.cost ? 'border-destructive' : ''}`}
                       />
+                      {manualErrors.cost && (
+                        <span id={`quote-manual-cost-error-${block.id}`} className="mt-0.5 block text-xs text-destructive" data-testid={`quote-manual-cost-error-${block.id}`}>
+                          {manualErrors.cost}
+                        </span>
+                      )}
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.markupPercent')}</span>
@@ -2684,10 +2838,12 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
     ? null
     : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));
   const tax = lineTaxAmount(l.lineTotal, l.taxable, taxRate);
+  // Billing cadence rides in the money cells ('/mo', '/yr'); one-time is unmarked.
+  const suffix = l.recurrence === 'monthly' ? t('quotes.editor.units.perMonth') : l.recurrence === 'annual' ? t('quotes.editor.units.perYear') : '';
   return (
     <>
       <tr className="border-t [&>td]:pt-4" data-testid={`quote-line-${l.id}`}>
-        <td className="px-2 py-2">
+        <td className="px-1.5 py-2">
           <div className="flex items-start gap-2">
             {l.imageId
               ? <LineImageThumb quoteId={quoteId} imageId={l.imageId} />
@@ -2698,27 +2854,21 @@ function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInt
             </div>
           </div>
         </td>
-        <td className="px-2 py-2 text-right tabular-nums">{l.quantity}</td>
-        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
-        <td className="px-2 py-2">
-          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {t(/* i18n-dynamic */ `quotes.editor.recurrence.${l.recurrence}`)}
-          </span>
+        <td className="px-1.5 py-2 text-right tabular-nums">{formatQuantity(l.quantity)}</td>
+        <td className="whitespace-nowrap px-1.5 py-2 text-right tabular-nums">
+          {formatMoney(l.unitPrice, currency)}{suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
         </td>
-        <td className="px-2 py-2 text-center text-muted-foreground" data-testid={`quote-line-taxable-${l.id}`}>
-          {/* aria-label on a non-focusable span is ignored by AT, so hide the glyph
-              and carry the meaning in an sr-only label instead. */}
-          <span aria-hidden="true">{l.taxable ? t('quotes.editor.symbols.check') : t('quotes.editor.symbols.notAvailable')}</span>
-          <span className="sr-only">{l.taxable ? t('quotes.editor.table.taxable') : t('quotes.editor.table.notTaxable')}</span>
+        <td className="whitespace-nowrap px-1.5 py-2 text-right tabular-nums">
+          {formatMoney(l.lineTotal, currency)}{suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
+          <div className="text-xs font-normal text-muted-foreground" data-testid={`quote-line-tax-${l.id}`}>
+            {tax !== null
+              ? t('quotes.editor.table.taxSuffix', { amount: formatMoney(tax, currency) })
+              : l.taxable ? t('quotes.editor.table.taxable') : null}
+          </div>
         </td>
-        <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${l.id}`}>
-          {tax === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(tax, currency)}
-        </td>
-        <td className="px-2 py-2 text-right tabular-nums">{formatMoney(l.lineTotal, currency)}</td>
-        <td className="sticky right-0 border-l bg-card px-2 py-2 text-right" />
       </tr>
       <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${l.id}`}>
-        <td colSpan={8} className="px-2 pb-2">
+        <td colSpan={4} className="px-2 pb-2">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
             {/* Full disclaimer on the first row, a subtle "Internal" tag on the rest. */}
             <span className="font-medium uppercase tracking-wide">{isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}</span>
@@ -2777,7 +2927,9 @@ function EditableLineRow({
   const removeBusy = isPending(`line:${line.id}`);
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
-  const [qty, setQty] = useState(line.quantity);
+  // Quantity edits/displays in its bare form ('3', not the stored '3.00') so the
+  // input matches its own step="1" and the customer-facing rendering.
+  const [qty, setQty] = useState(formatQuantity(line.quantity));
   const [price, setPrice] = useState(line.unitPrice);
   // recurrence/taxable are committed on change (not blur); keep them in local
   // state so the control updates instantly rather than lagging until the
@@ -2793,15 +2945,20 @@ function EditableLineRow({
   const [partNumber, setPartNumber] = useState(line.partNumber ?? '');
 
   // "Move to…" menu. Fixed-position so the overflow-x-auto table wrapper can't
-  // clip it; closes on outside click or Escape.
+  // clip it; closes on outside click or Escape (which refocuses the trigger —
+  // focus moved into the menu on open, so it would otherwise drop to <body>).
   const [movePos, setMovePos] = useState<{ top: number; left: number } | null>(null);
   const moveMenuRef = useRef<HTMLDivElement>(null);
+  const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const { listRef: moveListRef, onKeyDown: onMoveListKeyDown } = useMenuKeyboard(movePos !== null, () => setMovePos(null));
   useEffect(() => {
     if (!movePos) return;
     const onDown = (e: MouseEvent) => {
       if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) setMovePos(null);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMovePos(null); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setMovePos(null); moveTriggerRef.current?.focus(); }
+    };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
@@ -2838,7 +2995,7 @@ function EditableLineRow({
   useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
   // Re-fit the description box after any value change (typing or server resync).
   useEffect(() => { autoGrowDesc(); }, [desc]);
-  useEffect(() => { if (!qtyEdited.current) setQty(line.quantity); }, [line.quantity]);
+  useEffect(() => { if (!qtyEdited.current) setQty(formatQuantity(line.quantity)); }, [line.quantity]);
   useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
   useEffect(() => { if (!costEdited.current) setCost(line.unitCost ?? ''); }, [line.unitCost]);
   useEffect(() => { if (!skuEdited.current) setSku(line.sku ?? ''); }, [line.sku]);
@@ -2848,6 +3005,23 @@ function EditableLineRow({
   useEffect(() => { setRec(line.recurrence); }, [line.recurrence]);
   useEffect(() => { setTaxable(line.taxable); }, [line.taxable]);
   useEffect(() => { setDepositEligible(line.depositEligible ?? false); }, [line.depositEligible]);
+
+  // Inline validation errors for the money/qty fields. A rejected entry keeps
+  // the user's input in the field (to correct, not re-type) with the message
+  // rendered directly under the row — replacing the old toast-1000px-away +
+  // silent snap-back. Same visual contract as the contract-variable errors
+  // (aria-invalid + destructive border + text). Cleared on the next keystroke.
+  // Server-side rejections still surface through runAction's toast.
+  const [fieldErrors, setFieldErrors] = useState<{ qty?: string; price?: string; cost?: string }>({});
+  const setFieldError = useCallback((field: 'qty' | 'price' | 'cost', msg: string | null) => {
+    setFieldErrors((e) => {
+      if (msg === null) {
+        if (!(field in e)) return e;
+        const n = { ...e }; delete n[field]; return n;
+      }
+      return { ...e, [field]: msg };
+    });
+  }, []);
 
   // Quiet "Saved" flash in place of the old per-field success toast. This is a
   // single row-level flag on purpose: committing any one field briefly pulses the
@@ -3022,36 +3196,38 @@ function EditableLineRow({
   const commitQty = () => {
     const n = Number(qty);
     qtyEdited.current = false;
-    if (n === Number(line.quantity)) { setQty(line.quantity); return; } // unchanged — silent
-    // A rejected entry no longer snaps back silently: tell the user why (parity
-    // with the tax field and the manual-add path) before reverting.
+    if (n === Number(line.quantity)) { setQty(formatQuantity(line.quantity)); setFieldError('qty', null); return; } // unchanged — silent
+    // A rejected entry stays in the field with an inline error under the row —
+    // never a far-away toast plus a silent snap-back. The optimistic Total/rail
+    // already fall back to the persisted value while the field holds an invalid
+    // one (qtyValid), so nothing downstream computes from the bad input.
     if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-      handleActionError(new Error('invalid quantity'), t('quotes.editor.errors.quantityWholeGreaterThanZero'));
-      setQty(line.quantity);
+      setFieldError('qty', t('quotes.editor.errors.quantityWholeGreaterThanZero'));
       return;
     }
+    setFieldError('qty', null);
     void edit({ quantity: n }, 'qty');
   };
   const commitPrice = () => {
     const n = Number(price);
     priceEdited.current = false;
-    if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; } // unchanged — silent
+    if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); setFieldError('price', null); return; } // unchanged — silent
     if (!Number.isFinite(n) || n < 0) {
-      handleActionError(new Error('invalid price'), t('quotes.editor.errors.unitPriceZeroOrMore'));
-      setPrice(line.unitPrice);
+      setFieldError('price', t('quotes.editor.errors.unitPriceZeroOrMore'));
       return;
     }
+    setFieldError('price', null);
     void edit({ unitPrice: n }, 'price');
   };
   const commitCost = () => {
     costEdited.current = false;
-    if (cost.trim() === '') { if (line.unitCost !== null) void edit({ unitCost: null }, 'cost'); return; }
+    if (cost.trim() === '') { setFieldError('cost', null); if (line.unitCost !== null) void edit({ unitCost: null }, 'cost'); return; }
     const n = Number(cost);
     if (!Number.isFinite(n) || n < 0) {
-      handleActionError(new Error('invalid cost'), t('quotes.editor.errors.costZeroOrMore'));
-      setCost(line.unitCost ?? '');
+      setFieldError('cost', t('quotes.editor.errors.costZeroOrMore'));
       return;
     }
+    setFieldError('cost', null);
     if (n !== Number(line.unitCost)) void edit({ unitCost: n }, 'cost');
   };
   const commitSku = () => {
@@ -3080,10 +3256,10 @@ function EditableLineRow({
   return (
     <>
     <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
-      {/* Column min-width (min-w-[13rem]) is declared on the cell so table
+      {/* Column min-width (min-w-[12rem]) is declared on the cell so table
           auto-layout reserves the name column instead of squeezing it below the
           input's width (which used to overflow into the qty cell). */}
-      <td className="min-w-[13rem] px-2 py-2">
+      <td className="min-w-[12rem] px-1.5 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {line.imageId
             ? <LineImageThumb quoteId={quoteId} imageId={line.imageId} />
@@ -3103,31 +3279,36 @@ function EditableLineRow({
           </div>
         </div>
       </td>
-      <td className="px-2 py-2 text-right">
+      <td className="px-1.5 py-2 text-right">
         <input
           type="number" min="1" step="1"
           value={qty}
           aria-label={t('quotes.editor.line.quantityAria')}
-          onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
+          onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; setFieldError('qty', null); }}
           onBlur={commitQty}
           disabled={fieldBusy('qty')}
+          aria-invalid={fieldErrors.qty ? true : undefined}
+          aria-describedby={fieldErrors.qty ? `quote-line-qty-error-${line.id}` : undefined}
           data-testid={`quote-line-qty-${line.id}`}
-          className={`h-9 w-16 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
+          className={`h-9 w-14 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldErrors.qty ? 'border-destructive ring-1 ring-destructive' : fieldRing(qtyDirty, saved)}`}
         />
       </td>
-      <td className="px-2 py-2 text-right">
+      <td className="px-1.5 py-2 text-right">
         <input
           type="number" min="0" step="0.01"
           value={price}
           aria-label={t('quotes.editor.table.unitPrice')}
-          onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
+          onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; setFieldError('price', null); }}
           onBlur={commitPrice}
           disabled={fieldBusy('price')}
+          aria-invalid={fieldErrors.price ? true : undefined}
+          aria-describedby={fieldErrors.price ? `quote-line-price-error-${line.id}` : undefined}
           data-testid={`quote-line-price-${line.id}`}
-          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
+          className={`h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldErrors.price ? 'border-destructive ring-1 ring-destructive' : fieldRing(priceDirty, saved)}`}
         />
-      </td>
-      <td className="px-2 py-2">
+        {/* Billing cadence belongs with the price ("$1,499.00 /mo"), so its
+            select rides directly under the price input instead of claiming a
+            table column of its own. */}
         <select
           value={rec}
           aria-label={t('quotes.editor.line.billingFrequencyAria')}
@@ -3138,126 +3319,138 @@ function EditableLineRow({
           }}
           disabled={fieldBusy('rec')}
           data-testid={`quote-line-recurrence-${line.id}`}
-          className="h-9 w-full min-w-0 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          className="ml-auto mt-1 block h-7 w-24 rounded-md border bg-background py-0 pl-2 pr-6 text-xs text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
         >
           <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
           <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
           <option value="annual">{t('quotes.editor.recurrence.annual')}</option>
         </select>
       </td>
-      <td className="px-2 py-2 text-center">
-        <input
-          type="checkbox"
-          checked={taxable}
-          aria-label={t('quotes.editor.table.taxable')}
-          onChange={(e) => {
-            const next = e.target.checked;
-            setTaxable(next); // optimistic — revert if the save fails
-            void edit({ taxable: next }, 'taxable').then((ok) => { if (!ok) setTaxable(line.taxable); });
-          }}
-          disabled={fieldBusy('taxable')}
-          data-testid={`quote-line-taxable-${line.id}`}
-        />
-        {/* Deposit-eligible toggle appears only when the quote's deposit is
-            'selected_lines'. It's meaningful for one-time lines only (recurring
-            lines never count toward a deposit), so it's hidden for recurring rows. */}
-        {depositSelectMode && rec === 'one_time' && (
-          <label className="mt-1 flex items-center justify-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={depositEligible}
-              aria-label={t('quotes.editor.deposit.eligibleAria')}
-              onChange={(e) => {
-                const next = e.target.checked;
-                setDepositEligible(next); // optimistic — revert if the save fails
-                void edit({ depositEligible: next }, 'deposit').then((ok) => { if (!ok) setDepositEligible(line.depositEligible ?? false); });
-              }}
-              disabled={fieldBusy('deposit')}
-              data-testid={`line-deposit-eligible-${line.id}`}
-            />
-            {t('quotes.editor.deposit.short')}
-          </label>
-        )}
-      </td>
-      <td className="px-2 py-2 text-right tabular-nums text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
-        {displayTax === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(displayTax, currency)}
-      </td>
-      <td className="px-2 py-2 text-right tabular-nums">
+      <td className="whitespace-nowrap px-1.5 py-2 text-right tabular-nums">
         <span data-testid={`quote-line-total-${line.id}`}>{formatMoney(displayTotal, currency)}</span>
+        {rec !== 'one_time' && (
+          <span className="text-xs text-muted-foreground">{rec === 'monthly' ? t('quotes.editor.units.perMonth') : t('quotes.editor.units.perYear')}</span>
+        )}
+        <div className="text-xs font-normal text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
+          {displayTax !== null
+            ? t('quotes.editor.table.taxSuffix', { amount: formatMoney(displayTax, currency) })
+            : taxable ? t('quotes.editor.table.taxable') : null}
+        </div>
         <SrSaved show={saved} testId={`quote-line-saved-${line.id}`} />
       </td>
-      <td className="sticky right-0 border-l bg-card px-2 py-2 text-right">
-        <div className="flex items-center justify-end gap-1">
-          <MoveControls
-            disabledUp={isFirst}
-            disabledDown={isLast}
-            onUp={() => onMove(line, 'up')}
-            onDown={() => onMove(line, 'down')}
-            labelUp={t('quotes.editor.actions.moveLineUp')}
-            labelDown={t('quotes.editor.actions.moveLineDown')}
-            testIdUp={`quote-line-move-up-${line.id}`}
-            testIdDown={`quote-line-move-down-${line.id}`}
-          />
-          {moveTargets.length > 0 && !line.parentLineId && (
-            <div ref={moveMenuRef}>
+      <td className="px-1.5 py-2 text-right">
+        {/* ALL row-level actions live behind one overflow menu, so tabbing
+            through a line is data-entry only — one stop instead of four, and
+            no destructive button sitting mid-path between the price fields and
+            the description. Same menu grammar as the header kebab
+            (useMenuKeyboard: focus-on-open, arrow cycling, Esc → trigger). */}
+        <div ref={moveMenuRef} className="inline-block">
+          <button
+            ref={moveTriggerRef}
+            type="button"
+            onClick={(e) => {
+              if (movePos) { setMovePos(null); return; }
+              const r = e.currentTarget.getBoundingClientRect();
+              setMovePos({ top: r.bottom + 4, left: r.right });
+            }}
+            disabled={removeBusy}
+            aria-label={t('quotes.editor.actions.lineActions')}
+            aria-haspopup="menu"
+            aria-expanded={movePos !== null}
+            data-testid={`quote-line-actions-${line.id}`}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden />
+          </button>
+          {movePos && (
+            <div
+              role="menu"
+              ref={moveListRef}
+              onKeyDown={onMoveListKeyDown}
+              aria-label={t('quotes.editor.actions.lineActions')}
+              style={{ position: 'fixed', top: movePos.top, left: movePos.left, transform: 'translateX(-100%)' }}
+              className="z-50 w-max min-w-40 max-w-[min(20rem,calc(100vw-1rem))] rounded-md border bg-card py-1 shadow-md"
+              data-testid={`quote-line-actions-menu-${line.id}`}
+            >
               <button
                 type="button"
-                onClick={(e) => {
-                  if (movePos) { setMovePos(null); return; }
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMovePos({ top: r.bottom + 4, left: r.right });
-                }}
-                disabled={removeBusy}
-                aria-label={t('quotes.editor.actions.moveLineToAnotherTable')}
-                aria-haspopup="menu"
-                aria-expanded={movePos !== null}
-                data-testid={`quote-line-move-to-${line.id}`}
-                className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+                role="menuitem"
+                tabIndex={-1}
+                disabled={isFirst}
+                onClick={() => { setMovePos(null); moveTriggerRef.current?.focus(); onMove(line, 'up'); }}
+                data-testid={`quote-line-move-up-${line.id}`}
+                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-40"
               >
-                <FolderInput className="h-4 w-4" aria-hidden />
+                {t('quotes.editor.actions.moveLineUp')}
               </button>
-              {movePos && (
-                <div
-                  role="menu"
-                  aria-label={t('quotes.editor.actions.moveLineTo')}
-                  style={{ position: 'fixed', top: movePos.top, left: movePos.left, transform: 'translateX(-100%)' }}
-                  className="z-50 w-max min-w-40 max-w-[min(20rem,calc(100vw-1rem))] rounded-md border bg-card py-1 shadow-md"
-                  data-testid={`quote-line-move-to-menu-${line.id}`}
-                >
-                  <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                disabled={isLast}
+                onClick={() => { setMovePos(null); moveTriggerRef.current?.focus(); onMove(line, 'down'); }}
+                data-testid={`quote-line-move-down-${line.id}`}
+                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-40"
+              >
+                {t('quotes.editor.actions.moveLineDown')}
+              </button>
+              {moveTargets.length > 0 && !line.parentLineId && (
+                <>
+                  <p className="mt-1 border-t px-3 pb-0.5 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
                   {moveTargets.map((t) => (
                     <button
                       key={t.id}
                       type="button"
                       role="menuitem"
+                      tabIndex={-1}
                       title={t.label}
                       onClick={() => { setMovePos(null); onMoveTo(line, t.id); }}
                       data-testid={`quote-line-move-to-${line.id}-${t.id}`}
-                      className="block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted"
+                      className="block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden"
                     >
                       {t.label}
                     </button>
                   ))}
-                </div>
+                </>
               )}
+              <div className="mt-1 border-t pt-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => { setMovePos(null); onRemove(line); }}
+                  data-testid={`quote-line-remove-${line.id}`}
+                  className="block w-full px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 focus:bg-destructive/10 focus:outline-hidden"
+                >
+                  {t('quotes.editor.actions.removeLine')}
+                </button>
+              </div>
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => onRemove(line)}
-            disabled={removeBusy}
-            data-testid={`quote-line-remove-${line.id}`}
-            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            {t('quotes.editor.actions.remove')}
-          </button>
         </div>
       </td>
     </tr>
     {/* Full-width description row, so writers get a roomy, expandable box instead
         of a cramped textarea squeezed into the narrow Description column. */}
     <tr className="border-0" data-testid={`quote-line-desc-row-${line.id}`}>
-      <td colSpan={8} className="px-2 pb-2">
+      <td colSpan={5} className="px-2 pb-2">
+        {/* Inline errors for the row's qty/price inputs — rendered full-width
+            directly under the row (the narrow cells above can't hold a message);
+            the offending input carries aria-invalid + a destructive ring. */}
+        {(fieldErrors.qty || fieldErrors.price) && (
+          <div className="mb-1 space-y-0.5">
+            {fieldErrors.qty && (
+              <p id={`quote-line-qty-error-${line.id}`} className="text-xs text-destructive" data-testid={`quote-line-qty-error-${line.id}`}>
+                {fieldErrors.qty}
+              </p>
+            )}
+            {fieldErrors.price && (
+              <p id={`quote-line-price-error-${line.id}`} className="text-xs text-destructive" data-testid={`quote-line-price-error-${line.id}`}>
+                {fieldErrors.price}
+              </p>
+            )}
+          </div>
+        )}
         <textarea
           ref={descRef}
           value={desc}
@@ -3271,6 +3464,41 @@ function EditableLineRow({
           className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
         />
         <div className="mt-1 flex flex-wrap items-center gap-2">
+          {/* Taxable moved out of its own table column: it's an editing control,
+              not a per-glance figure (the computed tax shows under the Total). */}
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={taxable}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setTaxable(next); // optimistic — revert if the save fails
+                void edit({ taxable: next }, 'taxable').then((ok) => { if (!ok) setTaxable(line.taxable); });
+              }}
+              disabled={fieldBusy('taxable')}
+              data-testid={`quote-line-taxable-${line.id}`}
+            />
+            {t('quotes.editor.table.taxable')}
+          </label>
+          {/* Deposit-eligible toggle appears only when the quote's deposit is
+              'selected_lines'. It's meaningful for one-time lines only (recurring
+              lines never count toward a deposit), so it's hidden for recurring rows. */}
+          {depositSelectMode && rec === 'one_time' && (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={depositEligible}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  setDepositEligible(next); // optimistic — revert if the save fails
+                  void edit({ depositEligible: next }, 'deposit').then((ok) => { if (!ok) setDepositEligible(line.depositEligible ?? false); });
+                }}
+                disabled={fieldBusy('deposit')}
+                data-testid={`line-deposit-eligible-${line.id}`}
+              />
+              {t('quotes.editor.deposit.eligibleAria')}
+            </label>
+          )}
           {(name.trim() || desc.trim()) && (
             <PolishButton
               disabled={fieldBusy('polish')}
@@ -3374,7 +3602,7 @@ function EditableLineRow({
         Collapsed by default via the editor's "Show cost & margin" toggle; kept in
         the DOM (hidden) rather than unmounted so totals/draft wiring stays live. */}
     <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${line.id}`}>
-      <td colSpan={8} className="px-2 pb-2">
+      <td colSpan={5} className="px-2 pb-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-[hsl(220_12%_40%)] dark:text-muted-foreground">
           {/* Full disclaimer on the first row; a subtle "Internal" tag persists on
               every following row so a writer scanning mid-table never mistakes the
@@ -3406,13 +3634,20 @@ function EditableLineRow({
             <input
               type="number" min="0" step="0.01"
               value={cost}
-              onChange={(e) => { setCost(e.target.value); costEdited.current = true; }}
+              onChange={(e) => { setCost(e.target.value); costEdited.current = true; setFieldError('cost', null); }}
               onBlur={commitCost}
               disabled={fieldBusy('cost')}
+              aria-invalid={fieldErrors.cost ? true : undefined}
+              aria-describedby={fieldErrors.cost ? `quote-line-cost-error-${line.id}` : undefined}
               data-testid={`quote-line-cost-${line.id}`}
-              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldRing(costDirty, saved)}`}
+              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldErrors.cost ? 'border-destructive ring-1 ring-destructive' : fieldRing(costDirty, saved)}`}
             />
           </label>
+          {fieldErrors.cost && (
+            <p id={`quote-line-cost-error-${line.id}`} className="w-full text-xs font-normal normal-case tracking-normal text-destructive" data-testid={`quote-line-cost-error-${line.id}`}>
+              {fieldErrors.cost}
+            </p>
+          )}
           <label className="flex items-center gap-1">{t('quotes.editor.line.markup')}
             <input
               type="number" step="0.1"
@@ -3639,7 +3874,7 @@ function ContractBlockEditor({
       )}
 
       {unfilled.length > 0 && (
-        <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground" data-testid={`quote-block-contract-unresolved-${block.id}`}>
+        <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid={`quote-block-contract-unresolved-${block.id}`}>
           {t('quotes.editor.contract.unresolvedWarning', { names: unfilled.join(', ') })}
         </p>
       )}

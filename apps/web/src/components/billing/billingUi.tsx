@@ -22,7 +22,7 @@ export function UnsavedBadge({ show, testId = 'unsaved-badge' }: { show: boolean
       // when a blur-save fails and the edit stays dirty — is announced, not just
       // shown. Dark-amber text (not the ~2:1 bright warning) keeps it readable.
       role="status"
-      className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-warning-foreground"
+      className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-warning-foreground dark:text-warning"
       data-testid={testId}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />
@@ -80,7 +80,7 @@ export function MarginPanel({
         {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">{t('billingUi.margin.profitAnnual')}</dt><dd data-testid={`${idPrefix}-margin-net-annual`}>{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perYear')}</span></dd></div>}
       </dl>
       {profit.linesMissingCost > 0 && (
-        <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground" data-testid={`${idPrefix}-margin-missing-cost`}>
+        <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground dark:text-warning" data-testid={`${idPrefix}-margin-missing-cost`}>
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
           <span>
             {t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}

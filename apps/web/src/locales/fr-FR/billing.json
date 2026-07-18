@@ -451,6 +451,7 @@
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
         "hideCostMargin": "Masquer coût et marge",
+        "lineActions": "Actions de la ligne",
         "moveLineDown": "Descendre la ligne",
         "moveLineTo": "Déplacer la ligne vers",
         "moveLineToAnotherTable": "Déplacer la ligne vers un autre tableau de prix",
@@ -529,17 +530,21 @@
         "removeSectionWithLines": "Cette action supprime le tableau de prix et ses lignes. Elle est irréversible."
       },
       "customer": {
+        "confirmLabel": "Déplacer le devis",
+        "confirmMessage": "Déplacer ce devis vers {{name}} ? Cela retire l'affectation de site et l'adresse de facturation personnalisée, et applique le taux de taxe de la nouvelle entreprise.",
+        "confirmTitle": "Changer de client ?",
         "help": "Déplacer un brouillon vers une autre entreprise retire l’affectation de site et applique le taux de taxe de cette entreprise.",
         "label": "Client",
         "success": "Devis déplacé vers {{name}}."
       },
       "deposit": {
         "due": "Acompte dû",
+        "dueUpFront": "Acompte dû à la signature",
         "eligibleAria": "Éligible à l'acompte",
         "label": "Acompte",
         "none": "Aucun acompte",
         "percent": "Pourcentage",
-        "percentOfDue": "Pourcentage dû à l'acceptation",
+        "percentOfDue": "Pourcentage du montant dû",
         "selectedLines": "Lignes sélectionnées",
         "selectedLinesHelp": "Cochez les lignes ponctuelles éligibles à l'acompte dans chaque tableau de prix.",
         "short": "Acompte"
@@ -547,12 +552,14 @@
       "emptyBlocks": "Aucun contenu pour le moment. Ajoutez un titre, du texte enrichi ou un tableau de prix ci-dessous.",
       "errors": {
         "addCatalogItem": "Impossible d'ajouter l'article du catalogue.",
+        "addContractSection": "Impossible d'ajouter la section de contrat",
         "addDistributorItem": "Impossible d'ajouter l'article du distributeur.",
         "addImageSection": "Impossible d'ajouter la section image.",
         "addLine": "Impossible d'ajouter la ligne.",
         "addPax8Product": "Impossible d'ajouter le produit Pax8.",
         "addSection": "Impossible d'ajouter la section.",
         "costZeroOrMore": "Saisissez un coût supérieur ou égal à 0.",
+        "depositPercentRange": "Saisissez un pourcentage entre 0.01 et 99.99.",
         "fetchImageFromUrl": "Impossible de récupérer l'image depuis cette URL.",
         "imageAddedSectionFailed": "Image ajoutée, mais l'ajout de la section a échoué.",
         "imageTooLarge": "L'image doit faire 5 MB ou moins.",
@@ -560,6 +567,7 @@
         "importPax8Product": "Impossible d'importer le produit Pax8.",
         "lineAddedCatalogSaveFailed": "Ligne ajoutée, mais l'enregistrement dans le catalogue a échoué.",
         "lineNeedsNameOrDescription": "Une ligne doit avoir un nom ou une description.",
+        "loadContractTemplates": "Impossible de charger les modèles de contrat",
         "moveLine": "Impossible de déplacer la ligne.",
         "quantityWholeGreaterThanZero": "Saisissez une quantité entière supérieure à 0.",
         "removeLine": "Impossible de supprimer la ligne.",
@@ -567,6 +575,7 @@
         "reorderBlocks": "Impossible de réordonner les blocs.",
         "reorderLines": "Impossible de réordonner les lignes.",
         "reorderSections": "Impossible de réordonner les sections.",
+        "saveCoverPage": "Impossible d'enregistrer la page de couverture",
         "saveCustomer": "Impossible de changer le client.",
         "saveTerms": "Impossible d'enregistrer les conditions.",
         "saveTitle": "Impossible d'enregistrer le titre.",
@@ -575,10 +584,7 @@
         "updateDeposit": "Impossible de mettre à jour l'acompte.",
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
-        "uploadImage": "Impossible de téléverser l'image.",
-        "loadContractTemplates": "Impossible de charger les modèles de contrat",
-        "addContractSection": "Impossible d'ajouter la section de contrat",
-        "saveCoverPage": "Impossible d'enregistrer la page de couverture"
+        "uploadImage": "Impossible de téléverser l'image."
       },
       "image": {
         "alt": "Image du devis",
@@ -657,9 +663,10 @@
         "notTaxable": "Non taxable",
         "qty": "Qté",
         "recurrence": "Récurrence",
-        "scrollAria": "Tableau de prix — faites défiler horizontalement pour la taxe, le total et les actions de ligne",
+        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne",
         "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
+        "taxSuffix": "+ {{amount}} de taxe",
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
         "total": "Total",
@@ -880,10 +887,13 @@
       "totals": {
         "annualRecurring": "Récurrent annuel",
         "depositDue": "Acompte dû",
+        "depositDueNow": "Acompte dû maintenant",
         "dueOnAcceptance": "Dû à l'acceptation",
+        "firstPeriodSubtotal": "Sous-total de la première période",
+        "firstPeriodTotal": "Total de la première période",
         "monthlyRecurring": "Récurrent mensuel",
         "recurringNote": "L'acceptation de cette proposition facture maintenant les frais ponctuels. Les lignes récurrentes sont facturées selon leur propre calendrier.",
-        "remainingBalance": "Solde restant",
+        "remainingBalance": "Solde restant (selon les conditions)",
         "subtotal": "Sous-total",
         "tax": "Taxe"
       },
@@ -902,12 +912,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "Supprimer {{count}} devis sélectionné(s) ? Seuls les devis DRAFT seront supprimés ; cette action est irréversible.",
+        "message_one": "Supprimer le devis sélectionné ? Seuls les BROUILLONS sont supprimés ; cette action est irréversible.",
+        "message_other": "Supprimer {{count}} devis sélectionnés ? Seuls les BROUILLONS sont supprimés ; cette action est irréversible.",
+        "skippedNotDraft": "Pas un brouillon (ignoré)",
         "title": "Supprimer les devis brouillon"
       },
       "bulkSend": {
-        "message": "Envoyer {{count}} proposition(s) sélectionnée(s) par e-mail à leurs clients ? Cette action est irréversible.",
-        "title": "Envoyer les devis"
+        "message_one": "Envoyer la proposition sélectionnée à son client par e-mail ? Cette action est irréversible.",
+        "message_other": "Envoyer {{count}} propositions sélectionnées à leurs clients par e-mail ? Cette action est irréversible.",
+        "recipients": "Chaque proposition est envoyée par e-mail au contact de facturation de son organisation et marquée comme Envoyée.",
+        "title": "Envoyer les devis",
+        "unnumbered": "Brouillon"
       },
       "create": {
         "description": "Choisissez le client concerné par cette proposition. Vous pourrez ensuite ajouter des blocs et la tarification.",
@@ -959,7 +974,7 @@
         "number": "Numéro",
         "selectAll": "Sélectionner tous les devis",
         "selectQuote": "Sélectionner le devis {{quote}}",
-        "total": "Total"
+        "total": "Première période"
       },
       "title": "Devis",
       "tryAgain": "Réessayer"

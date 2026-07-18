@@ -77,6 +77,9 @@ const addManualLineMock = vi.mocked(addManualLine);
 describe('QuoteEditor — per-line cost/markup/net strip', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The cost/margin toggle persists to localStorage — clear it so every test
+    // starts from the collapsed default regardless of what a prior test toggled.
+    localStorage.clear();
     updateLineMock.mockResolvedValue(
       { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
     );
@@ -137,6 +140,11 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     };
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    // The rail Margin panel is governed by the same "Show cost & margin" toggle
+    // as the per-line bands — one toggle honestly means "no margin on screen".
+    expect(screen.queryByTestId('quote-margin-cost')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
 
     expect(screen.getByTestId('quote-margin-cost')).toHaveTextContent('$125.00');
     expect(screen.getByTestId('quote-margin-net-onetime')).toHaveTextContent('$30.00');

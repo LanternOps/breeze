@@ -147,7 +147,10 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
             {showTax && (
               <>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Subtotal</span>
+                  {/* Basis qualifier — see QuoteDetailView: with recurring lines
+                      a bare "Subtotal" never reconciles against the
+                      due-on-acceptance figures below. */}
+                  <span className="text-muted-foreground">{hasRecurring ? 'First period subtotal' : 'Subtotal'}</span>
                   <span className="tabular-nums text-foreground">{money(quote.subtotal ?? 0, currency)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -186,8 +189,14 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
             )}
             {depositDue != null ? (
               <>
-                <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }} data-testid="public-quote-deposit-due">
-                  <span className="text-sm font-semibold text-foreground">Deposit due on acceptance</span>
+                {/* Anchor row — due on acceptance = deposit due now + remaining
+                    balance, stated instead of implied (see QuoteDetailView). */}
+                <div className="flex justify-between border-t pt-3 text-sm" style={{ borderColor: 'var(--doc-accent)' }} data-testid="public-quote-due-on-acceptance">
+                  <span className="font-medium text-foreground">Due on acceptance</span>
+                  <span className="font-medium tabular-nums text-foreground">{money(dueOnAcceptance, currency)}</span>
+                </div>
+                <div className="flex items-baseline justify-between" data-testid="public-quote-deposit-due">
+                  <span className="text-sm font-semibold text-foreground">Deposit due now</span>
                   <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
                     {money(depositDue, currency)}
                   </span>
