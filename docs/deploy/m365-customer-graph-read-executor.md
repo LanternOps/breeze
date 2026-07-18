@@ -10,7 +10,9 @@ Customer Graph Read uses one dedicated multitenant Entra application, the fixed 
 - user-owned delegated mail and Teams communications;
 - future Graph mutation and Exchange PowerShell executors.
 
-Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/complete-consent` and `POST /v1/retest`. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/complete-consent`, `POST /v1/retest`, and `POST /v1/read-action`. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+
+`POST /v1/read-action` executes one typed Microsoft Graph read (the twelve actions behind the `m365_query_*` AI tools) and uses the same internal EdDSA request authentication as the other two operations — no separate trust boundary. It is additive, so deploy order is safe in either direction: an executor deployed before this operation exists returns a plain `404` for the route, and the API's executor client treats that the same as any other unreachable/unhealthy executor, surfacing the existing `executor_unavailable` outcome rather than failing insecurely or leaking a raw transport error.
 
 ## Release and migration gate
 
@@ -97,6 +99,8 @@ Use deployment secret mounts or the platform secret store. Do not put private JW
 | `M365_GRAPH_READ_EXECUTOR_AUDIENCE` | Exactly `m365-graph-read-executor`. |
 | `M365_GRAPH_READ_EXECUTOR_SIGNING_KID` | Key ID shared with the executor's public verification JWK. |
 | `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Absolute path to the API's Ed25519 private signing JWK. The regular file must deny group/other access (`0600` or stricter) and must not be a symlink. |
+| `M365_GRAPH_READ_TOOLS_ENABLED` | `false` for dark deployment. Independently gates the six `m365_query_*` AI tools (`POST /v1/read-action`); it is not coupled to `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` — enabling one does not enable the other. Enabling this flag also forces full validation of the executor configuration rows above at boot, even if onboarding itself stays disabled. |
+| `M365_GRAPH_READ_TOOLS_ORG_IDS` | Canonical lowercase Breeze organization UUIDs separated by commas, or literal `*`. Required when the tools flag is enabled — boot refuses to start otherwise. Expand gradually; use `*` only after the limited rollout is accepted, matching the onboarding allowlist's rollout discipline. |
 
 The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_APP_URL`, then `PUBLIC_API_URL`. Production requires one of them. The API appends `/api/v1/m365/consent/callback`; configure the resulting exact URI in Entra and as the executor callback URI.
 
@@ -189,5 +193,7 @@ The Prometheus counter is `breeze_m365_customer_graph_read_events_total` with bo
 - `m365.customer_graph_read.grant_drift_detected`
 - `m365.customer_graph_read.retested`
 - `m365.customer_graph_read.disconnected`
+
+A second, independent Prometheus counter, `breeze_m365_graph_read_actions_total{action,outcome}`, covers per-call typed Graph read outcomes (the `m365_query_*` AI tools going through `POST /v1/read-action`), not connection lifecycle events — it does not replace the counter above. Its matching audit action is `m365.customer_graph_read.action_executed`, with details limited to `actionType`, `outcome`, `itemCount`, and `truncated`; it never carries the read's Graph payload. Both counters are registered on the same `/metrics` route.
 
 Use correlation IDs to join API and executor observations. Never add state, cookies, authorization codes, tokens, verifier/nonces, certificate data, raw provider bodies, or raw vault locators to metrics, audit, or logs.
