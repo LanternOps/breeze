@@ -171,6 +171,11 @@ describe('two-replica reconcile and failure policy (issue #2619, exit criteria 2
     // the duration of this call migrates it — the parent's import-time `db` pool
     // (bound to the base DB) is untouched. Restore env afterward so nothing else
     // in the process observes the swap.
+    // Mutating process.env here is safe ONLY because the integration config
+    // sets `fileParallelism: false` (vitest.integration.config.ts) — files run
+    // strictly sequentially, so no other test file's module graph can observe
+    // this swap during the autoMigrate() window. If file parallelism is ever
+    // enabled, this must move to a child process or a per-call config override.
     const prevUrl = process.env.DATABASE_URL;
     const prevApp = process.env.DATABASE_URL_APP;
     process.env.DATABASE_URL = DATABASE_URL;
