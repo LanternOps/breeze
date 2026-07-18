@@ -11,6 +11,7 @@ import { transitionIntent } from '../services/actionIntents/intentService';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { getToolTier, executeTool } from '../services/aiTools';
+import { checkToolPermission } from '../services/aiGuardrails';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 
 /**
@@ -229,6 +230,23 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   const activeOrg = await getActiveOrgTenant(intent.orgId);
   if (!activeOrg) {
     await failIntent(intent, 'org_inactive');
+    return;
+  }
+
+  // (e) The actor must STILL hold the specific RBAC permission the tool
+  // requires, checked against the rebuilt `auth` from step (c) — not the
+  // caller's original, now possibly stale, permission check. This is the
+  // core durability guarantee (spec §5 "user active with required RBAC";
+  // §10.3 "approval is not a timeless bearer capability"): an intent can sit
+  // `approved` for minutes to (mcp_api, 24h expiry) hours, and the actor may
+  // have been demoted to a lesser role in that window while remaining an
+  // active org member (which alone only trips (c) `actor_invalid`).
+  // `buildAuthContextForIntent` populates `auth.token.roleId` from freshly
+  // resolved permissions (never null for a real user), so this call cannot
+  // fail open via checkToolPermission's helper-session bypass.
+  const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, auth);
+  if (permissionDenial) {
+    await failIntent(intent, 'rbac_denied', { details: { reason: permissionDenial } });
     return;
   }
 

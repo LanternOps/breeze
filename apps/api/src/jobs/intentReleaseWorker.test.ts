@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, authMock, auditMock, metricsMock, sentryMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -19,6 +19,7 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     actorContextMock: { buildAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn() },
+    aiGuardrailsMock: { checkToolPermission: vi.fn() },
     authMock: { dbAccessContextFromAuth: vi.fn((auth: unknown) => ({ mock: 'dbContext', auth })) },
     auditMock: {
       writeAuditEvent: vi.fn(),
@@ -80,6 +81,9 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/aiTools', () => ({
   getToolTier: aiToolsMock.getToolTier,
   executeTool: aiToolsMock.executeTool,
+}));
+vi.mock('../services/aiGuardrails', () => ({
+  checkToolPermission: aiGuardrailsMock.checkToolPermission,
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -166,6 +170,7 @@ function primeThroughRevalidation(intent: ActionIntent) {
   aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
   actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
   tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+  aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
 }
 
 describe('releaseApprovedIntent', () => {
@@ -193,6 +198,11 @@ describe('releaseApprovedIntent', () => {
 
     await releaseApprovedIntent(intent.id);
 
+    expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(
+      intent.actionName,
+      intent.arguments,
+      fakeAuth,
+    );
     expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
@@ -338,6 +348,48 @@ describe('releaseApprovedIntent', () => {
       'failed',
       expect.objectContaining({ errorCode: 'org_inactive' }),
     );
+  });
+
+  it('rbac_denied: actor is still an active org member but no longer holds the tool permission', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(
+      'Insufficient permissions: requires scripts.run',
+    );
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(
+      intent.actionName,
+      intent.arguments,
+      fakeAuth,
+    );
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'rbac_denied' }),
+    );
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        result: 'failure',
+        details: expect.objectContaining({
+          errorCode: 'rbac_denied',
+          reason: 'Insufficient permissions: requires scripts.run',
+        }),
+      }),
+    );
+    expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
   });
 
   it('executeTool throws -> failed:execution_error, with executedAt stamped', async () => {
