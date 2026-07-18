@@ -66,6 +66,11 @@ export default defineConfig({
       // the mocked `changes.test.ts` unit suite, so this drives the real
       // `changesRoutes` handler + RLS insert/select policies against Postgres.
       'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for BREEZE-3: software report
+      // wipe-and-reinsert with linked vuln findings — proves the SET NULL FK
+      // (constraint name + delete action) and the re-link UPDATE under the
+      // org-scoped agent RLS context, which the mocked inventory.test.ts can't.
+      'src/routes/agents/inventorySoftwareRelink.integration.test.ts',
       // Co-located real-DB integration test for the SR2-22 auth-email worker:
       // proves the OUT-OF-REQUEST worker's withSystemDbAccessContext wrap lets
       // it FIND a FORCE-RLS `users` row (a contextless read would be 0 rows =

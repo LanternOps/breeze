@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
   deviceHardware,
   deviceDisks,
   deviceNetwork,
+  deviceVulnerabilities,
   softwareInventory,
 } from '../../db/schema';
 import {
@@ -105,26 +106,115 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
   }
 
   await db.transaction(async (tx) => {
+    // The wipe-and-reinsert below churns software_inventory row ids, and
+    // device_vulnerabilities.software_inventory_id references them (ON DELETE
+    // SET NULL). The fleet aggregation layer displays a NULL-linked finding as
+    // an OS finding (vulnerabilityFleetAggregation.ts groupKey), so without
+    // repair every software report would misclassify the device's software
+    // findings in the UI until the next correlation run. Capture what each
+    // finding pointed at, then re-link to the replacement row.
+    const linkedFindings = await tx
+      .select({
+        findingId: deviceVulnerabilities.id,
+        name: softwareInventory.name,
+        vendor: softwareInventory.vendor,
+      })
+      .from(deviceVulnerabilities)
+      .innerJoin(softwareInventory, eq(deviceVulnerabilities.softwareInventoryId, softwareInventory.id))
+      .where(and(
+        eq(deviceVulnerabilities.deviceId, device.id),
+        eq(softwareInventory.deviceId, device.id)
+      ));
+
     await tx
       .delete(softwareInventory)
       .where(eq(softwareInventory.deviceId, device.id));
 
+    let inserted: { id: string; name: string; vendor: string | null }[] = [];
     if (data.software.length > 0) {
       const now = new Date();
-      await tx.insert(softwareInventory).values(
-        data.software.map((item) => ({
-          deviceId: device.id,
-          orgId: device.orgId,
-          name: item.name,
-          version: item.version || null,
-          vendor: item.vendor || null,
-          installDate: sanitizeDate(item.installDate),
-          installLocation: item.installLocation || null,
-          uninstallString: item.uninstallString || null,
-          fileHash: item.fileHash || null,
-          hashAlgorithm: item.hashAlgorithm || null,
-          lastSeen: now
-        }))
+      const rows = data.software.map((item) => ({
+        deviceId: device.id,
+        orgId: device.orgId,
+        name: item.name,
+        version: item.version || null,
+        vendor: item.vendor || null,
+        installDate: sanitizeDate(item.installDate),
+        installLocation: item.installLocation || null,
+        uninstallString: item.uninstallString || null,
+        fileHash: item.fileHash || null,
+        hashAlgorithm: item.hashAlgorithm || null,
+        lastSeen: now
+      }));
+      // .returning() serializes up to 10k rows back over the wire — only pay
+      // for it when there are findings to re-link.
+      if (linkedFindings.length > 0) {
+        inserted = await tx.insert(softwareInventory).values(rows).returning({
+          id: softwareInventory.id,
+          name: softwareInventory.name,
+          vendor: softwareInventory.vendor,
+        });
+      } else {
+        await tx.insert(softwareInventory).values(rows);
+      }
+    }
+
+    if (linkedFindings.length > 0 && inserted.length > 0) {
+      // Match by (name, vendor), normalized the same way the correlation
+      // layer matches products (lower(trim(...)) — see the
+      // softwareProductResolutions join in vulnerabilityCorrelation.ts), so a
+      // casing/whitespace change between reports doesn't drop the link.
+      // Version is deliberately ignored: upgrades keep the link and the
+      // correlation job re-evaluates version ranges on its next run. First
+      // row wins for duplicate keys. Findings whose software is gone keep a
+      // NULL link; correlateOrg's resolve pass closes them.
+      const relinkKey = (name: string, vendor: string | null) =>
+        JSON.stringify([name.trim().toLowerCase(), (vendor ?? '').trim().toLowerCase()]);
+
+      const newRowByKey = new Map<string, string>();
+      for (const row of inserted) {
+        const key = relinkKey(row.name, row.vendor);
+        if (!newRowByKey.has(key)) newRowByKey.set(key, row.id);
+      }
+
+      const findingIdsByNewRow = new Map<string, string[]>();
+      let severed = 0;
+      for (const finding of linkedFindings) {
+        const newRowId = newRowByKey.get(relinkKey(finding.name, finding.vendor));
+        if (!newRowId) {
+          severed++;
+          continue;
+        }
+        const ids = findingIdsByNewRow.get(newRowId) ?? [];
+        ids.push(finding.findingId);
+        findingIdsByNewRow.set(newRowId, ids);
+      }
+
+      for (const [newRowId, findingIds] of findingIdsByNewRow) {
+        await tx
+          .update(deviceVulnerabilities)
+          .set({ softwareInventoryId: newRowId, updatedAt: new Date() })
+          .where(inArray(deviceVulnerabilities.id, findingIds));
+      }
+
+      if (severed > 0) {
+        // Expected for genuinely uninstalled software (the next correlation
+        // pass resolves those findings), but a spike of these fleet-wide is
+        // the signature of truncated agent-side collection silently converting
+        // open findings to patched — keep the trail.
+        console.warn(
+          `[Inventory] Software report for device ${device.id} severed ${severed} vuln finding link(s) with no replacement row (uninstalled or renamed software)`
+        );
+      }
+    }
+
+    if (linkedFindings.length > 0 && inserted.length === 0) {
+      // An empty report against a device with linked findings just severed
+      // every link in one statement. Legitimate only if all software was
+      // actually removed — it is also the signature of a truncated agent-side
+      // collection, so leave a trail.
+      console.warn(
+        `[Inventory] Software report for device ${device.id} emptied the inventory and detached ${linkedFindings.length} vuln finding link(s)`
       );
     }
   });

@@ -190,11 +190,14 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
         .limit(1);
 
       if (job && isRedisAvailable()) {
-        await enqueueDiscoveryResults(
+        const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() => enqueueDiscoveryResults(
           expectedJobId,
           job.orgId,
           job.siteId,
-          normalizeDiscoveryHosts(discoveryData.hosts),
+          normalizedHosts,
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,
@@ -204,7 +207,7 @@ async function handleDiscoveryResult({ agentId, command, result }: Parameters<Co
             actorId: agentId,
             source: 'route:agentWs:script-network-scan',
           }
-        );
+        ));
       } else if (job) {
         // Redis not available — mark job failed so user knows results weren't processed
         console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
@@ -369,7 +372,10 @@ async function handleSnmpPollResult({ agentId, command, result }: Parameters<Com
         return;
       }
       if (isRedisAvailable()) {
-        await enqueueSnmpPollResults(expectedDeviceId, snmpData.metrics);
+        const metrics = snmpData.metrics;
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics));
       } else {
         // Redis not available — log warning about dropped metrics and mark status
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
@@ -382,6 +388,7 @@ async function handleSnmpPollResult({ agentId, command, result }: Parameters<Com
     }
   } catch (err) {
     console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+    captureException(err);
   }
 }
 
@@ -1010,7 +1017,11 @@ export async function processOrphanedCommandResult(
     console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
     try {
       if (isRedisAvailable()) {
-        await enqueueSnmpPollResults(snmpData.deviceId, snmpData.metrics, result.commandId);
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() =>
+          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId)
+        );
       } else {
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
         const { snmpDevices } = await import('../db/schema');
@@ -1046,32 +1057,33 @@ export async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing monitor check result for monitor ${monitorData.monitorId} from agent ${agentId}`);
     try {
-      const status = normalizeMonitorStatus(monitorData.status);
+      const monitorId = monitorData.monitorId;
+      const checkResult = {
+        monitorId,
+        checkId: result.commandId,
+        status: normalizeMonitorStatus(monitorData.status),
+        responseMs: monitorData.responseMs ?? 0,
+        statusCode: monitorData.statusCode,
+        error: monitorData.error,
+        details: monitorData as Record<string, unknown>
+      };
       if (isRedisAvailable()) {
-        await enqueueMonitorCheckResult(monitorData.monitorId, {
-          monitorId: monitorData.monitorId,
-          checkId: result.commandId,
-          status,
-          responseMs: monitorData.responseMs ?? 0,
-          statusCode: monitorData.statusCode,
-          error: monitorData.error,
-          details: monitorData as Record<string, unknown>
-        }, {
-          actorType: 'agent',
-          actorId: agentId,
-          source: 'route:agentWs:monitor-result',
-        });
+        // Command results are processed inside a held org-scoped transaction
+        // (runWithAgentDbAccess). runOutsideDbContext exits the ALS context so
+        // instrumented-queue tripwires pass and any nested DB work routes to
+        // the pool — it does NOT release the outer transaction's connection,
+        // which stays held for the (normally short) Redis round-trips; the
+        // full fix is dispatching enqueues after the context closes (#1105).
+        await runOutsideDbContext(() =>
+          enqueueMonitorCheckResult(monitorId, checkResult, {
+            actorType: 'agent',
+            actorId: agentId,
+            source: 'route:agentWs:monitor-result',
+          })
+        );
       } else {
-        console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorData.monitorId}`);
-        await recordMonitorCheckResult(monitorData.monitorId, {
-          monitorId: monitorData.monitorId,
-          checkId: result.commandId,
-          status,
-          responseMs: monitorData.responseMs ?? 0,
-          statusCode: monitorData.statusCode,
-          error: monitorData.error,
-          details: monitorData as Record<string, unknown>
-        });
+        console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorId}`);
+        await recordMonitorCheckResult(monitorId, checkResult);
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
@@ -1284,11 +1296,14 @@ export async function processOrphanedCommandResult(
       }
 
       if (isRedisAvailable()) {
-        await enqueueDiscoveryResults(
+        const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() => enqueueDiscoveryResults(
           discoveryJob.id,
           discoveryJob.orgId,
           discoveryJob.siteId,
-          normalizeDiscoveryHosts(discoveryData.hosts),
+          normalizedHosts,
           discoveryData.hostsScanned ?? 0,
           discoveryData.hostsDiscovered ?? 0,
           undefined,
@@ -1298,7 +1313,7 @@ export async function processOrphanedCommandResult(
             actorId: agentId,
             source: 'route:agentWs:discovery-result',
           }
-        );
+        ));
       } else {
         console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
         await db
@@ -1422,7 +1437,9 @@ export async function processOrphanedCommandResult(
         : `Malformed backup result payload: ${parsedBackup.error.issues.map((issue) => issue.message).join(', ')}`;
 
       if (isRedisAvailable()) {
-        await enqueueBackupResults(
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() => enqueueBackupResults(
           backupJob.id,
           backupJob.orgId,
           backupJob.deviceId,
@@ -1449,7 +1466,7 @@ export async function processOrphanedCommandResult(
             actorId: agentId,
             source: 'route:agentWs:backup-result',
           }
-        );
+        ));
       } else {
         console.warn(`[AgentWs] Redis unavailable, marking backup job ${backupJob.id} with inline result`);
         const persisted = await applyBackupCommandResultToJob({
@@ -1741,7 +1758,10 @@ async function processCommandResult(
 
       try {
         const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
-        await enqueueDrExecutionReconcile(commandPayload.drExecutionId);
+        const drExecutionId = commandPayload.drExecutionId as string;
+        // Exit the held org-scoped transaction context for the Redis
+        // round-trips (#1105) — see the note on the monitor-result branch.
+        await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
         captureException(err);

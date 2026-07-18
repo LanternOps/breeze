@@ -187,7 +187,7 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
   };
 });
 
-import { db } from '../db';
+import { db, runOutsideDbContext } from '../db';
 import { devices } from '../db/schema';
 import {
   createAgentWsHandlers,
@@ -195,9 +195,11 @@ import {
   validateAgentToken,
   disconnectAgent,
   isAgentConnected,
+  sendCommandToAgent,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { isRedisAvailable } from '../services/redis';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
 import { isAgentTenantActive } from '../services/tenantStatus';
@@ -767,6 +769,69 @@ describe('agent websocket command results', () => {
 
     expect(db.select).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueMonitorCheckResult)).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // BREEZE-H: the command_result handler runs inside a held org-scoped
+  // transaction; BullMQ enqueues must be wrapped in runOutsideDbContext so
+  // the #1105 tripwire in bullmqQueue passes and nested DB work routes to
+  // the pool (the wrap does not release the outer transaction's connection —
+  // dispatching after the context closes is the deeper #1105 fix).
+  it('enqueues an accepted monitor result via runOutsideDbContext (#1105, BREEZE-H)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    // onOpen: register the socket so sendCommandToAgent records the
+    // orphaned-result expectation the monitor result is matched against.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+
+    sendCommandToAgent('agent-123', {
+      id: 'mon-monitor-1-123',
+      type: 'network_ping',
+      payload: { monitorId: 'monitor-1' },
+    } as any);
+
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    let outsideDepth = 0;
+    vi.mocked(runOutsideDbContext).mockImplementation((fn: any) => {
+      outsideDepth++;
+      try {
+        return fn();
+      } finally {
+        outsideDepth--;
+      }
+    });
+    // Record (not assert) inside the mock: the handler catches enqueue errors,
+    // so a failing expect() inside the implementation would be swallowed.
+    let enqueuedOutsideContext: boolean | null = null;
+    vi.mocked(enqueueMonitorCheckResult).mockImplementation(async () => {
+      enqueuedOutsideContext = outsideDepth > 0;
+      return 'job-1';
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'mon-monitor-1-123',
+        status: 'completed',
+        result: {
+          monitorId: 'monitor-1',
+          status: 'online',
+          responseMs: 12
+        }
+      })
+    } as any, ws as any);
+
+    expect(enqueueMonitorCheckResult).toHaveBeenCalledTimes(1);
+    expect(enqueueMonitorCheckResult).toHaveBeenCalledWith(
+      'monitor-1',
+      expect.objectContaining({ monitorId: 'monitor-1', status: 'online', responseMs: 12 }),
+      expect.objectContaining({ source: 'route:agentWs:monitor-result' })
+    );
+    expect(enqueuedOutsideContext).toBe(true);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

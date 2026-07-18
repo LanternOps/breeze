@@ -5,6 +5,7 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -182,5 +183,192 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
 
     expect(res.status).toBe(200);
     expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The software report wipes and reinserts software_inventory rows. Vuln
+// findings reference those rows (FK now ON DELETE SET NULL — BREEZE-3), and
+// the fleet aggregation layer displays a NULL-linked finding as an OS finding,
+// so the route must re-point each finding at the replacement row for the same
+// (name, vendor).
+describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
+  type TxUpdateCall = { set?: Record<string, unknown>; where?: unknown };
+
+  function mockSoftwareTx(opts: {
+    linkedFindings: Array<{ findingId: string; name: string; vendor: string | null }>;
+    insertedRows: Array<{ id: string; name: string; vendor: string | null }>;
+  }) {
+    const updateCalls: TxUpdateCall[] = [];
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(opts.insertedRows),
+    });
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(opts.linkedFindings),
+          }),
+        }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: deleteWhere }),
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+      update: vi.fn(() => {
+        const call: TxUpdateCall = {};
+        updateCalls.push(call);
+        return {
+          set: vi.fn((set: Record<string, unknown>) => {
+            call.set = set;
+            return {
+              where: vi.fn((where: unknown) => {
+                call.where = where;
+                return Promise.resolve(undefined);
+              }),
+            };
+          }),
+        };
+      }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return { tx, updateCalls, deleteWhere, insertValues };
+  }
+
+  async function putSoftware(app: Hono, software: Array<Record<string, unknown>>) {
+    return app.request('/agents/agent-1/software', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ software }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('re-links findings to the replacement rows matching (name, vendor)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { tx, updateCalls } = mockSoftwareTx({
+      linkedFindings: [
+        { findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' },
+        { findingId: 'finding-2', name: 'Google Chrome', vendor: 'Google LLC' },
+        { findingId: 'finding-3', name: '7-Zip', vendor: null },
+      ],
+      insertedRows: [
+        { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
+        { id: 'sw-new-2', name: '7-Zip', vendor: null },
+      ],
+    });
+
+    const res = await putSoftware(makeApp(), [
+      { name: 'Google Chrome', version: '127.0', vendor: 'Google LLC' },
+      { name: '7-Zip', version: '24.06' },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    // One UPDATE per replacement row; both Chrome findings batched together.
+    expect(updateCalls).toHaveLength(2);
+    const sets = updateCalls.map((c) => c.set?.softwareInventoryId).sort();
+    expect(sets).toEqual(['sw-new-1', 'sw-new-2']);
+  });
+
+  it('re-links across casing/whitespace changes in name and vendor (correlation-normalized matching)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { updateCalls } = mockSoftwareTx({
+      linkedFindings: [
+        { findingId: 'finding-1', name: 'GOOGLE Chrome ', vendor: 'GOOGLE LLC' },
+      ],
+      insertedRows: [
+        { id: 'sw-new-1', name: 'Google Chrome', vendor: ' Google LLC' },
+      ],
+    });
+
+    const res = await putSoftware(makeApp(), [
+      { name: 'Google Chrome', vendor: ' Google LLC' },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]!.set?.softwareInventoryId).toBe('sw-new-1');
+  });
+
+  it('does not match on name alone when the vendor differs', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { updateCalls } = mockSoftwareTx({
+      linkedFindings: [
+        { findingId: 'finding-1', name: 'Agent', vendor: 'Vendor A' },
+      ],
+      insertedRows: [
+        { id: 'sw-new-1', name: 'Agent', vendor: 'Vendor B' },
+      ],
+    });
+
+    const res = await putSoftware(makeApp(), [{ name: 'Agent', vendor: 'Vendor B' }]);
+
+    expect(res.status).toBe(200);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('leaves findings for uninstalled software unlinked (resolved by next correlation pass)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { updateCalls } = mockSoftwareTx({
+      linkedFindings: [
+        { findingId: 'finding-1', name: 'Old App', vendor: 'Gone Inc.' },
+      ],
+      insertedRows: [
+        { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
+      ],
+    });
+
+    const res = await putSoftware(makeApp(), [
+      { name: 'Google Chrome', vendor: 'Google LLC' },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('skips re-linking entirely when the device has no linked findings', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { tx, updateCalls } = mockSoftwareTx({
+      linkedFindings: [],
+      insertedRows: [{ id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' }],
+    });
+
+    const res = await putSoftware(makeApp(), [
+      { name: 'Google Chrome', vendor: 'Google LLC' },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('handles an empty software list: wipes rows, inserts nothing, re-links nothing', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const { tx, updateCalls } = mockSoftwareTx({
+      linkedFindings: [
+        { findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' },
+      ],
+      insertedRows: [],
+    });
+
+    const res = await putSoftware(makeApp(), []);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, count: 0 });
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('returns 404 without opening a transaction when the device is unknown', async () => {
+    mockDeviceLookup(null);
+
+    const res = await putSoftware(makeApp(), [{ name: 'Google Chrome' }]);
+
+    expect(res.status).toBe(404);
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });
