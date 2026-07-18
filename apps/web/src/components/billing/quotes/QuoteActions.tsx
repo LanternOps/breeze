@@ -346,7 +346,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
-  const layout = header ? 'flex flex-wrap items-center gap-2' : 'space-y-2';
+  // justify-end matters: the full-basis reason hints stretch this container
+  // to full width, and without it the buttons drift LEFT whenever a hint shows.
+  const layout = header ? 'flex flex-wrap items-center justify-end gap-2' : 'space-y-2';
   const btnBase = header
     ? 'inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium'
     : 'inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
@@ -361,8 +363,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   return (
     <>
       <div className={layout} data-testid={`quote-actions-${variant}`}>
-        {/* Send a draft proposal: issues a number, emails the customer's billing
-            contact with the PDF + a public accept link, and flips draft→sent.
+        {/* Send a draft proposal: emails the customer's billing contact with
+            the PDF + a public accept link, and flips draft→sent. (The quote
+            number already exists — it's minted at creation, by contract.)
             Gated on quotes:send; only a draft can be sent. An empty quote can't. */}
         {canSend && (
           <button
@@ -389,16 +392,19 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 : undefined
             }
             data-testid="quote-send"
-            className={`${btnBase} inline-flex items-center justify-center gap-1.5 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
+            className={`${btnBase} relative bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
           >
-            {/* The label stays "Send proposal" while edits settle — a spinner
-                marks the wait instead. Swapping the label to "Saving…" resized
-                the button (shifting the sticky header cluster) and made the
-                SEND button read as if a send were already in progress. The
-                spinner's slot is always reserved (invisible at rest) so its
-                appearance never shifts the cluster either. */}
-            <Loader2 className={`h-3.5 w-3.5 ${sending || savePending ? 'animate-spin' : 'invisible'}`} aria-hidden="true" />
-            {sending ? t('quotes.actions.sending') : t('quotes.actions.sendProposal')}
+            {/* Overlay spinner: while edits settle (or a send is in flight) the
+                label fades under a dead-centered spinner. The label always
+                defines the button's size and sits truly centered — the earlier
+                reserved-slot approach kept the width stable but left the text
+                permanently off-center. */}
+            {(sending || savePending) && (
+              <Loader2 className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin" aria-hidden="true" />
+            )}
+            <span className={sending || savePending ? 'opacity-30' : ''}>
+              {t('quotes.actions.sendProposal')}
+            </span>
           </button>
         )}
         {/* In the rail the secondary actions stack as full-width buttons; in the

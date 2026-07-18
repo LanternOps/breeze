@@ -5,7 +5,6 @@ import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
-import { useOrgStore } from '../../../stores/orgStore';
 import {
   addBlock,
   updateBlock,
@@ -159,13 +158,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const [pax8Active, setPax8Active] = useState(false);
   const [terms, setTerms] = useState(quote.termsAndConditions ?? '');
   const [termsDirty, setTermsDirty] = useState(false);
-  // Editable quote title (shown in the workspace header, document, and PDF).
-  const [title, setTitle] = useState(quote.title ?? '');
-  const [titleDirty, setTitleDirty] = useState(false);
-  // Quiet "Saved" cues for the blur-to-save title/terms fields, matching the
-  // per-line/per-block cue so the whole editor speaks one save language.
+  // Quiet "Saved" cue for the blur-to-save terms field (title moved to the
+  // workspace header — see QuoteHeaderMeta).
   const [termsSaved, flashTermsSaved] = useSavedFlash();
-  const [titleSaved, flashTitleSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
   // Surface "is anything still saving / sitting dirty?" to the workspace so the
@@ -173,7 +168,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // (line/block/terms/add/remove); the terms dirty flag covers the rail's
   // blur-to-save field. Per-line dirty state isn't lifted — clicking Send blurs
   // the focused field, whose commit lands in `pending` before the dialog opens.
-  const hasPendingEdits = pending.size > 0 || termsDirty || titleDirty;
+  const hasPendingEdits = pending.size > 0 || termsDirty;
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
   // (e.g. the quote was just issued and the tab switched).
@@ -231,7 +226,6 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const [contractLabel, setContractLabel] = useState('');
 
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
-  useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
@@ -297,77 +291,6 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, t('quotes.editor.errors.saveTerms'));
     if (ok) flashTermsSaved();
   }, [termsDirty, terms, quote.id, refresh, runScoped, flashTermsSaved, t]);
-
-  const saveTitle = useCallback(async () => {
-    if (!titleDirty) return;
-    const ok = await runScoped('title', async () => {
-      await runAction({
-        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
-          method: 'PATCH', body: JSON.stringify({ title: title.trim() || null }),
-        }),
-        errorFallback: t('quotes.editor.errors.saveTitle'),
-        onUnauthorized: UNAUTHORIZED,
-      });
-      setTitleDirty(false);
-      refresh();
-    }, t('quotes.editor.errors.saveTitle'));
-    if (ok) flashTitleSaved();
-  }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved, t]);
-
-  // ---- customer (organization) reassignment --------------------------------
-  // Company choices for the customer select: the partner's org list, with the
-  // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
-  // select always shows a valid current value.
-  const organizations = useOrgStore((s) => s.organizations);
-  const orgOptions = useMemo(() => {
-    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
-    if (!sorted.some((o) => o.id === quote.orgId)) {
-      sorted.unshift({
-        id: quote.orgId,
-        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
-      } as (typeof sorted)[number]);
-    }
-    return sorted;
-  }, [organizations, quote.orgId, detail.billTo?.name]);
-
-  // Local mirror so the select shows the chosen company instantly instead of
-  // snapping back to the prop value while the PATCH is in flight (same pattern
-  // as the deposit controls); resyncs from the server after each refresh().
-  const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
-  useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
-  // Reassignment is destructive in effect (site + bill-to cleared, tax rate
-  // re-resolved), so a select change stages here and a confirm step commits it —
-  // a mis-click in the dropdown must not silently rewrite the quote's tax basis.
-  const [pendingCustomer, setPendingCustomer] = useState<{ id: string; name: string } | null>(null);
-
-  // Reassign the draft to another company. The server clears the site + bill-to
-  // override and re-resolves the org's tax rate, so refresh() re-pulls the whole
-  // detail to land the recomputed totals and the new bill-to in one hop.
-  const saveCustomer = useCallback((orgId: string) => {
-    if (orgId === quote.orgId) return;
-    const name = orgOptions.find((o) => o.id === orgId)?.name ?? '';
-    setCustomerOrgId(orgId);
-    void runScoped('customer', async () => {
-      try {
-        await runAction({
-          request: () => fetchWithAuth(`/quotes/${quote.id}`, {
-            method: 'PATCH', body: JSON.stringify({ orgId }),
-          }),
-          errorFallback: t('quotes.editor.errors.saveCustomer'),
-          successMessage: t('quotes.editor.customer.success', { name }),
-          onUnauthorized: UNAUTHORIZED,
-        });
-      } catch (err) {
-        // Snap back to the last-known server value, then re-pull: on an error
-        // the client can't know whether the move landed, so re-converge on
-        // server truth instead of asserting a rollback.
-        setCustomerOrgId(quote.orgId);
-        refresh();
-        throw err;
-      }
-      refresh();
-    }, t('quotes.editor.errors.saveCustomer'));
-  }, [quote.id, quote.orgId, orgOptions, refresh, runScoped, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -1663,6 +1586,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             {t('quotes.editor.autosaveHint')}
           </p>
         )}
+        {canWrite && (
+          <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" data-testid="quote-cover-page">
+            <input
+              type="checkbox"
+              checked={cover.enabled}
+              onChange={(e) => saveCover({ ...cover, enabled: e.target.checked })}
+              disabled={isPending('cover-page')}
+              data-testid="quote-cover-page-enabled"
+              className="h-3.5 w-3.5"
+            />
+            {t('quotes.editor.coverPage.enable')}
+          </label>
+        )}
         <button
           type="button"
           onClick={() => setShowInternal((v) => !v)}
@@ -1674,71 +1610,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
         </button>
       </div>
-      {canWrite && (
-        <div className="flex max-w-3xl flex-wrap items-start gap-3">
-          <div className="min-w-64 flex-1">
-            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
-            <input
-              id="quote-title"
-              type="text"
-              value={title}
-              maxLength={200}
-              placeholder={t('quotes.editor.title.placeholder')}
-              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-              onBlur={() => void saveTitle()}
-              disabled={isPending('title')}
-              data-testid="quote-title"
-              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
-            />
-            <SrSaved show={titleSaved} testId="quote-title-saved" />
-          </div>
-          {/* Customer reassignment (drafts only — this editor only mounts for
-              drafts). Selecting a company saves immediately; the server clears
-              the site + bill-to override and applies the new org's tax rate. */}
-          <div className="w-64 max-w-full">
-            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
-            <select
-              id="quote-customer"
-              value={customerOrgId}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id === customerOrgId) return;
-                setPendingCustomer({ id, name: orgOptions.find((o) => o.id === id)?.name ?? '' });
-              }}
-              disabled={isPending('customer')}
-              title={t('quotes.editor.customer.help')}
-              data-testid="quote-customer"
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-            >
-              {orgOptions.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-      )}
-      {canWrite && (
-        <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-cover-page-summary">
-                {cover.enabled ? t('quotes.editor.coverPage.summaryOn') : t('quotes.editor.coverPage.summaryOff')}
-              </p>
-            </div>
-            <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={cover.enabled}
-                onChange={(e) => saveCover({ ...cover, enabled: e.target.checked })}
-                disabled={isPending('cover-page')}
-                data-testid="quote-cover-page-enabled"
-                className="h-4 w-4"
-              />
-              {t('quotes.editor.coverPage.enable')}
-            </label>
-          </div>
-
+      {/* Cover page: a toolbar toggle, not a permanent card — the once-per-quote
+          setup stays out of the daily compose path. Fields appear only while
+          enabled. */}
+      {canWrite && cover.enabled && (
+        <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page-fields">
           {cover.enabled && (
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
@@ -1817,6 +1693,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           )}
         </div>
       )}
+
       {/* The rail joins as a second column only at xl: below that the two-column
           split starves the pricing table (at 1100px the blocks track is ~420px
           against a ~650px table minimum) and forces sideways scrolling on the
@@ -2202,24 +2079,6 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           </span>
         )}
       </div>
-
-      {/* Customer reassignment confirm — warning (guarded, not destructive-red):
-          the move is recoverable by moving back, but it clears site + bill-to and
-          swaps the tax basis, so it must never ride on a single dropdown click. */}
-      <ConfirmDialog
-        open={pendingCustomer !== null}
-        onClose={() => setPendingCustomer(null)}
-        onConfirm={() => {
-          const next = pendingCustomer;
-          setPendingCustomer(null);
-          if (next) saveCustomer(next.id);
-        }}
-        variant="warning"
-        title={t('quotes.editor.customer.confirmTitle')}
-        message={t('quotes.editor.customer.confirmMessage', { name: pendingCustomer?.name ?? '' })}
-        confirmLabel={t('quotes.editor.customer.confirmLabel')}
-        confirmTestId="quote-customer-confirm"
-      />
 
       <ConfirmDialog
         open={pendingRemove !== null}

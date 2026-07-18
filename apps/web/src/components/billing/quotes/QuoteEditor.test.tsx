@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
+import { QuoteHeaderMeta } from './QuoteHeaderMeta';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
@@ -98,8 +99,8 @@ describe('QuoteEditor', () => {
   });
 
   it('editing the title and blurring issues PATCH /quotes/:id with { title }', async () => {
-    render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The editable title moved to the workspace header (QuoteHeaderMeta).
+    render(<QuoteHeaderMeta detail={draftDetail()} onChanged={vi.fn()} />);
 
     const input = screen.getByTestId('quote-title');
     fireEvent.change(input, { target: { value: 'Office network refresh' } });

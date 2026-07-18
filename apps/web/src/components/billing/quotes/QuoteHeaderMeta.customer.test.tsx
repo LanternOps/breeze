@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import QuoteEditor from './QuoteEditor';
+import { QuoteHeaderMeta } from './QuoteHeaderMeta';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
@@ -63,7 +63,7 @@ const customerPatchCalls = () =>
   fetchMock.mock.calls.filter((c) => c[0] === '/quotes/q-1' && (c[1] as RequestInit | undefined)?.method === 'PATCH'
     && String((c[1] as RequestInit).body).includes('orgId'));
 
-describe('QuoteEditor customer reassignment', () => {
+describe('QuoteHeaderMeta customer reassignment', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockImplementation(async () => json({ data: {} }));
@@ -73,7 +73,7 @@ describe('QuoteEditor customer reassignment', () => {
   // change stages a confirm step — the PATCH only fires after the user confirms.
   it('changing the customer confirms, then PATCHes { orgId } and refreshes the detail', async () => {
     const onChanged = vi.fn();
-    render(<QuoteEditor detail={detail()} onChanged={onChanged} />);
+    render(<QuoteHeaderMeta detail={detail()} onChanged={onChanged} />);
 
     const select = screen.getByTestId('quote-customer');
     expect(select).toHaveValue('org-1');
@@ -90,7 +90,7 @@ describe('QuoteEditor customer reassignment', () => {
   });
 
   it('cancelling the confirm leaves the customer unchanged and PATCHes nothing', async () => {
-    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
 
     const select = screen.getByTestId('quote-customer');
     fireEvent.change(select, { target: { value: 'org-2' } });
@@ -102,7 +102,7 @@ describe('QuoteEditor customer reassignment', () => {
   });
 
   it('re-selecting the current customer is a no-op', () => {
-    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
 
     fireEvent.change(screen.getByTestId('quote-customer'), { target: { value: 'org-1' } });
 
@@ -117,7 +117,7 @@ describe('QuoteEditor customer reassignment', () => {
       }
       return json({ data: {} });
     });
-    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
 
     const select = screen.getByTestId('quote-customer');
     fireEvent.change(select, { target: { value: 'org-2' } });

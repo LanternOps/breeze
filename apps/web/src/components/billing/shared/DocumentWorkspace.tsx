@@ -16,6 +16,10 @@ export interface DocumentWorkspaceProps {
   backHref: string;
   backLabel: string;
   title: string;
+  /** Replaces the plain h1 with caller-provided identity chrome (e.g. the quote
+   *  workspace's editable title + customer selector for drafts). The `title`
+   *  string is still required as the fallback/document identity. */
+  titleSlot?: ReactNode;
   statusPill?: ReactNode;
   actions?: ReactNode;
   tabs: DocumentTab[];
@@ -43,6 +47,7 @@ export function DocumentWorkspace({
   backHref,
   backLabel,
   title,
+  titleSlot,
   statusPill,
   actions,
   tabs,
@@ -100,7 +105,7 @@ export function DocumentWorkspace({
           flush with main's true top edge; its own pt re-covers the zone. */}
       <div className="sticky -top-4 z-20 -mx-4 -mt-4 bg-background px-4 pt-4 md:-top-6 md:-mx-6 md:-mt-6 md:px-6 md:pt-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <a
               href={backHref}
               aria-label={t('shared.documentWorkspace.backAria', { label: backLabel.toLowerCase() })}
@@ -109,9 +114,11 @@ export function DocumentWorkspace({
               <span aria-hidden="true">←</span> {backLabel}
             </a>
             <div className="flex items-center gap-2 min-w-0">
-              <h1 className="truncate text-xl font-semibold" data-testid={`${idPrefix}-workspace-title`}>
-                {title}
-              </h1>
+              {titleSlot ?? (
+                <h1 className="truncate text-xl font-semibold" data-testid={`${idPrefix}-workspace-title`}>
+                  {title}
+                </h1>
+              )}
               {statusPill}
             </div>
           </div>
