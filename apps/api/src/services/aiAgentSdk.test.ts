@@ -723,6 +723,115 @@ describe('createSessionPreToolUse', () => {
     });
   });
 
+  describe('Tier 2 per_step: legacy lightweight approval bridge (regression fix)', () => {
+    beforeEach(() => {
+      mockCreateActionIntent.mockReset();
+      mockWaitForIntentDecision.mockReset();
+      mockTransitionIntent.mockReset();
+    });
+
+    it('inserts a linked approval_requests row, waits via waitForApproval, and executes on approve — WITHOUT creating an action intent', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      const { values } = mockInsertReturning({ id: 'exec-2' });
+      mockGetUserPushTokens.mockResolvedValue([
+        { token: 'ExponentPushToken[abc]', platform: 'ios', provider: 'expo' },
+      ]);
+      mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 1, dispatched: 1, errors: 0 });
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+      expect(result).toEqual({ allowed: true });
+
+      // Both inserts fire: ai_tool_executions THEN approval_requests (old
+      // direct bridge — NOT createActionIntent).
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-1',
+        toolName: 'take_screenshot',
+        status: 'pending',
+      }));
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'user-1',
+        executionId: 'exec-2',
+        requestingClientLabel: 'Breeze AI',
+        actionToolName: 'take_screenshot',
+        riskTier: 'medium',
+        status: 'pending',
+      }));
+
+      // Push dispatched (best-effort), same as the pre-Task-8 behavior.
+      expect(mockGetUserPushTokens).toHaveBeenCalledWith('user-1');
+      expect(mockDispatchApprovalPushToTokens).toHaveBeenCalled();
+
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-2',
+        toolName: 'take_screenshot',
+        description: 'Take screenshot',
+      }));
+
+      expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal));
+      expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
+
+      // THE REGRESSION: Tier 2 under per_step must never route through the
+      // durable action-intents layer — createActionIntent throws
+      // ActionIntentTierError('tool_not_tier3') for anything below Tier 3.
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('returns allowed:false without creating an action intent when rejected or timed out', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      mockInsertReturning({ id: 'exec-3' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('does not register the session in pendingIntentBySession, so the postToolUse completion-CAS stays a no-op', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      mockInsertReturning({ id: 'exec-4' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const preResult = await createSessionPreToolUse(session)('take_screenshot', {});
+      expect(preResult).toEqual({ allowed: true });
+
+      mockTransitionIntent.mockClear();
+      const postToolUse = createSessionPostToolUse(session);
+      await postToolUse('take_screenshot', {}, JSON.stringify({ status: 'completed' }), false, 5);
+
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+  });
+
   it('blocks tools outside the session allowlist before approval handling', async () => {
     const session = makeActiveSession({
       approvalMode: 'auto_approve',
