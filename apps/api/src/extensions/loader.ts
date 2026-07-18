@@ -115,6 +115,10 @@ async function stageLegacyExtension(
 
   const context: ExtensionContext = {
     mountRoute: (subApp) => session.registrar.mountRoute(subApp),
+    // Source-dir legacy extensions synthesize `jobs: []`, so a registration here
+    // would fail the session's declared-vs-registered check — but the channel is
+    // wired for shape parity with the signed-bundle context.
+    registerJob: (job) => session.registrar.registerJob(job),
     authMiddleware: legacyExtensionAuthMiddleware,
     agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
     helperAuthMiddleware: legacyExtensionHelperAuthMiddleware,

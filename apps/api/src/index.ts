@@ -286,6 +286,15 @@ import { reconcileExtensions } from './extensions/reconciler';
 import { resolveExtensionsRoot } from './extensions/discovery';
 import { resolveArtifactStoreRoot } from './extensions/artifactStore';
 import { createExtensionStateStore } from './extensions/stateStore';
+import { createEnabledGate } from './extensions/enabledGate';
+import {
+  initializeExtensionJobHost,
+  shutdownExtensionJobHost,
+} from './extensions/jobHost';
+import {
+  attributeExtensionError,
+  extensionRootsSnapshot,
+} from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -957,7 +966,12 @@ api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
 
-mountExtensionGateway(app, extensionContributionRegistry, async () => true);
+// One system-scoped state store, shared by the per-request enabled gate, the
+// startup reconciler, and the BullMQ job host. The gate checks
+// installed_extensions.enabled on EVERY dispatched extension request (no cache)
+// so an admin disabling an extension takes effect fleet-wide on the next request.
+const extensionStateStore = createExtensionStateStore();
+mountExtensionGateway(app, extensionContributionRegistry, createEnabledGate(extensionStateStore));
 
 app.route('/api/v1', api);
 
@@ -1199,6 +1213,7 @@ async function initializeWorkers(): Promise<void> {
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
+    ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
@@ -1397,6 +1412,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
     shutdownAuditRetentionWorker,
+    shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
@@ -1509,8 +1525,21 @@ function installSignalHandlers(): void {
       captureException(reason instanceof Error ? reason : new Error(String(reason)));
       return;
     }
-    console.error('[FATAL] Unhandled rejection:', reason);
-    captureException(reason instanceof Error ? reason : new Error(String(reason)));
+    // Attribution ADDS a culprit name to the log + Sentry tag ONLY. It does not
+    // suppress or resolve the fault — the existing capture/telemetry behavior is
+    // unchanged; we simply name the likely extension when its loaded code is in
+    // the stack.
+    const attributed = attributeExtensionError(reason, extensionRootsSnapshot());
+    if (attributed) {
+      console.error(`[FATAL] Unhandled rejection attributed to extension "${attributed}":`, reason);
+    } else {
+      console.error('[FATAL] Unhandled rejection:', reason);
+    }
+    captureException(
+      reason instanceof Error ? reason : new Error(String(reason)),
+      undefined,
+      attributed ? { extension: attributed } : undefined,
+    );
   });
 
   // #1379 B4 — a synchronous uncaughtException otherwise tears the process
@@ -1530,8 +1559,15 @@ function installSignalHandlers(): void {
       captureException(err);
       return;
     }
-    console.error('[FATAL] Uncaught exception:', err);
-    captureException(err);
+    // Attribution ADDS a culprit name/tag ONLY — the crash path below (flush +
+    // exit(1)) is preserved exactly so the supervisor still restarts us.
+    const attributed = attributeExtensionError(err, extensionRootsSnapshot());
+    if (attributed) {
+      console.error(`[FATAL] Uncaught exception attributed to extension "${attributed}":`, err);
+    } else {
+      console.error('[FATAL] Uncaught exception:', err);
+    }
+    captureException(err, undefined, attributed ? { extension: attributed } : undefined);
     // Best-effort drain, then exit non-zero so the supervisor restarts us.
     void flushSentry().finally(() => process.exit(1));
   });
@@ -1569,7 +1605,7 @@ async function bootstrap(): Promise<void> {
     configPath: joinPath(resolveExtensionsRoot(), 'extensions.yaml'),
     storeRoot: resolveArtifactStoreRoot(),
     registry: extensionContributionRegistry,
-    stateStore: createExtensionStateStore(),
+    stateStore: extensionStateStore,
   });
 
   try {

@@ -79,6 +79,7 @@ import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { ExtensionIncompatibleError, RequiredExtensionError } from './errors';
+import { clearExtensionRoot, registerExtensionRoot } from './faultAttribution';
 
 /** The ordered phases of the pipeline; doubles as the coarse failure category. */
 type ReconcilePhase =
@@ -333,6 +334,11 @@ async function defaultStageExtension(
 
   const context: ExtensionContext = {
     mountRoute: (subApp) => session.registrar.mountRoute(subApp),
+    // Signed manifests may DECLARE jobs; without this channel a job-declaring
+    // extension could never register them and session.finish() would fail its
+    // declared-vs-registered parity check. Registrations land in the session and
+    // surface as registry.get(name).jobs for the BullMQ job host to schedule.
+    registerJob: (job) => session.registrar.registerJob(job),
     authMiddleware: legacyExtensionAuthMiddleware,
     agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
     db: db as unknown as ExtensionDatabase,
@@ -498,11 +504,17 @@ export async function reconcileExtensions(
         }
         await stateStore.recordActive(selection.name, bundle.manifest.version);
 
+        // Record the extracted root so a later process fault whose stack points
+        // into this extension's loaded code can be attributed to it. Populated
+        // only on FULL success; cleared on withdraw (the catch below).
+        registerExtensionRoot(selection.name, extractedRoot);
+
         summary.activated.push(selection.name);
         console.log(`[extensions] reconciled "${selection.name}" ${bundle.manifest.version}`);
       } catch (error) {
         await recordSanitizedFailure(stateStore, selection.name, phase, error);
         registry.withdraw(selection.name);
+        clearExtensionRoot(selection.name);
         summary.failed.push(selection.name);
         console.error(
           `[extensions] reconcile failed for "${selection.name}" at phase "${phase}" (${

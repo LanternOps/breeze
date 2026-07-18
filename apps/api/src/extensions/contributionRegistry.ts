@@ -288,6 +288,19 @@ export class ExtensionContributionRegistry {
     return this.active.get(name);
   }
 
+  /**
+   * Every currently-ENABLED active snapshot. Drives the job host's schedule
+   * reconciliation and any other "enumerate what's live" consumer; withdrawn
+   * (disabled) snapshots are excluded so their jobs stop being scheduled.
+   */
+  listActive(): StagedExtensionContributions[] {
+    const active: StagedExtensionContributions[] = [];
+    for (const snapshot of this.active.values()) {
+      if (snapshot.enabled) active.push(snapshot);
+    }
+    return active;
+  }
+
   getByRouteNamespace(routeNamespace: string): StagedExtensionContributions | undefined {
     let disabledFallback: StagedExtensionContributions | undefined;
     for (const snapshot of this.active.values()) {
