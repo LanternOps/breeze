@@ -33,6 +33,7 @@ import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
 import { registerM365CustomerGraphReadPrometheusCounter } from '../services/m365ControlPlane/metrics';
+import { setExtensionMetricsRecorder } from '../extensions/metrics';
 
 export {
   recordBackupCommandTimeout,
@@ -314,6 +315,55 @@ const proxyTrustUntrustedPeerTotal = new Counter({
   registers: [register]
 });
 
+// ── Runtime-extension request + job signals ──────────────────────────────────
+// Labels are restricted to the manifest-bounded closed sets `extension`,
+// `route`, and `job` (plus a fixed `outcome` enum). URLs, org/tenant, device,
+// and exception text are NEVER labels here — they are unbounded / PII and would
+// blow up Prometheus cardinality or leak identifiers.
+const extensionRequestsTotal = new Counter({
+  name: 'breeze_extension_requests_total',
+  help: 'Runtime-extension gateway requests by extension and normalized route',
+  labelNames: ['extension', 'route'] as const,
+  registers: [register],
+});
+
+const extensionRequestDurationSeconds = new Histogram({
+  name: 'breeze_extension_request_duration_seconds',
+  help: 'Runtime-extension gateway request duration in seconds',
+  labelNames: ['extension', 'route'] as const,
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+});
+
+const extensionRequestErrorsTotal = new Counter({
+  name: 'breeze_extension_request_errors_total',
+  help: 'Runtime-extension gateway responses with a 5xx status, by extension and route',
+  labelNames: ['extension', 'route'] as const,
+  registers: [register],
+});
+
+const extensionJobsTotal = new Counter({
+  name: 'breeze_extension_jobs_total',
+  help: 'Runtime-extension job runs by extension and job',
+  labelNames: ['extension', 'job'] as const,
+  registers: [register],
+});
+
+const extensionJobDurationSeconds = new Histogram({
+  name: 'breeze_extension_job_duration_seconds',
+  help: 'Runtime-extension job run duration in seconds',
+  labelNames: ['extension', 'job'] as const,
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120],
+  registers: [register],
+});
+
+const extensionJobOutcomeTotal = new Counter({
+  name: 'breeze_extension_job_outcome_total',
+  help: 'Runtime-extension job outcomes by extension, job, and outcome',
+  labelNames: ['extension', 'job', 'outcome'] as const,
+  registers: [register],
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -356,6 +406,10 @@ function initializeMetricDefaults(): void {
   abuseSweepRunsTotal.labels('success').inc(0);
   opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
   proxyTrustUntrustedPeerTotal.inc(0);
+  extensionRequestsTotal.labels('unknown', 'unknown').inc(0);
+  extensionRequestErrorsTotal.labels('unknown', 'unknown').inc(0);
+  extensionJobsTotal.labels('unknown', 'unknown').inc(0);
+  extensionJobOutcomeTotal.labels('unknown', 'unknown', 'success').inc(0);
   nodejsVersionInfoGauge.labels(process.version).set(1);
 }
 
@@ -645,6 +699,36 @@ export function recordSoftwareRemediationDecision(decision: string, count = 1): 
   }, safeCount);
 }
 
+function recordExtensionRequestMetric(
+  extension: string,
+  route: string,
+  status: number,
+  durationSeconds: number,
+): void {
+  const ext = normalizeMetricLabel(extension, 'unknown');
+  const normalizedRoute = normalizeMetricLabel(normalizeRoute(route), 'root');
+  const safeDuration = Number.isFinite(durationSeconds) ? Math.max(durationSeconds, 0) : 0;
+  extensionRequestsTotal.labels(ext, normalizedRoute).inc();
+  extensionRequestDurationSeconds.labels(ext, normalizedRoute).observe(safeDuration);
+  if (status >= 500) {
+    extensionRequestErrorsTotal.labels(ext, normalizedRoute).inc();
+  }
+}
+
+function recordExtensionJobMetric(
+  extension: string,
+  job: string,
+  outcome: 'success' | 'failure',
+  durationSeconds: number,
+): void {
+  const ext = normalizeMetricLabel(extension, 'unknown');
+  const jobLabel = normalizeMetricLabel(job, 'unknown');
+  const safeDuration = Number.isFinite(durationSeconds) ? Math.max(durationSeconds, 0) : 0;
+  extensionJobsTotal.labels(ext, jobLabel).inc();
+  extensionJobDurationSeconds.labels(ext, jobLabel).observe(safeDuration);
+  extensionJobOutcomeTotal.labels(ext, jobLabel, outcome).inc();
+}
+
 function bindMetricsRecorders(): void {
   setS1MetricsRecorder({
     onSyncRun: (job, outcome, durationMs) => {
@@ -683,6 +767,11 @@ function bindMetricsRecorders(): void {
 
   setProxyTrustMetricsRecorder({
     onForwardedHeadersFromUntrustedPeer: () => proxyTrustUntrustedPeerTotal.inc(),
+  });
+
+  setExtensionMetricsRecorder({
+    onRequest: recordExtensionRequestMetric,
+    onJob: recordExtensionJobMetric,
   });
 }
 

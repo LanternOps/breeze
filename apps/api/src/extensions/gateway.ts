@@ -4,6 +4,7 @@ import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { authMiddleware } from '../middleware/auth';
+import { recordExtensionRequest } from './metrics';
 import type {
   ExtensionContributionRegistry,
   StagedExtensionContributions,
@@ -116,6 +117,30 @@ function executionContext(c: Context): Context['executionCtx'] | undefined {
   }
 }
 
+/**
+ * Dispatch into a snapshot's Hono wrapper while recording bounded request
+ * metrics (extension + route + status/duration). A wrapper throw (an extension
+ * route that re-raised past its onError) is still counted — as a 500 — and then
+ * re-thrown UNCHANGED so the outer app's error handler and fault attribution
+ * behave exactly as before.
+ */
+async function dispatchMeasured(
+  wrapperApp: Hono,
+  extension: string,
+  route: string,
+  c: Context,
+): Promise<Response> {
+  const startedAt = performance.now();
+  try {
+    const response = await wrapperApp.fetch(c.req.raw, c.env, executionContext(c));
+    recordExtensionRequest(extension, route, response.status, (performance.now() - startedAt) / 1000);
+    return response;
+  } catch (error) {
+    recordExtensionRequest(extension, route, 500, (performance.now() - startedAt) / 1000);
+    throw error;
+  }
+}
+
 export function mountExtensionGateway(
   app: Hono,
   registry: ExtensionContributionRegistry,
@@ -141,7 +166,7 @@ export function mountExtensionGateway(
         agentWrapper = createAgentSnapshotWrapper(active, mountPrefix, isEnabled);
         byPrefix.set(mountPrefix, agentWrapper);
       }
-      return agentWrapper.fetch(c.req.raw, c.env, executionContext(c));
+      return dispatchMeasured(agentWrapper, active.name, relativePath, c);
     }
 
     if (!active.enabled || !(await isEnabled(active.name))) {
@@ -159,7 +184,7 @@ export function mountExtensionGateway(
       byPrefix.set(mountPrefix, wrapper);
     }
 
-    return wrapper.fetch(c.req.raw, c.env, executionContext(c));
+    return dispatchMeasured(wrapper, active.name, relativePath, c);
   };
 
   const dispatchCanonical = async (c: Context): Promise<Response> => {
