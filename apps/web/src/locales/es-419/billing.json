@@ -107,6 +107,22 @@
         "title": "Eliminar borrador de contrato",
         "message": "Esto elimina permanentemente el borrador del contrato. Esto no se puede deshacer.",
         "confirm": "Eliminar borrador"
+      },
+      "documents": {
+        "title": "Documentos ejecutados",
+        "columns": {
+          "template": "Plantilla",
+          "signer": "Firmante",
+          "signedAt": "Firmado",
+          "quote": "Cotización"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Aún no hay documentos ejecutados.",
+        "loadError": "No se pudieron cargar los documentos ejecutados.",
+        "downloadError": "No se pudo descargar el PDF.",
+        "download": "Descargar PDF",
+        "preparing": "Preparando…",
+        "viewQuote": "Ver cotización"
       }
     },
     "contractEditor": {
@@ -227,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Todos los estados",
-        "allOrganizations": "Todas las organizaciones",
         "searchPlaceholder": "Buscar nombre u organización",
         "searchAria": "Buscar contratos"
       },
@@ -296,6 +311,132 @@
       "errors": {
         "loadSubscriptions": "No se pudieron cargar las suscripciones de Pax8 para esta organización."
       }
+    },
+    "tabs": {
+      "contracts": "Contratos",
+      "templates": "Plantillas",
+      "documents": "Documentos"
+    },
+    "templatesTab": {
+      "title": "Plantillas de contrato",
+      "description": "Documentos de contrato reutilizables que puedes adjuntar a cotizaciones aceptadas.",
+      "newTemplate": "Nueva plantilla",
+      "includeArchived": "Mostrar archivadas",
+      "allOrgs": "Todas las org.",
+      "ownerOrg": "Organización",
+      "noVersions": "Aún sin versiones",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archivar",
+      "loadError": "No se pudieron cargar las plantillas de contrato",
+      "createError": "No se pudo crear la plantilla",
+      "created": "Plantilla creada",
+      "archiveError": "No se pudo archivar la plantilla",
+      "archiveSuccess": "Plantilla archivada",
+      "columns": {
+        "name": "Nombre",
+        "owner": "Propietario",
+        "status": "Estado",
+        "latestVersion": "Última versión"
+      },
+      "status": {
+        "active": "Activa",
+        "archived": "Archivada"
+      },
+      "empty": {
+        "title": "Aún no hay plantillas",
+        "description": "Crea tu primera plantilla de contrato para empezar."
+      },
+      "createDialog": {
+        "title": "Nueva plantilla de contrato",
+        "name": "Nombre",
+        "namePlaceholder": "ej. Acuerdo maestro de servicios",
+        "description": "Descripción",
+        "descriptionPlaceholder": "Resumen opcional de esta plantilla",
+        "scope": "Propiedad",
+        "allOrganizations": "Todas las organizaciones",
+        "partnerWide": "Plantilla para todo el socio",
+        "thisOrgOnly": "Solo esta organización",
+        "organization": "Organización",
+        "selectOrg": "Selecciona una organización",
+        "orgRequired": "Selecciona una organización para una plantilla propiedad de la organización.",
+        "nameRequired": "Ingresa un nombre de plantilla.",
+        "cancel": "Cancelar",
+        "create": "Crear plantilla",
+        "creating": "Creando…"
+      }
+    },
+    "documentsTab": {
+      "title": "Documentos",
+      "description": "Documentos de contrato ejecutados que aún no están vinculados a un contrato.",
+      "empty": {
+        "title": "No hay documentos sin vincular",
+        "description": "Los documentos ejecutados aparecen aquí hasta que se vinculan a un contrato."
+      },
+      "loadError": "No se pudieron cargar los documentos.",
+      "columns": {
+        "template": "Plantilla",
+        "signer": "Firmante",
+        "signedAt": "Firmado",
+        "quote": "Cotización",
+        "organization": "Organización"
+      },
+      "download": "Descargar PDF",
+      "preparing": "Preparando…",
+      "viewQuote": "Ver cotización",
+      "linkAction": "Vincular a un contrato",
+      "linkDialog": {
+        "title": "Vincular a un contrato",
+        "contractLabel": "Contrato",
+        "selectContract": "Selecciona un contrato",
+        "noContracts": "No se encontraron contratos para esta organización.",
+        "loadContractsError": "No se pudieron cargar los contratos. Inténtalo de nuevo.",
+        "cancel": "Cancelar",
+        "confirm": "Vincular",
+        "linking": "Vinculando…"
+      },
+      "linkSuccess": "Documento vinculado al contrato.",
+      "linkError": "No se pudo vincular el documento a ese contrato."
+    },
+    "templateEditor": {
+      "back": "Volver",
+      "loadError": "No se pudo cargar la plantilla",
+      "newVersion": "Nueva versión",
+      "newVersionConfirm": {
+        "title": "¿Descartar los cambios sin guardar?",
+        "message": "Iniciar una nueva versión vaciará el editor. Se perderán los cambios sin guardar de este borrador.",
+        "confirm": "Iniciar nueva versión"
+      },
+      "uploadPdf": "Subir PDF",
+      "versions": "Versiones",
+      "noVersions": "Aún sin versiones",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Borrador",
+        "published": "Publicada"
+      },
+      "sourceType": {
+        "authored": "Redactada",
+        "uploaded": "PDF subido"
+      },
+      "publish": "Publicar",
+      "publishDirtyHint": "Guarda tu borrador antes de publicar",
+      "body": "Cuerpo",
+      "bodyAria": "Cuerpo de la plantilla de contrato",
+      "preview": "Vista previa",
+      "edit": "Editar",
+      "saveDraft": "Guardar borrador",
+      "saving": "Guardando…",
+      "emptyBody": "Agrega contenido antes de guardar.",
+      "autoVariables": "Variables automáticas",
+      "manualVariables": "Variables manuales",
+      "noManualVariables": "Ninguna detectada",
+      "archivedNotice": "Esta plantilla está archivada. No se pueden agregar nuevas versiones.",
+      "saveError": "No se pudo guardar la versión borrador",
+      "saveSuccess": "Versión borrador guardada",
+      "uploadError": "No se pudo subir el PDF",
+      "uploadSuccess": "Versión PDF subida",
+      "publishError": "No se pudo publicar la versión",
+      "publishSuccess": "Versión publicada"
     }
   },
   "quotes": {
@@ -362,7 +503,8 @@
         "heading": "Título",
         "image": "Imagen",
         "pricingTable": "tabla de precios",
-        "richText": "Texto enriquecido"
+        "richText": "Texto enriquecido",
+        "contract": "Contrato"
       },
       "catalog": {
         "addSome": "Agregue algunos en el catálogo de productos",
@@ -385,6 +527,11 @@
         "removeSectionWithLines_other": "Esto elimina la tabla de precios y sus líneas de pedido {{count}}. Esto no se puede deshacer.",
         "thisLine": "esta linea",
         "removeSectionWithLines": "Esto elimina la tabla de precios y sus líneas. Esto no se puede deshacer."
+      },
+      "customer": {
+        "help": "Mover un borrador a otra empresa quita la asignación de sitio y aplica la tasa de impuestos de esa empresa.",
+        "label": "Cliente",
+        "success": "Cotización movida a {{name}}."
       },
       "deposit": {
         "due": "Depósito adeudado",
@@ -420,6 +567,7 @@
         "reorderBlocks": "No se pudieron reordenar los bloques.",
         "reorderLines": "No se pudieron reordenar las líneas.",
         "reorderSections": "No se pudieron reordenar las secciones.",
+        "saveCustomer": "No se pudo cambiar el cliente.",
         "saveTerms": "No se pudieron guardar los términos.",
         "saveTitle": "No se pudo guardar el título.",
         "unitPriceZeroOrMore": "Introduzca un precio unitario de 0 o más.",
@@ -427,7 +575,10 @@
         "updateDeposit": "No se pudo actualizar el depósito.",
         "updateLine": "No se pudo actualizar la línea.",
         "updateSection": "No se pudo actualizar la sección.",
-        "uploadImage": "No se pudo cargar la imagen."
+        "uploadImage": "No se pudo cargar la imagen.",
+        "loadContractTemplates": "No se pudieron cargar las plantillas de contrato",
+        "addContractSection": "No se pudo agregar la sección de contrato",
+        "saveCoverPage": "No se pudo guardar la portada"
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -488,7 +639,8 @@
         "lineRemoved": "Línea eliminada",
         "savedToCatalog": "Guardado en el catálogo",
         "sectionAdded": "Sección agregada",
-        "sectionRemoved": "Sección eliminada"
+        "sectionRemoved": "Sección eliminada",
+        "contractSectionAdded": "Sección de contrato agregada"
       },
       "symbols": {
         "check": "✓",
@@ -506,6 +658,7 @@
         "qty": "Cantidad",
         "recurrence": "Recurrencia",
         "scrollAria": "Tabla de precios: desplácese hacia los lados para ver las acciones de impuestos, totales y filas",
+        "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
         "taxTitle": "Impuesto por línea. El encabezado Total de impuestos es determinante y puede diferir en un centavo redondeado.",
         "taxable": "Imponible",
@@ -523,9 +676,51 @@
       "units": {
         "perMonth": "/mo",
         "perYear": "/yr"
+      },
+      "contract": {
+        "templateLabel": "Plantilla de contrato",
+        "templatePlaceholder": "Selecciona una plantilla…",
+        "noTemplates": "Aún no hay plantillas de contrato. Crea una en Contratos → Plantillas.",
+        "noPublishedVersion": "Esta plantilla aún no tiene una versión publicada. Publícala antes de adjuntarla.",
+        "pinnedVersion": "Fijado a v{{version}}",
+        "autoVariablesTitle": "Se completa automáticamente desde la cotización",
+        "autoHint": "Estos valores se resuelven desde la cotización al enviar la propuesta.",
+        "manualVariablesTitle": "Completa para esta propuesta",
+        "labelFieldLabel": "Etiqueta de la sección",
+        "labelPlaceholder": "Etiqueta opcional (p. ej., Acuerdo maestro de servicios)",
+        "variableRequired": "Ingresa un valor",
+        "variableUnresolved": "Esta variable aún no está resuelta",
+        "untitledTemplate": "Contrato",
+        "readOnlyHint": "Quita y vuelve a agregar esta sección para cambiar la plantilla, la versión o las variables.",
+        "updateToVersion": "Actualizar a v{{version}}",
+        "saveVariables": "Guardar variables",
+        "unresolvedWarning": "Variables sin resolver (bloquearán el envío): {{names}}"
+      },
+      "coverPage": {
+        "title": "Portada",
+        "enable": "Mostrar una portada",
+        "summaryOn": "Se muestra como la primera página de la propuesta.",
+        "summaryOff": "Sin portada: la propuesta comienza con su contenido.",
+        "titleLabel": "Título de la portada",
+        "titlePlaceholder": "p. ej., Propuesta de servicios de TI administrados",
+        "preparedForLabel": "Preparado para",
+        "preparedForPlaceholder": "Reemplazar el nombre del cliente",
+        "showPreparedBy": "Mostrar “preparado por” (tu empresa)",
+        "imageLabel": "Imagen de portada",
+        "imageHelp": "PNG, JPEG o WebP, hasta 5 MB.",
+        "removeImage": "Quitar imagen"
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Empresa",
+        "confirm": "Crear copia",
+        "defaultTitle": "Copia de {{name}}",
+        "message": "Crea un nuevo borrador con el mismo contenido. Elige la empresa a la que va dirigido y asígnale un título.",
+        "retargetHint": "El nuevo borrador usará los datos de facturación y la tasa de impuestos de esta empresa; se quitará la asignación de sitio.",
+        "title": "Duplicar cotización",
+        "titleLabel": "Título"
+      },
       "cloneError": "No se pudo clonar la cotización.",
       "cloneQuote": "Clonar cotización",
       "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
@@ -540,11 +735,34 @@
       "deleteSuccess": "Borrador eliminado",
       "downloadPdf": "Descargar PDF",
       "emptyHint": "Agregue al menos un artículo antes de enviar.",
+      "moreActions": "Más acciones",
       "savingHint": "Guardando cambios... Enviar desbloqueos cuando todo esté guardado.",
       "savingTitle": "Guardar sus cambios: envíe desbloqueos cuando todo esté guardado.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Adjuntar el PDF de la propuesta",
+        "invalidEmail": "Dirección de correo no válida: {{addresses}}",
         "message": "Enviaremos esta propuesta por correo electrónico a {{orgName}} y la marcaremos como Enviada - {{amount}} al momento de su aceptación. Esto no se puede deshacer.",
-        "title": "¿Enviar esta propuesta?"
+        "messageLabel": "Agregar un mensaje personal (opcional)",
+        "messagePlaceholder": "Incluye una nota breve: aparecerá en el correo, encima del enlace para aceptar.",
+        "paymentEnabled": "El pago en línea está habilitado: el cliente puede pagar con tarjeta después de aceptar.",
+        "paymentNoteNoStripe": "No se ofrecerá pago en línea después de la aceptación. Conecta Stripe en Configuración → Integraciones para habilitarlo.",
+        "paymentWarningDeposit": "Esta propuesta solicita un depósito, pero los clientes aún no pueden pagar en línea: conecta Stripe en Configuración → Integraciones para poder cobrar el depósito al aceptar.",
+        "signaturePreviewLabel": "Firma (configurada en Configuración → Marca):",
+        "subjectLabel": "Asunto",
+        "subjectPlaceholder": "Propuesta {{number}} de tu empresa",
+        "subjectPlaceholderNoNumber": "Propuesta de tu empresa",
+        "title": "¿Enviar esta propuesta?",
+        "toLabel": "Para",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Usa como máximo {{max}} direcciones."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
+        "noEmailService": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — el correo no está configurado en este servidor.",
+        "pdfRenderFailed": "La propuesta se marcó como Enviada, pero no se pudo generar el PDF, por lo que no se entregó ningún correo. Revise los archivos de contrato adjuntos y vuelva a enviarla.",
+        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección o comparta el enlace de aceptación manualmente."
       },
       "sendError": "No se pudo enviar la propuesta.",
       "sendProposal": "Enviar propuesta",
@@ -625,11 +843,19 @@
     },
     "document": {
       "additionalItems": "Artículos adicionales",
+      "contract": {
+        "download": "Descargar contrato",
+        "previewTitle": "Documento del contrato {{name}}",
+        "unavailable": "Archivo del contrato no disponible",
+        "versionFooter": "{{name}} — versión {{version}}"
+      },
       "draft": "Borrador",
       "empty": "Esta propuesta aún no tiene ningún contenido.",
       "imageUnavailable": "Imagen no disponible",
       "issued": "Emitido",
       "preparedFor": "preparado para",
+      "taxId": "ID fiscal: {{id}}",
+      "imageZoomAria": "Ver imagen más grande",
       "preview": {
         "description": "Esto es lo que su cliente ve en el enlace de su propuesta.",
         "downloadPdf": "Descargar PDF",
@@ -714,9 +940,7 @@
         "loadSites": "No se pudieron cargar los sitios."
       },
       "filters": {
-        "allOrganizations": "Todas las organizaciones",
         "allStatuses": "Todos los estados",
-        "organizationAria": "Filtrar por organización",
         "searchAria": "Buscar cotizaciones",
         "searchPlaceholder": "Buscar número u organización",
         "statusAria": "Filtrar por estado"
@@ -1117,11 +1341,9 @@
       "loadSites": "No se pudieron cargar los sitios."
     },
     "filters": {
-      "allOrganizations": "Todas las organizaciones",
       "allStatuses": "Todos los estados",
       "issuedFrom": "Emitido desde",
       "issuedTo": "Emitido a",
-      "organizationAria": "Filtrar por organización",
       "searchAria": "Buscar facturas",
       "searchPlaceholder": "Buscar número u organización",
       "statusAria": "Filtrar por estado"

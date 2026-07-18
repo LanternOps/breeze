@@ -268,8 +268,6 @@
     "reviewQueue": "File d’attente pour les révisions",
     "archived": "Archivé",
     "searchPlaceholder": "Rechercher des tickets",
-    "filterByOrganization": "Filtrer par organisation",
-    "allOrganizations": "Toutes les organisations",
     "filterByPriority": "Filtrer par priorité",
     "allPriorities": "Toutes les priorités",
     "filterByCategory": "Filtrer par catégorie",

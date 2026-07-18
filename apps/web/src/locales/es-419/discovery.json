@@ -204,8 +204,7 @@
       "newProfile": "Nuevo perfil"
     },
     "allOrgs": {
-      "description": "El descubrimiento de redes tiene como alcance una única organización, sitio y agente. Elija una organización en el conmutador de alcance para ver sus activos, perfiles, trabajos de escaneo y topología descubiertos.",
-      "title": "Seleccione una organización para ver el descubrimiento de redes"
+      "description": "El descubrimiento de redes tiene como alcance una única organización, sitio y agente. Elija una organización en el conmutador de alcance para ver sus activos, perfiles, trabajos de escaneo y topología descubiertos."
     },
     "confirmDeleteProfile": "¿Eliminar perfil \"{{name}}\"? Esto también eliminará todos los trabajos de escaneo asociados.",
     "description": "Configure perfiles de descubrimiento, supervise análisis y administre activos de red.",

@@ -3642,6 +3642,82 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
 - Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
 
+## Windows System State Backup (system_image mode) — 2026-07-15
+
+**Branch:** `backup-fixes-wip`
+**Base commit:** `e2df3b691`
+**Tested by:** Claude
+**Result:** PASS (backend E2E; UI badge display is an unblocked follow-up)
+
+### What was tested
+- [x] Agent: `system_image` backup_run on the live Windows VM (`WIN-DHQNR1F8LO2`) collects OS system state (registry hives, BCD, drivers, services, tasks, firewall, features) and uploads it as a snapshot.
+- [x] API: server labels the snapshot `backup_type=system_image` and persists `system_state_manifest` + `hardware_profile`; snapshots list DTO surfaces `backupType`.
+- [x] Full-stack fan-out: manual run creates one `file` + one `system_image` job; both complete.
+
+### Bug found (before fix)
+`system_image` job failed immediately with `backup_run payload has no paths`. The worker maps `system_image` → `backup_run {systemImage:true}` (no file paths), but the agent's `backup_run` handler required file paths and never read `systemImage`. Nothing captured Windows system state through the server-driven flow.
+
+### Fixes
+- **agent/cmd/breeze-backup/exec_backup.go** — `managerFromBackupRunPayload` honors `systemImage:true`: builds the manager with `SystemStateEnabled`, no file paths required.
+- **agent/internal/backup/backup.go** — `RunBackupWithExcludes` allows a paths-less run when system state is enabled; an empty system-state-only run now FAILS loudly instead of a silent `skipped`.
+- **apps/api** — result manifest was dropped in three places, all fixed: `resultSchemas.ts` (schema passthrough), `queueSchemas.ts` (strict queue schema rejected the new keys → job hung), `agentWs.ts` (enqueue subset omitted the fields), `backupResultPersistence.ts` (persist manifest/hardware_profile + derive `backupType` from `backup_mode`), `snapshots.ts` (list DTO surfaces `backupType`).
+
+### Evidence
+- Snapshot `snapshot-20260716T042714Z-4c7abb8b`: `backup_type=system_image`, 13 files, 103 MB, `has_manifest=t`, `has_hw=t`, platform=windows, os=Windows Server 2022, 10 manifest artifacts.
+- Tests: Go `internal/backup` + `cmd/breeze-backup` green; API backup/agentWs/queue/persistence/snapshots suites green (new cases added for the systemImage payload guard and the manifest-persistence/labeling).
+
+### Follow-ups — all completed + verified in the same session
+- **UI badge (done):** `SnapshotBrowser.tsx` now shows a "System image" badge on the snapshot header + a type suffix in the selector dropdown (`backupType !== 'file'`). Web test added; `astro check` 0 errors.
+- **Windows hardware profile (done):** root cause was `wmic.exe`, deprecated/removed on Server 2022 — the whole collector silently returned zeros. Rewrote `hw_windows.go` to use PowerShell `Get-CimInstance`. Verified live: `AMD Ryzen 7 3800X`, 4 cores, 4255 MB, 4 disks, 2 NICs, BIOS `090008`, `Microsoft Corporation Virtual Machine`.
+- **Restore round-trip (done, non-destructive):** restored the system_image snapshot to `C:\tmp\restore-test` via `POST /backup/restore` (full). 13 files / 103,584,508 bytes / 0 failed; on-disk artifacts byte-match the backup (registry SOFTWARE 84,037,632, SYSTEM 18,776,064, SAM/SECURITY, BCD, drivers, services, tasks, firewall, features). Full BMR (destructive, needs boot media) intentionally not run on the live VM.
+
+### Code review round (PR #2581) — hardening applied
+
+A 4-agent review (code / silent-failure / tests / comments) confirmed the core change sound and surfaced partial-failure gaps, now fixed:
+- **Partial system-state collection no longer silent (C1):** `state_windows.go` records failed steps in `manifest.IncompleteSteps`, `collectRegistry` reports failure when it captures zero hives (every Windows box has SYSTEM/SOFTWARE), and `backup.go` surfaces a completion `Warning` (→ result `warning` → job errorLog → UI) so a degraded system_image can't pass as a full, restorable capture.
+- **CIM failures now logged (M1):** `cimCSV` logs each failure with PowerShell stderr — an unlogged failure was how the wmic path shipped all-zero profiles.
+- **Malformed-completed backup result now fails, not silently completes (H2):** the Redis enqueue path in `agentWs.ts` gates `status` on parse success, mirroring the inline path.
+- **Tests added:** Go seam (`collectSystemState`) + fail-loud/partial-warning assertions (the prior test was vacuous on CI hosts); `backupProcessResultSchema` + `backupCommandResultSchema` manifest round-trip (the strict-schema rejection that hung the job); backupType precedence (file not mislabeled, explicit type wins).
+- **Deferred (noted, not fixed):** H1 (server null-manifest guard — verified unreachable in practice); M2 (combined file+system_image mode — not dispatched); hard-fail-on-missing-registry policy (product decision); hw perf (8 PowerShell spawns).
+
+### Partial-collection policy: hard-fail on required artifacts (per Todd)
+
+Refined the review-round C1 handling — missing *required* artifacts now fails the run rather than warning:
+- `systemstate.go` adds a pure, CI-testable `missingRequired(incomplete, required)` policy helper; the Windows collector declares `windowsRequiredSteps = {registry, boot}` (the classes a bare-metal restore can't boot without) and `CollectState` returns an error when any is missing.
+- A required-artifact failure therefore propagates as a collection error → the system_image job fails loud (no green unbootable snapshot).
+- Genuinely optional classes (certs, iis, firewall, …) still complete with a surfaced warning — an MSP doesn't lose an otherwise-good backup over a non-critical step.
+- Tests: `TestMissingRequired` (policy table); partial-warning test switched to optional classes (certs/iis); required-failure → hard-fail is covered by the collection-error consumption test.
+
+## Incremental Backups + Reliability Controls — live E2E — 2026-07-17
+
+**Branch:** `ToddHebebrand/backup-work` (de9e6285b + fixes below)
+**Rig:** breeze-wt-toddhebebrand-backup-testing stack (fresh seed), isolated non-root agent on this Mac (`~/breeze-backup-e2e-rig`, HOME-overridden so `~/.breeze/backup-journal` is writable), local-provider destination, profile→config-policy→org assignment created through the web UI via Playwright.
+**Tested by:** Claude
+**Result:** PASS after 2 fixes (both committed with this entry)
+
+### Verified working
+- Profile → policy Backup tab (new destination inline create) → org assignment → device shows "Policy assigned"; Run backup now dispatches.
+- Full backup #1: 14 files/14.35 MB uploaded, objects + manifest in dest, job row + restore point + expiry in UI.
+- Incremental #2/#3: snapshot prefix physically contains only changed files; mtime-only touch correctly *referenced* via sha256 tiebreak; `baseSnapshotId` set; restore/verify read through references.
+- Savings UI: "13.9 MB protected — 79.0 B uploaded" (`backup-job-savings`) on the /backup jobs list after the fix below.
+- Live progress: jobs list shows "44% · 18/24 files · 60.8 MB/s" with Stop button during a 3.5 GB run.
+- Stop: after fix below, `backup_stop` → `{"stopped":true}`, upload halts immediately, no manifest written, partial prefix + journal preserved.
+- Resume: next run reused the interrupted snapshot prefix (journal), re-uploaded only the interrupted file, completed with 34/35 referenced.
+- Pure-reference snapshot (unchanged source): completes with ref=12/12, zero upload.
+- Integrity check (idle): passed 35/35 across referenced prefixes. Test restore: correct partial + per-file failures + temp cleanup when the rig disk filled (env artifact, not a bug).
+- Agent auto-update host-mismatch guard refused a cross-host download URL (dev rig).
+
+### Bugs found + fixed in this branch
+1. **Incremental savings dropped on the Redis path** — `agentWs.ts` `enqueueBackupResults` payload hand-copied fields and omitted `referencedFiles`/`referencedBytes`/`errorCount`; `ProcessResultsResult` + strict `backupProcessResultSchema` also lacked them. Only the no-Redis inline fallback preserved them, so every real deployment persisted NULL savings. Fixed in all three layers + `queueSchemas.test.ts` regression block.
+2. **backup_stop was a no-op on policy-managed devices** — helper `executeCommand` nil-mgr fallback returned "backup not configured on this device" before reaching the canceller, so server-dispatched runs could never be stopped (3/3 live repros: cancelled jobs kept uploading and wrote their manifests). Fixed by routing `backup_stop` through `commandCanceller.cancelAll()` in the nil-mgr switch + 2 tests in `main_test.go`.
+
+### Observations (not fixed)
+- Restore point "Expires" shows +7d under Standard (30d) retention — GFS `daily:7` bucket wins over `retentionDays`; adjudicate whether intended.
+- Integrity Check button targets the latest job even while it's running → helper result has no snapshotId → verification row fails "malformed". Should target last *completed* snapshot or disable mid-run.
+- `backup_stop` during helper spawn returns "backup helper is already being spawned" (stop lost); benign for the reaper (retries) but a UI stop click in that window is dropped.
+- Rebuilding `bin/breeze-backup` under a running agent → "auth rejected: binary hash mismatch" until agent restart (hash pinning working as designed; dev-loop gotcha).
+- Device "Updating" badge persists while a failed auto-update retries every heartbeat; recovers once update stops failing.
+
 ## PAM approval dialog on the secure desktop — 2026-07-16
 
 **Branch:** `ToddHebebrand/PAM-Testing-2`

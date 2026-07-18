@@ -9,6 +9,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:load-static": "pnpm --dir load-tests test:static",
     "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
@@ -22,7 +23,7 @@
     "@typescript-eslint/parser": "^8.64.0",
     "eslint": "^10.7.0",
     "tsx": "^4.23.1",
-    "turbo": "^2.9.17",
+    "turbo": "^2.10.5",
     "typescript": "^5.7.2"
   },
   "packageManager": "pnpm@10.33.4",
@@ -80,8 +81,7 @@
       "uuid@<14.0.0": ">=14.0.0",
       "@astrojs/node@<10.0.5": ">=10.0.5",
       "shell-quote@<1.8.4": ">=1.8.4",
-      "@grpc/grpc-js@<1.14.4": ">=1.14.4",
-      "websocket-driver@<0.7.5": ">=0.7.5"
+      "@grpc/grpc-js@<1.14.4": ">=1.14.4"
     }
   }
 }

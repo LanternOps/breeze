@@ -122,8 +122,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'config_policy_onedrive_settings',
   'configuration_policies',
   'contract_billing_periods',
+  'contract_documents',
   'contract_lines',
   'contract_renewal_notices',
+  // contract_template_versions sorts before contract_templates: localeCompare
+  // puts '_' (versions) before 's' (templates) at the diverging character —
+  // same prefix-extension trap as custom_field_definitions/customer_email_domains
+  // above. FK-safe order is verified at runtime by topologicalCascadeOrder(),
+  // not by this hand order, but membership must include both.
+  'contract_template_versions',
+  'contract_templates',
   'contracts',
   'custom_field_definitions',
   // NB: sorts AFTER custom_field_definitions — localeCompare puts the '_' in
@@ -198,6 +206,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_correlations',
   'log_search_queries',
   'm365_connections',
+  'm365_consent_sessions',
   'maintenance_windows',
   'metric_anomalies',
   'metric_anomaly_candidates',

@@ -27,11 +27,11 @@ func TestSendResult_Success(t *testing.T) {
 		t.Fatalf("SendResult error: %v", err)
 	}
 
-	// Verify the data is in the sendChan
+	// Verify the result is queued on the dedicated resultChan (not sendChan).
 	select {
-	case data := <-c.sendChan:
+	case msg := <-c.resultChan:
 		var parsed CommandResult
-		if err := json.Unmarshal(data, &parsed); err != nil {
+		if err := json.Unmarshal(msg.data, &parsed); err != nil {
 			t.Fatalf("unmarshal error: %v", err)
 		}
 		if parsed.CommandID != "cmd-1" {
@@ -40,16 +40,19 @@ func TestSendResult_Success(t *testing.T) {
 		if parsed.Status != "ok" {
 			t.Fatalf("status = %q, want %q", parsed.Status, "ok")
 		}
+		if msg.result.CommandID != "cmd-1" {
+			t.Fatalf("structured result commandId = %q, want cmd-1", msg.result.CommandID)
+		}
 	default:
-		t.Fatal("expected data in sendChan")
+		t.Fatal("expected result in resultChan")
 	}
 }
 
 func TestSendResult_ClientStopped(t *testing.T) {
 	c := newTestClient("http://localhost", noopHandler)
-	// Fill the send channel so the select can only choose the done case
-	for i := 0; i < cap(c.sendChan); i++ {
-		c.sendChan <- []byte("filler")
+	// Fill the result channel so the select can only choose the done case
+	for i := 0; i < cap(c.resultChan); i++ {
+		c.resultChan <- outboundResult{data: []byte("filler")}
 	}
 	close(c.done)
 
@@ -70,9 +73,9 @@ func TestSendResult_ChannelFull(t *testing.T) {
 	}
 	c := New(cfg, noopHandler)
 
-	// Fill the send channel
-	for i := 0; i < cap(c.sendChan); i++ {
-		c.sendChan <- []byte("filler")
+	// Fill the result channel
+	for i := 0; i < cap(c.resultChan); i++ {
+		c.resultChan <- outboundResult{data: []byte("filler")}
 	}
 
 	err := c.SendResult(CommandResult{CommandID: "overflow"})
@@ -404,8 +407,11 @@ func TestSendMethods_ErrorCases(t *testing.T) {
 		{
 			name: "SendResult_stopped",
 			setup: func(c *Client) {
-				for i := 0; i < cap(c.sendChan); i++ {
-					c.sendChan <- []byte("x")
+				// Fill resultChan so the only ready select case in SendResult is
+				// the closed done channel — otherwise the resultChan send is also
+				// ready and the "client is stopped" branch races nondeterministically.
+				for i := 0; i < cap(c.resultChan); i++ {
+					c.resultChan <- outboundResult{data: []byte("x")}
 				}
 				close(c.done)
 			},
@@ -456,8 +462,8 @@ func TestSendMethods_ErrorCases(t *testing.T) {
 		{
 			name: "SendResult_full",
 			setup: func(c *Client) {
-				for i := 0; i < cap(c.sendChan); i++ {
-					c.sendChan <- []byte("x")
+				for i := 0; i < cap(c.resultChan); i++ {
+					c.resultChan <- outboundResult{data: []byte("x")}
 				}
 			},
 			send: func(c *Client) error {

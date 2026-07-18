@@ -21,12 +21,12 @@ const orgOwned: ConfigPolicy = {
 };
 
 describe('ConfigPolicyList ownership badges', () => {
-  it('shows the All orgs badge only on partner-wide policies', () => {
+  it('shows the Partner-wide badge only on partner-wide policies', () => {
     render(<ConfigPolicyList policies={[partnerWide, orgOwned]} />);
 
     const badges = screen.getAllByTestId('partner-wide-badge');
     expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('All orgs');
+    expect(badges[0]).toHaveTextContent('Partner-wide');
   });
 
   it('shows an org badge with the owning org name on org-owned policies', () => {

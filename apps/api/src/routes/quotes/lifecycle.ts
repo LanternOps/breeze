@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
+import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteLifecycleRoutes = new Hono();
@@ -16,6 +17,7 @@ const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIO
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
+const contractFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 // Accepts only http(s) URLs; the fetch layer enforces size/mime.
 const imageFromUrlSchema = z.object({
@@ -34,10 +36,46 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
   }
 }
 
+// Composer options for the customer email. `.strict()` so a mis-keyed field
+// (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
+const sendEmailField = z.string().trim().email().max(255);
+const sendBodySchema = z.object({
+  message: z.string().trim().max(2000).optional(),
+  // Composer fields (all optional — an empty body reproduces the classic send):
+  // explicit recipients override the org billing-contact fallback.
+  to: z.array(sendEmailField).min(1).max(10).optional(),
+  cc: z.array(sendEmailField).max(10).optional(),
+  subject: z.string().trim().max(200).optional(),
+  includePdf: z.boolean().optional(),
+}).strict();
+
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c)) }); }
-  catch (err) { return handleServiceError(c, err); }
+  let emailOpts: z.infer<typeof sendBodySchema> = {};
+  // Distinguish an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
+  // yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
+  // one. An empty body degrades to "no message"; a non-empty body that fails to
+  // parse/validate is rejected 400 rather than silently swallowing a note the
+  // sender intended (mirrors the image-from-URL route below).
+  if ((c.req.header('content-type') ?? '').includes('application/json')) {
+    const raw = await c.req.text().catch(() => '');
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = sendBodySchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid send options' }, 400);
+      emailOpts = parsed.data;
+    }
+  }
+  try {
+    return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), {
+      message: emailOpts.message || undefined,
+      to: emailOpts.to,
+      cc: emailOpts.cc,
+      subject: emailOpts.subject || undefined,
+      includePdf: emailOpts.includePdf,
+    }) });
+  } catch (err) { return handleServiceError(c, err); }
 });
 
 // POST /:id/images — multipart file upload OR JSON {url} to copy a remote image
@@ -90,5 +128,23 @@ quoteLifecycleRoutes.get('/:id/images/:imageId', scopes, readPerm, zValidator('p
     const img = await readQuoteImage(imageId, id);
     if (!img) return c.json({ error: 'Image not found' }, 404);
     return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// GET /:id/contract-file/:blockId — uploaded contract PDF bytes for the editor
+// preview, mirroring /:id/images/:imageId. getQuote's org-access check + finding
+// the block among ITS OWN blocks (not a bare id lookup) closes the cross-quote
+// blockId case the same way the image route's quote_id match does.
+quoteLifecycleRoutes.get('/:id/contract-file/:blockId', scopes, readPerm, zValidator('param', contractFileParam), async (c) => {
+  const { id, blockId } = c.req.valid('param');
+  try {
+    const { blocks } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+    const block = blocks.find((b) => b.id === blockId && b.blockType === 'contract');
+    if (!block) return c.json({ error: 'Contract file not found' }, 404);
+    const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
+    if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) {
+      return c.json({ error: 'Contract file not found' }, 404);
+    }
+    return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
   } catch (err) { return handleServiceError(c, err); }
 });

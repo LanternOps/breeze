@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -343,7 +344,39 @@ func TestHandleUserHelperMessageClearsOwnerOnPeerDisconnect(t *testing.T) {
 	_ = clientConn.Close()
 }
 
-func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
+func TestSpawnHelperForDesktopLinuxReturnsTypedError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only: exercises the non-darwin/non-windows spawn branch")
+	}
+	h := &Heartbeat{}
+	err := h.spawnHelperForDesktop("")
+	if !errors.Is(err, ErrLinuxDesktopHelperUnsupported) {
+		t.Fatalf("expected ErrLinuxDesktopHelperUnsupported, got %v", err)
+	}
+}
+
+func TestFindOrSpawnHelperSkipsPollOnUnsupportedPlatform(t *testing.T) {
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t),
+		spawnHelper:   func(string) error { return ErrLinuxDesktopHelperUnsupported },
+	}
+	start := time.Now()
+	got := h.findOrSpawnHelper("")
+	if got != nil {
+		t.Fatalf("expected nil helper on unsupported platform, got %v", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("findOrSpawnHelper should fast-fail, took %v (10s poll not skipped)", elapsed)
+	}
+}
+
+// TestHandleStopDesktopFallsThroughToDirectWhenOwnerHelperGone: when a desktop
+// session has a registered owner whose helper session is no longer connected
+// (desktopOwnerSession resolves to nil), the state-based stop routing (Task 11
+// change #3) falls through to the direct desktopMgr.StopSession rather than
+// failing. It must NEVER route the stop to a different, still-connected helper
+// (no fallback-helper routing).
+func TestHandleStopDesktopFallsThroughToDirectWhenOwnerHelperGone(t *testing.T) {
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -366,7 +399,10 @@ func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
 	h := &Heartbeat{
 		sessionBroker: broker,
 		isHeadless:    true,
+		desktopMgr:    desktop.NewSessionManager(),
 	}
+	// Owner registered, but its helper session ("missing-session") is not in the
+	// broker, so desktopOwnerSession resolves to nil.
 	h.rememberDesktopOwner("desktop-stop-missing", "missing-session")
 
 	result := handleStopDesktop(h, Command{
@@ -380,15 +416,12 @@ func TestHandleStopDesktopFailsWhenOwnerUnavailable(t *testing.T) {
 	_ = session.Close()
 	_ = clientIPC.Close()
 
-	if result.Status != "failed" {
-		t.Fatalf("expected failed, got %s", result.Status)
-	}
-	if result.Error != "desktop session owner unavailable; cannot safely stop session" {
-		t.Fatalf("unexpected error: %s", result.Error)
+	if result.Status != "completed" {
+		t.Fatalf("expected completed (direct fallthrough), got status=%q error=%q", result.Status, result.Error)
 	}
 	select {
 	case <-seen:
-		t.Fatal("desktop_stop should not be routed to a fallback helper")
+		t.Fatal("desktop_stop must not be routed to a fallback helper")
 	default:
 	}
 }

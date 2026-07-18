@@ -2,6 +2,8 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
@@ -17,6 +19,9 @@ const (
 	// consent.exe's idle lifetime (~120s default). Timeout → deny+dismiss
 	// (RequestPamApproval already returns that on timeout).
 	pamDialogTimeout = 90 * time.Second
+	// pamDismissTimeout gives the helper's eight-second dismissal attempt time
+	// to complete and return its correlated IPC result.
+	pamDismissTimeout = 10 * time.Second
 	// defaultActuateTimeoutMs is the per-actuation consent.exe wait, matching
 	// the remote handler's fallback.
 	defaultActuateTimeoutMs = 8000
@@ -43,22 +48,31 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	}()
 
 	switch outcome.Status {
-	case etwlua.ElevationDenied:
-		h.denyConsent(ctx, outcome.RequestID, "policy_denied") // policy hard-deny, no dialog
-		return
-	case etwlua.ElevationAutoApproved, etwlua.ElevationPending:
-		// fall through to the dialog gate
+	case etwlua.ElevationDenied, etwlua.ElevationAutoApproved, etwlua.ElevationPending:
+		// All supported statuses need the SYSTEM+PAM helper in the requester's
+		// Windows session when known. Hard deny skips the dialog only after
+		// resolving that target session.
 	default:
 		log.Debug("pam: no local flow for status", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
 		return
 	}
 
+	targetWinSession := ""
+	sessionTarget := "physical_console_fallback"
+	// Zero and Windows' 0xFFFFFFFF invalid-session sentinel both mean the
+	// requester session is unresolved, so retain the existing console fallback.
+	if ev.SubjectSessionID != 0 && ev.SubjectSessionID != 0xFFFFFFFF {
+		targetWinSession = strconv.FormatUint(uint64(ev.SubjectSessionID), 10)
+		sessionTarget = "requester_session"
+	}
+
 	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
 	// passes a nil runner when the broker is absent. Guard anyway so a wiring
-	// slip can't panic the ETW hot path — only the dialog path needs the broker.
+	// slip can't panic the ETW hot path — every supported flow needs a helper.
 	if h.pamFindSession == nil && h.sessionBroker == nil {
 		log.Warn("pam: no session broker available; skipping elevation flow",
-			"elevationRequestId", outcome.RequestID)
+			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
+			"targetWinSession", targetWinSession)
 		return
 	}
 
@@ -66,10 +80,15 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	if find == nil {
 		find = h.sessionBroker.FindCapableSession
 	}
-	session := find(ipc.ScopePam, "")
+	session := find(ipc.ScopePam, targetWinSession)
 	if session == nil {
-		log.Warn("pam: no capable SYSTEM helper session; cannot show dialog, consent.exe will time out",
-			"elevationRequestId", outcome.RequestID)
+		log.Warn("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out",
+			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
+			"targetWinSession", targetWinSession)
+		return
+	}
+	if outcome.Status == etwlua.ElevationDenied {
+		h.denyConsent(session, outcome.RequestID, "policy_denied") // policy hard-deny, no dialog
 		return
 	}
 
@@ -94,7 +113,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// but fail closed if a new fall-through status is ever added upstream:
 		// never actuate on a status we don't recognize.
 		log.Warn("pam: unexpected status at verdict mapping; denying", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
-		h.denyConsent(ctx, outcome.RequestID, "unexpected_status")
+		h.denyConsent(session, outcome.RequestID, "unexpected_status")
 		return
 	}
 
@@ -118,19 +137,70 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			}
 		}()
 	case sessionbroker.PamActionDeny:
-		h.denyConsent(ctx, outcome.RequestID, dialog.Reason)
+		h.denyConsent(session, outcome.RequestID, dialog.Reason)
 	case sessionbroker.PamActionAwaitRemote:
 		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
 	}
 }
 
 // denyConsent cancels the live consent.exe prompt and logs the denial.
-func (h *Heartbeat) denyConsent(ctx context.Context, requestID, reason string) {
-	// Serialize the Dismiss against any concurrent actuateElevation so the two
-	// never drive SendInput against the same prompt at once. See pamActuateMu.
-	h.pamActuateMu.Lock()
-	res := newActuator(h.pamActuatorStrategy()).Dismiss(ctx)
-	h.pamActuateMu.Unlock()
+func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reason string) {
+	if session == nil {
+		log.Warn("pam: deny enforcement FAILED — no SYSTEM helper session; consent.exe may still be live",
+			"elevationRequestId", requestID, "reason", reason)
+		return
+	}
+
+	dismiss := h.pamDismissConsent
+	if dismiss == nil {
+		if h.sessionBroker == nil {
+			log.Warn("pam: deny enforcement FAILED — dismissal IPC unavailable; consent.exe may still be live",
+				"elevationRequestId", requestID, "reason", reason)
+			return
+		}
+		dismiss = h.sessionBroker.DismissPamConsent
+	}
+
+	var (
+		res              ipc.PamDismissConsentResult
+		err              error
+		alreadyUncertain bool
+	)
+	// Serialize the helper command against any concurrent actuateElevation. If
+	// the broker cannot prove completion, mark PAM input fail-closed until the
+	// helper's correlated response proves its work is quiescent. New actuation
+	// attempts return immediately without promoting credentials or sending input.
+	func() {
+		h.pamActuateMu.Lock()
+		defer h.pamActuateMu.Unlock()
+		if h.pamDismissalUncertain {
+			alreadyUncertain = true
+			return
+		}
+		res, err = dismiss(session, requestID, pamDismissTimeout)
+		var uncertain *sessionbroker.PamDismissUncertainError
+		if errors.As(err, &uncertain) && uncertain.Quiesced != nil {
+			h.pamDismissalUncertain = true
+			go func(quiesced <-chan struct{}) {
+				<-quiesced
+				h.pamActuateMu.Lock()
+				h.pamDismissalUncertain = false
+				h.pamActuateMu.Unlock()
+				log.Info("pam: uncertain dismissal quiesced; PAM actuation gate released",
+					"elevationRequestId", requestID)
+			}(uncertain.Quiesced)
+		}
+	}()
+	if alreadyUncertain {
+		log.Warn("pam: deny enforcement skipped — previous dismissal completion remains uncertain",
+			"elevationRequestId", requestID, "reason", reason)
+		return
+	}
+	if err != nil {
+		log.Warn("pam: deny enforcement FAILED — dismissal IPC error; consent.exe may still be live",
+			"elevationRequestId", requestID, "reason", reason, "error", err.Error())
+		return
+	}
 
 	switch {
 	case res.Success:

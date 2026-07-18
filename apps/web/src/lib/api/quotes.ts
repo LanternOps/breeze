@@ -69,8 +69,14 @@ export function createQuote(body: CreateQuoteInput): Promise<Response> {
   });
 }
 
-export function cloneQuote(id: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/clone`, { method: 'POST' });
+/** Clone a quote into a new draft. Optional body retargets it to another
+ *  organization (same partner) and/or renames it — omitted fields fall back to
+ *  the source quote (matches `cloneQuoteSchema` in shared). */
+export function cloneQuote(id: string, body?: { orgId?: string; title?: string }): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/clone`, {
+    method: 'POST',
+    ...(body ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
+  });
 }
 
 export function updateQuote(id: string, body: UpdateQuoteInput): Promise<Response> {
@@ -187,10 +193,51 @@ export function quotePdfUrl(id: string): string {
 
 // ---- Phase 2 lifecycle / image upload -------------------------------------
 
+/** Composer fields for `POST /quotes/:id/send`. Everything is optional — the
+ *  server's `.strict()` schema treats an absent field as "use the default". */
+export interface SendQuoteOptions {
+  /** Explicit recipients (1-10) — override the org billing-contact fallback. */
+  to?: string[];
+  /** Extra recipients (0-10). */
+  cc?: string[];
+  /** Overrides the server default "Proposal <number> from <partner>". */
+  subject?: string;
+  /** Personal note shown in the customer email above the accept link. */
+  message?: string;
+  /** false skips the PDF attachment; the server defaults to attaching it. */
+  includePdf?: boolean;
+}
+
+/** Why the best-effort email step did NOT deliver after a send committed
+ *  (`data.emailed === false`). Kept in sync with the API's send route:
+ *  - `no_billing_contact` — the org has no billing-contact email to fall back to
+ *  - `no_email_service`   — email isn't configured on this server
+ *  - `pdf_render_failed`  — the PDF attachment couldn't be generated
+ *  - `send_failed`        — the transport itself rejected/failed the message */
+export type QuoteSendEmailReason =
+  | 'no_billing_contact'
+  | 'no_email_service'
+  | 'pdf_render_failed'
+  | 'send_failed';
+
 /** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
- *  quotes:send. Responds with the updated quote in a `{ data }` envelope. */
-export function sendQuote(id: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/send`, { method: 'POST' });
+ *  quotes:send. Only non-empty / non-default fields are POSTed, so a bare
+ *  `sendQuote(id)` reproduces the classic body-less send. Responds with
+ *  `{ data: { quote, emailed, emailReason?, acceptUrl } }` (emailReason is a
+ *  `QuoteSendEmailReason` when emailed is false). */
+export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
+  const body: Record<string, unknown> = {};
+  if (opts.to && opts.to.length > 0) body.to = opts.to;
+  if (opts.cc && opts.cc.length > 0) body.cc = opts.cc;
+  const subject = opts.subject?.trim();
+  if (subject) body.subject = subject;
+  const note = opts.message?.trim();
+  if (note) body.message = note;
+  if (opts.includePdf === false) body.includePdf = false;
+  return fetchWithAuth(`/quotes/${id}/send`, {
+    method: 'POST',
+    ...(Object.keys(body).length > 0 ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
+  });
 }
 
 /** Upload an image for a quote (POST /quotes/:id/images). The body is multipart

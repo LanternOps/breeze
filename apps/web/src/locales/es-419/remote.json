@@ -63,8 +63,12 @@
       "manualInstall": "El escritorio con ventana de inicio de sesión solo es compatible con instalaciones administradas",
       "missingEntitlement": "El escritorio de la ventana de inicio de sesión está bloqueado hasta que se apruebe el derecho de Apple requerido",
       "missingPermission": "Todavía faltan los permisos macOS necesarios para el acceso al escritorio desatendido",
+      "noDisplaySession": "No hay una sesión gráfica activa — inicie sesión primero mediante RDP o la consola",
       "unsupportedOs": "El escritorio con ventana de inicio de sesión requiere macOS 14 (Sonoma) o posterior. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
-      "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing."
+      "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing.",
+      "waylandUnsupported": "Este es un escritorio Wayland — el escritorio remoto requiere un agente más reciente",
+      "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
+      "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
     }
   },
   "connectVncButton": {

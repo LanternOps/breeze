@@ -79,6 +79,11 @@ jobs:
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
+    env:
+      # tsc on the full apps/api project (dense Drizzle types) + astro check
+      # exceed Node's default heap on the type-heaviest branches. Give the
+      # type checker a larger old-space so it doesn't OOM. See release-prep OOM.
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -125,8 +130,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test extension SDK
+        run: pnpm --filter @breeze/extension-sdk test
+
+      - name: Type-check extension SDK
+        run: pnpm --filter @breeze/extension-sdk typecheck
+
+      - name: Test legacy extension adapter
+        run: pnpm --filter @breeze/extension-api test
+
+      - name: Type-check legacy extension adapter
+        run: pnpm --filter @breeze/extension-api typecheck
+
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
+
+      - name: Run load-test static contract tests
+        run: pnpm test:load-static
+
+      # Keep this explicit even though the API unit suite also discovers the
+      # test. It is the release gate for the checked-in SDK v1 fixture and must
+      # remain until the documented v1 compatibility window closes.
+      - name: Gate SDK v1 compatibility fixture
+        run: pnpm --filter=@breeze/api test --run src/extensions/compatibility.test.ts
 
       # Site-scope contract tests are pure static analysis (walk routes/*.ts
       # from disk, no DB/Redis), so they run here in the fast, blocking job
@@ -156,6 +182,30 @@ jobs:
       # blocking `integration-test` job.
       - name: Run RLS session-context contract test
         run: pnpm --filter=@breeze/api test:rls
+
+  test-m365-graph-read-executor:
+    name: Test M365 Graph Read Executor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run executor tests
+        run: pnpm --filter=@breeze/m365-graph-read-executor test:run
 
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
@@ -440,6 +490,9 @@ jobs:
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
 
+      - name: Run M365 signing secret runtime smoke
+        run: bash scripts/security/check-m365-graph-read-runtime.sh
+
       - name: Run relay/edge hardening guard
         run: bash scripts/security/check-relay-edge-hardening.sh
 
@@ -487,6 +540,37 @@ jobs:
           name: api-dist
           path: apps/api/dist
           retention-days: 7
+
+  build-m365-graph-read-executor:
+    name: Build M365 Graph Read Executor
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck executor
+        run: pnpm --filter=@breeze/m365-graph-read-executor exec tsc --noEmit
+
+      - name: Build executor
+        run: pnpm --filter=@breeze/m365-graph-read-executor build
+
+      - name: Verify executor entrypoint exists
+        run: test -s apps/m365-graph-read-executor/dist/index.cjs
 
   build-web:
     name: Build Web
@@ -596,7 +680,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -670,7 +754,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -702,7 +786,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -732,7 +816,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -791,6 +875,76 @@ jobs:
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/watchdog ./cmd/breeze-watchdog
 
+  # ─── Go agent lint ────────────────────────────────────────────────────
+  # The `lint` job above is JS/TS + compose guards only; the Go agent was
+  # never vet/lint-gated in CI (golangci-lint lived only in agent/Makefile).
+  # `go vet` is an unconditional gate (the tree is already vet-clean).
+  # golangci-lint runs in new-issues-only mode so the pre-existing backlog
+  # (incl. ~20 unformatted files) does not block PRs — burn it down separately.
+  lint-agent:
+    name: Lint Agent (Go)
+    runs-on: ubuntu-latest
+    # CGO off (matches test-agent): the agent's only cgo files are the linux
+    # X11/pcap capture backends, whose C headers are not on the runner. vet +
+    # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: go vet
+        working-directory: agent
+        run: go vet ./...
+
+      - name: golangci-lint (new issues only)
+        working-directory: agent
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
+
+  # ─── Go agent race tests (broad) ──────────────────────────────────────
+  # test-agent runs the suite CGO-off (no race detector). This job races the
+  # ENTIRE agent tree so new concurrency-heavy packages are covered
+  # automatically without a hand-maintained list (~80s). The race detector
+  # requires CGO; it runs on macOS to match the repo's only cgo agent build
+  # (build-agent darwin) — the linux agent is never cgo-built in CI, and the
+  # concurrency logic under test is platform-independent. Windows-only
+  # concurrency is covered by the agent's own windows race jobs.
+  test-agent-race:
+    name: Test Agent (race)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: agent
+        run: go mod download
+
+      - name: go test -race ./...
+        working-directory: agent
+        env:
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
   # it on Windows, so runtime-only Windows regressions shipped green. This
@@ -824,7 +978,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -1072,16 +1226,31 @@ jobs:
   # main red for 8 days. No Docker image builds, but the real-DB suite plus
   # RLS coverage regularly needs more than 15 minutes as the migration/test
   # surface grows.
+  #
+  # Sharded 4 ways with vitest `--shard` (2026-07): the suite had grown to
+  # 212 files / ~1170 tests ≈ 21 min of strictly sequential wall clock
+  # (fileParallelism stays false — the shared TRUNCATE-based cleanup in
+  # setup.ts requires it). Each shard is a full job with its own fresh
+  # Postgres/Redis containers, so per-file isolation semantics are
+  # unchanged; only the file list is split. Branch protection requires the
+  # "CI Success" fan-in, and `needs.integration-test.result` there already
+  # aggregates across the matrix (success only if every shard passed).
   integration-test:
-    name: Integration Tests
+    name: Integration Tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [lint, typecheck]
-    # The suite (138 files / ~690 tests) runs ~29 min and was tipping over the
-    # old 30-min ceiling at the boundary (passed/cancelled non-deterministically
-    # on the same commit). Raised to 40 for headroom — the tests pass, this is
-    # runtime growth, not a hang. By 2026-07 the baseline hit ~36 min and PRs
-    # adding integration suites tipped over 40 the same way; raised to 55.
-    timeout-minutes: 55
+    strategy:
+      # Report every shard's result — a red shard must not cancel the others
+      # (same rationale as the no-bail rule inside the suite: masking stacked
+      # breakages hid #1092 behind #1042 for a day).
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # ~1/4 of the suite (~6 min) + env/container setup + one autoMigrate
+    # pass. 25 leaves generous headroom for suite growth; before sharding
+    # this ceiling had to be raised twice (30→40→55) as the sequential
+    # runtime grew.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -1130,13 +1299,19 @@ jobs:
           # guarded `db` proxy. Production code must always carry an access
           # context, so a genuine offender here is a real bug, not test noise.
           DB_CONTEXTLESS_WRITE_STRICT: 'true'
-        run: pnpm --filter=@breeze/api test:integration
+        # pnpm forwards args after the script name to the script itself, so
+        # --shard reaches vitest. Sharding only splits the file list; files
+        # within a shard still run sequentially (fileParallelism: false).
+        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
 
       # Dedicated exact-role enforcement runner. The general integration config
       # excludes it because this suite manages a temporary BYPASSRLS role and
       # must not inherit the shared TRUNCATE hooks. The preceding suite has
-      # already applied migrations and ensured the breeze_app login exists.
+      # already applied migrations (globalSetup runs autoMigrate on every
+      # shard's fresh DB) and ensured the breeze_app login exists. Runs on
+      # shard 1 only — it's a single-DB contract check, not a sharded suite.
       - name: Run request database role enforcement tests
+        if: matrix.shard == 1
         env:
           DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
           DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
@@ -1148,11 +1323,13 @@ jobs:
       # The rls-coverage contract test inspects pg_catalog to verify every
       # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
       # via the right access helper. Runs against the same test DB AFTER
-      # the integration suite (which has already triggered autoMigrate).
-      # Has its own runner because vitest.integration.config.ts excludes it:
-      # the read-only catalog inspection must not be hooked to setup.ts,
-      # which TRUNCATEs core tables on beforeEach.
+      # the integration suite (whose globalSetup has already triggered
+      # autoMigrate). Has its own runner because vitest.integration.config.ts
+      # excludes it: the read-only catalog inspection must not be hooked to
+      # setup.ts, which TRUNCATEs core tables on beforeEach. Shard 1 only —
+      # a single-DB contract check, identical on every shard.
       - name: Run RLS coverage contract test
+        if: matrix.shard == 1
         env:
           DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
           DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
@@ -1204,6 +1381,9 @@ jobs:
           POSTGRES_PASSWORD=smoketest
           REDIS_PASSWORD=ci-smoke-redis-pw
           JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          # Required in production by config/validate.ts (#2506) — signs
+          # partner reconstruction export cursors. 32 random bytes, base64.
+          PARTNER_API_CURSOR_SIGNING_KEY=nJ4B7uS2xielQGyxLoBLcPCPey5FyilPeVQbGL10CDo=
           AGENT_ENROLLMENT_SECRET=ci-smoke-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
           BREEZE_BOOTSTRAP_ADMIN_EMAIL=ci-admin@breeze.local
           BREEZE_BOOTSTRAP_ADMIN_PASSWORD=ci-smoke-bootstrap-credential-32-chars
@@ -1414,7 +1594,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1422,6 +1602,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
+          TEST_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.test-m365-graph-read-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -1431,6 +1612,7 @@ jobs:
           TEST_OUTLOOK_ADDIN_RESULT: ${{ needs.test-outlook-addin.result }}
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
+          BUILD_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.build-m365-graph-read-executor.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -1445,6 +1627,7 @@ jobs:
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
+             [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
@@ -1454,6 +1637,7 @@ jobs:
              [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "success" ]] || \
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
+             [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \

@@ -9,12 +9,12 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
-import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { requestPathLogger } from './middleware/requestPathLogger';
 import { bodyLimitForPath } from './middleware/bodyLimit';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
@@ -63,6 +63,8 @@ import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
+import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
+import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { ssoRoutes } from './routes/sso';
@@ -146,6 +148,8 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { googleRoutes } from './routes/google';
+import { m365ConsentCallbackRoutes } from './routes/m365ConsentCallback';
+import { m365CustomerGraphReadRoutes } from './routes/m365CustomerGraphRead';
 import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
@@ -270,7 +274,9 @@ import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
-import { mountExtensions } from './extensions/loader';
+import { loadSourceExtensions } from './extensions/loader';
+import { extensionContributionRegistry } from './extensions/contributionRegistry';
+import { mountExtensionGateway } from './extensions/gateway';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -323,7 +329,7 @@ const resolveCorsOrigin = createCorsOriginResolver({
 });
 
 // Global middleware
-app.use('*', logger());
+app.use('*', requestPathLogger());
 app.use(
   '*',
   secureHeaders({
@@ -833,6 +839,8 @@ api.route('/vnc-viewer', vncViewerRoutes); // Viewer-token auth (purpose='viewer
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/service-principals', servicePrincipalRoutes);
+api.route('/partner-service-principals', partnerServicePrincipalRoutes);
+api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/installer', installerRoutes);
@@ -932,11 +940,15 @@ api.route('/browser-security', browserSecurityRoutes);
 api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
+api.route('/m365', m365ConsentCallbackRoutes); // Public two-phase consent callback; mount before authenticated M365 routes
+api.route('/m365', m365CustomerGraphReadRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
+
+mountExtensionGateway(app, extensionContributionRegistry, async () => true);
 
 app.route('/api/v1', api);
 
@@ -1527,7 +1539,7 @@ async function bootstrap(): Promise<void> {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
   }
 
-  await mountExtensions(app);
+  await loadSourceExtensions(extensionContributionRegistry);
 
   try {
     await bootstrapPlatformAdmins();

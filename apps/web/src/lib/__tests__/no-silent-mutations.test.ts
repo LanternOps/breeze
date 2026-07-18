@@ -87,6 +87,7 @@ const TARGET_GLOBS = [
   'src/components/vulnerabilities/VulnBulkActionModal.tsx',
   'src/lib/api/vulnerabilities.ts',
   'src/components/settings/TdSynnexEcExpressPanel.tsx',
+  'src/components/settings/PartnerServicePrincipalsPage.tsx',
   'src/components/settings/TdSynnexSftpPanel.tsx',
   'src/lib/edr.ts',
   'src/lib/incidents.ts',
@@ -98,6 +99,16 @@ const TARGET_GLOBS = [
   // shipped with zero CI signal while sibling ticket files stayed covered (#2429).
   'src/components/settings/TicketFormsCard.tsx',
   'src/components/tickets/CreateTicketPage.tsx',
+  // Quotes/proposals + contracts send-polish surface: every mutation already
+  // routes through runAction (or a typed API wrapper), but these files were
+  // never guarded, so a future bare mutation would ship with no CI signal.
+  'src/components/billing/quotes/QuoteActions.tsx',
+  'src/components/billing/quotes/QuoteDocument.tsx',
+  'src/components/contracts/TemplateEditor.tsx',
+  'src/components/contracts/DocumentsTab.tsx',
+  'src/components/contracts/ContractDocumentsSection.tsx',
+  'src/components/contracts/TemplatesTab.tsx',
+  'src/components/settings/PartnerCompanyTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -289,7 +300,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(67);
+    expect(absoluteFiles.length).toBe(75);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

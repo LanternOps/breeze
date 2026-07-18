@@ -150,38 +150,60 @@ listRoutes.get(
     };
     for (const row of sourceCounts) counts[row.source] = Number(row.count);
 
-    // If org specified, get approval statuses (optionally ring-scoped).
-    // Approvals are partner-scoped; resolve the org's partner first.
+    // Resolve approval statuses (optionally ring-scoped). Approvals are
+    // partner-scoped, so we need the caller's partner:
+    //   - With ?orgId: resolve the org's partner (org access already checked above).
+    //   - Without orgId (the "All orgs" partner-wide view): use the caller's own
+    //     partner from their token. Gated on partner/system scope — org-scoped
+    //     tokens must never read partner-wide approvals (they're 403'd on the write
+    //     side too, and patch_approvals is partner-axis RLS).
+    // Both paths derive the partner server-side, so the system-context read below
+    // never widens tenant visibility. Without the no-orgId branch the all-orgs
+    // list silently shows every patch as 'pending' on reload even though the
+    // approval row exists (issue #2597).
     let approvalStatuses: Record<string, string> = {};
-    if (query.orgId) {
-      const partnerId = await resolvePartnerIdForOrg(query.orgId);
-      if (partnerId !== null) {
-        const approvalConditions = [eq(patchApprovals.partnerId, partnerId)];
-        if (query.ringId) {
-          approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
-        }
-
-        // patch_approvals is partner-axis RLS; org-scoped callers cannot read it
-        // in request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
-        // from the org (already access-checked above), so system context is safe.
-        const approvals = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({
-                patchId: patchApprovals.patchId,
-                status: patchApprovals.status
-              })
-              .from(patchApprovals)
-              .where(and(...approvalConditions))
-          )
-        );
-
-        approvalStatuses = Object.fromEntries(
-          approvals.map(a => [a.patchId, a.status])
-        );
-      }
-      // If partnerId is null the org has no partner; no approvals exist — leave approvalStatuses empty.
+    const approvalPartnerId = query.orgId
+      ? await resolvePartnerIdForOrg(query.orgId)
+      : (auth.scope !== 'organization' ? auth.partnerId : null);
+    // A partner-scoped token should always carry its own partnerId. If it
+    // doesn't, the read below is skipped and every patch renders 'pending' —
+    // the exact #2597 symptom via a different cause. Surface that invariant
+    // violation instead of failing invisibly. (Org scope with no orgId and
+    // system scope with no partnerId both legitimately yield null and are
+    // silent — only the partner case is unexpected.)
+    if (approvalPartnerId === null && auth.scope === 'partner') {
+      console.warn(
+        `[Patches] partner-scope token has null partnerId (user=${auth.user?.id ?? 'unknown'}); patch approvals will render as pending`
+      );
     }
+    if (approvalPartnerId !== null) {
+      const approvalConditions = [eq(patchApprovals.partnerId, approvalPartnerId)];
+      if (query.ringId) {
+        approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
+      }
+
+      // patch_approvals is partner-axis RLS; org-scoped callers cannot read it
+      // in request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
+      // (from the access-checked org, or from the caller's own token), so system
+      // context is safe.
+      const approvals = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({
+              patchId: patchApprovals.patchId,
+              status: patchApprovals.status
+            })
+            .from(patchApprovals)
+            .where(and(...approvalConditions))
+        )
+      );
+
+      approvalStatuses = Object.fromEntries(
+        approvals.map(a => [a.patchId, a.status])
+      );
+    }
+    // If approvalPartnerId is null (see the scope cases above) no approvals
+    // apply — leave approvalStatuses empty.
 
     const data = patchList.map(patch => ({
       ...patch,

@@ -138,6 +138,13 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	// would corrupt input injection. See Heartbeat.pamActuateMu.
 	h.pamActuateMu.Lock()
 	defer h.pamActuateMu.Unlock()
+	if h.pamDismissalUncertain {
+		return pamactuator.Result{
+			Success:       false,
+			Reason:        "dismissal_uncertain",
+			DetailMessage: "previous PAM consent dismissal has not reported completion",
+		}
+	}
 
 	manager := newElevationAccountManager()
 	cred, err := manager.Promote(ctx)

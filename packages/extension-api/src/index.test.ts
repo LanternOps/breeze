@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { parseExtensionManifest, RESERVED_ROUTE_NAMESPACES } from './index';
+import {
+  parseExtensionManifest,
+  parseExtensionManifestV1,
+  RESERVED_ROUTE_NAMESPACES,
+  SUPPORTED_EXTENSION_CAPABILITIES,
+} from './index';
+
+describe('versioned SDK adapter', () => {
+  it('re-exports the v1 SDK alongside legacy names', () => {
+    expect(parseExtensionManifestV1).toBeTypeOf('function');
+    expect(SUPPORTED_EXTENSION_CAPABILITIES).toContain('server.routes.v1');
+    expect(parseExtensionManifest).not.toBe(parseExtensionManifestV1);
+  });
+});
 
 describe('parseExtensionManifest', () => {
   const valid = {
@@ -59,7 +72,7 @@ describe('parseExtensionManifest', () => {
   });
 
   it('rejects a routeNamespace that collides with core mounts', () => {
-    for (const ns of ['plugins', 'devices', 'auth', 'ai', 'mcp']) {
+    for (const ns of ['plugins', 'devices', 'auth', 'ai', 'mcp', 'ext']) {
       expect(() => parseExtensionManifest({ ...valid, routeNamespace: ns })).toThrow();
     }
   });
@@ -146,7 +159,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'client-ai', 'config', 'configuration-policies', 'contracts',
     'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
     'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-    'events', 'filters', 'google', 'groups', 'helper', 'huntress',
+    'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
     'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
     'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
     'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
@@ -162,8 +175,8 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
   ];
 
-  it('has exactly 114 entries in the ground-truth contract', () => {
-    expect(CORE_NAMESPACES).toHaveLength(114);
+  it('has exactly 115 entries in the ground-truth contract', () => {
+    expect(CORE_NAMESPACES).toHaveLength(115);
   });
 
   it('reserves every core /api/v1 route namespace', () => {

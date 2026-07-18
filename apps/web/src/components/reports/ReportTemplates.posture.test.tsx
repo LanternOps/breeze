@@ -56,6 +56,7 @@ describe('ReportTemplates — Security & Compliance Posture card', () => {
     render(<ReportTemplates />);
 
     await clickUseTemplate('Security & Compliance Posture (Insurance)');
+    await userEvent.setup().click(screen.getByTestId('posture-options-submit'));
 
     await waitFor(() => {
       expect(fetchWithAuth).toHaveBeenCalledWith('/reports', expect.objectContaining({ method: 'POST' }));
@@ -67,7 +68,7 @@ describe('ReportTemplates — Security & Compliance Posture card', () => {
     expect(body.format).toBe('pdf');
 
     // Must NOT open the freeform builder (which would downgrade to "compliance").
-    expect(screen.queryByText(/Use Security & Compliance Posture/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Report name/i)).not.toBeInTheDocument();
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/reports'));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
@@ -77,6 +78,7 @@ describe('ReportTemplates — Security & Compliance Posture card', () => {
     render(<ReportTemplates />);
 
     const card = await clickUseTemplate('Security & Compliance Posture (Insurance)');
+    await userEvent.setup().click(screen.getByTestId('posture-options-submit'));
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(navigateTo).not.toHaveBeenCalledWith('/reports');
@@ -92,9 +94,38 @@ describe('ReportTemplates — Security & Compliance Posture card', () => {
     render(<ReportTemplates />);
 
     await clickUseTemplate('Security & Compliance Posture (Insurance)');
+    await userEvent.setup().click(screen.getByTestId('posture-options-submit'));
 
     await waitFor(() => expect(postCallBody()).toBeDefined());
     expect(postCallBody()).not.toHaveProperty('orgId');
+  });
+
+  it('opens posture options and creates backup-optional by default', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-9' } }) }));
+    render(<ReportTemplates />);
+
+    await clickUseTemplate('Security & Compliance Posture (Insurance)');
+    await userEvent.setup().click(screen.getByTestId('posture-options-submit'));
+
+    expect(postCallBody()).toMatchObject({
+      type: 'security_compliance_posture',
+      config: { backupRequired: false },
+    });
+  });
+
+  it('posts backupRequired true when the user opts in', async () => {
+    mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-9' } }) }));
+    render(<ReportTemplates />);
+
+    await clickUseTemplate('Security & Compliance Posture (Insurance)');
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('posture-backup-required'));
+    await user.click(screen.getByTestId('posture-options-submit'));
+
+    expect(postCallBody()).toMatchObject({
+      type: 'security_compliance_posture',
+      config: { backupRequired: true },
+    });
   });
 });
 

@@ -1,7 +1,46 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { randomUUID } from 'crypto';
+import type { JWK } from 'jose';
 import { generateTestKeypair, signTestJwt } from '../oauth/testHelpers';
+
+const configState = vi.hoisted(() => ({
+  privateJwks: '',
+}));
+
+type CallableDelegate = (...args: any[]) => any;
+
+const mocks = vi.hoisted(() => ({
+  getProvider: vi.fn(),
+  revokeJti: vi.fn<CallableDelegate>(),
+  revokeGrant: vi.fn<CallableDelegate>(),
+  isJtiRevoked: vi.fn(),
+  isGrantRevoked: vi.fn(),
+  getRedis: vi.fn(),
+  rateLimiter: vi.fn(),
+}));
+
+vi.mock('../config/env', () => Object.defineProperty({
+  MCP_OAUTH_ENABLED: true,
+  OAUTH_DCR_ENABLED: false,
+  OAUTH_ISSUER: 'https://test.example',
+  OAUTH_RESOURCE_URL: 'https://test.example/mcp/server',
+}, 'OAUTH_JWKS_PRIVATE_JWK', {
+  enumerable: true,
+  configurable: true,
+  get: () => configState.privateJwks,
+}));
+vi.mock('../oauth/provider', () => ({ getProvider: mocks.getProvider }));
+vi.mock('../oauth/revocationCache', () => ({
+  revokeJti: mocks.revokeJti,
+  revokeGrant: mocks.revokeGrant,
+  isJtiRevoked: mocks.isJtiRevoked,
+  isGrantRevoked: mocks.isGrantRevoked,
+}));
+vi.mock('../services/redis', () => ({ getRedis: mocks.getRedis }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
+
+import { oauthRoutes } from './oauth';
 
 const ENV_KEYS = [
   'MCP_OAUTH_ENABLED',
@@ -20,53 +59,37 @@ const AUDIENCE = 'https://test.example/mcp/server';
 
 interface Harness {
   app: Hono;
-  privateJwk: import('jose').JWK;
+  privateJwk: JWK;
   kid: string;
-  revokeJti: ReturnType<typeof vi.fn>;
-  revokeGrant: ReturnType<typeof vi.fn>;
+  revokeJti: typeof mocks.revokeJti;
+  revokeGrant: typeof mocks.revokeGrant;
   providerCalled: () => number;
 }
 
-const importHarness = async (
+let privateJwk: JWK;
+let kid: string;
+
+const app = new Hono();
+app.onError((err) => new Response(`bridge-reached:${(err as Error).message}`, { status: 599 }));
+app.route('/oauth', oauthRoutes);
+
+const getHarness = (
   cacheBehavior: {
-    revokeJti?: ReturnType<typeof vi.fn>;
-    revokeGrant?: ReturnType<typeof vi.fn>;
+    revokeJti?: CallableDelegate;
+    revokeGrant?: CallableDelegate;
   } = {}
 ): Promise<Harness> => {
-  const kp = await generateTestKeypair();
-  // Provide a JWKS env var with both private+public so loadJwks() works.
-  process.env.MCP_OAUTH_ENABLED = 'true';
-  process.env.OAUTH_ISSUER = ISSUER;
-  process.env.OAUTH_RESOURCE_URL = AUDIENCE;
-  process.env.OAUTH_COOKIE_SECRET = 'x'.repeat(48);
-  process.env.OAUTH_JWKS_PRIVATE_JWK = JSON.stringify({ keys: [kp.privateJwk] });
+  if (cacheBehavior.revokeJti) mocks.revokeJti.mockImplementation(cacheBehavior.revokeJti);
+  if (cacheBehavior.revokeGrant) mocks.revokeGrant.mockImplementation(cacheBehavior.revokeGrant);
 
-  const revokeJti = cacheBehavior.revokeJti ?? vi.fn(async () => undefined);
-  const revokeGrant = cacheBehavior.revokeGrant ?? vi.fn(async () => undefined);
-
-  let providerCalls = 0;
-  vi.doMock('../oauth/provider', () => ({
-    getProvider: vi.fn(async () => {
-      providerCalls += 1;
-      // Throw a sentinel so the catch-all bridge resolves to a known error.
-      throw new Error('provider sentinel — bridge reached');
-    }),
-  }));
-  vi.doMock('../oauth/revocationCache', () => ({ revokeJti, revokeGrant, isJtiRevoked: vi.fn(), isGrantRevoked: vi.fn() }));
-  vi.doMock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
-  vi.doMock('../services/rate-limit', () => ({
-    rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 1, resetAt: new Date() })),
-  }));
-  vi.resetModules();
-
-  const { oauthRoutes } = await import('./oauth');
-  const app = new Hono();
-  // Surface the bridge sentinel as 599 so tests can distinguish "fell through to bridge"
-  // from "short-circuited at pre-handler".
-  app.onError((err) => new Response(`bridge-reached:${(err as Error).message}`, { status: 599 }));
-  app.route('/oauth', oauthRoutes);
-
-  return { app, privateJwk: kp.privateJwk, kid: kp.kid, revokeJti, revokeGrant, providerCalled: () => providerCalls };
+  return Promise.resolve({
+    app,
+    privateJwk,
+    kid,
+    revokeJti: mocks.revokeJti,
+    revokeGrant: mocks.revokeGrant,
+    providerCalled: () => mocks.getProvider.mock.calls.length,
+  });
 };
 
 const post = (app: Hono, body: Record<string, string>) =>
@@ -84,20 +107,32 @@ const postRaw = (app: Hono, body: string) =>
   });
 
 describe('POST /oauth/token/revocation pre-handler — JWT signature gating', () => {
+  beforeAll(async () => {
+    const keypair = await generateTestKeypair();
+    privateJwk = keypair.privateJwk;
+    kid = keypair.kid;
+    configState.privateJwks = JSON.stringify({ keys: [privateJwk] });
+  });
+
   beforeEach(() => {
     clearEnv();
-    vi.resetModules();
-  });
-  afterEach(() => {
-    clearEnv();
-    vi.doUnmock('../oauth/provider');
-    vi.doUnmock('../oauth/revocationCache');
-    vi.doUnmock('../services/redis');
-    vi.doUnmock('../services/rate-limit');
+    configState.privateJwks = JSON.stringify({ keys: [privateJwk] });
+    mocks.getProvider.mockReset();
+    mocks.getProvider.mockRejectedValue(new Error('provider sentinel — bridge reached'));
+    mocks.revokeJti.mockReset();
+    mocks.revokeJti.mockResolvedValue(undefined);
+    mocks.revokeGrant.mockReset();
+    mocks.revokeGrant.mockResolvedValue(undefined);
+    mocks.isJtiRevoked.mockReset();
+    mocks.isGrantRevoked.mockReset();
+    mocks.getRedis.mockReset();
+    mocks.getRedis.mockReturnValue(null);
+    mocks.rateLimiter.mockReset();
+    mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 1, resetAt: new Date() });
   });
 
   it('does NOT write the cache for a forged JWT signed with a foreign key', async () => {
-    const h = await importHarness();
+    const h = await getHarness();
     // Sign with a DIFFERENT keypair than the one in OAUTH_JWKS_PRIVATE_JWK
     const foreignKp = await generateTestKeypair();
     const forged = await signTestJwt(
@@ -121,7 +156,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     // caller is not authorized to act on. Returning 401/400/599 here used
     // to leak token validity to a probing client. The cache MUST stay
     // untouched (the legitimate owner can still use the token).
-    const h = await importHarness();
+    const h = await getHarness();
     const tokenForA = await signTestJwt(
       h.privateJwk,
       h.kid,
@@ -141,7 +176,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('returns 200 when the request omits client_id entirely (no leak)', async () => {
-    const h = await importHarness();
+    const h = await getHarness();
     const token = await signTestJwt(
       h.privateJwk,
       h.kid,
@@ -157,7 +192,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('writes the cache and short-circuits 200 when JWT + client_id both verify', async () => {
-    const h = await importHarness();
+    const h = await getHarness();
     const jti = randomUUID();
     const grantId = randomUUID();
     const token = await signTestJwt(
@@ -176,7 +211,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('returns 503 when the JTI cache write fails (Redis-down propagation, NOT 200)', async () => {
-    const h = await importHarness({
+    const h = await getHarness({
       revokeJti: vi.fn(async () => {
         throw new Error('Redis unavailable');
       }),
@@ -196,7 +231,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('returns 503 when the GRANT cache write fails (after JTI succeeded)', async () => {
-    const h = await importHarness({
+    const h = await getHarness({
       revokeGrant: vi.fn(async () => {
         throw new Error('Redis unavailable');
       }),
@@ -214,7 +249,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('rejects oversized revocation bodies before provider bridge or cache writes', async () => {
-    const h = await importHarness();
+    const h = await getHarness();
     const oversized = `token=${'a'.repeat(70 * 1024)}&client_id=client-A`;
 
     const res = await postRaw(h.app, oversized);
@@ -228,7 +263,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
   });
 
   it('falls through to bridge for opaque (non three-part) refresh tokens', async () => {
-    const h = await importHarness();
+    const h = await getHarness();
     const res = await post(h.app, { token: 'opaque-refresh-token-no-dots', client_id: 'client-A' });
 
     // Bridge is reached (sentinel) and revocation cache is untouched.

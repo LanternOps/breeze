@@ -14,22 +14,29 @@
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
 import PDFDocument from 'pdfkit';
-import { toCents, fromCents } from '@breeze/shared';
+import { toCents, fromCents, type CoverPage } from '@breeze/shared';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
+import { renderRichTextIntoPdf } from './richTextPdf';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
 // ---------------------------------------------------------------------------
 
-function formatMoney(amount: string | number | null | undefined, currency: string): string {
+// Exported so other renderers (contractTemplateRender.ts's auto-variable
+// resolver) format money identically instead of hand-rolling a second
+// Intl/toLocaleString call that could drift from this one.
+export function formatMoney(amount: string | number | null | undefined, currency: string): string {
   const n = Number(amount ?? 0);
   const symbol = currency === 'USD' ? '$' : '';
   const formatted = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`;
 }
 
-function formatDate(value: string | Date | null | undefined): string {
+// Exported for the same reason as formatMoney above — kept in lock-step so a
+// contract's {{dates.effective}}/{{dates.expiry}} render in the same style as
+// the PDF's own date fields.
+export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return '';
   const d = typeof value === 'string' ? new Date(value + (value.length === 10 ? 'T00:00:00Z' : '')) : value;
   if (Number.isNaN(d.getTime())) return '';
@@ -58,10 +65,6 @@ function hexToColor(value: string | null | undefined, fallback: string): string 
   if (!value) return fallback;
   const v = value.startsWith('#') ? value : `#${value}`;
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : fallback;
-}
-
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function addressLines(addr: BillToAddress | null | undefined): string[] {
@@ -115,6 +118,11 @@ interface QuoteHeader {
   categoryBreakdown?: { category: string; oneTimeTotal: string; monthlyTotal: string; annualTotal: string }[];
   sellerSnapshot?: unknown;
   termsAndConditions?: string | null;
+  // Enhanced-proposals cover page (quotes.cover_page jsonb). Typed `unknown` like
+  // billToAddress/sellerSnapshot above — a raw Drizzle jsonb select — and cast to
+  // CoverPage inside renderCoverPage, which also treats a malformed/absent value
+  // as "no cover page" rather than throwing.
+  coverPage?: unknown;
 }
 
 interface QuoteBlock {
@@ -143,6 +151,28 @@ interface QuoteLine {
 /** Loads a catalog item's product image bytes (or null). Injected so renderQuotePdf
  *  stays pure / DB-free; the route supplies the real readCatalogItemImage loader. */
 type LoadCatalogImage = (catalogItemId: string) => Promise<{ data: Buffer } | null>;
+
+// A `contract` quote block's PDF-ready render data, keyed by block id and
+// injected into renderQuotePdf (Task 14) so it stays pure / DB-free — the
+// route pre-fetches this via contractTemplateRender.ts's loadContractPdfInputs
+// (same pinned-template-version read Task 13's client render path uses).
+// `html` is the ALREADY-SUBSTITUTED authored body for an 'authored' block, or
+// null for an 'uploaded' block (pdfkit can't draw an existing PDF's pages — see
+// pdfMerge.ts; the renderer draws a one-line marker instead and the route
+// appends the uploaded PDF's own pages after rendering).
+export interface ContractPdfBlockData {
+  html: string | null;
+  templateName: string;
+}
+
+/** Exact one-line marker text drawn for an UPLOADED contract block. Exported so
+ *  contractTemplateRender.ts's loadContractPdfInputs builds the SAME string for
+ *  pdfMerge.ts's `afterMarker` — the two must never drift, or a future
+ *  interleaving pass (see pdfMerge.ts's v1-limitation comment) would look for a
+ *  marker that doesn't match what's actually drawn on the page. */
+export function contractUploadedMarker(templateName: string): string {
+  return `${templateName} — attached below`;
+}
 
 // ---------------------------------------------------------------------------
 // Layout constants (shared between the line table + summary so columns align).
@@ -213,6 +243,7 @@ async function renderLineTable(
   loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   taxRate = 0,
   showTax = false,
+  showSubtotal = false,
 ): Promise<number> {
   const c = columnsFor(doc, showTax);
   let y = ensureSpace(doc, startY, 60);
@@ -275,33 +306,77 @@ async function renderLineTable(
 
   const descX = c.colDescX;
   for (const l of lines) {
-    y = ensureRowSpace(y, Math.max(30, gutter));
     // Title falls back to description for legacy lines that predate the name/description split.
     const title = (l.name ?? l.description ?? '').trim() || '—';
     const blurb = l.name ? (l.description ?? '').trim() : '';
-    doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
+    // Measure each fragment at the SAME font/size it is drawn with. The blurb is
+    // rendered at 8.5pt but used to be measured while the font was still 10pt,
+    // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
+    // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
+    doc.font('Helvetica-Bold').fontSize(10);
     const titleHeight = doc.heightOfString(title, { width: descW });
-    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW }) + 2 : 0;
+    doc.font('Helvetica').fontSize(8.5);
+    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
     const descHeight = titleHeight + blurbHeight;
-    doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     const img = imageByLine.get(l.id);
+    const rowHeight = Math.max(descHeight, img ? THUMB : 12);
+    // Keep the whole row together: if it won't fit in the remaining page, break to
+    // a fresh page (re-drawing the column header) rather than letting a long
+    // description overflow into the footer band. (Old reserve was a flat 30/52pt,
+    // so tall rows spilled past the bottom margin.)
+    y = ensureRowSpace(y, rowHeight + 6);
+    doc.fillColor('#1f2937').font('Helvetica').fontSize(10);
+    doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     if (img) {
-      try { doc.image(img, descX, y, { fit: [THUMB, THUMB] }); } catch { /* corrupt image: skip */ }
+      // A buffer that loaded but pdfkit can't decode: skip the thumbnail (never
+      // abort the document) but REPORT it — the pre-load loop above logs byte-level
+      // failures, so a decode-at-draw failure must not be the one silent gap.
+      try {
+        doc.image(img, descX, y, { fit: [THUMB, THUMB] });
+      } catch (e) {
+        console.error('[quotePdf] doc.image (line thumbnail) failed', l.id, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      }
     }
-    doc.font('Helvetica-Bold').text(title, descX + gutter, y, { width: descW });
+    doc.fillColor('#1f2937').font('Helvetica-Bold').fontSize(10).text(title, descX + gutter, y, { width: descW });
     if (blurb) {
-      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW });
+      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
       doc.fillColor('#1f2937').fontSize(10);
     }
-    doc.font('Helvetica').text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
+    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
       doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right' });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
-    y += Math.max(descHeight, img ? THUMB : 12) + 6;
+    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
+    y += rowHeight + 6;
+  }
+
+  // Opt-in per-table subtotal: sum THIS table's lines split by recurrence, shown
+  // as non-zero parts joined with " + " (matches the document footer style).
+  if (showSubtotal) {
+    const sums = { one_time: 0, monthly: 0, annual: 0 };
+    for (const l of lines) {
+      // Fold any unrecognized recurrence (e.g. a future re-enabled 'quarterly')
+      // into one_time so the printed Subtotal always covers every rendered row —
+      // never silently omit a bucket the parts list below doesn't know about.
+      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
+      sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
+    }
+    const parts: string[] = [];
+    if (sums.one_time > 0) parts.push(formatMoney(sums.one_time, currency));
+    if (sums.monthly > 0) parts.push(`${formatMoney(sums.monthly, currency)}/mo`);
+    if (sums.annual > 0) parts.push(`${formatMoney(sums.annual, currency)}/yr`);
+    if (parts.length) {
+      y = ensureRowSpace(y, 24);
+      doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
+      y += 6;
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#374151').text('Subtotal', c.colUnitX, y, { width: c.contentWidth * 0.2, align: 'left' });
+      doc.fillColor('#111827').text(parts.join('  +  '), c.colUnitX, y, { width: c.right - c.colUnitX, align: 'right' });
+      y += 18;
+    }
   }
   return y + 6;
 }
@@ -396,6 +471,98 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
 }
 
 // ---------------------------------------------------------------------------
+// Cover page (Task 14): a page-1 frame drawn ahead of every block when
+// `quote.coverPage.enabled` — branding wordmark, a hero cover image (top ~55%
+// of the page), the proposal title (24pt bold), then Prepared-for/Prepared-by
+// side by side at the bottom. Always ends with doc.addPage() when it draws
+// anything, so the existing header/blocks code below is unaffected — it always
+// starts drawing on a fresh page at the usual y=50 origin, cover or no cover.
+// ---------------------------------------------------------------------------
+
+async function renderCoverPage(
+  doc: PDFKit.PDFDocument,
+  quote: QuoteHeader,
+  branding: QuotePdfBranding,
+  loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
+  c: Cols,
+): Promise<void> {
+  const cp = (quote.coverPage ?? null) as CoverPage | null;
+  if (!cp?.enabled) return;
+
+  const partnerName = branding.partnerName ?? 'Proposal';
+  const top = doc.page.margins.top;
+  const pageBottom = doc.page.height - doc.page.margins.bottom;
+
+  // Branding wordmark (mirrors the main document header's plain-text wordmark —
+  // this renderer has no logo-image loader; logoUrl is a remote URL and the
+  // renderer must stay network-free/pure).
+  doc.fillColor('#111827').fontSize(16).font('Helvetica-Bold').text(partnerName, c.left, top);
+
+  // Cover image: top ~55% of the page, full content width. A failed/absent
+  // load degrades to "no image" — never aborts the document (same discipline
+  // as every other image draw in this file).
+  const imageTop = top + 30;
+  const imageAreaHeight = doc.page.height * 0.55 - imageTop;
+  let imageBottom = imageTop;
+  if (cp.coverImageId) {
+    let img: { data: Buffer } | null = null;
+    try {
+      img = await loadImage(cp.coverImageId);
+    } catch (e) {
+      console.error('[quotePdf] cover image load failed', cp.coverImageId, e instanceof Error ? e.message : e);
+      captureException(e instanceof Error ? e : new Error(String(e)));
+    }
+    if (img?.data) {
+      try {
+        doc.image(img.data, c.left, imageTop, { fit: [c.contentWidth, imageAreaHeight] });
+        imageBottom = imageTop + imageAreaHeight;
+      } catch (e) {
+        console.error('[quotePdf] cover doc.image failed', cp.coverImageId, e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  // Title (24pt bold).
+  if (cp.title?.trim()) {
+    doc.fillColor('#111827').fontSize(24).font('Helvetica-Bold').text(cp.title.trim(), c.left, imageBottom + 24, { width: c.contentWidth });
+  }
+
+  // Prepared for / Prepared by, side by side at the bottom of the page.
+  const rowY = pageBottom - 90;
+  const colW = c.contentWidth / 2 - 12;
+  const rightX = c.left + colW + 24;
+
+  const preparedForName = cp.preparedForName ?? quote.billToName ?? null;
+  if (preparedForName) {
+    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', c.left, rowY);
+    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(preparedForName, c.left, rowY + 14, { width: colW });
+    let addrY = rowY + 30;
+    doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
+    for (const line of addressLines(quote.billToAddress as BillToAddress | null)) {
+      doc.text(line, c.left, addrY, { width: colW });
+      addrY += 12;
+    }
+  }
+
+  // showPreparedBy defaults true at the validator layer; treat anything but an
+  // explicit `false` as "show" so a legacy/loosely-typed value degrades safely.
+  if (cp.showPreparedBy !== false) {
+    const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
+    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED BY', rightX, rowY);
+    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? partnerName, rightX, rowY + 14, { width: colW });
+    let addrY = rowY + 30;
+    doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
+    for (const line of sellerAddressLines(seller)) {
+      doc.text(line, rightX, addrY, { width: colW });
+      addrY += 12;
+    }
+  }
+
+  doc.fillColor('#111827');
+  doc.addPage();
+}
+
+// ---------------------------------------------------------------------------
 // PURE renderer: draws the quote PDF from structured data. Image bytes arrive
 // via the injected loadImage; branding via the branding arg. No DB access.
 // ---------------------------------------------------------------------------
@@ -408,6 +575,11 @@ export async function renderQuotePdf(
   branding: QuotePdfBranding,
   // Optional so existing callers/tests compile; the route injects the real loader.
   loadCatalogImage: LoadCatalogImage = async () => null,
+  // Optional so existing callers/tests compile; the route pre-fetches this via
+  // contractTemplateRender.ts's loadContractPdfInputs (Task 14) and injects it
+  // here so the renderer stays pure / DB-free — same discipline as loadImage
+  // and loadCatalogImage above.
+  contractRenderData: Map<string, ContractPdfBlockData> = new Map(),
 ): Promise<Buffer> {
   const currency = quote.currencyCode ?? branding.currencyCode ?? 'USD';
   const primary = hexToColor(branding.primaryColor, '#2563eb');
@@ -427,6 +599,9 @@ export async function renderQuotePdf(
   });
 
   const c = columnsFor(doc);
+
+  // ---- Cover page (page 1, when enabled) — always ends with doc.addPage() ---
+  await renderCoverPage(doc, quote, branding, loadImage, c);
 
   // ---- Header: partner wordmark (left) + accent PROPOSAL eyebrow + number ---
   doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
@@ -489,10 +664,17 @@ export async function renderQuotePdf(
       y = doc.y + 8;
     } else if (b.blockType === 'rich_text') {
       const html = String((b.content as { html?: string }).html ?? '');
-      const text = stripHtml(html);
-      if (text) {
-        doc.fillColor('#1f2937').fontSize(11).font('Helvetica').text(text, c.left, y, { width: c.contentWidth });
-        y = doc.y + 8;
+      if (html.trim()) {
+        // ensureRoom reads doc.y (pdfkit's own cursor, kept accurate by every
+        // draw call the renderer makes) rather than the outer `y` snapshot, so
+        // it stays correct across the multiple blocks a single rich_text block
+        // can expand into (paragraphs/headings/lists), not just the one
+        // page-break check the outer `y` would otherwise be stale for.
+        const ensureRoom = (needed: number): number => {
+          y = ensureSpace(doc, doc.y, needed);
+          return y;
+        };
+        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom });
       }
     } else if (b.blockType === 'image') {
       const imageId = (b.content as { imageId?: string }).imageId;
@@ -531,12 +713,48 @@ export async function renderQuotePdf(
         // Section label above the table (parity with the web document), e.g.
         // "Recurring services" / "One-time".
         const label = String((b.content as { label?: string }).label ?? '').trim();
+        // Keep the section label glued to its table header + first row: reserve
+        // space for label + column header + a minimum first row up front. Without
+        // this, a label near the page bottom fit its own 36pt reservation but
+        // renderLineTable then broke, stranding the label (and later the column
+        // header) alone at the foot of the page.
+        y = ensureSpace(doc, y, (label ? 24 : 0) + 24 + 52);
         if (label) {
-          y = ensureSpace(doc, y, 36);
           doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
           y = doc.y + 6;
         }
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax);
+        const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal);
+      }
+    } else if (b.blockType === 'contract') {
+      // contractRenderData[b.id] is pre-fetched by the route (Task 14's
+      // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
+      // A missing entry (render data load failed upstream, or an injected-empty
+      // Map in a caller that doesn't pass one) degrades to the uploaded-marker
+      // branch below rather than throwing.
+      const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
+      const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+      const data = contractRenderData.get(b.id);
+      const templateName = data?.templateName || 'Contract';
+      if (data?.html) {
+        // Authored: heading (template name, unless a block-level label overrides
+        // it) + the substituted rich text, via the SAME renderer/pagination
+        // discipline the rich_text block branch above uses.
+        y = ensureSpace(doc, y, 40);
+        doc.fillColor('#111827').fontSize(13).font('Helvetica-Bold').text(label ?? templateName, c.left, y, { width: c.contentWidth });
+        y = doc.y + 8;
+        const ensureRoom = (needed: number): number => {
+          y = ensureSpace(doc, doc.y, needed);
+          return y;
+        };
+        y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom });
+      } else {
+        // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts) —
+        // draw a one-line marker; the route appends the uploaded PDF's own pages
+        // after this document via mergeUploadedContractPdfs.
+        y = ensureSpace(doc, y, 30);
+        doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
+        y = doc.y + 8;
       }
     }
   }

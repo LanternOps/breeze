@@ -59,8 +59,12 @@ async function seed() {
   return withSystemDbAccessContext(async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const partner = await createPartner();
-    const orgA = await createOrganization({ partnerId: partner.id });
-    const orgB = await createOrganization({ partnerId: partner.id });
+    let orgA = await createOrganization({ partnerId: partner.id });
+    let orgB = await createOrganization({ partnerId: partner.id });
+    // Partner-export org locks must be acquired in ascending UUID order
+    // within one transaction, and this whole seed runs in a single system
+    // context. Keep the A-then-B write order ascending by construction.
+    if (orgB.id < orgA.id) [orgA, orgB] = [orgB, orgA];
 
     const [siteA] = await db
       .insert(sites)
@@ -76,7 +80,7 @@ async function seed() {
     const deviceA2 = await seedDevice(orgA.id, siteA.id, `${unique}-a2`);
     const deviceB = await seedDevice(orgB.id, siteB.id, `${unique}-b`);
 
-    return { orgA, orgB, deviceA1, deviceA2, deviceB };
+    return { orgA, orgB, siteA, siteB, deviceA1, deviceA2, deviceB };
   });
 }
 
@@ -190,7 +194,7 @@ describe('device link-group dissolution', () => {
   });
 
   runDb('org flip on a linked device requires unlinking first, then dissolves the orphan (move-org contract)', async () => {
-    const { orgA, orgB, deviceA1, deviceA2 } = await seed();
+    const { orgA, orgB, siteB, deviceA1, deviceA2 } = await seed();
 
     const groupId = await withSystemDbAccessContext(async () => {
       const [group] = await db
@@ -214,11 +218,13 @@ describe('device link-group dissolution', () => {
     }
     expect((caught as { cause?: { code?: string } } | undefined)?.cause?.code).toBe('23503');
 
-    // Unlink + flip in one shot (as moveOrg does), then dissolve the orphan.
+    // Unlink + flip in one shot (as moveOrg does — including the target site,
+    // since devices_site_org_fk requires the site to belong to the new org),
+    // then dissolve the orphan.
     await withSystemDbAccessContext(async () => {
       await db
         .update(devices)
-        .set({ orgId: orgB.id, linkGroupId: null })
+        .set({ orgId: orgB.id, siteId: siteB.id, linkGroupId: null })
         .where(eq(devices.id, deviceA1.id));
       await dissolveLinkGroupIfBelowMinimum(db, groupId);
     });

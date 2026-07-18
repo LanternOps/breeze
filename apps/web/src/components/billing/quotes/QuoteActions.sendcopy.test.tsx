@@ -6,20 +6,24 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 
 // The post-send success toast should tell the seller "what happens next" — that
 // the proposal will move to Viewed and Accepted on its own as the customer opens
-// and signs — instead of a bare "Proposal sent". This asserts the copy (and the
-// customer name interpolation) via the successMessage passed to runAction.
-const runAction = vi.hoisted(() => vi.fn(async (opts: { request: () => Promise<unknown> }) => { await opts.request(); }));
+// and signs — instead of a bare "Proposal sent". Since the emailed=false warning
+// branch, the success copy goes through showToast (not runAction's successMessage).
+const runAction = vi.hoisted(() => vi.fn(async (opts: { request: () => Promise<unknown> }) => opts.request()));
+const showToast = vi.hoisted(() => vi.fn());
 vi.mock('../../../lib/runAction', () => ({ runAction, handleActionError: vi.fn() }));
+vi.mock('../../shared/Toast', () => ({ showToast }));
 vi.mock('../../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('../../../stores/orgStore', () => ({ useOrgStore: (sel: (s: { organizations: unknown[] }) => unknown) => sel({ organizations: [] }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
-vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn().mockResolvedValue({}), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
-// A clickable ConfirmDialog stand-in so we can drive the confirm path.
-vi.mock('../../shared/ConfirmDialog', () => ({
-  ConfirmDialog: ({ open, onConfirm, confirmTestId }: { open: boolean; onConfirm: () => void; confirmTestId?: string }) =>
-    open ? <button type="button" data-testid={confirmTestId} onClick={onConfirm}>confirm</button> : null,
+// fetchWithAuth serves the composer's billing-contact prefill (Send stays
+// disabled until To is valid); tokens: null keeps the composer org-scoped so
+// the partner-only signature/Stripe fetches are skipped.
+vi.mock('../../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(async () =>
+    ({ ok: true, json: async () => ({ billingContact: { email: 'ap@customer.example' } }) }) as unknown as Response),
+  useAuthStore: { getState: () => ({ tokens: null }) },
 }));
+vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn().mockResolvedValue({ data: { emailed: true } }), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
 
 function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
   return {
@@ -43,12 +47,16 @@ describe('QuoteActions — post-send success copy', () => {
   it('the success toast advertises the auto Viewed/Accepted lifecycle with the customer name', async () => {
     render(<QuoteActions detail={draft()} onChanged={vi.fn()} variant="rail" />);
     fireEvent.click(screen.getByTestId('quote-send'));
-    fireEvent.click(await screen.findByTestId('quote-send-confirm'));
+    // Send unlocks once the billing-contact prefill lands in To.
+    await waitFor(() => expect(screen.getByTestId('quote-send-to')).toHaveValue('ap@customer.example'));
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
 
     await waitFor(() => expect(runAction).toHaveBeenCalled());
-    const opts = runAction.mock.calls[0]![0] as { successMessage?: string };
-    expect(opts.successMessage).toBe(
-      "Proposal sent — we'll mark it Viewed and Accepted as Acme Inc. opens and signs.",
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: 'success',
+        message: "Proposal sent — we'll mark it Viewed and Accepted as Acme Inc. opens and signs.",
+      }),
     );
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
-import { Plus, X, Building2 } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
@@ -11,8 +11,11 @@ import NetworkTopologyMap from './NetworkTopologyMap';
 import NetworkChangesPanel from './NetworkChangesPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '../../lib/navigation';
+import { OrgRequiredState } from '../shared/OrgRequiredState';
+import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -251,7 +254,7 @@ function getTabFromHash(): DiscoveryTab {
 
 export default function DiscoveryPage() {
   const { t } = useTranslation('discovery');
-  const { currentOrgId, currentSiteId, sites, allOrgs } = useOrgStore();
+  const { currentOrgId, sites, fetchSites, allOrgs } = useOrgStore();
   // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
   // All-orgs scope via the switcher. Network discovery is inherently
   // org/site/agent-scoped — the API deliberately refuses an unscoped list
@@ -269,6 +272,12 @@ export default function DiscoveryPage() {
   // keying on the bare null would flash this prompt at single-org users on every
   // cold load before hydration completes.
   const allOrgsMode = allOrgs && currentOrgId === null;
+  // Full context resolution for the render gate below. Distinguishes the
+  // transient pre-hydration window (loading → render nothing for that frame)
+  // from a genuine load failure (error → retry card) and a zero-org partner
+  // (empty → org-required prompt), instead of collapsing all three into a
+  // permanently blank page.
+  const scope = useOrgScope();
 
   const [activeTab, setActiveTab] = useState<DiscoveryTab>('assets');
 
@@ -389,6 +398,12 @@ export default function DiscoveryPage() {
     return map;
   }, [profiles]);
 
+  // Sites are fetched lazily now that the org switcher no longer preloads
+  // them; the profile form and changes-panel site filter need the list.
+  useEffect(() => {
+    if (currentOrgId && sites.length === 0) void fetchSites();
+  }, [currentOrgId, sites.length, fetchSites]);
+
   const siteOptions = useMemo(() => sites.map(s => ({ id: s.id, name: s.name })), [sites]);
 
   const formInitialValues = useMemo<DiscoveryProfileFormValues | undefined>(() => {
@@ -413,14 +428,14 @@ export default function DiscoveryPage() {
 
     return {
       name: editingProfile.name,
-      siteId: editingProfile.siteId ?? currentSiteId ?? '',
+      siteId: editingProfile.siteId ?? '',
       subnets: editingProfile.subnets ?? [],
       methods: editingProfile.methods ?? [],
       schedule: scheduleToForm(editingProfile.schedule),
       snmp,
       alertSettings: editingProfile.alertSettings ?? defaultAlertSettings
     };
-  }, [editingProfile, currentSiteId]);
+  }, [editingProfile]);
 
   const handleSubmitProfile = async (values: DiscoveryProfileFormValues) => {
     setSavingProfile(true);
@@ -639,14 +654,10 @@ export default function DiscoveryPage() {
         )}
       </div>
 
-      {allOrgsMode ? (
-        <div className="flex flex-col items-center justify-center rounded-lg border bg-card p-12 text-center shadow-xs">
-          <Building2 className="h-10 w-10 text-muted-foreground" />
-          <h2 className="mt-4 text-lg font-semibold">{t('discoveryPage.allOrgs.title')}</h2>
-          <p className="mt-2 max-w-md text-sm text-muted-foreground">
-            {t('discoveryPage.allOrgs.description')}
-          </p>
-        </div>
+      {scope.status === 'error' ? (
+        <OrgLoadFailedState error={scope.error} />
+      ) : scope.status === 'loading' ? null : (allOrgsMode || scope.status === 'empty') ? (
+        <OrgRequiredState description={t('discoveryPage.allOrgs.description')} />
       ) : (
         <>
       <div className="flex flex-wrap gap-2">
@@ -712,7 +723,6 @@ export default function DiscoveryPage() {
       {activeTab === 'changes' && (
         <NetworkChangesPanel
           currentOrgId={currentOrgId}
-          currentSiteId={currentSiteId}
           siteOptions={siteOptions}
         />
       )}

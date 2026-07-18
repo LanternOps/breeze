@@ -214,7 +214,7 @@
     },
     "empty": "Aucune automatisation trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
     "partnerWideTitle": "Automatisation à l’échelle du partenaire — s’applique à toutes les organisations",
-    "allOrgs": "Toutes les orgs",
+    "allOrgs": "À l’échelle du partenaire",
     "never": "Jamais",
     "actions": {
       "viewHistory": "Voir l’historique",
@@ -579,7 +579,7 @@
     },
     "empty": "Aucune politique trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
     "partnerWideTitle": "Politique à l’échelle du partenaire — évalue les appareils de toutes les organisations",
-    "allOrgs": "Toutes les orgs",
+    "allOrgs": "À l’échelle du partenaire",
     "ruleCount": "{{count}} règle",
     "moreTargets": " +{{count}} de plus",
     "actions": {

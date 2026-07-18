@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+// This test compares the real bootstrap tool names with the real permission map;
+// the independently covered eager 48-tool registry is unrelated to that parity.
+vi.mock('./aiTools', () => ({ getToolTier: vi.fn() }));
+
 // Registry parity (MCP-OAUTH-11): every authenticated bootstrap tool MUST
 // declare a TOOL_PERMISSIONS mapping, so a future bootstrap tool cannot ship
 // without a product-RBAC gate. `../db` is stubbed only so importing the real

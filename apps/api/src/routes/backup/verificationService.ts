@@ -9,6 +9,7 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
+import { BACKUP_LOW_READINESS_THRESHOLD } from './constants';
 import {
   addBackupVerification,
   backupConfigs as backupConfigsMemory,
@@ -39,7 +40,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export const BACKUP_LOW_READINESS_THRESHOLD = 70;
+export { BACKUP_LOW_READINESS_THRESHOLD } from './constants';
 export const BACKUP_READINESS_RECOVERY_THRESHOLD = 75;
 export const BACKUP_HIGH_READINESS_THRESHOLD = 85;
 export const BACKUP_RECENT_COVERAGE_DAYS = 30;

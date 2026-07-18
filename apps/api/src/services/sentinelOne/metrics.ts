@@ -38,6 +38,13 @@ export function setS1MetricsRecorder(next: S1MetricsRecorder | null): void {
   recorder = next;
 }
 
+export function resetS1MetricsForTesting(): void {
+  s1SyncRunState.clear();
+  s1ActionDispatchState.clear();
+  s1ActionPollTransitionState.clear();
+  recorder = null;
+}
+
 export function recordS1SyncRun(
   job: S1SyncJob,
   outcome: S1SyncOutcome,

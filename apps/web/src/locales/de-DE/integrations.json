@@ -1,4 +1,79 @@
 {
+  "m365CustomerGraphRead": {
+    "title": "Kunden-Graph-Lesezugriff",
+    "description": "Schreibgeschützter Zugriff auf Microsoft 365-Inventardaten, den ein Kundenadministrator genehmigt. Breeze fragt hier nie nach einem Mandantengeheimnis oder Zertifikat.",
+    "selectOrganization": "Wählen Sie eine Organisation aus, um Customer Graph Read zu verwalten.",
+    "loading": "Customer-Graph-Read-Verbindung wird geladen.",
+    "unavailable": "Verbindungsdetails sind nicht verfügbar.",
+    "onboardingUnavailable": "Der Kunden-Graph-Lesezugriff ist für diese Organisation nicht aktiviert.",
+    "callback": {
+      "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
+      "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
+    },
+    "tenant": "Verifizierter Mandant",
+    "tenantId": "Mandanten-ID",
+    "manifest": "Berechtigungsmanifest",
+    "manifestVersion": "Manifestversion {{version}}",
+    "unnamedTenant": "Unbenannter Mandant",
+    "notVerified": "Nicht verifiziert",
+    "lastVerifiedAt": "Letzte Verbindungsprüfung",
+    "never": "Nie",
+    "none": "Keine",
+    "microsoftConsentHelp": "Das Trennen in Breeze entfernt die mandantenweite Zustimmung in Microsoft Entra nicht.",
+    "microsoftConsentDocs": "Microsoft-Anwendungsberechtigungen verwalten",
+    "status": {
+      "pending-consent": "Zustimmung ausstehend",
+      "verifying": "Wird überprüft",
+      "active": "Aktiv",
+      "degraded": "Eingeschränkt",
+      "suspended": "Ausgesetzt",
+      "revoked": "Widerrufen"
+    },
+    "grants": {
+      "required": "Erforderliche Berechtigungen",
+      "observed": "Ermittelte Berechtigungen",
+      "lastKnownObserved": "Zuletzt bekannte Berechtigungen",
+      "lastKnownHelp": "Microsoft konnte den Berechtigungsabgleich nicht abschließen. Die angezeigte Liste ist der zuletzt bekannte Stand.",
+      "unknownHelp": "Microsoft konnte den Berechtigungsabgleich nicht abschließen. Es ist noch kein verifiziertes Berechtigungsergebnis verfügbar.",
+      "missing": "Fehlende Berechtigungen",
+      "lastKnownMissing": "Zuletzt bekannte fehlende Berechtigungen",
+      "unexpectedAlert": "Unerwartete Berechtigungen erkannt",
+      "lastKnownUnexpectedAlert": "Zuletzt bekannte unerwartete Berechtigungen erkannt",
+      "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
+      "grantsVerifiedAt": "Berechtigungen geprüft"
+    },
+    "actions": {
+      "connect": "Verbinden",
+      "reconsent": "Erneut zustimmen",
+      "retest": "Erneut prüfen",
+      "disconnect": "Von Breeze trennen",
+      "permissionRequired": "Für diese Aktionen ist die Schreibberechtigung für Organisationen erforderlich.",
+      "consentFailed": "Die Zustimmung konnte nicht gestartet werden.",
+      "retestFailed": "Die Verbindung konnte nicht erneut geprüft werden.",
+      "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
+      "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
+      "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
+      "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt."
+    },
+    "errors": {
+      "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",
+      "consent_state_mismatch": "Die Zustimmungssitzung konnte nicht verifiziert werden. Starten Sie die Zustimmung erneut.",
+      "consent_cancelled": "Die Microsoft-Zustimmung wurde abgebrochen.",
+      "admin_role_required": "Ein globaler Administrator oder Administrator für privilegierte Rollen muss die Zustimmung erteilen.",
+      "tenant_mismatch": "Microsoft hat einen anderen Mandanten zurückgegeben. Starten Sie die Zustimmung für diese Organisation erneut.",
+      "tenant_already_bound": "Dieser Microsoft-Mandant ist bereits mit einer anderen Organisation verbunden.",
+      "credential_unavailable": "Die Verbindungsanmeldeinformationen sind nicht verfügbar. Wenden Sie sich an einen Breeze-Administrator.",
+      "identity_token_invalid": "Die Identitätsprüfung des Microsoft-Administrators ist fehlgeschlagen.",
+      "application_token_invalid": "Die Microsoft-Anwendungsprüfung ist fehlgeschlagen.",
+      "grant_reconciliation_unavailable": "Der Berechtigungsabgleich ist nicht verfügbar. Prüfen Sie die Verbindung erneut.",
+      "grant_missing": "Mindestens eine erforderliche Microsoft-Berechtigung fehlt.",
+      "grant_unexpected": "Microsoft meldet Berechtigungen außerhalb des genehmigten Manifests.",
+      "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
+      "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
+      "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
+      "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
+    }
+  },
   "communicationIntegrations": {
     "critical": "Kritisch",
     "high": "Hoch",
@@ -138,10 +213,7 @@
     "huntressIntegration": "Huntress-Integration",
     "connectOnePartnerLevelHuntressAccountAndMap": "Verbinden Sie ein Huntress-Konto auf Partnerebene und ordnen Sie Huntress-Organisationen Breeze-Organisationen zu.",
     "huntressIsntConnectedYet": "Huntress ist noch nicht verbunden",
-    "huntressIsConfiguredOnceAtThePartnerLevel": "Huntress wird einmal auf Partnerebene konfiguriert und in allen Organisationen geteilt. Wechseln Sie Ihren Bereich zu",
-    "allOrgs": "Alle Organisationen",
-    "toAddTheAPIKeyAndSecret": "um den API Schlüssel und das Geheimnis hinzuzufügen.",
-    "thisBreezeOrganizationIsNotMappedToA": "Diese Breeze-Organisation ist noch keiner Huntress-Organisation zugeordnet. Wechseln Sie als Partneradministrator zu „Alle Organisationen“, um es zuzuordnen.",
+    "thisBreezeOrganizationIsNotMappedToA": "Diese Breeze-Organisation ist noch keiner Huntress-Organisation zugeordnet. Bitten Sie Ihren MSP-Administrator um die Zuordnung.",
     "partnerConnection": "Partneranbindung",
     "oneAPIKeyAndSecretCoversEveryHuntress": "Ein Schlüssel und Geheimnis im Wert von API gilt für jede Huntress-Organisation unter diesem Partnerkonto.",
     "partnerHuntress": "Partner Huntress",
@@ -234,7 +306,8 @@
     "webhookSecretPlaceholder": "Geben Sie ein Webhook-Geheimnis ein oder generieren Sie es",
     "update": "Aktualisieren",
     "saveAndConnect": "Speichern und verbinden",
-    "unknownTime": "Unbekannte Zeit"
+    "unknownTime": "Unbekannte Zeit",
+    "askAdminToConnect": "Huntress wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten."
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -287,7 +360,7 @@
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
     "microsoft365": "Microsoft 365",
     "connectAnEntraAzureADAppRegistrationSo": "Verbinden Sie eine Entra (Azure AD)-App-Registrierung, damit der KI-Assistent Benutzer und Gruppen für den Mandanten dieser Organisation verwalten kann.",
-    "microsoft365IntegrationIsNotEnabledOnThis": "Die Microsoft 365-Integration ist auf dieser Instanz nicht aktiviert.",
+    "microsoft365IntegrationIsNotEnabledOnThis": "Die direkte Legacy-Verbindung ist auf dieser Instanz nicht aktiviert.",
     "anAdministratorEnablesItBySetting": "Ein Administrator aktiviert es durch Einstellung",
     "onTheAPIServerThenReloadingThisPage": "auf dem API-Server, dann Neuladen dieser Seite.",
     "connectAnEntraAzureADAppRegistrationSo2": "Verbinden Sie eine Entra (Azure AD)-App-Registrierung, damit der KI-Assistent nach Benutzern suchen, Gruppen verwalten, Konten deaktivieren und Kennwörter für den Mandanten dieser Organisation zurücksetzen kann.",
@@ -366,9 +439,6 @@
     "connectionTestFailed": "Verbindungstest fehlgeschlagen",
     "monitoringIntegrations": "Überwachung von Integrationen",
     "connectObservabilityPlatformsAlertingToolsAndExternalMonitoring": "Verbinden Sie Observability-Plattformen, Alarmierungstools und externe Überwachungsendpunkte.",
-    "monitoringIntegrationsAreConfiguredPerOrganizationSwitchThe": "Überwachungsintegrationen werden pro Organisation konfiguriert. Schalten Sie den Bereich in der oberen Leiste um",
-    "allOrgs": "Alle Organisationen",
-    "toASingleOrganizationToViewOrEdit": "einer einzelnen Organisation, um deren Überwachungseinstellungen anzuzeigen oder zu bearbeiten.",
     "loadingMonitoringIntegrations": "Überwachungsintegrationen werden geladen...",
     "unsavedChanges": "Nicht gespeicherte Änderungen",
     "prometheus": "Prometheus",
@@ -403,7 +473,8 @@
     "metricsSelected": "Metriken ausgewählt.",
     "connectionSuccessful": "Verbindung erfolgreich.",
     "saving": "Speichern...",
-    "saveSettings": "Einstellungen speichern"
+    "saveSettings": "Einstellungen speichern",
+    "selectOrgToConfigure": "Monitoring-Integrationen werden pro Organisation konfiguriert. Wählen Sie in der oberen Leiste eine Organisation aus, um deren Monitoring-Einstellungen anzusehen oder zu bearbeiten."
   },
   "psaConnectionList": {
     "ticketsCompaniesAndConfigs": "Tickets, Unternehmen und Konfigurationen",
@@ -609,10 +680,7 @@
     "sentineloneIntegration": "SentinelOne-Integration",
     "connectOnePartnerLevelSentinelOneTenantAndMap": "Verbinden Sie einen SentinelOne-Mandanten auf Partnerebene und ordnen Sie SentinelOne-Standorte Breeze-Organisationen zu.",
     "sentineloneIsntConnectedYet": "SentinelOne ist noch nicht verbunden",
-    "sentineloneIsConfiguredOnceAtThePartnerLevel": "SentinelOne wird einmal auf Partnerebene konfiguriert und in allen Organisationen gemeinsam genutzt. Wechseln Sie Ihren Bereich zu",
-    "allOrgs": "Alle Organisationen",
-    "toAddTheManagementURLAndAPIToken": "um den Management-Token URL und API hinzuzufügen.",
-    "thisOrganizationIsntMappedToASentinelOneSite": "Diese Organisation ist noch keiner SentinelOne-Standort zugeordnet. Wechseln Sie als Partneradministrator zu „Alle Organisationen“, um es zuzuordnen.",
+    "thisOrganizationIsntMappedToASentinelOneSite": "Diese Organisation ist noch keiner SentinelOne-Site zugeordnet. Bitten Sie Ihren MSP-Administrator um die Zuordnung.",
     "partnerConnection": "Partneranbindung",
     "oneManagementURLAndAPITokenCoversEvery": "Ein Management-Token im Wert von URL und API deckt jede SentinelOne-Standort unter diesem Partnerkonto ab.",
     "myS1Tenant": "Mein S1-Mieter",
@@ -646,7 +714,8 @@
     "hideApiToken": "API-Token ausblenden",
     "showApiToken": "API-Token anzeigen",
     "update": "Aktualisieren",
-    "saveAndConnect": "Speichern und verbinden"
+    "saveAndConnect": "Speichern und verbinden",
+    "askAdminToConnect": "SentinelOne wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten."
   },
   "stripePaymentsIntegration": {
     "loadFailed": "Laden fehlgeschlagen",

@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+// Org scope, so the fleet-view gate stays open and the data paths under test run.
+vi.mock('@/hooks/useOrgScope', () => ({
+  useOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
+  getOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
+}));
+vi.mock('../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(), fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const getJwtClaims = vi.fn(() => ({ scope: 'partner', partnerId: 'p-1', orgId: null }));

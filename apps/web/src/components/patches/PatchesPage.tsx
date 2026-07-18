@@ -15,7 +15,6 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '../../lib/authScope';
-import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { normalizePatch, normalizeRing } from './patchHelpers';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
@@ -64,6 +63,16 @@ export default function PatchesPage() {
   // Rings + approvals are partner-scoped: only partner/system users manage them.
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
+
+  // The Update Rings tab is gated on the client-only JWT scope (canManageRings),
+  // which is absent during SSR, so the server renders two tabs and the client
+  // three. Render the tab list from an SSR-stable value until after mount so the
+  // first client render matches the server markup — companion to the #2421
+  // active-tab fix below. canManageRings itself stays accurate everywhere else
+  // (the hash-resolution effect, ring actions) so the #rings deep-link and
+  // scope guards are unaffected.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   // Start from the SSR-safe default; the hash (with the org-scope guard) is
   // applied post-mount by the sync effect below, avoiding an SSR hydration
@@ -119,9 +128,9 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
-      ...(canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
+      ...(mounted && canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
-    [canManageRings, t]
+    [mounted, canManageRings, t]
   );
 
   // Ring selector data (simplified for dropdown)
@@ -541,7 +550,6 @@ export default function PatchesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('patchesPage.title')}</h1>
-          <PageScopeIndicator pathname={typeof window !== 'undefined' ? window.location.pathname : '/patches'} orgName={currentOrg?.name} />
           <p className="text-muted-foreground">{t('patchesPage.description')}</p>
         </div>
         <div className="flex items-center gap-3">
@@ -676,7 +684,6 @@ export default function PatchesPage() {
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
-        currentOrgId={currentOrgId}
         orgName={currentOrg?.name ?? null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         onClose={() => {

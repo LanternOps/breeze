@@ -8,7 +8,13 @@ import { DEFAULT_VISIBLE_COLUMNS, writeColumnVisibility } from './columnVisibili
 // agent endpoints with a class badge, a type badge, an All/Agent/Network
 // facet, and blank agent-only columns.
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+// Fleet view so the fleet-only Organization column stays available to these
+// suites (see DeviceList isColumnAvailable).
+vi.mock('@/stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null; allOrgs: boolean }) => unknown) =>
+    selector({ currentOrgId: null, allOrgs: true }),
+}));
 vi.mock('../remote/ConnectDesktopButton', () => ({ default: () => null }));
 vi.mock('@/lib/formatTime', () => ({ formatLastSeen: () => 'just now' }));
 

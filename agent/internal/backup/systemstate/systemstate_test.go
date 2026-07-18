@@ -277,3 +277,31 @@ func TestHelperCopyTree(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingRequired(t *testing.T) {
+	required := map[string]bool{"registry": true, "boot": true}
+	tests := []struct {
+		name       string
+		incomplete []string
+		want       []string
+	}{
+		{"nothing incomplete", nil, nil},
+		{"only optional failed", []string{"certs", "iis"}, nil},
+		{"one required failed", []string{"registry"}, []string{"registry"}},
+		{"required + optional failed", []string{"iis", "boot", "certs"}, []string{"boot"}},
+		{"both required failed", []string{"registry", "boot"}, []string{"registry", "boot"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := missingRequired(tt.incomplete, required)
+			if len(got) != len(tt.want) {
+				t.Fatalf("missingRequired(%v) = %v, want %v", tt.incomplete, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("missingRequired[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

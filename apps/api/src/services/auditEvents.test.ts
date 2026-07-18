@@ -4,7 +4,7 @@ vi.mock('./auditService', () => ({
   createAuditLogAsync: vi.fn(),
 }));
 
-import { writeAuditEvent } from './auditEvents';
+import { writeAuditEvent, writeAuditEventAsync } from './auditEvents';
 import { createAuditLogAsync } from './auditService';
 
 function buildRequestLike(headers: Record<string, string> = {}) {
@@ -38,6 +38,27 @@ describe('writeAuditEvent', () => {
         resourceId: '123e4567-e89b-42d3-a456-426614174002',
       })
     );
+  });
+
+  it('exposes the persistence promise for callers that require completion', async () => {
+    let resolvePersistence!: () => void;
+    const persistence = new Promise<void>((resolve) => {
+      resolvePersistence = resolve;
+    });
+    vi.mocked(createAuditLogAsync).mockReturnValueOnce(persistence);
+    const c = buildRequestLike({ 'user-agent': 'vitest' });
+
+    const result = writeAuditEventAsync(c, {
+      orgId: null,
+      actorType: 'api_key',
+      actorId: '123e4567-e89b-42d3-a456-426614174001',
+      action: 'partner_api.request',
+      resourceType: 'partner_service_principal',
+    });
+
+    expect(result).toBe(persistence);
+    resolvePersistence();
+    await result;
   });
 
   it('normalizes non-UUID actor IDs and preserves raw actor ID in details', () => {

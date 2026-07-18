@@ -9,18 +9,92 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 // Shared lightweight mocks for the heavy module-graph leaves.
 // ---------------------------------------------------------------------------
 
-const ledgerBegin = vi.fn(async (..._args: any[]) => ({ id: 'ledger-1' }));
-const ledgerComplete = vi.fn(async (..._args: any[]) => undefined);
-
-vi.mock('../services/mcpToolExecutionLedger', () => ({
-  beginMcpToolExecutionLedger: (...args: any[]) => ledgerBegin(...args),
-  completeMcpToolExecutionLedger: (...args: any[]) => ledgerComplete(...args),
+const testState = vi.hoisted(() => ({
+  scopes: ['ai:read'] as string[],
+  permissions: [] as Array<{ resource: string; action: string }>,
+  allowedSiteIds: undefined as string[] | undefined,
 }));
 
-const writeAuditEvent = vi.fn();
+const mocks = vi.hoisted(() => ({
+  dbSelect: vi.fn(),
+  executeTool: vi.fn(),
+  getToolDefinitions: vi.fn(),
+  getToolTier: vi.fn(),
+  ledgerBegin: vi.fn(),
+  ledgerComplete: vi.fn(),
+  writeAuditEvent: vi.fn(),
+}));
+
+vi.mock('../services/mcpToolExecutionLedger', () => ({
+  beginMcpToolExecutionLedger: (...args: any[]) => mocks.ledgerBegin(...args),
+  completeMcpToolExecutionLedger: (...args: any[]) => mocks.ledgerComplete(...args),
+}));
+
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: (...args: any[]) => writeAuditEvent(...args),
+  writeAuditEvent: (...args: any[]) => mocks.writeAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
+}));
+
+vi.mock('../db', () => ({
+  db: { select: (...args: any[]) => mocks.dbSelect(...args) },
+  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+}));
+
+// Keep schema initialization out of the timed test bodies while still giving
+// Drizzle real table/column objects for eq/inArray/getTableColumns.
+vi.mock('../db/schema', async () => {
+  const { boolean, jsonb, pgTable, text, timestamp } = await import('drizzle-orm/pg-core');
+  return {
+    devices: pgTable('test_devices', {
+      id: text('id'), orgId: text('org_id'), siteId: text('site_id'), hostname: text('hostname'),
+      status: text('status', { enum: ['online', 'offline'] }), osType: text('os_type'),
+      osVersion: text('os_version'), agentVersion: text('agent_version'), lastSeenAt: timestamp('last_seen_at'),
+    }),
+    alerts: pgTable('test_alerts', {
+      id: text('id'), orgId: text('org_id'), title: text('title'), severity: text('severity'),
+      status: text('status', { enum: ['active', 'resolved'] }), deviceId: text('device_id'),
+      triggeredAt: timestamp('triggered_at'),
+    }),
+    scripts: pgTable('test_scripts', {
+      id: text('id'), orgId: text('org_id'), partnerId: text('partner_id'), name: text('name'),
+      description: text('description'), language: text('language'), category: text('category'),
+      deletedAt: timestamp('deleted_at'),
+    }),
+    automations: pgTable('test_automations', {
+      id: text('id'), orgId: text('org_id'), partnerId: text('partner_id'), name: text('name'),
+      description: text('description'), enabled: boolean('enabled'), trigger: jsonb('trigger'),
+    }),
+    organizations: pgTable('test_organizations', {
+      id: text('id'), partnerId: text('partner_id'), createdAt: timestamp('created_at'),
+    }),
+    partners: pgTable('test_partners', { id: text('id'), billingEmail: text('billing_email') }),
+  };
+});
+
+vi.mock('../middleware/apiKeyAuth', () => ({
+  apiKeyAuthMiddleware: async (c: any, next: any) => {
+    c.set('apiKey', {
+      id: 'key-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      name: 'test',
+      keyPrefix: 'brz_test',
+      scopes: testState.scopes,
+      rateLimit: 1000,
+      createdBy: 'user-1',
+    });
+    c.set('apiKeyOrgId', 'org-1');
+    await next();
+  },
+  requireApiKeyScope: () => async (_c: any, next: any) => next(),
+}));
+
+vi.mock('../services/aiTools', () => ({
+  getToolDefinitions: (...args: any[]) => mocks.getToolDefinitions(...args),
+  executeTool: (...args: any[]) => mocks.executeTool(...args),
+  getToolTier: (...args: any[]) => mocks.getToolTier(...args),
 }));
 
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
@@ -32,6 +106,16 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
     throw new Error('should not be called without a Bearer header');
   },
   resolvePartnerAccessibleOrgIds: async () => [],
+}));
+
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async () => null),
+  assertActiveTenantContext: vi.fn(),
+  TenantInactiveError: class TenantInactiveError extends Error {},
+}));
+
+vi.mock('../services/recoveryBootstrap', () => ({
+  resolveServerUrl: (requestUrl?: string) => requestUrl ? new URL(requestUrl).origin : 'http://localhost:3001',
 }));
 
 vi.mock('./mcpExecutionOrg', () => ({
@@ -51,10 +135,8 @@ vi.mock('./mcpExecutionOrg', () => ({
 //
 // checkPermissionRequirement (MCP-OAUTH-03 resource RBAC, used by
 // resources/read) is stubbed here too, for the same reason: the FIX-3
-// site-axis tests below exercise site narrowing, not RBAC, and per-test
-// getUserPermissions() overrides via vi.doMock do not reliably propagate
-// through this outer importOriginal-wrapped mock across vi.resetModules()
-// cycles — stubbing it directly avoids that test-infra fragility.
+// site-axis tests below exercise site narrowing, not RBAC. The dedicated
+// resource-RBAC suite retains the real permission primitive.
 vi.mock('../services/aiGuardrails', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/aiGuardrails')>();
   return {
@@ -66,125 +148,79 @@ vi.mock('../services/aiGuardrails', async (importOriginal) => {
 });
 
 // Stub getUserPermissions so buildAuthFromApiKey for org keys doesn't hit the
-// permissions DB. Tests that need a site restriction override this per-case.
+// permissions DB. Site-axis cases mutate only allowedSiteIds, without
+// rebuilding the route graph. Keep the real hasPermission helper for the
+// real guardrails.
 //
 // SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now
 // re-validates a key's stored scopes against these permissions via
-// authorizeHumanApiKeyCreator before an AuthContext is ever built. This
-// file's tests exercise tier/scope GATING (FIX 1) with `ai:read`/`ai:write`/
-// `ai:execute`-scoped keys, not scope delegation, so the default creator here
-// must hold every permission those coarse scopes require (devices/alerts/
-// scripts/automations read/write/execute) — otherwise every "still works"
-// assertion below would be denied by the NEW re-clamp before ever reaching
-// the tier-gating logic under test.
+// authorizeHumanApiKeyCreator before an AuthContext is ever built — the
+// single getUserPermissions() call in this flow (checkToolPermission and
+// checkPermissionRequirement are BOTH stubbed to `null` for this whole file,
+// so neither makes its own separate call) has to double as that coarse
+// scope-ceiling check. `permissions` is therefore always this fixed FULL
+// baseline — covering devices/alerts/scripts/automations read/write/execute,
+// a superset of every `ai:read`/`ai:write`/`ai:execute` combination this file
+// exercises — never `testState.permissions`; the fine-grained RBAC these
+// tests actually target is stubbed out, so what the mock returns for
+// `permissions` doesn't drive any assertion. `allowedSiteIds` is the one
+// field the site-axis (FIX 3) tests DO depend on, so it stays testState-driven.
+const FULL_PERMISSIONS_BASELINE = [
+  { resource: 'devices', action: 'read' },
+  { resource: 'devices', action: 'write' },
+  { resource: 'devices', action: 'execute' },
+  { resource: 'alerts', action: 'read' },
+  { resource: 'alerts', action: 'write' },
+  { resource: 'scripts', action: 'read' },
+  { resource: 'scripts', action: 'write' },
+  { resource: 'scripts', action: 'execute' },
+  { resource: 'automations', action: 'read' },
+  { resource: 'automations', action: 'write' },
+];
+
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [
-        { resource: 'devices', action: 'read' },
-        { resource: 'devices', action: 'write' },
-        { resource: 'devices', action: 'execute' },
-        { resource: 'alerts', action: 'read' },
-        { resource: 'alerts', action: 'write' },
-        { resource: 'scripts', action: 'read' },
-        { resource: 'scripts', action: 'write' },
-        { resource: 'scripts', action: 'execute' },
-        { resource: 'automations', action: 'read' },
-        { resource: 'automations', action: 'write' },
-      ],
+      permissions: FULL_PERMISSIONS_BASELINE,
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
       scope: 'organization' as const,
-      allowedSiteIds: undefined,
+      allowedSiteIds: testState.allowedSiteIds,
     })),
   };
 });
 
+import { mcpServerRoutes } from './mcpServer';
+
 const ORIG_NODE_ENV = process.env.NODE_ENV;
 
 beforeEach(() => {
-  vi.resetModules();
-  ledgerBegin.mockClear();
-  ledgerComplete.mockClear();
-  writeAuditEvent.mockClear();
+  vi.clearAllMocks();
+  testState.scopes = ['ai:read'];
+  testState.permissions = [];
+  testState.allowedSiteIds = undefined;
+  mocks.dbSelect.mockReset().mockImplementation(() => {
+    throw new Error('Unexpected db.select call');
+  });
+  mocks.executeTool.mockReset();
+  mocks.getToolDefinitions.mockReset().mockReturnValue([]);
+  mocks.getToolTier.mockReset().mockReturnValue(undefined);
+  mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
+  mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
+  mocks.writeAuditEvent.mockReset();
 });
 
 afterEach(() => {
   if (ORIG_NODE_ENV === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = ORIG_NODE_ENV;
-  vi.doUnmock('../db');
-  vi.doUnmock('../db/schema');
-  vi.doUnmock('../services/aiTools');
-  vi.doUnmock('../middleware/apiKeyAuth');
 });
 
-// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
-// getUserPermissions ONCE via authorizeHumanApiKeyCreator to re-validate the
-// key's coarse 'ai:read' scope (API_KEY_SCOPE_POLICIES['ai:read'] bundles
-// devices+alerts+scripts+automations read as a single all-or-nothing unit)
-// BEFORE resources/read's own fine-grained checkPermissionRequirement runs
-// its OWN, separate getUserPermissions call. The site-axis (FIX 3) tests
-// below intentionally model a site-RESTRICTED creator who holds only ONE
-// resource's read grant — that's incompatible with the coarse 'ai:read'
-// ceiling on its own, so: the FIRST call (the coarse ceiling) gets a full
-// baseline that always satisfies 'ai:read', and every SUBSEQUENT call (the
-// fine-grained per-resource + site-axis gate) returns the scenario's actual
-// restricted permissions, preserving each test's premise without loosening
-// any assertion.
-const FULL_AI_READ_BASELINE = [
-  { resource: 'devices', action: 'read' },
-  { resource: 'alerts', action: 'read' },
-  { resource: 'scripts', action: 'read' },
-  { resource: 'automations', action: 'read' },
-];
-
-function mockSiteRestrictedPerms(
-  perms: Array<{ resource: string; action: string }>,
-  allowedSiteIds: string[],
-) {
-  vi.doMock('../services/permissions', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../services/permissions')>();
-    const buildResult = (permissions: Array<{ resource: string; action: string }>) => ({
-      permissions,
-      partnerId: null,
-      orgId: 'org-1',
-      roleId: 'role-1',
-      scope: 'organization' as const,
-      allowedSiteIds,
-    });
-    const getUserPermissions = vi.fn(async () => buildResult(perms));
-    getUserPermissions.mockResolvedValueOnce(buildResult(FULL_AI_READ_BASELINE));
-    return { ...actual, getUserPermissions };
-  });
-}
-
-function mockApiKey(scopes: string[]) {
-  vi.doMock('../middleware/apiKeyAuth', () => ({
-    apiKeyAuthMiddleware: async (c: any, next: any) => {
-      c.set('apiKey', {
-        id: 'key-1',
-        orgId: 'org-1',
-        partnerId: 'partner-1',
-        name: 'test',
-        keyPrefix: 'brz_test',
-        scopes,
-        rateLimit: 1000,
-        createdBy: 'user-1',
-      });
-      c.set('apiKeyOrgId', 'org-1');
-      await next();
-    },
-    requireApiKeyScope: () => async (_c: any, next: any) => next(),
-  }));
-}
-
 async function callTool(scopes: string[], toolName: string, args: Record<string, unknown>) {
-  mockApiKey(scopes);
-  const mod = await import('./mcpServer');
-  const res = await mod.mcpServerRoutes.request('/message', {
+  testState.scopes = scopes;
+  const res = await mcpServerRoutes.request('/message', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
     body: JSON.stringify({
@@ -205,31 +241,22 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
   // Use real aiGuardrails so registry_operations action:'delete_key' escalates
   // base tier 1 → effective tier 3 and manage_processes action:'kill' → tier 3.
   beforeEach(() => {
-    // db is unused in these tier paths until executeTool; keep a benign stub.
-    vi.doMock('../db', () => ({
-      db: {},
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
     // registry_operations / manage_processes / manage_patches are base tier 1;
     // run_script is base tier 3; security_scan is base tier 2 (its
     // action:'vulnerabilities' downgrades to tier 1 in guardrails — used by the
     // downgrade-clamp test to prove Math.max ignores the downgrade).
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [],
-      executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
-      getToolTier: (name: string) =>
-        name === 'run_script'
-          ? 3
-          : name === 'security_scan'
-            ? 2
-            : name === 'registry_operations' ||
-                name === 'manage_processes' ||
-                name === 'manage_patches'
-              ? 1
-              : undefined,
-    }));
+    mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+    mocks.getToolTier.mockImplementation((name: string) =>
+      name === 'run_script'
+        ? 3
+        : name === 'security_scan'
+          ? 2
+          : name === 'registry_operations' ||
+              name === 'manage_processes' ||
+              name === 'manage_patches'
+            ? 1
+            : undefined,
+    );
   });
 
   // C1 — tier-2 escalation: manage_patches is base tier 1, action:'approve'
@@ -266,7 +293,7 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     // The route writes two audit events: a request-level 'mcp_request' and the
     // tool-level 'mcp_tool_execution'. Select the tool-level one and assert it
     // records the EFFECTIVE (escalated) tier 3, not the base tier 1.
-    const toolAudit = writeAuditEvent.mock.calls
+    const toolAudit = mocks.writeAuditEvent.mock.calls
       .map((call: any[]) => call[1])
       .find((p: any) => p?.resourceType === 'mcp_tool_execution');
     expect(toolAudit).toBeDefined();
@@ -337,15 +364,15 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     );
     const body = await res.json();
     expect(body.error).toBeUndefined();
-    expect(ledgerBegin).toHaveBeenCalledTimes(1);
-    const arg = (ledgerBegin.mock.calls[0] as any[])[0] as any;
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0] as any;
     expect(arg.tier).toBe(3);
     expect(arg.toolName).toBe('registry_operations');
   });
 
   it('benign read action on a tier-1 tool does NOT create a ledger', async () => {
     await callTool(['ai:read', 'ai:execute'], 'registry_operations', { action: 'read_value' });
-    expect(ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 });
 
@@ -361,98 +388,48 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     { id: 'd-b', siteId: 'site-B', hostname: 'host-b' },
   ];
 
-  function buildSiteDbMock() {
-    // Minimal chainable query stub. resolveSiteAllowedDeviceIds selects
-    // {id, siteId} from devices where org; the resource queries select with a
-    // where(and(...)). We interpret captured conditions to filter rows.
-    return {
-      db: {
-        select: (cols?: any) => ({
-          from: (_table: any) => {
-            const builder: any = {
-              _conds: [] as any[],
-              where(cond: any) {
-                this._conds.push(cond);
-                return this;
-              },
-              limit(_n: number) {
-                return Promise.resolve(this._rows());
-              },
-              orderBy() {
-                return this;
-              },
-              _rows() {
-                // resolveSiteAllowedDeviceIds path: no limit() call, returns all
-                // org devices with {id, siteId}.
-                return DEVICE_ROWS.map((d) => ({ ...d, status: 'online', osType: 'linux', osVersion: '1', agentVersion: '1', lastSeenAt: null }));
-              },
-              then(resolve: any) {
-                // resolveSiteAllowedDeviceIds awaits the builder directly (no limit).
-                resolve(DEVICE_ROWS.map((d) => ({ id: d.id, siteId: d.siteId })));
-              },
-            };
-            return builder;
-          },
-        }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    };
-  }
-
   it('site-restricted caller does not see site-B devices via resources/read', async () => {
     // Restrict creator to site-A only. MCP-OAUTH-03: resources/read now
     // requires devices.read before it will even reach the site-axis
     // narrowing under test here, so the role must hold it.
-    mockSiteRestrictedPerms([{ resource: 'devices', action: 'read' }], ['site-A']);
+    testState.permissions = [{ resource: 'devices', action: 'read' }];
+    testState.allowedSiteIds = ['site-A'];
 
     // db mock: resolveSiteAllowedDeviceIds returns both devices with siteIds;
     // the real canAccessSite filter (built from allowedSiteIds) then narrows to
     // d-a. The device list query is then narrowed by inArray(devices.id,[d-a]).
     // We capture the final device list query and only return d-a.
     const capturedDeviceListConds: any[] = [];
-    vi.doMock('../db', () => ({
-      db: {
-        select: (_cols?: any) => ({
-          from: (_table: any) => {
-            const builder: any = {
-              _conds: [] as any[],
-              where(cond: any) {
-                this._conds.push(cond);
-                capturedDeviceListConds.push(cond);
-                return this;
-              },
-              limit(_n: number) {
-                // device/alert list path — return only the site-A row to model
-                // the inArray narrowing the route applied.
-                return Promise.resolve([
-                  { id: 'd-a', hostname: 'host-a', status: 'online', osType: 'linux', osVersion: '1', agentVersion: '1', lastSeenAt: null },
-                ]);
-              },
-              orderBy() {
-                return this;
-              },
-              then(resolve: any) {
-                // resolveSiteAllowedDeviceIds path (awaited without limit).
-                resolve([
-                  { id: 'd-a', siteId: 'site-A' },
-                  { id: 'd-b', siteId: 'site-B' },
-                ]);
-              },
-            };
-            return builder;
+    mocks.dbSelect.mockImplementation((_cols?: any) => ({
+      from: (_table: any) => {
+        const builder: any = {
+          _conds: [] as any[],
+          where(cond: any) {
+            this._conds.push(cond);
+            capturedDeviceListConds.push(cond);
+            return this;
           },
-        }),
+          limit(_n: number) {
+            // device list path — return only the site-A row to model the
+            // inArray narrowing the route applied.
+            return Promise.resolve([
+              { id: 'd-a', hostname: 'host-a', status: 'online', osType: 'linux', osVersion: '1', agentVersion: '1', lastSeenAt: null },
+            ]);
+          },
+          orderBy() {
+            return this;
+          },
+          then(resolve: any) {
+            // resolveSiteAllowedDeviceIds path (awaited without limit).
+            resolve(DEVICE_ROWS.map((d) => ({ id: d.id, siteId: d.siteId })));
+          },
+        };
+        return builder;
       },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
 
-    mockApiKey(['ai:read']);
-    const mod = await import('./mcpServer');
-    const res = await mod.mcpServerRoutes.request('/message', {
+    testState.scopes = ['ai:read'];
+    const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
       body: JSON.stringify({
@@ -470,9 +447,6 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     // The device-list query must have received a site-narrowing condition
     // (in addition to the org condition) — proves the route applied the axis.
     expect(capturedDeviceListConds.length).toBeGreaterThan(0);
-    // Borderline-slow under full-suite parallel load (real async MCP resources/read
-    // + permission re-mock); give headroom over the 5s default so it doesn't flake
-    // when the suite is saturated. Passes in well under 1s in isolation.
   }, 15_000);
 
   // C4 — alerts list site axis. Alert a-a is on site-A device d-a; a-b is on
@@ -482,48 +456,38 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   it('C4: site-restricted caller does not see site-B alerts via resources/read', async () => {
     // MCP-OAUTH-03: resources/read now requires alerts.read before the
     // site-axis narrowing under test here even runs.
-    mockSiteRestrictedPerms([{ resource: 'alerts', action: 'read' }], ['site-A']);
+    testState.permissions = [{ resource: 'alerts', action: 'read' }];
+    testState.allowedSiteIds = ['site-A'];
 
     const capturedAlertConds: any[] = [];
-    vi.doMock('../db', () => ({
-      db: {
-        select: (_cols?: any) => ({
-          from: (_table: any) => {
-            const builder: any = {
-              where(cond: any) {
-                capturedAlertConds.push(cond);
-                return this;
-              },
-              limit(_n: number) {
-                // alert list path — return only the site-A alert to model the
-                // inArray(alerts.deviceId,[d-a]) narrowing the route applied.
-                return Promise.resolve([
-                  { id: 'a-a', title: 'alert-a', severity: 'high', status: 'active', deviceId: 'd-a', triggeredAt: null },
-                ]);
-              },
-              orderBy() {
-                return this;
-              },
-              then(resolve: any) {
-                // resolveSiteAllowedDeviceIds path (awaited without limit).
-                resolve([
-                  { id: 'd-a', siteId: 'site-A' },
-                  { id: 'd-b', siteId: 'site-B' },
-                ]);
-              },
-            };
-            return builder;
+    mocks.dbSelect.mockImplementation((_cols?: any) => ({
+      from: (_table: any) => {
+        const builder: any = {
+          where(cond: any) {
+            capturedAlertConds.push(cond);
+            return this;
           },
-        }),
+          limit(_n: number) {
+            // alert list path — return only the site-A alert to model the
+            // inArray(alerts.deviceId,[d-a]) narrowing the route applied.
+            return Promise.resolve([
+              { id: 'a-a', title: 'alert-a', severity: 'high', status: 'active', deviceId: 'd-a', triggeredAt: null },
+            ]);
+          },
+          orderBy() {
+            return this;
+          },
+          then(resolve: any) {
+            // resolveSiteAllowedDeviceIds path (awaited without limit).
+            resolve(DEVICE_ROWS.map((d) => ({ id: d.id, siteId: d.siteId })));
+          },
+        };
+        return builder;
       },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
 
-    mockApiKey(['ai:read']);
-    const mod = await import('./mcpServer');
-    const res = await mod.mcpServerRoutes.request('/message', {
+    testState.scopes = ['ai:read'];
+    const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
       body: JSON.stringify({
@@ -540,10 +504,6 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     expect(text).not.toContain('a-b');
     // The alert-list query must have received a site-narrowing condition.
     expect(capturedAlertConds.length).toBeGreaterThan(0);
-    // Same shape as the devices test above (real async MCP resources/read +
-    // permission re-mock); borderline-slow under full-suite parallel load, so
-    // give the same 15s headroom over the 5s default. Passes well under 1s in
-    // isolation — this only prevents flakes when the suite is saturated.
   }, 15_000);
 
   // C4 — single-device read breeze://devices/{id}. A site-A-restricted caller
@@ -554,44 +514,37 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   const D_B = '22222222-2222-2222-2222-222222222222';
 
   function mockSingleDeviceDb(returnedDevice: any) {
-    vi.doMock('../db', () => ({
-      db: {
-        select: (_cols?: any) => ({
-          from: (_table: any) => {
-            const builder: any = {
-              where() {
-                return this;
-              },
-              limit(_n: number) {
-                return Promise.resolve(returnedDevice ? [returnedDevice] : []);
-              },
-              then(resolve: any) {
-                resolve([
-                  { id: D_A, siteId: 'site-A' },
-                  { id: D_B, siteId: 'site-B' },
-                ]);
-              },
-            };
-            return builder;
+    mocks.dbSelect.mockImplementation((_cols?: any) => ({
+      from: (_table: any) => {
+        const builder: any = {
+          where() {
+            return this;
           },
-        }),
+          limit(_n: number) {
+            return Promise.resolve(returnedDevice ? [returnedDevice] : []);
+          },
+          then(resolve: any) {
+            resolve([
+              { id: D_A, siteId: 'site-A' },
+              { id: D_B, siteId: 'site-B' },
+            ]);
+          },
+        };
+        return builder;
       },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     }));
   }
 
   function restrictToSiteA() {
     // MCP-OAUTH-03: resources/read now requires devices.read before the
     // site-axis narrowing under test here even runs.
-    mockSiteRestrictedPerms([{ resource: 'devices', action: 'read' }], ['site-A']);
+    testState.permissions = [{ resource: 'devices', action: 'read' }];
+    testState.allowedSiteIds = ['site-A'];
   }
 
   async function readDevice(id: string) {
-    mockApiKey(['ai:read']);
-    const mod = await import('./mcpServer');
-    return mod.mcpServerRoutes.request('/message', {
+    testState.scopes = ['ai:read'];
+    return mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
       body: JSON.stringify({

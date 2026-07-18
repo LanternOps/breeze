@@ -1253,7 +1253,7 @@
     "empty": "Ainda não há políticas. Crie uma para começar.",
     "badges": {
       "partnerWideTitle": "Política para todo o parceiro — verifica dispositivos em todas as organizações",
-      "allOrgs": "Todas as orgs"
+      "allOrgs": "Todo o parceiro"
     },
     "deleteDialog": {
       "title": "Excluir política de varredura",

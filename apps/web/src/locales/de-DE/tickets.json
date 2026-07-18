@@ -268,8 +268,6 @@
     "reviewQueue": "Prüfwarteschlange",
     "archived": "Archiviert",
     "searchPlaceholder": "Tickets suchen",
-    "filterByOrganization": "Nach Organisation filtern",
-    "allOrganizations": "Alle Organisationen",
     "filterByPriority": "Nach Priorität filtern",
     "allPriorities": "Alle Prioritäten",
     "filterByCategory": "Nach Kategorie filtern",

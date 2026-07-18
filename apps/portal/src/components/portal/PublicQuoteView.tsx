@@ -137,6 +137,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
           imageUrl={(imageId) =>
             buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
           }
+          buildUrl={buildPortalApiUrl}
           taxRate={taxRate}
           showTax={showTax}
         />

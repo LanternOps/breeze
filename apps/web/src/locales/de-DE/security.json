@@ -1253,7 +1253,7 @@
     "empty": "Noch keine Richtlinien. Erstellen Sie zunächst eine Richtlinie.",
     "badges": {
       "partnerWideTitle": "Partnerweite Richtlinie – scannt Geräte in jeder Organisation",
-      "allOrgs": "Alle Organisationen"
+      "allOrgs": "Partnerweit"
     },
     "deleteDialog": {
       "title": "Scanrichtlinie löschen",

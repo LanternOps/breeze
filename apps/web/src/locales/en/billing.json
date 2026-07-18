@@ -107,6 +107,22 @@
         "title": "Delete draft contract",
         "message": "This permanently deletes the draft contract. This cannot be undone.",
         "confirm": "Delete draft"
+      },
+      "documents": {
+        "title": "Executed documents",
+        "columns": {
+          "template": "Template",
+          "signer": "Signer",
+          "signedAt": "Signed",
+          "quote": "Quote"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "No executed documents yet.",
+        "loadError": "Could not load executed documents.",
+        "downloadError": "Could not download the PDF.",
+        "download": "Download PDF",
+        "preparing": "Preparing…",
+        "viewQuote": "View quote"
       }
     },
     "contractEditor": {
@@ -227,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "All statuses",
-        "allOrganizations": "All organizations",
         "searchPlaceholder": "Search name or org",
         "searchAria": "Search contracts"
       },
@@ -296,6 +311,132 @@
       "errors": {
         "loadSubscriptions": "Could not load Pax8 subscriptions for this organization."
       }
+    },
+    "tabs": {
+      "contracts": "Contracts",
+      "templates": "Templates",
+      "documents": "Documents"
+    },
+    "templatesTab": {
+      "title": "Contract templates",
+      "description": "Reusable contract documents you can attach to accepted quotes.",
+      "newTemplate": "New template",
+      "includeArchived": "Show archived",
+      "allOrgs": "All orgs",
+      "ownerOrg": "Organization",
+      "noVersions": "No versions yet",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archive",
+      "loadError": "Failed to load contract templates",
+      "createError": "Failed to create the template",
+      "created": "Template created",
+      "archiveError": "Failed to archive the template",
+      "archiveSuccess": "Template archived",
+      "columns": {
+        "name": "Name",
+        "owner": "Owner",
+        "status": "Status",
+        "latestVersion": "Latest version"
+      },
+      "status": {
+        "active": "Active",
+        "archived": "Archived"
+      },
+      "empty": {
+        "title": "No templates yet",
+        "description": "Create your first contract template to get started."
+      },
+      "createDialog": {
+        "title": "New contract template",
+        "name": "Name",
+        "namePlaceholder": "e.g. Master Services Agreement",
+        "description": "Description",
+        "descriptionPlaceholder": "Optional summary of this template",
+        "scope": "Ownership",
+        "allOrganizations": "All organizations",
+        "partnerWide": "Partner-wide template",
+        "thisOrgOnly": "This organization only",
+        "organization": "Organization",
+        "selectOrg": "Select an organization",
+        "orgRequired": "Select an organization for an organization-owned template.",
+        "nameRequired": "Enter a template name.",
+        "cancel": "Cancel",
+        "create": "Create template",
+        "creating": "Creating…"
+      }
+    },
+    "documentsTab": {
+      "title": "Documents",
+      "description": "Executed contract documents not yet linked to a contract.",
+      "empty": {
+        "title": "No unattached documents",
+        "description": "Executed documents appear here until they're linked to a contract."
+      },
+      "loadError": "Could not load documents.",
+      "columns": {
+        "template": "Template",
+        "signer": "Signer",
+        "signedAt": "Signed",
+        "quote": "Quote",
+        "organization": "Organization"
+      },
+      "download": "Download PDF",
+      "preparing": "Preparing…",
+      "viewQuote": "View quote",
+      "linkAction": "Link to contract",
+      "linkDialog": {
+        "title": "Link to a contract",
+        "contractLabel": "Contract",
+        "selectContract": "Select a contract",
+        "noContracts": "No contracts found for this organization.",
+        "loadContractsError": "Failed to load contracts. Please try again.",
+        "cancel": "Cancel",
+        "confirm": "Link",
+        "linking": "Linking…"
+      },
+      "linkSuccess": "Document linked to contract.",
+      "linkError": "Could not link the document to that contract."
+    },
+    "templateEditor": {
+      "back": "Back",
+      "loadError": "Failed to load the template",
+      "newVersion": "New version",
+      "newVersionConfirm": {
+        "title": "Discard unsaved changes?",
+        "message": "Starting a new version will clear the editor. Your unsaved edits to this draft will be lost.",
+        "confirm": "Start new version"
+      },
+      "uploadPdf": "Upload PDF",
+      "versions": "Versions",
+      "noVersions": "No versions yet",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Draft",
+        "published": "Published"
+      },
+      "sourceType": {
+        "authored": "Authored",
+        "uploaded": "Uploaded PDF"
+      },
+      "publish": "Publish",
+      "publishDirtyHint": "Save your draft before publishing",
+      "body": "Body",
+      "bodyAria": "Contract template body",
+      "preview": "Preview",
+      "edit": "Edit",
+      "saveDraft": "Save draft",
+      "saving": "Saving…",
+      "emptyBody": "Add some content before saving.",
+      "autoVariables": "Auto variables",
+      "manualVariables": "Manual variables",
+      "noManualVariables": "None detected",
+      "archivedNotice": "This template is archived. New versions cannot be added.",
+      "saveError": "Failed to save the draft version",
+      "saveSuccess": "Draft version saved",
+      "uploadError": "Failed to upload the PDF",
+      "uploadSuccess": "PDF version uploaded",
+      "publishError": "Failed to publish the version",
+      "publishSuccess": "Version published"
     }
   },
   "quotes": {
@@ -362,7 +503,8 @@
         "heading": "Heading",
         "image": "Image",
         "pricingTable": "Pricing table",
-        "richText": "Rich text"
+        "richText": "Rich text",
+        "contract": "Contract"
       },
       "catalog": {
         "addSome": "Add some in Product Catalog",
@@ -385,6 +527,11 @@
         "removeSectionWithLines_other": "This removes the pricing table and its {{count}} line items. This can't be undone.",
         "thisLine": "this line",
         "removeSectionWithLines": "This removes the pricing table and its lines. This can't be undone."
+      },
+      "customer": {
+        "help": "Moving a draft to another company clears the site assignment and applies that company’s tax rate.",
+        "label": "Customer",
+        "success": "Quote moved to {{name}}."
       },
       "deposit": {
         "due": "Deposit due",
@@ -420,6 +567,7 @@
         "reorderBlocks": "Could not reorder blocks.",
         "reorderLines": "Could not reorder lines.",
         "reorderSections": "Could not reorder sections.",
+        "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
         "saveTitle": "Could not save the title.",
         "unitPriceZeroOrMore": "Enter a unit price of 0 or more.",
@@ -427,7 +575,10 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image."
+        "uploadImage": "Could not upload the image.",
+        "loadContractTemplates": "Couldn't load contract templates",
+        "addContractSection": "Couldn't add the contract section",
+        "saveCoverPage": "Couldn't save the cover page"
       },
       "image": {
         "alt": "Quote image",
@@ -488,7 +639,8 @@
         "lineRemoved": "Line removed",
         "savedToCatalog": "Saved to catalog",
         "sectionAdded": "Section added",
-        "sectionRemoved": "Section removed"
+        "sectionRemoved": "Section removed",
+        "contractSectionAdded": "Contract section added"
       },
       "symbols": {
         "check": "✓",
@@ -506,6 +658,7 @@
         "qty": "Qty",
         "recurrence": "Recurrence",
         "scrollAria": "Pricing table — scroll sideways for tax, total and row actions",
+        "showSubtotal": "Show subtotal row",
         "tax": "Tax",
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
@@ -523,9 +676,51 @@
       "units": {
         "perMonth": "/mo",
         "perYear": "/yr"
+      },
+      "contract": {
+        "templateLabel": "Contract template",
+        "templatePlaceholder": "Select a template…",
+        "noTemplates": "No contract templates yet. Create one under Contracts → Templates.",
+        "noPublishedVersion": "This template has no published version yet. Publish it before attaching.",
+        "pinnedVersion": "Pinned to v{{version}}",
+        "autoVariablesTitle": "Filled automatically from the quote",
+        "autoHint": "These values resolve from the quote when the proposal is sent.",
+        "manualVariablesTitle": "Fill in for this proposal",
+        "labelFieldLabel": "Section label",
+        "labelPlaceholder": "Optional label (e.g. Master Services Agreement)",
+        "variableRequired": "Enter a value",
+        "variableUnresolved": "This variable is still unresolved",
+        "untitledTemplate": "Contract",
+        "readOnlyHint": "Remove and re-add this section to change the template, version, or variables.",
+        "updateToVersion": "Update to v{{version}}",
+        "saveVariables": "Save variables",
+        "unresolvedWarning": "Unresolved variables (will block sending): {{names}}"
+      },
+      "coverPage": {
+        "title": "Cover page",
+        "enable": "Show a cover page",
+        "summaryOn": "Shown as the first page of the proposal.",
+        "summaryOff": "No cover page — the proposal starts with its content.",
+        "titleLabel": "Cover title",
+        "titlePlaceholder": "e.g. Managed IT Services Proposal",
+        "preparedForLabel": "Prepared for",
+        "preparedForPlaceholder": "Override the customer name",
+        "showPreparedBy": "Show “prepared by” (your company)",
+        "imageLabel": "Cover image",
+        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "removeImage": "Remove image"
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Company",
+        "confirm": "Create clone",
+        "defaultTitle": "Clone of {{name}}",
+        "message": "Creates a new draft with the same content. Pick the company it’s for and give it a title.",
+        "retargetHint": "The new draft will use this company’s billing details and tax rate; the site assignment is cleared.",
+        "title": "Clone quote",
+        "titleLabel": "Title"
+      },
       "cloneError": "Could not clone the quote.",
       "cloneQuote": "Clone quote",
       "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
@@ -540,11 +735,34 @@
       "deleteSuccess": "Draft deleted",
       "downloadPdf": "Download PDF",
       "emptyHint": "Add at least one item before sending.",
+      "moreActions": "More actions",
       "savingHint": "Saving changes… Send unlocks when everything is saved.",
       "savingTitle": "Saving your changes — Send unlocks when everything is saved.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Attach the proposal PDF",
+        "invalidEmail": "Invalid email address: {{addresses}}",
         "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. This can't be undone.",
-        "title": "Send this proposal?"
+        "messageLabel": "Add a personal message (optional)",
+        "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
+        "paymentEnabled": "Online payment is enabled — the customer can pay by card after accepting.",
+        "paymentNoteNoStripe": "Online payment won't be offered after acceptance. Connect Stripe in Settings → Integrations to enable it.",
+        "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in Settings → Integrations so the deposit can be collected on acceptance.",
+        "signaturePreviewLabel": "Signature (set in Settings → Branding):",
+        "subjectLabel": "Subject",
+        "subjectPlaceholder": "Proposal {{number}} from your company",
+        "subjectPlaceholderNoNumber": "Proposal from your company",
+        "title": "Send this proposal?",
+        "toLabel": "To",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Use at most {{max}} addresses."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
+        "noEmailService": "Proposal marked Sent, but no email was delivered — email is not configured on this server.",
+        "pdfRenderFailed": "Proposal marked Sent, but the PDF could not be generated, so no email was delivered. Check the attached contract files, then resend.",
+        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually."
       },
       "sendError": "Could not send the proposal.",
       "sendProposal": "Send proposal",
@@ -625,11 +843,19 @@
     },
     "document": {
       "additionalItems": "Additional items",
+      "contract": {
+        "download": "Download contract",
+        "previewTitle": "{{name}} contract document",
+        "unavailable": "Contract file unavailable",
+        "versionFooter": "{{name}} — v{{version}}"
+      },
       "draft": "Draft",
       "empty": "This proposal doesn’t have any content yet.",
       "imageUnavailable": "Image unavailable",
       "issued": "Issued",
       "preparedFor": "Prepared for",
+      "taxId": "Tax ID: {{id}}",
+      "imageZoomAria": "View larger image",
       "preview": {
         "description": "This is what your customer sees on their proposal link.",
         "downloadPdf": "Download PDF",
@@ -714,9 +940,7 @@
         "loadSites": "Failed to load sites."
       },
       "filters": {
-        "allOrganizations": "All organizations",
         "allStatuses": "All statuses",
-        "organizationAria": "Filter by organization",
         "searchAria": "Search quotes",
         "searchPlaceholder": "Search number or org",
         "statusAria": "Filter by status"
@@ -892,9 +1116,9 @@
     "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing."
   },
   "invoiceActions": {
-      "deleteConfirm": {
-        "message": "This permanently deletes the draft invoice. This cannot be undone.",
-        "title": "Delete draft invoice"
+    "deleteConfirm": {
+      "message": "This permanently deletes the draft invoice. This cannot be undone.",
+      "title": "Delete draft invoice"
     },
     "deleteDraft": "Delete draft",
     "deleteError": "Could not delete the draft.",
@@ -1117,11 +1341,9 @@
       "loadSites": "Failed to load sites."
     },
     "filters": {
-      "allOrganizations": "All organizations",
       "allStatuses": "All statuses",
       "issuedFrom": "Issued from",
       "issuedTo": "Issued to",
-      "organizationAria": "Filter by organization",
       "searchAria": "Search invoices",
       "searchPlaceholder": "Search number or org",
       "statusAria": "Filter by status"

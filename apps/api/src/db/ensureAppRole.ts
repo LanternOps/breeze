@@ -141,6 +141,18 @@ export async function ensureAppRole(): Promise<void> {
             GRANT USAGE ON SEQUENCE audit_chain_anchors_anchor_seq_seq TO breeze_app;
           END IF;
         END IF;
+        -- Reconstruction material clocks are maintained only by trusted
+        -- SECURITY DEFINER triggers. The API may read them for incremental
+        -- exports, but direct writes could suppress or forge change signals.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_device_material_state') THEN
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_device_material_state FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_site_material_state') THEN
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_site_material_state FROM breeze_app;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_configuration_org_state') THEN
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_configuration_org_state FROM breeze_app;
+        END IF;
       END $$;
     `);
 

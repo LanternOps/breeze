@@ -1,6 +1,7 @@
 import { isIP } from 'net';
 import { z } from 'zod';
-import { isRecognizedSelfHostSignal } from './env';
+import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
+import { decodePartnerApiCursorSigningKey, isRecognizedSelfHostSignal } from './env';
 
 // ---------------------------------------------------------------------------
 // Insecure default detection
@@ -393,6 +394,8 @@ const envSchema = z
       .string({ error: 'MFA_ENCRYPTION_KEY is required' })
       .min(1, 'MFA_ENCRYPTION_KEY must not be empty'),
 
+    PARTNER_API_CURSOR_SIGNING_KEY: z.string().optional(),
+
     // -- Production-required -------------------------------------------------
     CORS_ALLOWED_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
@@ -752,6 +755,24 @@ const envSchema = z
 
     // --- Required secrets: reject insecure values in production only ---
     if (isProduction) {
+      const cursorSigningKey = decodePartnerApiCursorSigningKey(data.PARTNER_API_CURSOR_SIGNING_KEY);
+      if (!cursorSigningKey || cursorSigningKey.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PARTNER_API_CURSOR_SIGNING_KEY'],
+          message:
+            'PARTNER_API_CURSOR_SIGNING_KEY must decode to at least 32 bytes of random key material from canonical base64 in production.',
+        });
+      }
+      if (cursorSigningKey?.equals(Buffer.from(data.JWT_SECRET, 'utf8'))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PARTNER_API_CURSOR_SIGNING_KEY'],
+          message:
+            'PARTNER_API_CURSOR_SIGNING_KEY must not reuse UTF-8 JWT_SECRET key material. Generate a dedicated random key.',
+        });
+      }
+
       // E2E_MODE must never be enabled in production
       if (data.E2E_MODE === '1' || data.E2E_MODE === 'true') {
         ctx.addIssue({
@@ -870,6 +891,7 @@ const envSchema = z
       rejectSecretReuse(
         [
           { key: 'JWT_SECRET', value: data.JWT_SECRET },
+          { key: 'PARTNER_API_CURSOR_SIGNING_KEY', value: data.PARTNER_API_CURSOR_SIGNING_KEY },
           { key: 'APP_ENCRYPTION_KEY', value: data.APP_ENCRYPTION_KEY },
           { key: 'MFA_ENCRYPTION_KEY', value: data.MFA_ENCRYPTION_KEY },
           { key: 'ENROLLMENT_KEY_PEPPER', value: data.ENROLLMENT_KEY_PEPPER },
@@ -1402,6 +1424,7 @@ export function validateConfig(): AppConfig {
     JWT_ACTIVE_KID: env.JWT_ACTIVE_KID,
     APP_ENCRYPTION_KEY: env.APP_ENCRYPTION_KEY,
     MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,
+    PARTNER_API_CURSOR_SIGNING_KEY: env.PARTNER_API_CURSOR_SIGNING_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
     TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
@@ -1503,6 +1526,10 @@ export function validateConfig(): AppConfig {
 
     throw new Error(message);
   }
+
+  // The Graph-read descriptor stays out of AppConfig/public config. Parse it
+  // lazily, but fail boot closed when the new-consent rollout is enabled.
+  validateM365CustomerGraphReadRuntimeConfigAtBoot(env);
 
   _config = result.data;
 

@@ -16,6 +16,11 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
+# apps/api depends on these source-only workspace packages (@breeze/extension-api
+# re-exports @breeze/extension-sdk); their manifests must be present so pnpm
+# creates the workspace symlinks the API's tsup bundle resolves at build time.
+COPY packages/extension-api/package.json ./packages/extension-api/
+COPY packages/extension-sdk/package.json ./packages/extension-sdk/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline

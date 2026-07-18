@@ -193,6 +193,14 @@ function formatDesktopAccessReason(
       return "Unsupported macOS Version";
     case "manual_install":
       return "Manual Install";
+    case "no_display_session":
+      return "No Display Session";
+    case "wayland_unsupported":
+      return "Wayland Unsupported";
+    case "x11_connect_failed":
+      return "X11 Connection Failed";
+    case "x11_auth_failed":
+      return "X11 Authentication Failed";
     default:
       return "—";
   }

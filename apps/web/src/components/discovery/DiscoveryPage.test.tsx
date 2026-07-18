@@ -12,18 +12,22 @@ vi.mock('../../stores/auth', () => ({
 
 const orgStoreState: {
   currentOrgId: string | null;
-  currentSiteId: string | null;
   sites: unknown[];
+  organizations: unknown[];
   allOrgs: boolean;
+  fetchSites: () => void;
 } = {
   currentOrgId: 'org-1',
-  currentSiteId: 'site-1',
   sites: [],
-  allOrgs: false
+  organizations: [],
+  allOrgs: false,
+  fetchSites: vi.fn()
 };
 
+// Selector-aware: OrgRequiredState reads useOrgStore((s) => s.organizations).
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: () => orgStoreState
+  useOrgStore: (selector?: (s: typeof orgStoreState) => unknown) =>
+    selector ? selector(orgStoreState) : orgStoreState
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -100,7 +104,6 @@ describe('DiscoveryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     orgStoreState.currentOrgId = 'org-1';
-    orgStoreState.currentSiteId = 'site-1';
     orgStoreState.sites = [];
     orgStoreState.allOrgs = false;
     window.history.pushState({}, '', '/discovery#profiles');
@@ -250,7 +253,6 @@ describe('DiscoveryPage', () => {
     beforeEach(() => {
       // Explicit All-Orgs scope: allOrgs flag set, not a transient hydration null.
       orgStoreState.currentOrgId = null;
-      orgStoreState.currentSiteId = null;
       orgStoreState.allOrgs = true;
     });
 
@@ -262,7 +264,7 @@ describe('DiscoveryPage', () => {
 
       // Prompt is shown instead of an error state.
       expect(
-        await screen.findByText('Select an organization to view network discovery')
+        await screen.findByTestId('org-required-state')
       ).toBeInTheDocument();
 
       // No tab content is rendered (none of the org-scoped tabs mount).
@@ -282,7 +284,7 @@ describe('DiscoveryPage', () => {
 
       render(<DiscoveryPage />);
 
-      await screen.findByText('Select an organization to view network discovery');
+      await screen.findByTestId('org-required-state');
       expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/assets/asset-9');
     });
 
@@ -292,7 +294,7 @@ describe('DiscoveryPage', () => {
 
       render(<DiscoveryPage />);
 
-      await screen.findByText('Select an organization to view network discovery');
+      await screen.findByTestId('org-required-state');
       expect(screen.queryByRole('button', { name: /New Profile/ })).not.toBeInTheDocument();
     });
 
@@ -303,12 +305,11 @@ describe('DiscoveryPage', () => {
       const { rerender } = render(<DiscoveryPage />);
 
       // Starts on the prompt, no profiles request.
-      await screen.findByText('Select an organization to view network discovery');
+      await screen.findByTestId('org-required-state');
       expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles');
 
       // User picks a concrete org via the switcher -> store updates, re-render.
       orgStoreState.currentOrgId = 'org-1';
-      orgStoreState.currentSiteId = 'site-1';
       orgStoreState.allOrgs = false;
       rerender(<DiscoveryPage />);
 
@@ -320,28 +321,27 @@ describe('DiscoveryPage', () => {
       await screen.findAllByText('HQ sweep');
       expect(desktop().getByText('HQ sweep')).toBeInTheDocument();
       expect(
-        screen.queryByText('Select an organization to view network discovery')
+        screen.queryByTestId('org-required-state')
       ).not.toBeInTheDocument();
       expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles');
     });
   });
 
-  it('does not flash the prompt on a transient pre-hydration null org', async () => {
-    // Before the first org is auto-selected, currentOrgId is null but allOrgs is
-    // false. Single-org users must NOT see the "select an organization" prompt
-    // in this window -- the guard keys on the explicit allOrgs flag.
+  it('renders neither the prompt nor the tab content on a transient pre-hydration null org', () => {
+    // Before the persisted context rehydrates / the first org auto-selects,
+    // currentOrgId is null and allOrgs is false. Single-org users must NOT see
+    // the "select an organization" prompt in this window — and the tab content
+    // must not mount either, since child components (assets list) would fire
+    // org-less fetches that 400 before the context resolves.
     orgStoreState.currentOrgId = null;
-    orgStoreState.currentSiteId = null;
     orgStoreState.allOrgs = false;
     window.history.pushState({}, '', '/discovery#assets');
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
 
     render(<DiscoveryPage />);
 
-    expect(await screen.findByText('Assets tab')).toBeInTheDocument();
-    expect(
-      screen.queryByText('Select an organization to view network discovery')
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-required-state')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
   });
 });
 import '@/lib/i18n';

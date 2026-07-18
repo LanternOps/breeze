@@ -206,6 +206,12 @@
       "topMemoryUsage": "Top Memory Usage",
       "totalDevices": "Total Devices"
     },
+    "postureOptions": {
+      "requireBackupCoverage": "Require backup coverage",
+      "requireBackupCoverageHelp": "When optional, backup remains visible as neutral evidence and does not create a recommendation.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
     "reportBuilderPage": {
       "configurationTitle": "Report Configuration",
       "description": "Generate a one-time report without saving it.",

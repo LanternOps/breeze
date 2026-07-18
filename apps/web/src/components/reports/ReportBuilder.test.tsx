@@ -107,3 +107,69 @@ describe('ReportBuilder live preview', () => {
     expect(screen.queryByText('Triage Backlog')).not.toBeNull();
   });
 });
+
+describe('ReportBuilder config preservation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const putBody = () => {
+    const call = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT'
+    );
+    expect(call).toBeDefined();
+    return JSON.parse(String((call![1] as RequestInit).body)) as {
+      config: Record<string, unknown>;
+    };
+  };
+
+  it('preserves config keys it does not own through an edit save', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        baseConfig={{
+          backupRequired: false,
+          includeCis: false,
+          maxLocalAdmins: 4,
+          sites: ['11111111-1111-4111-8111-111111111111']
+        }}
+        defaultValues={{ name: 'Workstation posture', type: 'security_compliance_posture' }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => {
+      const { config } = putBody();
+      expect(config.backupRequired).toBe(false);
+      expect(config.includeCis).toBe(false);
+      expect(config.maxLocalAdmins).toBe(4);
+      expect(config.sites).toEqual(['11111111-1111-4111-8111-111111111111']);
+    });
+  });
+
+  it('lets current builder state win over stale baseConfig keys', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        baseConfig={{ builderType: 'activity', backupRequired: true }}
+        defaultValues={{ name: 'Workstation posture', type: 'security_compliance_posture' }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => {
+      const { config } = putBody();
+      // posture key survives, but the builder's own key reflects live state
+      expect(config.backupRequired).toBe(true);
+      expect(config.builderType).toBe('compliance');
+    });
+  });
+});

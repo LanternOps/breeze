@@ -87,6 +87,13 @@ describe('m365DirectGraph legacy connection selection', () => {
     expect(decryptForColumn).not.toHaveBeenCalled();
     expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
   });
+
+  it('fails closed before token acquisition when a legacy row has no tenant id', async () => {
+    selectRows = [{ ...mockRow, tenantId: null }];
+    const result = await getToken('org-1');
+    expect(result).toMatchObject({ kind: 'error', code: 'connection_key_error' });
+    expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
+  });
 });
 
 describe('m365DirectGraph.invokeDirect endpoint mapping', () => {

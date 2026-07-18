@@ -1,0 +1,30 @@
+{
+  "name": "@breeze/m365-graph-read-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 node dist/index.cjs",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.6.0",
+    "@azure/keyvault-secrets": "^4.9.0",
+    "@breeze/shared": "workspace:*",
+    "@hono/node-server": "^2.0.10",
+    "hono": "^4.12.30",
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsup": "^8.3.5",
+    "tsx": "^4.23.1",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
+  }
+}

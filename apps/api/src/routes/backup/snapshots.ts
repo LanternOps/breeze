@@ -658,6 +658,7 @@ function toSnapshotResponse(row: typeof backupSnapshots.$inferSelect) {
     configId: row.configId ?? null,
     jobId: row.jobId,
     createdAt: row.timestamp.toISOString(),
+    backupType: row.backupType ?? 'file',
     sizeBytes: row.size ?? null,
     fileCount: row.fileCount ?? null,
     label: row.label ?? null,

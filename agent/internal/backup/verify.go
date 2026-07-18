@@ -15,9 +15,14 @@ import (
 
 // VerifyResult holds the outcome of a backup integrity check.
 type VerifyResult struct {
-	SnapshotID    string   `json:"snapshotId"`
-	Status        string   `json:"status"` // passed, failed, partial
-	FilesVerified int      `json:"filesVerified"`
+	SnapshotID    string `json:"snapshotId"`
+	Status        string `json:"status"` // passed, failed, partial
+	FilesVerified int    `json:"filesVerified"`
+	// FilesSizeOnly counts files verified by size only because the manifest
+	// carried no checksum for them (an older manifest, or a checksum that
+	// failed to compute at backup time). Non-zero means "passed" is weaker than
+	// a full checksum verification — size-only can't catch same-size bit-rot.
+	FilesSizeOnly int      `json:"filesSizeOnly,omitempty"`
 	FilesFailed   int      `json:"filesFailed"`
 	SizeBytes     int64    `json:"sizeBytes"`
 	DurationMs    int64    `json:"durationMs"`
@@ -103,10 +108,43 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 			continue
 		}
 
-		info, _ := os.Stat(tempPath)
-		if info != nil {
-			result.SizeBytes += info.Size()
+		// Validate the downloaded object against the manifest so SILENT
+		// corruption (bit-rot, truncation, tampering) is caught — not just a
+		// missing object. Downloading proves presence; without this a wrong-bytes
+		// object passed as "verified" (the remote/cloud providers, unlike
+		// LocalProvider, do not gzip-validate, and the manifest previously stored
+		// no checksum). Size is always checked; the SHA-256 is checked whenever
+		// the manifest carries one (manifests written before checksums were added
+		// do not — those are counted as size-only via FilesSizeOnly).
+		info, statErr := os.Stat(tempPath)
+		if statErr != nil || info == nil {
+			os.Remove(tempPath)
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-verify] stat failed for %s: %v", file.BackupPath, statErr)
+			continue
 		}
+		if info.Size() != file.Size {
+			os.Remove(tempPath)
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-verify] size mismatch for %s: manifest %d, stored %d",
+				file.BackupPath, file.Size, info.Size())
+			continue
+		}
+		if file.Checksum != "" {
+			if !checksumMatches(tempPath, file.Checksum) {
+				os.Remove(tempPath)
+				result.FilesFailed++
+				result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+				log.Printf("[backup-verify] checksum mismatch for %s (manifest %s)",
+					file.BackupPath, file.Checksum)
+				continue
+			}
+		} else {
+			result.FilesSizeOnly++
+		}
+		result.SizeBytes += info.Size()
 		os.Remove(tempPath)
 		result.FilesVerified++
 	}
@@ -193,19 +231,30 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 		}
 
 		dlErr := provider.Download(file.BackupPath, destPath)
-		if dlErr != nil {
+		info, statErr := os.Stat(destPath)
+		switch {
+		case dlErr != nil:
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
 			log.Printf("[backup-restore] download failed for %s: %v", file.BackupPath, dlErr)
-		} else {
-			info, statErr := os.Stat(destPath)
-			if statErr != nil {
-				result.FilesFailed++
-				result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			} else {
-				result.FilesVerified++
-				result.SizeBytes += info.Size()
-			}
+		case statErr != nil || info == nil:
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-restore] stat failed for %s: %v", file.BackupPath, statErr)
+		case info.Size() != file.Size:
+			// A real test-restore must confirm the bytes came back intact, not
+			// just that a file appeared (same blind spot as VerifyIntegrity).
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-restore] size mismatch for %s: manifest %d, restored %d",
+				file.BackupPath, file.Size, info.Size())
+		case file.Checksum != "" && !checksumMatches(destPath, file.Checksum):
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
+			log.Printf("[backup-restore] checksum mismatch for %s", file.BackupPath)
+		default:
+			result.FilesVerified++
+			result.SizeBytes += info.Size()
 		}
 
 		if progressFn != nil {

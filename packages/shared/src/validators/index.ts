@@ -22,6 +22,7 @@ export * from './invoices';
 export * from './contracts';
 export * from './mlFeedback';
 export * from './quotes';
+export * from './contractTemplates';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './softwareDetection';
@@ -514,10 +515,56 @@ export const updateConfigPolicySchema = z.object({
   status: z.enum(['active', 'inactive', 'archived']).optional(),
 });
 
+/**
+ * Private database-to-export material used to reconstruct patch settings.
+ * It is never valid in caller-controlled feature settings, regardless of the
+ * feature type or nesting depth.
+ */
+export const CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY = '__breezePatchInlineMirror';
+
+export function containsConfigPolicyReservedKey(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+
+  const pending: object[] = [value];
+  const visited = new WeakSet<object>();
+  let inspectedObjects = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    // JSON request bodies cannot contain cycles or shared object references.
+    // Service callers can, so reject those structures instead of risking an
+    // incomplete reservation scan. Bound work for the same fail-closed reason.
+    if (visited.has(current) || inspectedObjects >= 10_000) return true;
+    visited.add(current);
+    inspectedObjects += 1;
+
+    try {
+      for (const key of Object.keys(current)) {
+        if (key === CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY) return true;
+        const nested = (current as Record<string, unknown>)[key];
+        if (nested !== null && typeof nested === 'object') pending.push(nested);
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+export const configFeatureInlineSettingsSchema = z
+  .record(z.string(), z.unknown())
+  .superRefine((settings, ctx) => {
+    if (containsConfigPolicyReservedKey(settings)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Reserved configuration feature material is not allowed',
+      });
+    }
+  });
+
 export const addFeatureLinkSchema = z.object({
   featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability']),
   featurePolicyId: z.string().guid().optional(),
-  inlineSettings: z.record(z.string(), z.unknown()).optional(),
+  inlineSettings: configFeatureInlineSettingsSchema.optional(),
 }).refine(
   (data) => data.featurePolicyId || data.inlineSettings,
   { message: 'At least one of featurePolicyId or inlineSettings is required' }
@@ -750,7 +797,7 @@ export const monitoringInlineSettingsSchema = z.object({
 
 export const updateFeatureLinkSchema = z.object({
   featurePolicyId: z.string().guid().nullable().optional(),
-  inlineSettings: z.record(z.string(), z.unknown()).nullable().optional(),
+  inlineSettings: configFeatureInlineSettingsSchema.nullable().optional(),
 });
 
 export const assignPolicySchema = z.object({

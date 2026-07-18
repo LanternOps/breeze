@@ -47,7 +47,7 @@ function isUuid(value: string | null | undefined): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
 }
 
-export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
+export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Promise<void> {
 
   const details = (event.details && typeof event.details === 'object')
     ? { ...event.details }
@@ -86,7 +86,7 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     ? (sanitizeAuditPayload(details) as Record<string, unknown>)
     : undefined;
 
-  createAuditLogAsync({
+  return createAuditLogAsync({
     orgId: event.orgId ?? undefined,
     actorType: resolvedActorType,
     actorId,
@@ -102,6 +102,11 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
     errorMessage: event.errorMessage,
     initiatedBy,
   });
+}
+
+/** Fire-and-forget compatibility wrapper for existing audit call sites. */
+export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
+  void writeAuditEventAsync(c, event);
 }
 
 /**

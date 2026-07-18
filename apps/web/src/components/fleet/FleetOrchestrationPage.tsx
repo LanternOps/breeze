@@ -8,6 +8,7 @@ import {
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
+import { getOrgScope } from '@/hooks/useOrgScope';
 import { useAiStore } from '@/stores/aiStore';
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -48,7 +49,10 @@ interface FleetStats {
   patches: PatchSummary;
   alerts: AlertSummary;
   automationCount: number;
-  maintenanceActive: number;
+  // null when the per-org maintenance endpoint is skipped in fleet view — the
+  // count isn't zero, it's unknown, so the card reads "—" rather than a
+  // fabricated healthy "0 active windows".
+  maintenanceActive: number | null;
   groupCount: number;
   reportCount: number;
 }
@@ -81,9 +85,14 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
     { name: 'reports', path: '/reports' },
   ] as const;
 
+  // Maintenance windows are per-org (the endpoint 400s with no org); in fleet
+  // view we skip that one call. Capture the scope once so the stat below can be
+  // reported as null (unknown), not a fabricated 0.
+  const fleetView = getOrgScope().scope === 'all';
   const failedEndpoints: string[] = [];
   const results = await Promise.all(
     endpoints.map(async (ep) => {
+      if (ep.name === 'maintenance' && fleetView) return null;
       try {
         const res = await fetchWithAuth(ep.path);
         if (!res.ok) {
@@ -170,9 +179,13 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
       total: toNum(alerts?.total),
     },
     automationCount: Array.isArray(automationList) ? automationList.length : 0,
-    maintenanceActive: Array.isArray(maintenanceList)
-      ? maintenanceList.filter((w: Record<string, unknown>) => w.status === 'active' || w.isActive).length
-      : 0,
+    // Unknown (null) in fleet view where the call was skipped; a real count
+    // otherwise. Never a fabricated 0 that reads as "no active windows".
+    maintenanceActive: fleetView
+      ? null
+      : Array.isArray(maintenanceList)
+        ? maintenanceList.filter((w: Record<string, unknown>) => w.status === 'active' || w.isActive).length
+        : 0,
     groupCount: Array.isArray(groupList) ? groupList.length : 0,
     reportCount: Array.isArray(reportList) ? reportList.length : 0,
   } };
@@ -231,7 +244,9 @@ export default function FleetOrchestrationPage() {
           activeAlerts: data.alerts.total,
           criticalAlerts: data.alerts.critical,
           automationCount: data.automationCount,
-          maintenanceActive: data.maintenanceActive,
+          // Omit entirely in fleet view (null) so the assistant doesn't assert a
+          // fabricated "0 active maintenance windows" across the fleet.
+          ...(data.maintenanceActive != null ? { maintenanceActive: data.maintenanceActive } : {}),
           groupCount: data.groupCount,
           hint: 'User is on the Fleet Orchestration page. You have fleet-level tools: manage_configuration_policy, get_configuration_policy, configuration_policy_compliance, list_configuration_policies, apply_configuration_policy, remove_configuration_policy_assignment, preview_configuration_change, get_effective_configuration, manage_deployments, manage_patches, manage_groups, manage_maintenance_windows, manage_automations, manage_alert_rules, generate_report. Use these to help with fleet operations.',
         },
@@ -380,9 +395,9 @@ export default function FleetOrchestrationPage() {
         <StatCard
           title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
           icon={Clock}
-          value={s.maintenanceActive}
+          value={s.maintenanceActive ?? '—'}
           subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.activeWindows')}
-          accent={s.maintenanceActive > 0 ? 'yellow' : 'green'}
+          accent={s.maintenanceActive == null ? 'gray' : s.maintenanceActive > 0 ? 'yellow' : 'green'}
           onClick={() => handleQuickAction('What maintenance windows are active right now?')}
         />
         <StatCard
@@ -517,6 +532,7 @@ const accentColors = {
   yellow: 'text-yellow-500',
   red: 'text-red-500',
   purple: 'text-purple-500',
+  gray: 'text-muted-foreground',
 } as const;
 
 function StatCard({
@@ -524,7 +540,9 @@ function StatCard({
 }: {
   title: string;
   icon: React.ComponentType<{ className?: string }>;
-  value: number;
+  // A string value is rendered verbatim (e.g. "—" for a stat that isn't
+  // available in the current scope); a number is locale-formatted.
+  value: number | string;
   subtitle: string;
   accent: keyof typeof accentColors;
   badge?: string;
@@ -544,7 +562,7 @@ function StatCard({
         )}
       </div>
       <div className="mt-4">
-        <div className="text-2xl font-bold">{formatNumber(value)}</div>
+        <div className="text-2xl font-bold">{typeof value === 'number' ? formatNumber(value) : value}</div>
         <div className="text-sm text-muted-foreground">{title}</div>
         <div className="text-xs text-muted-foreground/70 mt-1">{subtitle}</div>
       </div>

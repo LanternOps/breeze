@@ -7,6 +7,18 @@ const mocks = vi.hoisted(() => ({
   executeTool: vi.fn(),
   getToolDefinitions: vi.fn(() => []),
   getToolTier: vi.fn((_: string): number | undefined => undefined),
+  writeAuditEvent: vi.fn(),
+  rateLimiter: vi.fn(),
+}));
+
+const envState = vi.hoisted(() => ({
+  oauthEnabled: false,
+  oauthIssuer: 'https://us.example.com',
+}));
+
+vi.mock('../config/env', () => ({
+  get MCP_OAUTH_ENABLED() { return envState.oauthEnabled; },
+  get OAUTH_ISSUER() { return envState.oauthIssuer; },
 }));
 
 const setApiKeyContext = (c: any) => {
@@ -62,8 +74,12 @@ vi.mock('../db', () => {
     { resource: 'automations', action: 'read' },
   ];
   const makeWhere = (rows: unknown[]) => {
-    const thenable = Promise.resolve(rows) as Promise<unknown[]> & { limit: (n: number) => Promise<unknown[]> };
+    const thenable = Promise.resolve(rows) as Promise<unknown[]> & {
+      limit: (n: number) => Promise<unknown[]>;
+      orderBy: () => { limit: (n: number) => Promise<unknown[]> };
+    };
     thenable.limit = async () => rows;
+    thenable.orderBy = () => ({ limit: async () => rows });
     return thenable;
   };
   // buildPerms resolves role→permissions via `.innerJoin(...).where(...)`, so the
@@ -118,10 +134,13 @@ vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: async () => null, checkToolRateLimit: async () => null,
 }));
 
-vi.mock('../services/auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn() }));
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: mocks.writeAuditEvent,
+  requestLikeFromSnapshot: vi.fn(),
+}));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
+  rateLimiter: (...args: any[]) => mocks.rateLimiter(...args),
 }));
 vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
@@ -137,16 +156,17 @@ vi.mock('./mcpExecutionOrg', () => ({
   McpExecutionOrgError: class McpExecutionOrgError extends Error {},
 }));
 
+import { mcpServerRoutes } from './mcpServer';
+
 const ENV = ['MCP_OAUTH_ENABLED', 'IS_HOSTED', 'OAUTH_ISSUER'] as const;
 const clearEnv = () => { for (const key of ENV) delete process.env[key]; };
 
-async function appWithMcpRoutes() {
-  const mod = await import('./mcpServer');
-  return { app: new Hono().route('/mcp', mod.mcpServerRoutes), mod };
+function appWithMcpRoutes() {
+  return new Hono().route('/mcp', mcpServerRoutes);
 }
 
 async function postToolsList(headers: Record<string, string> = {}) {
-  const { app } = await appWithMcpRoutes();
+  const app = appWithMcpRoutes();
   return app.request('/mcp/message', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -155,7 +175,7 @@ async function postToolsList(headers: Record<string, string> = {}) {
 }
 
 async function postToolsCall(headers: Record<string, string> = {}) {
-  const { app } = await appWithMcpRoutes();
+  const app = appWithMcpRoutes();
   return app.request('/mcp/message', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -171,25 +191,30 @@ async function postToolsCall(headers: Record<string, string> = {}) {
 describe('mcpServer bearer auth routing', () => {
   beforeEach(() => {
     clearEnv();
-    vi.resetModules();
-    vi.clearAllMocks();
-    mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+    envState.oauthEnabled = false;
+    envState.oauthIssuer = 'https://us.example.com';
+    mocks.bearerTokenAuthMiddleware.mockReset().mockImplementation(async (c: any, next: any) => {
       setApiKeyContext(c);
       return next();
     });
-    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+    mocks.apiKeyAuthMiddleware.mockReset().mockImplementation(async (c: any, next: any) => {
       setApiKeyContext(c);
       return next();
     });
-    mocks.getToolDefinitions.mockReturnValue([]);
-    mocks.getToolTier.mockReturnValue(undefined);
-    mocks.executeTool.mockResolvedValue('{}');
+    mocks.getToolDefinitions.mockReset().mockReturnValue([]);
+    mocks.getToolTier.mockReset().mockReturnValue(undefined);
+    mocks.executeTool.mockReset().mockResolvedValue('{}');
+    mocks.writeAuditEvent.mockReset();
+    mocks.rateLimiter.mockReset().mockResolvedValue({
+      allowed: true,
+      resetAt: new Date(Date.now() + 60_000),
+    });
   });
 
   afterEach(() => clearEnv());
 
   it('routes Bearer auth through bearer middleware when OAuth is enabled', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     const res = await postToolsList({ Authorization: 'Bearer foo' });
     expect(res.status).toBe(200);
     expect(mocks.bearerTokenAuthMiddleware).toHaveBeenCalledTimes(1);
@@ -197,7 +222,7 @@ describe('mcpServer bearer auth routing', () => {
   });
 
   it('routes X-API-Key auth through api key middleware when no Bearer header exists', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     const res = await postToolsList({ 'X-API-Key': 'brz_abc' });
     expect(res.status).toBe(200);
     expect(mocks.apiKeyAuthMiddleware).toHaveBeenCalledTimes(1);
@@ -205,7 +230,7 @@ describe('mcpServer bearer auth routing', () => {
   });
 
   it('does not route Bearer auth through bearer middleware when OAuth is disabled', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'false';
+    envState.oauthEnabled = false;
     const res = await postToolsList({ Authorization: 'Bearer foo' });
     expect(res.status).toBe(401);
     expect(mocks.bearerTokenAuthMiddleware).not.toHaveBeenCalled();
@@ -213,7 +238,7 @@ describe('mcpServer bearer auth routing', () => {
   });
 
   it('prefers Bearer auth when both Bearer and X-API-Key headers exist', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     const res = await postToolsList({ Authorization: 'Bearer foo', 'X-API-Key': 'brz_abc' });
     expect(res.status).toBe(200);
     expect(mocks.bearerTokenAuthMiddleware).toHaveBeenCalledTimes(1);
@@ -233,7 +258,7 @@ describe('mcpServer bearer auth routing', () => {
     // NOT null. The important invariant is the SHAPE change — it's no longer
     // null, and downstream `orgCondition()` now returns an IN filter instead
     // of undefined.
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
       c.set('apiKey', {
         id: 'oauth:jti-1',
@@ -271,7 +296,7 @@ describe('mcpServer bearer auth routing', () => {
     // db shim returns an org-user row with no siteIds, i.e. an unrestricted
     // creator — so canAccessSite must be present AND permit any site (the gate
     // is a no-op for unrestricted callers, never a hard deny).
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     mocks.getToolTier.mockReturnValue(1);
     mocks.executeTool.mockResolvedValue('ok');
 
@@ -294,7 +319,7 @@ describe('mcpServer bearer auth routing', () => {
     // cannot access must NOT have that org used as the audit_logs attribution.
     // Proves the wiring resolveMcpExecutionOrgId -> executionOrgId ->
     // writeMcpToolAuditEvent for the tier-1 sink reachable with mcp:read.
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
       c.set('apiKey', {
         id: 'oauth:jti-1', orgId: null, partnerId: 'partner-1',
@@ -307,7 +332,7 @@ describe('mcpServer bearer auth routing', () => {
     mocks.executeTool.mockResolvedValue('ok');
 
     const VICTIM_ORG = '99999999-9999-4999-8999-999999999999';
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const { writeAuditEvent } = await import('../services/auditEvents');
 
     const res = await app.request('/mcp/message', {
@@ -335,9 +360,9 @@ describe('mcpServer bearer auth routing', () => {
   });
 
   it('no auth headers → 401 even with MCP_OAUTH_ENABLED (carve-out deleted in Phase 3)', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
+    envState.oauthEnabled = true;
     delete process.env.IS_HOSTED;
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

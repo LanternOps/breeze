@@ -26,6 +26,8 @@ export const partners = pgTable('partners', {
   settings: jsonb('settings').default({}),
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),
+  // Plain-text signature appended to outbound customer emails (quote sends).
+  emailSignature: text('email_signature'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
@@ -99,6 +101,7 @@ export const organizations = pgTable('organizations', {
   accountingExternalId: text('accounting_external_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),
@@ -116,8 +119,11 @@ export const sites = pgTable('sites', {
   contact: jsonb('contact'),
   settings: jsonb('settings').default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
+}, (table) => ({
+  idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const enrollmentKeys = pgTable('enrollment_keys', {
   id: uuid('id').primaryKey().defaultRandom(),

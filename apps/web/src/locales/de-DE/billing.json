@@ -107,6 +107,22 @@
         "title": "Vertragsentwurf löschen",
         "message": "Dadurch wird der Vertragsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         "confirm": "Entwurf löschen"
+      },
+      "documents": {
+        "title": "Ausgeführte Dokumente",
+        "columns": {
+          "template": "Vorlage",
+          "signer": "Unterzeichner",
+          "signedAt": "Unterschrieben",
+          "quote": "Angebot"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Noch keine ausgeführten Dokumente.",
+        "loadError": "Ausgeführte Dokumente konnten nicht geladen werden.",
+        "downloadError": "PDF konnte nicht heruntergeladen werden.",
+        "download": "PDF herunterladen",
+        "preparing": "Wird vorbereitet…",
+        "viewQuote": "Angebot ansehen"
       }
     },
     "contractEditor": {
@@ -227,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Alle Status",
-        "allOrganizations": "Alle Organisationen",
         "searchPlaceholder": "Nach Name oder Organisation suchen",
         "searchAria": "Verträge suchen"
       },
@@ -296,6 +311,132 @@
       "errors": {
         "loadSubscriptions": "Pax8-Abonnements für diese Organisation konnten nicht geladen werden."
       }
+    },
+    "tabs": {
+      "contracts": "Verträge",
+      "templates": "Vorlagen",
+      "documents": "Dokumente"
+    },
+    "templatesTab": {
+      "title": "Vertragsvorlagen",
+      "description": "Wiederverwendbare Vertragsdokumente, die Sie an angenommene Angebote anhängen können.",
+      "newTemplate": "Neue Vorlage",
+      "includeArchived": "Archivierte anzeigen",
+      "allOrgs": "Alle Orgs",
+      "ownerOrg": "Organisation",
+      "noVersions": "Noch keine Versionen",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archivieren",
+      "loadError": "Vertragsvorlagen konnten nicht geladen werden",
+      "createError": "Vorlage konnte nicht erstellt werden",
+      "created": "Vorlage erstellt",
+      "archiveError": "Vorlage konnte nicht archiviert werden",
+      "archiveSuccess": "Vorlage archiviert",
+      "columns": {
+        "name": "Name",
+        "owner": "Eigentümer",
+        "status": "Status",
+        "latestVersion": "Neueste Version"
+      },
+      "status": {
+        "active": "Aktiv",
+        "archived": "Archiviert"
+      },
+      "empty": {
+        "title": "Noch keine Vorlagen",
+        "description": "Erstellen Sie Ihre erste Vertragsvorlage, um zu beginnen."
+      },
+      "createDialog": {
+        "title": "Neue Vertragsvorlage",
+        "name": "Name",
+        "namePlaceholder": "z. B. Rahmendienstleistungsvertrag",
+        "description": "Beschreibung",
+        "descriptionPlaceholder": "Optionale Zusammenfassung dieser Vorlage",
+        "scope": "Eigentum",
+        "allOrganizations": "Alle Organisationen",
+        "partnerWide": "Partnerweite Vorlage",
+        "thisOrgOnly": "Nur diese Organisation",
+        "organization": "Organisation",
+        "selectOrg": "Organisation auswählen",
+        "orgRequired": "Wählen Sie eine Organisation für eine organisationseigene Vorlage.",
+        "nameRequired": "Geben Sie einen Vorlagennamen ein.",
+        "cancel": "Abbrechen",
+        "create": "Vorlage erstellen",
+        "creating": "Wird erstellt…"
+      }
+    },
+    "documentsTab": {
+      "title": "Dokumente",
+      "description": "Ausgeführte Vertragsdokumente, die noch keinem Vertrag zugeordnet sind.",
+      "empty": {
+        "title": "Keine nicht zugeordneten Dokumente",
+        "description": "Ausgeführte Dokumente erscheinen hier, bis sie einem Vertrag zugeordnet werden."
+      },
+      "loadError": "Dokumente konnten nicht geladen werden.",
+      "columns": {
+        "template": "Vorlage",
+        "signer": "Unterzeichner",
+        "signedAt": "Unterschrieben",
+        "quote": "Angebot",
+        "organization": "Organisation"
+      },
+      "download": "PDF herunterladen",
+      "preparing": "Wird vorbereitet…",
+      "viewQuote": "Angebot ansehen",
+      "linkAction": "Mit Vertrag verknüpfen",
+      "linkDialog": {
+        "title": "Mit einem Vertrag verknüpfen",
+        "contractLabel": "Vertrag",
+        "selectContract": "Vertrag auswählen",
+        "noContracts": "Keine Verträge für diese Organisation gefunden.",
+        "loadContractsError": "Verträge konnten nicht geladen werden. Bitte erneut versuchen.",
+        "cancel": "Abbrechen",
+        "confirm": "Verknüpfen",
+        "linking": "Wird verknüpft…"
+      },
+      "linkSuccess": "Dokument mit Vertrag verknüpft.",
+      "linkError": "Dokument konnte nicht mit diesem Vertrag verknüpft werden."
+    },
+    "templateEditor": {
+      "back": "Zurück",
+      "loadError": "Vorlage konnte nicht geladen werden",
+      "newVersion": "Neue Version",
+      "newVersionConfirm": {
+        "title": "Nicht gespeicherte Änderungen verwerfen?",
+        "message": "Wenn Sie eine neue Version beginnen, wird der Editor geleert. Ihre nicht gespeicherten Änderungen an diesem Entwurf gehen verloren.",
+        "confirm": "Neue Version beginnen"
+      },
+      "uploadPdf": "PDF hochladen",
+      "versions": "Versionen",
+      "noVersions": "Noch keine Versionen",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Entwurf",
+        "published": "Veröffentlicht"
+      },
+      "sourceType": {
+        "authored": "Verfasst",
+        "uploaded": "Hochgeladenes PDF"
+      },
+      "publish": "Veröffentlichen",
+      "publishDirtyHint": "Speichern Sie Ihren Entwurf vor dem Veröffentlichen",
+      "body": "Inhalt",
+      "bodyAria": "Inhalt der Vertragsvorlage",
+      "preview": "Vorschau",
+      "edit": "Bearbeiten",
+      "saveDraft": "Entwurf speichern",
+      "saving": "Wird gespeichert…",
+      "emptyBody": "Fügen Sie Inhalt hinzu, bevor Sie speichern.",
+      "autoVariables": "Automatische Variablen",
+      "manualVariables": "Manuelle Variablen",
+      "noManualVariables": "Keine erkannt",
+      "archivedNotice": "Diese Vorlage ist archiviert. Es können keine neuen Versionen hinzugefügt werden.",
+      "saveError": "Entwurfsversion konnte nicht gespeichert werden",
+      "saveSuccess": "Entwurfsversion gespeichert",
+      "uploadError": "PDF konnte nicht hochgeladen werden",
+      "uploadSuccess": "PDF-Version hochgeladen",
+      "publishError": "Version konnte nicht veröffentlicht werden",
+      "publishSuccess": "Version veröffentlicht"
     }
   },
   "quotes": {
@@ -362,7 +503,8 @@
         "heading": "Überschrift",
         "image": "Bild",
         "pricingTable": "Preistabelle",
-        "richText": "Rich-Text"
+        "richText": "Rich-Text",
+        "contract": "Vertrag"
       },
       "catalog": {
         "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
@@ -385,6 +527,11 @@
         "removeSectionWithLines_other": "Dadurch werden die Preistabelle und ihre {{count}}-Positionen entfernt. Dies kann nicht rückgängig gemacht werden.",
         "thisLine": "diese Position",
         "removeSectionWithLines": "Dadurch werden die Preistabelle und ihre Positionen entfernt. Dies kann nicht rückgängig gemacht werden."
+      },
+      "customer": {
+        "help": "Wird ein Entwurf einem anderen Unternehmen zugewiesen, wird die Standort-Zuordnung entfernt und der Steuersatz dieses Unternehmens angewendet.",
+        "label": "Kunde",
+        "success": "Angebot zu {{name}} verschoben."
       },
       "deposit": {
         "due": "Anzahlung fällig",
@@ -420,6 +567,7 @@
         "reorderBlocks": "Blöcke konnten nicht neu angeordnet werden.",
         "reorderLines": "Positionen konnten nicht neu angeordnet werden.",
         "reorderSections": "Abschnitte konnten nicht neu angeordnet werden.",
+        "saveCustomer": "Kunde konnte nicht geändert werden.",
         "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
         "saveTitle": "Der Titel konnte nicht gespeichert werden.",
         "unitPriceZeroOrMore": "Geben Sie einen Stückpreis von 0 oder mehr ein.",
@@ -427,7 +575,10 @@
         "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
-        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
+        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
+        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
+        "saveCoverPage": "Das Deckblatt konnte nicht gespeichert werden"
       },
       "image": {
         "alt": "Angebotsbild",
@@ -488,7 +639,8 @@
         "lineRemoved": "Position entfernt",
         "savedToCatalog": "Im Katalog gespeichert",
         "sectionAdded": "Abschnitt hinzugefügt",
-        "sectionRemoved": "Abschnitt entfernt"
+        "sectionRemoved": "Abschnitt entfernt",
+        "contractSectionAdded": "Vertragsabschnitt hinzugefügt"
       },
       "symbols": {
         "check": "✓",
@@ -506,6 +658,7 @@
         "qty": "Menge",
         "recurrence": "Wiederholung",
         "scrollAria": "Preistabelle – scrollen Sie seitwärts für Steuer-, Gesamt- und Zeilenaktionen",
+        "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
         "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
         "taxable": "Steuerpflichtig",
@@ -523,9 +676,51 @@
       "units": {
         "perMonth": "/Mo",
         "perYear": "/Jahr"
+      },
+      "contract": {
+        "templateLabel": "Vertragsvorlage",
+        "templatePlaceholder": "Vorlage auswählen…",
+        "noTemplates": "Noch keine Vertragsvorlagen. Erstellen Sie eine unter Verträge → Vorlagen.",
+        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie vor dem Anhängen.",
+        "pinnedVersion": "Angeheftet an v{{version}}",
+        "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
+        "manualVariablesTitle": "Für dieses Angebot ausfüllen",
+        "labelFieldLabel": "Abschnittsbezeichnung",
+        "labelPlaceholder": "Optionale Bezeichnung (z. B. Rahmenvertrag)",
+        "variableRequired": "Wert eingeben",
+        "variableUnresolved": "Diese Variable ist noch nicht aufgelöst",
+        "untitledTemplate": "Vertrag",
+        "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern.",
+        "updateToVersion": "Auf v{{version}} aktualisieren",
+        "saveVariables": "Variablen speichern",
+        "unresolvedWarning": "Nicht aufgelöste Variablen (verhindern das Senden): {{names}}"
+      },
+      "coverPage": {
+        "title": "Deckblatt",
+        "enable": "Deckblatt anzeigen",
+        "summaryOn": "Wird als erste Seite des Angebots angezeigt.",
+        "summaryOff": "Kein Deckblatt — das Angebot beginnt mit seinem Inhalt.",
+        "titleLabel": "Deckblatttitel",
+        "titlePlaceholder": "z. B. Angebot für Managed-IT-Services",
+        "preparedForLabel": "Erstellt für",
+        "preparedForPlaceholder": "Kundennamen überschreiben",
+        "showPreparedBy": "„Erstellt von“ anzeigen (Ihr Unternehmen)",
+        "imageLabel": "Deckblattbild",
+        "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
+        "removeImage": "Bild entfernen"
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Unternehmen",
+        "confirm": "Kopie erstellen",
+        "defaultTitle": "Kopie von {{name}}",
+        "message": "Erstellt einen neuen Entwurf mit demselben Inhalt. Wählen Sie das Unternehmen aus und vergeben Sie einen Titel.",
+        "retargetHint": "Der neue Entwurf verwendet die Rechnungsdaten und den Steuersatz dieses Unternehmens; die Standort-Zuordnung wird entfernt.",
+        "title": "Angebot duplizieren",
+        "titleLabel": "Titel"
+      },
       "cloneError": "Das Angebot konnte nicht dupliziert werden.",
       "cloneQuote": "Angebot duplizieren",
       "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
@@ -540,11 +735,34 @@
       "deleteSuccess": "Entwurf gelöscht",
       "downloadPdf": "Laden Sie PDF herunter",
       "emptyHint": "Fügen Sie vor dem Senden mindestens einen Artikel hinzu.",
+      "moreActions": "Weitere Aktionen",
       "savingHint": "Änderungen speichern… Entsperrungen senden, wenn alles gespeichert ist.",
       "savingTitle": "Speichern Ihrer Änderungen – Entsperrungen senden, wenn alles gespeichert ist.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Angebots-PDF anhängen",
+        "invalidEmail": "Ungültige E-Mail-Adresse: {{addresses}}",
         "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Dies kann nicht rückgängig gemacht werden.",
-        "title": "Dieses Angebot senden?"
+        "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
+        "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
+        "paymentEnabled": "Online-Zahlung ist aktiviert – der Kunde kann nach der Annahme per Karte zahlen.",
+        "paymentNoteNoStripe": "Nach der Annahme wird keine Online-Zahlung angeboten. Verbinden Sie Stripe unter Einstellungen → Integrationen, um sie zu aktivieren.",
+        "paymentWarningDeposit": "Für dieses Angebot ist eine Anzahlung konfiguriert, aber Kunden können noch nicht online zahlen – verbinden Sie Stripe unter Einstellungen → Integrationen, damit die Anzahlung bei Annahme eingezogen werden kann.",
+        "signaturePreviewLabel": "Signatur (festgelegt unter Einstellungen → Branding):",
+        "subjectLabel": "Betreff",
+        "subjectPlaceholder": "Angebot {{number}} von Ihrem Unternehmen",
+        "subjectPlaceholderNoNumber": "Angebot von Ihrem Unternehmen",
+        "title": "Dieses Angebot senden?",
+        "toLabel": "An",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",
+        "noEmailService": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — E-Mail ist auf diesem Server nicht konfiguriert.",
+        "pdfRenderFailed": "Vorschlag als Gesendet markiert, aber das PDF konnte nicht erstellt werden, daher wurde keine E-Mail zugestellt. Prüfen Sie die angehängten Vertragsdateien und senden Sie erneut.",
+        "sendFailed": "Vorschlag als Gesendet markiert, aber die E-Mail konnte nicht zugestellt werden. Prüfen Sie die Adresse oder teilen Sie den Annahme-Link manuell."
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",
       "sendProposal": "Vorschlag senden",
@@ -625,11 +843,19 @@
     },
     "document": {
       "additionalItems": "Zusätzliche Artikel",
+      "contract": {
+        "download": "Vertrag herunterladen",
+        "previewTitle": "Vertragsdokument {{name}}",
+        "unavailable": "Vertragsdatei nicht verfügbar",
+        "versionFooter": "{{name}} — Version {{version}}"
+      },
       "draft": "Entwurf",
       "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
       "imageUnavailable": "Bild nicht verfügbar",
       "issued": "Ausgestellt",
       "preparedFor": "Vorbereitet für",
+      "taxId": "Steuernummer: {{id}}",
+      "imageZoomAria": "Größeres Bild anzeigen",
       "preview": {
         "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
         "downloadPdf": "Laden Sie PDF herunter",
@@ -714,9 +940,7 @@
         "loadSites": "Die Standorte konnten nicht geladen werden."
       },
       "filters": {
-        "allOrganizations": "Alle Organisationen",
         "allStatuses": "Alle Status",
-        "organizationAria": "Nach Organisation filtern",
         "searchAria": "Angebote suchen",
         "searchPlaceholder": "Nach Nummer oder Organisation suchen",
         "statusAria": "Nach Status filtern"
@@ -1117,11 +1341,9 @@
       "loadSites": "Die Standorte konnten nicht geladen werden."
     },
     "filters": {
-      "allOrganizations": "Alle Organisationen",
       "allStatuses": "Alle Status",
       "issuedFrom": "Ausgestellt von",
       "issuedTo": "Ausgestellt an",
-      "organizationAria": "Nach Organisation filtern",
       "searchAria": "Rechnungen suchen",
       "searchPlaceholder": "Nach Nummer oder Organisation suchen",
       "statusAria": "Nach Status filtern"

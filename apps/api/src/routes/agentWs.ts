@@ -23,6 +23,13 @@ import {
   resolveVaultForResult,
 } from '../services/vaultSyncPersistence';
 import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
+import {
+  applyBackupProgress,
+  applyBackupStartedAck,
+  isBackupStartedAck,
+  isLegacyBackupTimeoutResult,
+  tryParseBackupResultPayload,
+} from '../services/backupProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
@@ -39,9 +46,10 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
+import { UUID_REGEX } from '../utils/uuid';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
-export const AGENT_WS_CAPABILITIES = ['terminal_output_base64'] as const;
+export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -50,7 +58,6 @@ declare module 'hono' {
 }
 
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
 const MAX_DESKTOP_SESSION_ID_BYTES = 128;
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -769,10 +776,22 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
   return decoded.toString('utf8');
 }
 
+// Live upload-progress ping for an in-flight backup_run (agent side:
+// websocket.Client.SendBackupProgress in agent/internal/websocket/client.go).
+// `progress` is intentionally loose here (z.record/z.any-ish) —
+// applyBackupProgress does the strict field-level validation so a malformed
+// progress body is dropped rather than failing the whole WS message parse.
+const backupProgressMessageSchema = z.object({
+  type: z.literal('backup_progress'),
+  commandId: z.string(),
+  progress: z.record(z.string(), z.unknown()).optional(),
+});
+
 const agentMessageSchema = z.discriminatedUnion('type', [
   commandResultSchema,
   heartbeatMessageSchema,
-  terminalOutputSchema
+  terminalOutputSchema,
+  backupProgressMessageSchema
 ]);
 
 // Command types sent to agent
@@ -1327,6 +1346,44 @@ export async function processOrphanedCommandResult(
       console.warn(`[AgentWs] Rejecting backup result for job ${backupJob.id} from unexpected agent ${agentId}`);
       return;
     }
+
+    // Both guards below MUST run before consumeDispatchedExpectation: it is
+    // one-shot, and consuming it for a non-terminal signal would cause the
+    // real terminal result to be dropped later as a "replay".
+
+    // Started-ack guard: an async-capable agent (backup_run_async) reports an
+    // immediate `{"started":true}` result right after dispatch, well before
+    // the backup completes. Treat it as a progress ping, not a terminal
+    // result.
+    const startedAckPayload = tryParseBackupResultPayload(result.result, result.stdout);
+    if (isBackupStartedAck(startedAckPayload)) {
+      // applyBackupStartedAck's guarded update no-ops (returns false) when the
+      // job is already terminal — only log the "started-ack" line when it
+      // actually applied, so an incident timeline isn't misled by a started-ack
+      // that landed after the job had already completed/failed/been reaped.
+      const startedAckApplied = await applyBackupStartedAck({ jobId: backupJob.id, deviceId: backupJob.deviceId });
+      if (startedAckApplied) {
+        console.log(`[AgentWs] Backup job ${backupJob.id} started-ack from agent ${agentId}`);
+      } else {
+        console.debug(`[AgentWs] Ignoring started-ack for already-terminal backup job ${backupJob.id} from agent ${agentId} (no-op)`);
+      }
+      return;
+    }
+
+    // Legacy timed-out guard: old agents' forwardToBackupHelper
+    // (agent/internal/heartbeat/backup_forwarder.go, timing out via
+    // sessionbroker Session.SendCommand) surfaces a "command timed out" result
+    // at exactly 10 minutes while the upload helper is still running. This
+    // falsely fails every backup over 10 minutes today; the stale-backup-job
+    // reaper now owns deciding when a silent job is actually dead.
+    if (isLegacyBackupTimeoutResult({ status: result.status, error: result.error, stderr: result.stderr })) {
+      console.warn(
+        `[AgentWs] Ignoring legacy 10-minute timed-out result for backup job ${backupJob.id} from agent ${agentId}: ` +
+        `agent may still be uploading; the stale-backup reaper owns deciding when this job is actually dead.`
+      );
+      return;
+    }
+
     // Integrity gate (F6): accept a backup completion only if it corresponds to a
     // dispatch we recorded and hasn't already been consumed. This blocks a
     // compromised agent that preemptively reports `completed` with fabricated
@@ -1370,11 +1427,20 @@ export async function processOrphanedCommandResult(
           backupJob.orgId,
           backupJob.deviceId,
           {
-            status: result.status ?? 'failed',
+            // A malformed stdout must not ride an agent-reported 'completed'
+            // through to a completed job with no snapshot (mirrors the inline
+            // path below). Without this, a truncated/invalid system_image
+            // result completes green and the parse error is discarded.
+            status: result.status === 'completed' && parsedBackup.success ? 'completed' : 'failed',
             snapshotId: backupData?.snapshotId,
             filesBackedUp: backupData?.filesBackedUp,
             bytesBackedUp: backupData?.bytesBackedUp,
             warning: backupData?.warning,
+            errorCount: backupData?.errorCount,
+            referencedFiles: backupData?.referencedFiles,
+            referencedBytes: backupData?.referencedBytes,
+            backupType: backupData?.backupType,
+            systemStateManifest: backupData?.systemStateManifest,
             snapshot: backupData?.snapshot,
             error: malformedPayloadError || result.error || result.stderr,
           },
@@ -2228,6 +2294,36 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               commandId: parsed.data.commandId
             }));
             break;
+
+          case 'backup_progress': {
+            const progressMessage = parsed.data as z.infer<typeof backupProgressMessageSchema>;
+            await runWithAgentDbAccess(async () => {
+              const applied = await applyBackupProgress({
+                agentId,
+                commandId: progressMessage.commandId,
+                // Default to {} so a bare keepalive ping (no counters) still
+                // parses and bumps last_progress_at instead of being dropped as
+                // invalid-payload. All fields on the progress schema are
+                // optional, so an empty body is a valid "still alive" signal.
+                progress: progressMessage.progress ?? {},
+              });
+              if (!applied.applied) {
+                // agent-mismatch is a real anomaly (an agent pinging another
+                // device's job) and stays at warn. Everything else is routine
+                // traffic — restore progress reuses this WS type with a
+                // commandId that matches no backup job (not-found), a garbage
+                // or non-UUID commandId is dropped pre-DB
+                // (invalid-command-id), and terminal-status is a benign
+                // completion race — so those drop quietly at debug.
+                const dropLog = applied.reason === 'agent-mismatch' ? console.warn : console.debug;
+                dropLog(
+                  `[AgentWs] Dropping backup_progress for ${progressMessage.commandId} from agent ${agentId}: reason=${applied.reason}`
+                );
+              }
+            });
+            // Fire-and-forget: no ack expected by the agent for progress pings.
+            break;
+          }
 
           case 'heartbeat':
             {

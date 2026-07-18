@@ -132,3 +132,31 @@
   --brand-logo-url: none;
   --brand-name: 'Customer Portal';
 }
+
+@layer components {
+  /*
+   * rich_text quote blocks (quoteBlocks.tsx) render sanitized author HTML via
+   * dangerouslySetInnerHTML — the API guarantees only richTextSanitize.ts's fixed
+   * subset (p/br/strong/em/u/h3/h4/ul/ol/li/a) ever reaches this class. Tailwind's
+   * base reset strips list markers and heading weight, so restore the minimal
+   * styling that subset needs.
+   */
+  .quote-rich-text p {
+    @apply mb-2 last:mb-0;
+  }
+  .quote-rich-text h3 {
+    @apply mb-1.5 mt-4 text-base font-semibold text-foreground first:mt-0;
+  }
+  .quote-rich-text h4 {
+    @apply mb-1 mt-3 text-sm font-semibold text-foreground first:mt-0;
+  }
+  .quote-rich-text ul {
+    @apply mb-2 list-disc space-y-1 pl-5 last:mb-0;
+  }
+  .quote-rich-text ol {
+    @apply mb-2 list-decimal space-y-1 pl-5 last:mb-0;
+  }
+  .quote-rich-text a {
+    @apply text-primary underline underline-offset-2;
+  }
+}

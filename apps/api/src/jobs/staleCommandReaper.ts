@@ -12,12 +12,16 @@ import {
   deploymentDevices,
   remoteSessions,
   restoreJobs,
+  backupJobs,
+  devices,
+  STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { queueBackupStopCommand } from '../services/commandQueue';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
@@ -53,6 +57,27 @@ const BACKUP_COMMAND_TYPES = new Set([
 const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours (zombie safety net)
+
+// Backup job orphan/stall reconciliation thresholds.
+const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent went silent
+const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
+const BACKUP_ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // legacy agents: no progress signal exists
+const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
+
+// Mirrors DEFAULT_OFFLINE_THRESHOLD_MINUTES in jobs/offlineDetector.ts (not
+// exported from there). Same condition shape: a device counts as offline
+// once it's flipped to 'offline', OR it's still marked online/updating but
+// hasn't heartbeat-ed in this long — i.e. disconnected but the async
+// offline-detection sweep hasn't caught up yet.
+const OFFLINE_DETECTOR_DEFAULT_THRESHOLD_MINUTES = 5;
+
+function isDeviceOfflineForReap(status: string | null | undefined, lastSeenAt: Date | null | undefined): boolean {
+  if (status === 'offline') return true;
+  if (status !== 'online' && status !== 'updating') return false;
+  if (!lastSeenAt) return false;
+  const thresholdTime = Date.now() - OFFLINE_DETECTOR_DEFAULT_THRESHOLD_MINUTES * 60 * 1000;
+  return lastSeenAt.getTime() < thresholdTime;
+}
 
 type ReaperJobData = { type: 'reap-stale-commands'; queuedAt: string };
 
@@ -547,6 +572,176 @@ async function reapStaleRemoteSessions(): Promise<number> {
   return pendingResult.length + activeResult.length;
 }
 
+/**
+ * Fail a stale/orphaned `backup_jobs` row, guarded so a concurrent terminal
+ * transition (the real result arriving mid-reap) always wins. Appends to any
+ * existing errorLog rather than clobbering it.
+ */
+async function reapBackupJobRow(
+  jobId: string,
+  existingErrorLog: string | null | undefined,
+  errorMsg: string,
+): Promise<boolean> {
+  const now = new Date();
+  // Stamp the reaper marker so the result-persistence path can later recognize a
+  // "failed-because-reaped" job and still record a late-but-genuine `completed`
+  // result (flipping failed→completed) instead of stranding its snapshot — see
+  // STALE_BACKUP_REAP_MARKER / FIX 7 in backupResultPersistence.ts.
+  const markedMsg = `${STALE_BACKUP_REAP_MARKER} ${errorMsg}`;
+  const errorLog = existingErrorLog ? `${existingErrorLog}\n${markedMsg}` : markedMsg;
+
+  const updated = await db
+    .update(backupJobs)
+    .set({
+      status: 'failed',
+      completedAt: now,
+      updatedAt: now,
+      errorLog,
+    })
+    .where(
+      and(
+        eq(backupJobs.id, jobId),
+        inArray(backupJobs.status, ['pending', 'running']),
+      ),
+    )
+    .returning({ id: backupJobs.id });
+
+  return updated.length > 0;
+}
+
+/**
+ * Reap orphaned/stalled `backup_jobs` rows the normal WS result path will
+ * never terminate on its own: a silently-dead agent (stall), a device that
+ * went offline mid-upload, a legacy agent with no progress signal at all
+ * (absolute cap), or a dispatch that never flipped out of `pending`.
+ *
+ * A `running` job is reaped when ANY of:
+ *  A (stall):    lastProgressAt is set and stale past BACKUP_STALL_TIMEOUT_MS
+ *  B (offline):  the owning device is offline (see isDeviceOfflineForReap)
+ *                AND coalesce(lastProgressAt, startedAt) is stale past
+ *                BACKUP_OFFLINE_GRACE_MS
+ *  C (absolute): no progress signal was ever reported (legacy agent) and
+ *                startedAt is stale past BACKUP_ABSOLUTE_TIMEOUT_MS
+ *
+ * A `pending` job is reaped when createdAt is stale past
+ * BACKUP_PENDING_TIMEOUT_MS (dispatch never completed).
+ *
+ * Per reaped running job on an online device: best-effort
+ * queueBackupStopCommand so a live-but-silent agent stops uploading.
+ */
+export async function reapStaleBackupJobs(): Promise<number> {
+  const now = Date.now();
+  let reaped = 0;
+
+  // Conservative SQL pre-filter on the loosest (smallest) of the three
+  // running-job thresholds; precise per-row logic below picks the actual
+  // rule (mirrors the SHORTEST_TIMEOUT_MS pattern used elsewhere in this
+  // file) — precise filtering happens in JS either way, so this only bounds
+  // the candidate set size.
+  const conservativeCutoff = new Date(now - BACKUP_OFFLINE_GRACE_MS);
+
+  const runningCandidates = await db
+    .select({
+      id: backupJobs.id,
+      deviceId: backupJobs.deviceId,
+      lastProgressAt: backupJobs.lastProgressAt,
+      startedAt: backupJobs.startedAt,
+      createdAt: backupJobs.createdAt,
+      errorLog: backupJobs.errorLog,
+      deviceStatus: devices.status,
+      deviceLastSeenAt: devices.lastSeenAt,
+    })
+    .from(backupJobs)
+    .innerJoin(devices, eq(backupJobs.deviceId, devices.id))
+    .where(
+      and(
+        eq(backupJobs.status, 'running'),
+        // Fall back to createdAt so a `running` row with BOTH last_progress_at
+        // and started_at NULL is still a candidate (createdAt is NOT NULL) —
+        // otherwise COALESCE(null, null) is NULL, the `< cutoff` is never true,
+        // and the row is an unreapable zombie.
+        sql`COALESCE(${backupJobs.lastProgressAt}, ${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${conservativeCutoff.toISOString()}`,
+      ),
+    )
+    .limit(MAX_REAP_PER_RUN);
+
+  for (const job of runningCandidates) {
+    if (reaped >= MAX_REAP_PER_RUN) break;
+
+    // createdAt is NOT NULL, so progressRef is always defined even for a row
+    // whose last_progress_at and started_at are both NULL (the zombie case).
+    const progressRef = job.lastProgressAt ?? job.startedAt ?? job.createdAt;
+    if (!progressRef) continue;
+
+    const deviceOffline = isDeviceOfflineForReap(job.deviceStatus, job.deviceLastSeenAt);
+
+    let errorMsg: string | null = null;
+    if (job.lastProgressAt && now - job.lastProgressAt.getTime() > BACKUP_STALL_TIMEOUT_MS) {
+      errorMsg = 'Backup stalled: no progress reported for 15 minutes';
+    } else if (deviceOffline && now - progressRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
+      errorMsg = 'Device went offline during backup';
+    } else if (!job.lastProgressAt && now - progressRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
+      // No progress signal ever (legacy agent) OR a zombie with no started_at —
+      // reap on the absolute cap against progressRef (started_at ?? createdAt).
+      errorMsg = 'Backup timed out (no completion after 24h)';
+    }
+
+    if (!errorMsg) continue;
+
+    const wasReaped = await reapBackupJobRow(job.id, job.errorLog, errorMsg);
+    if (!wasReaped) continue; // concurrent terminal transition won the race
+    reaped++;
+
+    if (!deviceOffline) {
+      try {
+        await queueBackupStopCommand(job.deviceId, {});
+      } catch (err) {
+        console.warn(`[StaleCommandReaper] Failed to queue backup_stop for reaped backup job ${job.id}:`, err);
+      }
+    }
+  }
+
+  const pendingCutoff = new Date(now - BACKUP_PENDING_TIMEOUT_MS);
+  // applyBackupStartedAck / applyBackupProgress accept a `pending` job and bump
+  // last_progress_at WITHOUT promoting it to `running`, so a pending job that is
+  // still receiving progress pings is alive and must NOT be reaped on createdAt
+  // alone. Spare any pending job whose last_progress_at is recent (within the
+  // stall window).
+  const pendingProgressCutoff = new Date(now - BACKUP_STALL_TIMEOUT_MS);
+  const pendingCandidates = await db
+    .select({
+      id: backupJobs.id,
+      errorLog: backupJobs.errorLog,
+      createdAt: backupJobs.createdAt,
+      lastProgressAt: backupJobs.lastProgressAt,
+    })
+    .from(backupJobs)
+    .where(
+      and(
+        eq(backupJobs.status, 'pending'),
+        lt(backupJobs.createdAt, pendingCutoff),
+        sql`(${backupJobs.lastProgressAt} IS NULL OR ${backupJobs.lastProgressAt} < ${pendingProgressCutoff.toISOString()})`,
+      ),
+    )
+    .limit(MAX_REAP_PER_RUN);
+
+  for (const job of pendingCandidates) {
+    if (reaped >= MAX_REAP_PER_RUN) break;
+    if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+    // A pending job still being kept alive by recent progress pings is not dead.
+    if (job.lastProgressAt && now - job.lastProgressAt.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;
+
+    const wasReaped = await reapBackupJobRow(job.id, job.errorLog, 'Backup dispatch never completed');
+    if (wasReaped) reaped++;
+  }
+
+  if (reaped > 0) {
+    console.log(`[StaleCommandReaper] Reaped ${reaped} stale/orphaned backup jobs`);
+  }
+
+  return reaped;
+}
+
 // ── Worker & queue management ─────────────────────────────────────
 
 function createWorker(): Worker<ReaperJobData> {
@@ -561,6 +756,7 @@ function createWorker(): Worker<ReaperJobData> {
         ['patchJobResults', reapStalePatchJobResults],
         ['deploymentDevices', reapStaleDeploymentDevices],
         ['remoteSessions', reapStaleRemoteSessions],
+        ['backupJobs', reapStaleBackupJobs],
       ] as const;
 
       // Each domain runs in its own transaction so a failure in one

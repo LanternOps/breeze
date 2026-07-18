@@ -63,8 +63,12 @@
       "manualInstall": "Login-window desktop is only supported for managed installs",
       "missingEntitlement": "Login-window desktop is blocked until the required Apple entitlement is approved",
       "missingPermission": "macOS permissions required for unattended desktop access are still missing",
+      "noDisplaySession": "No active graphical session — log in via RDP or the console first",
       "unsupportedOs": "Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device's configuration policy to connect at the login screen.",
-      "virtualDisplay": "No capturable display is available for this Mac. Enable VNC Relay to connect via macOS Screen Sharing."
+      "virtualDisplay": "No capturable display is available for this Mac. Enable VNC Relay to connect via macOS Screen Sharing.",
+      "waylandUnsupported": "This is a Wayland desktop — remote desktop needs a newer agent",
+      "x11AuthFailed": "Couldn't authenticate to the display server (X authority)",
+      "x11ConnectFailed": "Couldn't connect to the display server on this device"
     }
   },
   "connectVncButton": {

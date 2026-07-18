@@ -58,6 +58,8 @@ export type Alert = {
   correlationMemberCount?: number;
   correlationChildCount?: number;
   noiseReductionPercent?: number | null;
+  orgId?: string | null;
+  orgName?: string | null;
 };
 
 type AlertListProps = {
@@ -72,6 +74,8 @@ type AlertListProps = {
   submittingId?: string | null;
   pageSize?: number;
   alertCorrelationDisabled?: boolean;
+  /** Fleet (All-organizations) view: show which org each alert belongs to. */
+  showOrgColumn?: boolean;
 };
 
 export default function AlertList({
@@ -85,7 +89,8 @@ export default function AlertList({
   onBulkAction,
   submittingId,
   pageSize = 25,
-  alertCorrelationDisabled = false
+  alertCorrelationDisabled = false,
+  showOrgColumn = false
 }: AlertListProps) {
   const { t } = useTranslation('alerts');
   const [query, setQuery] = useState('');
@@ -399,6 +404,7 @@ export default function AlertList({
                 />
               </th>
               <th className="px-4 py-3">{t('alertList.device')}</th>
+              {showOrgColumn && <th className="px-4 py-3">{t('common:labels.organization')}</th>}
               <th className="px-4 py-3">{t('alertList.title')}</th>
               <th className="px-4 py-3">{t('alertList.severity')}</th>
               <th className="px-4 py-3">{t('alertList.status')}</th>
@@ -409,7 +415,7 @@ export default function AlertList({
           <tbody className="divide-y">
             {paginatedAlerts.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={showOrgColumn ? 8 : 7} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {t('alertList.noAlertsMatchYourFilters')}
                   {hasActiveFilters && (
                     <button
@@ -458,6 +464,13 @@ export default function AlertList({
                         <ExternalLink className="h-3 w-3 shrink-0" />
                       </a>
                     </td>
+                    {showOrgColumn && (
+                      <td className="max-w-[140px] px-4 py-3">
+                        <span className="block truncate text-sm text-muted-foreground" title={alert.orgName ?? undefined}>
+                          {alert.orgName ?? '—'}
+                        </span>
+                      </td>
+                    )}
                     <td className="max-w-[280px] px-4 py-3">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium" title={alert.title}>{alert.title}</p>

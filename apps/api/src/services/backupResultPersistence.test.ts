@@ -19,9 +19,11 @@ vi.mock('../db/schema', () => ({
     status: 'backupJobs.status',
     configId: 'backupJobs.configId',
     backupType: 'backupJobs.backupType',
+    backupMode: 'backupJobs.backupMode',
     featureLinkId: 'backupJobs.featureLinkId',
     policyId: 'backupJobs.policyId',
     deviceId: 'backupJobs.deviceId',
+    errorLog: 'backupJobs.errorLog',
   },
   backupSnapshots: {
     id: 'backupSnapshots.id',
@@ -53,6 +55,13 @@ vi.mock('../db/schema', () => ({
     featureLinkId: 'configPolicyBackupSettings.featureLinkId',
     retention: 'configPolicyBackupSettings.retention',
   },
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
+  STALE_BACKUP_REAP_MARKER: '[stale-backup-reaper]',
+}));
+
+const captureExceptionMock = vi.fn();
+vi.mock('./sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
 }));
 
 vi.mock('../db/schema/applicationBackup', () => ({
@@ -221,6 +230,111 @@ describe('backup result persistence', () => {
         }),
       }),
     }));
+  });
+
+  it('labels a system_image snapshot and persists its system-state manifest + hardware profile', async () => {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: null, backupMode: 'system_image' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    const manifest = {
+      platform: 'windows',
+      osVersion: 'Microsoft Windows [Version 10.0.20348.169]',
+      hostname: 'WIN-TEST',
+      artifacts: [{ name: 'registry_SYSTEM', category: 'registry', path: 'registry/SYSTEM', sizeBytes: 100 }],
+      hardwareProfile: { cpuModel: 'Xeon', cpuCores: 4, totalMemoryMB: 8192 },
+    };
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 13,
+        // backup_run for system_image carries no backupType — it must be
+        // derived from the job's backup_mode, not defaulted to 'file'.
+        systemStateManifest: manifest,
+      } as any,
+    });
+
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'system_image',
+      systemStateManifest: manifest,
+      hardwareProfile: manifest.hardwareProfile,
+    }));
+  });
+
+  it('does not mislabel a file backup: no backupType, non-system_image mode → file', async () => {
+    // Regression guard: the system_image derivation must not leak onto file
+    // jobs. A file backup_run sends no backupType and backupMode='file', so the
+    // snapshot must fall through to 'file' (and carry no manifest).
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: null, backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 5 } as any,
+    });
+
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'file',
+      systemStateManifest: null,
+      hardwareProfile: null,
+    }));
+  });
+
+  it('honors an explicit result.backupType over the mode-derived value', async () => {
+    // mssql/hyperv send an explicit backupType; it must win over derivation.
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: null, backupMode: 'mssql' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1, backupType: 'database' } as any,
+    });
+
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ backupType: 'database' }));
   });
 
   it('applies provider immutability when the winning feature link requests it', async () => {
@@ -440,6 +554,153 @@ describe('backup result persistence', () => {
     const setArg = updateChain.set.mock.calls[0][0] as { errorLog: string };
     expect(setArg.errorLog).toContain('[PRIVATE_KEY_REDACTED]');
     expect(setArg.errorLog).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
+  it('persists warning + errorCount for a partially-successful completed run', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        filesBackedUp: 8,
+        warning: '2 of 10 files failed to upload: upload stalled; disk read error',
+        errorCount: 2,
+      },
+    });
+
+    expect(outcome.applied).toBe(true);
+    const setArg = updateChain.set.mock.calls[0][0] as {
+      status: string;
+      errorLog: string;
+      errorCount: number;
+    };
+    expect(setArg.status).toBe('completed');
+    expect(setArg.errorCount).toBe(2);
+    expect(setArg.errorLog).toContain('2 of 10 files failed to upload');
+  });
+
+  it('does not write errorCount when the agent result carries none', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('errorCount');
+  });
+
+  it('persists referencedSize + referencedFiles for an incremental run that deduped files', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        filesBackedUp: 3,
+        bytesBackedUp: 1_000,
+        referencedBytes: 50_000,
+        referencedFiles: 17,
+      },
+    });
+
+    expect(outcome.applied).toBe(true);
+    const setArg = updateChain.set.mock.calls[0][0] as {
+      referencedSize: number;
+      referencedFiles: number;
+    };
+    expect(setArg.referencedSize).toBe(50_000);
+    expect(setArg.referencedFiles).toBe(17);
+  });
+
+  it('does not write referencedSize/referencedFiles when the agent result carries neither (old agent)', async () => {
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('referencedSize');
+    expect(setArg).not.toHaveProperty('referencedFiles');
+  });
+
+  it('FIX 7: records a late success on a reaper-failed job (flips failed→completed, clears the reaper errorLog, creates the snapshot)', async () => {
+    // The guarded UPDATE now also matches a `failed` row whose error_log carries
+    // the reaper marker. The chainable mock ignores the WHERE, so we assert the
+    // observable effects of the flip: status→completed, error_log cleared, and a
+    // backup_snapshots row created for the (previously stranded) snapshot.
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any) // existing snapshot: none → insert
+      .mockReturnValueOnce(chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 4, bytesBackedUp: 2048 },
+    });
+
+    expect(outcome.applied).toBe(true);
+    expect(outcome.snapshotDbId).toBe('snapshot-db-1');
+    const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg.status).toBe('completed');
+    expect(setArg.errorLog).toBeNull();
+    expect(db.insert).toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('FIX 7 fallback: logs + captureException when a late success cannot be recorded (user-cancelled / already-terminal job) so the snapshot is not silently orphaned', async () => {
+    // The guarded UPDATE matches nothing (job is `cancelled` or a non-reaper
+    // `failed`), so the snapshot in storage has no backup_snapshots row.
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-cancelled',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-9', filesBackedUp: 4 },
+    });
+
+    expect(outcome.applied).toBe(false);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    const capturedErr = captureExceptionMock.mock.calls[0]![0] as Error;
+    expect(capturedErr.message).toContain('provider-snap-9');
+    expect(capturedErr.message).toContain('job-cancelled');
+    errorSpy.mockRestore();
   });
 });
 

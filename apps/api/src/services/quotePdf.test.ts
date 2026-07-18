@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
-import { renderQuotePdf } from './quotePdf';
+import { PDFDocument } from 'pdf-lib';
+import { renderQuotePdf, contractUploadedMarker } from './quotePdf';
 
 // A minimal valid 1x1 transparent PNG (the smallest real PNG pdfkit will accept).
 const ONE_BY_ONE_PNG = Buffer.from(
@@ -64,7 +65,10 @@ describe('renderQuotePdf', () => {
       [
         { id: 'b1', blockType: 'heading', sortOrder: 0, content: { text: 'Our work', level: 2 } },
         { id: 'b2', blockType: 'image', sortOrder: 1, content: { imageId: 'img-123', caption: 'A diagram', width: 200 } },
-        { id: 'b3', blockType: 'rich_text', sortOrder: 2, content: { html: '<p>Hello <b>world</b></p>' } },
+        // <strong> (not <b>) — the sanitized rich-text subset (richTextSanitize.ts)
+        // never emits <b>, and the hand-rolled parser only recognizes the 11
+        // allowed tags.
+        { id: 'b3', blockType: 'rich_text', sortOrder: 2, content: { html: '<p>Hello <strong>world</strong></p>' } },
       ],
       [],
       async (imageId) => { requestedId = imageId; return { data: ONE_BY_ONE_PNG }; },
@@ -73,6 +77,11 @@ describe('renderQuotePdf', () => {
     expect(requestedId).toBe('img-123');
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     expect(buf.length).toBeGreaterThan(800);
+    // Formatted rich-text rendering (Task 2): the paragraph's text actually
+    // reaches the page, split across the plain/bold run boundary.
+    const text = extractPdfText(buf);
+    expect(text).toContain('Hello');
+    expect(text).toContain('world');
   });
 
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
@@ -286,6 +295,24 @@ describe('renderQuotePdf', () => {
     expect(summaryStream).not.toContain('Item ');
   });
 
+  it('renders a per-table Subtotal row only when the block opts in', async () => {
+    const lines = [
+      { id: 'l1', blockId: 'b1', description: 'Widget', quantity: '2', unitPrice: '100', lineTotal: '200.00', recurrence: 'one_time' as const },
+      { id: 'l2', blockId: 'b1', description: 'Service', quantity: '1', unitPrice: '50', lineTotal: '50.00', recurrence: 'monthly' as const },
+    ];
+    const base = { id: 'q1', quoteNumber: 'Q-SUB', currencyCode: 'USD', oneTimeTotal: '200.00', monthlyRecurringTotal: '50.00', total: '250.00', dueOnAcceptanceTotal: '200.00' };
+
+    const off = await renderQuotePdf(base as never, [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }], lines, async () => null, {});
+    expect(extractPdfText(off)).not.toContain('Subtotal');
+
+    const on = await renderQuotePdf(base as never, [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { showSubtotal: true } }], lines, async () => null, {});
+    const text = extractPdfText(on);
+    expect(text).toContain('Subtotal');
+    // Split by recurrence: one-time $200 and $50/mo.
+    expect(text).toContain('200.00');
+    expect(text).toContain('50.00/mo');
+  });
+
   it('renderQuotePdf includes the From block and T&C', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', currencyCode: 'USD', billToName: 'Cust',
@@ -295,5 +322,136 @@ describe('renderQuotePdf', () => {
       [], [], async () => null, { partnerName: 'Acme MSP LLC' },
     );
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  // Task 14: proposal cover page + contract blocks in the PDF.
+  describe('cover page', () => {
+    const baseQuote = {
+      id: 'q1', quoteNumber: 'Q-COVER', currencyCode: 'USD',
+      oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00',
+      billToName: 'Globex Corp',
+      billToAddress: { line1: '1 Main St', line2: null, city: 'Austin', region: 'TX', postalCode: '78701', country: 'US' },
+      sellerSnapshot: { name: 'Acme MSP LLC', phone: null, email: null, website: null, address: null },
+    };
+    const blocks = [{ id: 'b1', blockType: 'heading', sortOrder: 0, content: { text: 'Proposal', level: 1 } }] as const;
+
+    it('a coverPage.enabled quote grows the page count by exactly 1 vs. the same quote with cover disabled', async () => {
+      const without = await renderQuotePdf({ ...baseQuote, coverPage: { enabled: false, showPreparedBy: true } } as never, blocks as never, [], async () => null, {});
+      const withCover = await renderQuotePdf(
+        { ...baseQuote, coverPage: { enabled: true, title: 'Network Refresh Proposal', coverImageId: null, preparedForName: null, showPreparedBy: true } } as never,
+        blocks as never, [], async () => null, {},
+      );
+      const withoutPages = (await PDFDocument.load(without)).getPageCount();
+      const withPages = (await PDFDocument.load(withCover)).getPageCount();
+      expect(withPages).toBe(withoutPages + 1);
+    });
+
+    it('renders the cover title, prepared-for, and prepared-by text on the cover page', async () => {
+      const buf = await renderQuotePdf(
+        { ...baseQuote, coverPage: { enabled: true, title: 'Network Refresh Proposal', coverImageId: null, preparedForName: null, showPreparedBy: true } } as never,
+        blocks as never, [], async () => null, { partnerName: 'Acme MSP LLC' },
+      );
+      const text = extractPdfText(buf);
+      expect(text).toContain('Network Refresh Proposal');
+      expect(text).toContain('PREPARED FOR');
+      expect(text).toContain('Globex Corp');
+      expect(text).toContain('PREPARED BY');
+      expect(text).toContain('Acme MSP LLC');
+    });
+
+    it('draws the cover image via loadImage when coverImageId is set', async () => {
+      let requested: string | null = null;
+      const buf = await renderQuotePdf(
+        { ...baseQuote, coverPage: { enabled: true, title: 'Cover', coverImageId: 'cover-img-1', preparedForName: null, showPreparedBy: true } } as never,
+        blocks as never, [],
+        async (imageId) => { requested = imageId; return { data: ONE_BY_ONE_PNG }; },
+        {},
+      );
+      expect(requested).toBe('cover-img-1');
+      expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    });
+
+    it('omits the Prepared by block when showPreparedBy is false', async () => {
+      const buf = await renderQuotePdf(
+        { ...baseQuote, coverPage: { enabled: true, title: 'Cover', coverImageId: null, preparedForName: null, showPreparedBy: false } } as never,
+        blocks as never, [], async () => null, {},
+      );
+      const text = extractPdfText(buf);
+      expect(text).toContain('PREPARED FOR');
+      expect(text).not.toContain('PREPARED BY');
+    });
+
+    it('a quote with no coverPage (undefined) renders unchanged (no extra page, no throw)', async () => {
+      const buf = await renderQuotePdf(baseQuote as never, blocks as never, [], async () => null, {});
+      expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+      const pages = (await PDFDocument.load(buf)).getPageCount();
+      expect(pages).toBe(1);
+    });
+  });
+
+  // Task 14: contract blocks — authored (rich text) and uploaded (marker line).
+  describe('contract blocks', () => {
+    const baseQuote = {
+      id: 'q1', quoteNumber: 'Q-CONTRACT', currencyCode: 'USD',
+      oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00',
+    };
+
+    it('renders an authored contract block: heading (template name) + substituted rich text', async () => {
+      const contractRenderData = new Map([
+        ['b1', { html: '<p>This agreement is between <strong>Acme MSP</strong> and the client.</p>', templateName: 'Master Services Agreement' }],
+      ]);
+      const buf = await renderQuotePdf(
+        baseQuote as never,
+        [{ id: 'b1', blockType: 'contract', sortOrder: 0, content: { templateId: 't1', templateVersionId: 'v1', variableValues: {} } }],
+        [], async () => null, {}, async () => null, contractRenderData as never,
+      );
+      const text = extractPdfText(buf);
+      expect(text).toContain('Master Services Agreement');
+      expect(text).toContain('This agreement is between');
+      expect(text).toContain('Acme MSP');
+    });
+
+    it('a label on the block content overrides the template-name heading', async () => {
+      const contractRenderData = new Map([
+        ['b1', { html: '<p>Body text.</p>', templateName: 'Master Services Agreement' }],
+      ]);
+      const buf = await renderQuotePdf(
+        baseQuote as never,
+        [{ id: 'b1', blockType: 'contract', sortOrder: 0, content: { templateId: 't1', templateVersionId: 'v1', variableValues: {}, label: 'Our Custom Agreement' } }],
+        [], async () => null, {}, async () => null, contractRenderData as never,
+      );
+      const text = extractPdfText(buf);
+      expect(text).toContain('Our Custom Agreement');
+      expect(text).not.toContain('Master Services Agreement');
+    });
+
+    it('renders a one-line marker for an uploaded contract block (html: null)', async () => {
+      const contractRenderData = new Map([
+        ['b1', { html: null, templateName: 'Signed NDA' }],
+      ]);
+      const buf = await renderQuotePdf(
+        baseQuote as never,
+        [{ id: 'b1', blockType: 'contract', sortOrder: 0, content: { templateId: 't1', templateVersionId: 'v1', variableValues: {} } }],
+        [], async () => null, {}, async () => null, contractRenderData as never,
+      );
+      const text = extractPdfText(buf);
+      // The em dash doesn't survive the test's hex→latin1 text extraction (pdfkit
+      // maps it to a WinAnsi glyph code outside straight ASCII, unlike every other
+      // fixture string in this suite) — assert the surrounding text instead of the
+      // exact byte sequence; the marker format itself is asserted directly against
+      // contractUploadedMarker() below.
+      expect(text).toContain('Signed NDA');
+      expect(text).toContain('attached below');
+      expect(contractUploadedMarker('Signed NDA')).toBe('Signed NDA — attached below');
+    });
+
+    it('a contract block with no matching contractRenderData entry does not throw', async () => {
+      const buf = await renderQuotePdf(
+        baseQuote as never,
+        [{ id: 'b1', blockType: 'contract', sortOrder: 0, content: { templateId: 't1', templateVersionId: 'v1', variableValues: {} } }],
+        [], async () => null, {},
+      );
+      expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    });
   });
 });

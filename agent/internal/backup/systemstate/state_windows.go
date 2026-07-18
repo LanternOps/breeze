@@ -18,6 +18,15 @@ import (
 // Windows features, and IIS configuration.
 type WindowsCollector struct{}
 
+// windowsRequiredSteps are the collection steps whose failure makes a Windows
+// system_image unbootable/unrestorable. If any of these fails, CollectState
+// returns an error so the backup fails hard instead of shipping a partial that
+// presents as a complete capture.
+var windowsRequiredSteps = map[string]bool{
+	"registry": true,
+	"boot":     true,
+}
+
 // NewCollector returns a WindowsCollector.
 func NewCollector() Collector {
 	return &WindowsCollector{}
@@ -54,6 +63,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 		arts, err := s.fn(stagingDir)
 		if err != nil {
 			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
+			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
 			continue
 		}
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
@@ -61,6 +71,14 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 
 	if len(manifest.Artifacts) == 0 {
 		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
+	}
+
+	// Registry hives and boot config are required for a bootable bare-metal
+	// restore; a system_image missing either is not restorable, so fail hard
+	// rather than shipping a partial that looks complete. Other steps (certs,
+	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
+	if missing := missingRequired(manifest.IncompleteSteps, windowsRequiredSteps); len(missing) > 0 {
+		return manifest, fmt.Errorf("system state collection missing required artifact(s) %v — image would not be restorable", missing)
 	}
 
 	// Attach hardware profile (best-effort).
@@ -94,6 +112,13 @@ func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error
 			continue
 		}
 		artifacts = append(artifacts, artifactFromFile("registry_"+hive, "registry", outPath, stagingDir))
+	}
+	// Every Windows machine has SYSTEM/SOFTWARE hives, so capturing none is a
+	// real failure (e.g. the helper lacks the required privilege), not an
+	// "optional artifact absent" case. Report it so CollectState flags the
+	// step incomplete rather than silently producing an unbootable backup.
+	if len(artifacts) == 0 {
+		return nil, fmt.Errorf("reg save captured no registry hives")
 	}
 	return artifacts, nil
 }

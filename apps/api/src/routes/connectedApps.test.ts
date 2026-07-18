@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
@@ -44,9 +44,27 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
 }));
 
+vi.mock('../db/schema', () => ({
+  oauthClients: {
+    id: { name: 'id' },
+    metadata: { name: 'metadata' },
+    createdAt: { name: 'created_at' },
+    lastUsedAt: { name: 'last_used_at' },
+    disabledAt: { name: 'disabled_at' },
+  },
+  oauthClientPartnerGrants: {
+    clientId: { name: 'client_id' },
+    partnerId: { name: 'partner_id' },
+  },
+}));
+
 vi.mock('../oauth/revocationService', () => ({
   revokeClientFamilies: mocks.revokeClientFamilies,
 }));
+
+vi.mock('../config/env', () => ({ MCP_OAUTH_ENABLED: true }));
+
+import { connectedAppsRoutes } from './connectedApps';
 
 function resetAuth(partnerId: string | null = 'current-partner') {
   mocks.auth = {
@@ -87,10 +105,7 @@ function queueDelete() {
   return { where };
 }
 
-async function loadApp(enabled = true) {
-  process.env.MCP_OAUTH_ENABLED = enabled ? 'true' : 'false';
-  vi.resetModules();
-  const { connectedAppsRoutes } = await import('./connectedApps');
+function loadApp() {
   const app = new Hono().route('/api/v1/settings/connected-apps', connectedAppsRoutes);
   app.onError((err, c) => {
     if (err instanceof HTTPException) {
@@ -104,16 +119,17 @@ async function loadApp(enabled = true) {
 describe('connectedAppsRoutes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.select.mockReset();
+    mocks.update.mockReset();
+    mocks.delete.mockReset();
+    mocks.revokeClientFamilies.mockReset();
+    mocks.revokeClientFamilies.mockResolvedValue({ grants: 0, refreshTokens: 0 });
     resetAuth();
-  });
-
-  afterEach(() => {
-    delete process.env.MCP_OAUTH_ENABLED;
   });
 
   it('returns 403 when auth has no partner scope', async () => {
     resetAuth(null);
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ message: 'partner scope required' });
     expect(mocks.select).not.toHaveBeenCalled();
@@ -136,7 +152,7 @@ describe('connectedAppsRoutes', () => {
         disabledAt: null,
       },
     ]);
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       clients: [
@@ -158,7 +174,7 @@ describe('connectedAppsRoutes', () => {
 
   it('returns an empty client list', async () => {
     queueSelect([]);
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ clients: [] });
   });
@@ -181,7 +197,7 @@ describe('connectedAppsRoutes', () => {
       },
     ]);
 
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps');
+    const res = await loadApp().request('/api/v1/settings/connected-apps');
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -198,7 +214,7 @@ describe('connectedAppsRoutes', () => {
 
   it('filters GET clients by partner id (via the join table)', async () => {
     queueSelect([]);
-    await (await loadApp()).request('/api/v1/settings/connected-apps');
+    await loadApp().request('/api/v1/settings/connected-apps');
     // After the H2 proper fix, the partner filter is on
     // `oauth_client_partner_grants.partner_id`, not `oauth_clients.partner_id`.
     expect(mocks.eq).toHaveBeenCalledWith(expect.objectContaining({ name: 'partner_id' }), 'current-partner');
@@ -206,7 +222,7 @@ describe('connectedAppsRoutes', () => {
 
   it('DELETE returns 403 when auth has no partner scope and skips DB calls', async () => {
     resetAuth(null);
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
     expect(res.status).toBe(403);
@@ -221,7 +237,7 @@ describe('connectedAppsRoutes', () => {
     // either the client doesn't exist or another partner installed it but
     // this one didn't. Either way, return 404 without touching anything.
     queueSelect([], 'limit');
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-missing', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-missing', {
       method: 'DELETE',
     });
     expect(res.status).toBe(404);
@@ -231,7 +247,7 @@ describe('connectedAppsRoutes', () => {
 
   it('returns 404 when deleting a client where another partner has the join row', async () => {
     queueSelect([], 'limit');
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/other-client', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/other-client', {
       method: 'DELETE',
     });
     expect(res.status).toBe(404);
@@ -245,7 +261,7 @@ describe('connectedAppsRoutes', () => {
     // client are left untouched (MCP-OAUTH-07).
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
 
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
 
@@ -260,7 +276,7 @@ describe('connectedAppsRoutes', () => {
 
   it('does not call the revocation service when the join row is missing (404)', async () => {
     queueSelect([], 'limit');
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
     expect(res.status).toBe(404);
@@ -275,16 +291,11 @@ describe('connectedAppsRoutes', () => {
     mocks.revokeClientFamilies.mockRejectedValueOnce(new Error('redis down'));
     queueSelect([{ clientId: 'client-1', partnerId: 'current-partner' }], 'limit');
 
-    const res = await (await loadApp()).request('/api/v1/settings/connected-apps/client-1', {
+    const res = await loadApp().request('/api/v1/settings/connected-apps/client-1', {
       method: 'DELETE',
     });
 
     expect(res.status).toBe(503);
     errorSpy.mockRestore();
-  });
-
-  it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
-    const res = await (await loadApp(false)).request('/api/v1/settings/connected-apps');
-    expect(res.status).toBe(404);
   });
 });

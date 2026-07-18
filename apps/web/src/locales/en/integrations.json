@@ -1,4 +1,79 @@
 {
+  "m365CustomerGraphRead": {
+    "title": "Customer Graph Read",
+    "description": "Read-only Microsoft 365 inventory access granted by a customer administrator. Breeze never asks for a tenant secret or certificate here.",
+    "selectOrganization": "Select an organization to manage Customer Graph Read.",
+    "loading": "Loading Customer Graph Read connection.",
+    "unavailable": "Connection details are unavailable.",
+    "onboardingUnavailable": "Customer Graph Read onboarding is not enabled for this organization.",
+    "callback": {
+      "active": "Microsoft consent completed. The refreshed connection status is shown below.",
+      "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
+    },
+    "tenant": "Verified tenant",
+    "tenantId": "Tenant ID",
+    "manifest": "Permission manifest",
+    "manifestVersion": "Manifest version {{version}}",
+    "unnamedTenant": "Unnamed tenant",
+    "notVerified": "Not verified",
+    "lastVerifiedAt": "Last connection verification",
+    "never": "Never",
+    "none": "None",
+    "microsoftConsentHelp": "Disconnecting in Breeze does not remove tenant-wide consent in Microsoft Entra.",
+    "microsoftConsentDocs": "Manage Microsoft application permissions",
+    "status": {
+      "pending-consent": "Pending consent",
+      "verifying": "Verifying",
+      "active": "Active",
+      "degraded": "Degraded",
+      "suspended": "Suspended",
+      "revoked": "Revoked"
+    },
+    "grants": {
+      "required": "Required permissions",
+      "observed": "Observed permissions",
+      "lastKnownObserved": "Last-known observed permissions",
+      "lastKnownHelp": "Microsoft could not complete permission reconciliation. The observed list is the last known result.",
+      "unknownHelp": "Microsoft could not complete permission reconciliation. No verified permission result is available yet.",
+      "missing": "Missing permissions",
+      "lastKnownMissing": "Last-known missing permissions",
+      "unexpectedAlert": "Unexpected permissions detected",
+      "lastKnownUnexpectedAlert": "Last-known unexpected permissions detected",
+      "unknownPermission": "Unknown permission (role {{appRoleId}})",
+      "grantsVerifiedAt": "Permissions verified"
+    },
+    "actions": {
+      "connect": "Connect",
+      "reconsent": "Re-consent",
+      "retest": "Retest",
+      "disconnect": "Disconnect from Breeze",
+      "permissionRequired": "Organization write permission is required for these actions.",
+      "consentFailed": "Consent could not be started.",
+      "retestFailed": "The connection could not be retested.",
+      "retestSucceeded": "Connection retest completed.",
+      "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
+      "disconnectFailed": "The connection could not be disconnected.",
+      "disconnectSucceeded": "Breeze connection disconnected."
+    },
+    "errors": {
+      "consent_expired": "The consent session expired. Start consent again.",
+      "consent_state_mismatch": "The consent session could not be verified. Start consent again.",
+      "consent_cancelled": "Microsoft consent was cancelled.",
+      "admin_role_required": "A Global Administrator or Privileged Role Administrator must grant consent.",
+      "tenant_mismatch": "Microsoft returned a different tenant. Start consent again for this organization.",
+      "tenant_already_bound": "This Microsoft tenant is already connected to another organization.",
+      "credential_unavailable": "The connection credential is unavailable. Contact a Breeze administrator.",
+      "identity_token_invalid": "Microsoft administrator identity verification failed.",
+      "application_token_invalid": "Microsoft application verification failed.",
+      "grant_reconciliation_unavailable": "Permission reconciliation is unavailable. Retest the connection.",
+      "grant_missing": "One or more required Microsoft permissions are missing.",
+      "grant_unexpected": "Microsoft reports permissions outside the approved manifest.",
+      "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
+      "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
+      "executor_unavailable": "The verification service is unavailable. Retest later.",
+      "unknown": "Verification needs attention. Retest the connection or start consent again."
+    }
+  },
   "communicationIntegrations": {
     "critical": "Critical",
     "high": "High",
@@ -138,10 +213,7 @@
     "huntressIntegration": "Huntress Integration",
     "connectOnePartnerLevelHuntressAccountAndMap": "Connect one partner-level Huntress account and map Huntress organizations to Breeze organizations. ",
     "huntressIsntConnectedYet": "Huntress isn't connected yet",
-    "huntressIsConfiguredOnceAtThePartnerLevel": "Huntress is configured once at the partner level and shared across every organization. Switch your scope to",
-    "allOrgs": "All orgs",
-    "toAddTheAPIKeyAndSecret": "to add the API Key and Secret. ",
-    "thisBreezeOrganizationIsNotMappedToA": "This Breeze organization is not mapped to a Huntress organization yet. Switch to All orgs as a partner admin to map it. ",
+    "thisBreezeOrganizationIsNotMappedToA": "This Breeze organization is not mapped to a Huntress organization yet. Ask your MSP administrator to map it.",
     "partnerConnection": "Partner connection",
     "oneAPIKeyAndSecretCoversEveryHuntress": "One API Key and Secret covers every Huntress organization under this partner account. ",
     "partnerHuntress": "Partner Huntress",
@@ -234,7 +306,8 @@
     "webhookSecretPlaceholder": "Enter or generate a webhook secret",
     "update": "Update",
     "saveAndConnect": "Save & Connect",
-    "unknownTime": "Unknown time"
+    "unknownTime": "Unknown time",
+    "askAdminToConnect": "Huntress is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it."
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -287,7 +360,7 @@
     "connectionVerifiedAndSaved": "Connection verified and saved.",
     "microsoft365": "Microsoft 365",
     "connectAnEntraAzureADAppRegistrationSo": "Connect an Entra (Azure AD) app registration so the AI assistant can manage users and groups for this organization's tenant. ",
-    "microsoft365IntegrationIsNotEnabledOnThis": "Microsoft 365 integration is not enabled on this instance. ",
+    "microsoft365IntegrationIsNotEnabledOnThis": "Legacy direct connection is not enabled on this instance. ",
     "anAdministratorEnablesItBySetting": "An administrator enables it by setting",
     "onTheAPIServerThenReloadingThisPage": "on the API server, then reloading this page. ",
     "connectAnEntraAzureADAppRegistrationSo2": "Connect an Entra (Azure AD) app registration so the AI assistant can look up users, manage groups, disable accounts, and reset passwords for this organization's tenant. ",
@@ -366,9 +439,6 @@
     "connectionTestFailed": "Connection test failed",
     "monitoringIntegrations": "Monitoring integrations",
     "connectObservabilityPlatformsAlertingToolsAndExternalMonitoring": "Connect observability platforms, alerting tools, and external monitoring endpoints. ",
-    "monitoringIntegrationsAreConfiguredPerOrganizationSwitchThe": "Monitoring integrations are configured per organization. Switch the scope in the top bar from ",
-    "allOrgs": "All orgs",
-    "toASingleOrganizationToViewOrEdit": "to a single organization to view or edit its monitoring settings. ",
     "loadingMonitoringIntegrations": "Loading monitoring integrations...",
     "unsavedChanges": "Unsaved changes",
     "prometheus": "Prometheus",
@@ -403,7 +473,8 @@
     "metricsSelected": "metrics selected.",
     "connectionSuccessful": "Connection successful.",
     "saving": "Saving...",
-    "saveSettings": "Save settings"
+    "saveSettings": "Save settings",
+    "selectOrgToConfigure": "Monitoring integrations are configured per organization. Select an organization in the top bar to view or edit its monitoring settings."
   },
   "psaConnectionList": {
     "ticketsCompaniesAndConfigs": "Tickets, companies, and configs",
@@ -609,10 +680,7 @@
     "sentineloneIntegration": "SentinelOne Integration",
     "connectOnePartnerLevelSentinelOneTenantAndMap": "Connect one partner-level SentinelOne tenant and map SentinelOne sites to Breeze organizations. ",
     "sentineloneIsntConnectedYet": "SentinelOne isn't connected yet",
-    "sentineloneIsConfiguredOnceAtThePartnerLevel": "SentinelOne is configured once at the partner level and shared across every organization. Switch your scope to ",
-    "allOrgs": "All orgs",
-    "toAddTheManagementURLAndAPIToken": "to add the management URL and API token. ",
-    "thisOrganizationIsntMappedToASentinelOneSite": "This organization isn't mapped to a SentinelOne site yet. Switch to All orgs as a partner admin to map it. ",
+    "thisOrganizationIsntMappedToASentinelOneSite": "This organization isn't mapped to a SentinelOne site yet. Ask your MSP administrator to map it.",
     "partnerConnection": "Partner connection",
     "oneManagementURLAndAPITokenCoversEvery": "One management URL and API token covers every SentinelOne site under this partner account. ",
     "myS1Tenant": "My S1 Tenant",
@@ -646,7 +714,8 @@
     "hideApiToken": "Hide API token",
     "showApiToken": "Show API token",
     "update": "Update",
-    "saveAndConnect": "Save & Connect"
+    "saveAndConnect": "Save & Connect",
+    "askAdminToConnect": "SentinelOne is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it."
   },
   "stripePaymentsIntegration": {
     "loadFailed": "load failed",

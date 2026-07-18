@@ -24,11 +24,27 @@ func newTestBrokerWithSessions(t *testing.T, sessions ...*sessionbroker.Session)
 	return broker
 }
 
+func getUnexportedField(t *testing.T, target any, name string) any {
+	t.Helper()
+
+	v := reflect.ValueOf(target)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		t.Fatalf("target must be a non-nil pointer, got %T", target)
+	}
+
+	field := v.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("field %q not found on %T", name, target)
+	}
+
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface()
+}
+
 func setUnexportedField(t *testing.T, target any, name string, value any) {
 	t.Helper()
 
 	v := reflect.ValueOf(target)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
+	if v.Kind() != reflect.Pointer || v.IsNil() {
 		t.Fatalf("target must be a non-nil pointer, got %T", target)
 	}
 

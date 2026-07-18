@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"time"
 
@@ -181,7 +182,10 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// Linux is excluded: there is no IPC helper on Linux in Phase 1, so a booted-
+	// headless Linux box must take the direct path (the X11 capturer resolves the
+	// display itself). Never gate Linux on the latched-at-boot headless flag.
+	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt)
@@ -255,26 +259,25 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
-	// Service/headless mode: relay stop to user helper
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
-		session := h.desktopOwnerSession(sessionID)
-		if session == nil {
-			return tools.CommandResult{
-				Status:     "failed",
-				Error:      "desktop session owner unavailable; cannot safely stop session",
-				DurationMs: time.Since(start).Milliseconds(),
+	// State-based routing: if an IPC helper actually owns this session, stop it
+	// over IPC; otherwise stop the direct desktopMgr session. Never gate on the
+	// headless flag — on Linux (and any box whose headless state flips between
+	// start and stop) a direct session is never in desktopOwners, so a
+	// flag-gated helper path would strand the live capture. desktopOwners is only
+	// populated by the helper start path, so this is safe on every platform.
+	if h.sessionBroker != nil {
+		if session := h.desktopOwnerSession(sessionID); session != nil {
+			req := ipc.DesktopStopRequest{SessionID: sessionID}
+			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
+			if err != nil {
+				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
 			}
+			h.forgetDesktopOwner(sessionID)
+			return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 		}
-		req := ipc.DesktopStopRequest{SessionID: sessionID}
-		_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
-		if err != nil {
-			return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())
-		}
-		h.forgetDesktopOwner(sessionID)
-	} else {
-		h.desktopMgr.StopSession(sessionID)
 	}
 
+	h.desktopMgr.StopSession(sessionID)
 	return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
 }
 

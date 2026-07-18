@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { availableParallelism } from 'node:os';
 import path from 'path';
 
 export default defineConfig({
@@ -11,6 +12,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
       'src/__tests__/integration/**',

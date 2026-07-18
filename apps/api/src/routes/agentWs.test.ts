@@ -66,6 +66,11 @@ vi.mock('../db/schema', () => ({
     devicesFailed: 'scriptExecutionBatches.devicesFailed',
   },
   backupJobs: {},
+  // Real services/backupProgress.ts and services/backupResultPersistence.ts run
+  // in these tests and import these two from ../db/schema, so the mock must
+  // provide them (otherwise inArray(status, undefined) throws mid-handler).
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
+  STALE_BACKUP_REAP_MARKER: '[stale-backup-reaper]',
   restoreJobs: {
     id: 'restoreJobs.id',
     commandId: 'restoreJobs.commandId',
@@ -162,6 +167,26 @@ vi.mock('../services/commandDispatch', () => ({
   claimPendingCommandsForDevice: vi.fn(async () => []),
 }));
 
+// Task 7 backup-result guard-ordering tests exercise the REAL
+// services/backupProgress.ts predicates/appliers (unit-tested separately in
+// backupProgress.test.ts) through the agentWs message-handling path, so only
+// the Redis-backed expectation service and the DB-writing job-completion
+// persister are mocked here — everything else in the guard chain is real.
+vi.mock('../services/agentWorkExpectation', () => ({
+  claimConsumeOnce: vi.fn(),
+  consumeDispatchedExpectation: vi.fn(),
+  recordDispatchedExpectation: vi.fn(),
+  refreshDispatchedExpectation: vi.fn(),
+}));
+
+vi.mock('../services/backupResultPersistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/backupResultPersistence')>();
+  return {
+    ...actual,
+    applyBackupCommandResultToJob: vi.fn(),
+  };
+});
+
 import { db } from '../db';
 import { devices } from '../db/schema';
 import {
@@ -186,6 +211,11 @@ import { updateRestoreJobFromResult } from '../services/restoreResultPersistence
 import { rateLimiter } from '../services/rate-limit';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { publishEvent } from '../services/eventBus';
+import {
+  consumeDispatchedExpectation,
+  refreshDispatchedExpectation,
+} from '../services/agentWorkExpectation';
+import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 
 function wsMock() {
   return {
@@ -1334,6 +1364,195 @@ describe('agent websocket command results', () => {
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
     const res = await app.request('/agent-overlimit/ws');
     expect(res.status).toBe(429);
+  });
+});
+
+// Task 7 — backup command_result non-terminal guards. Unit coverage for the
+// extracted predicates/appliers (isBackupStartedAck, isLegacyBackupTimeoutResult,
+// applyBackupStartedAck, tryParseBackupResultPayload) lives in
+// backupProgress.test.ts. These tests instead exercise the REAL guard
+// placement inside agentWs's orphaned command_result path — a backup job's
+// commandId has no device_commands row, so a result for it always resolves
+// via processOrphanedCommandResult — proving the started-ack and legacy
+// timeout guards return BEFORE consumeDispatchedExpectation runs (so the
+// one-shot expectation survives for the real terminal result), while a
+// genuine failure or a completed result still falls through to consume it.
+describe('backup command_result non-terminal guards (guard ordering integration)', () => {
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+  const jobId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const backupJobRow = { id: jobId, orgId: 'org-123', deviceId: 'device-123', agentId: 'agent-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('started-ack result bumps lastProgressAt, refreshes the dispatch TTL, and does NOT consume the expectation (job stays in-flight)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // device_commands: no row → orphaned path
+      .mockReturnValueOnce(selectAgentDevice([]) as any) // discoveryJobs: none
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any); // backupJobs: found
+
+    const updateChain = updateResult([{ id: jobId }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+    vi.mocked(refreshDispatchedExpectation).mockResolvedValue(true);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({ started: true }),
+      })
+    } as any, ws as any);
+
+    // applyBackupStartedAck's update only bumps progress/updatedAt — no
+    // `status` key — so the (pending|running) job never transitions.
+    expect(db.update).toHaveBeenCalledTimes(1);
+    const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty('lastProgressAt');
+    expect(setArg.status).toBeUndefined();
+
+    expect(refreshDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
+    expect(consumeDispatchedExpectation).not.toHaveBeenCalled();
+    expect(applyBackupCommandResultToJob).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('started-ack on an already-terminal job is a no-op: does not log the "started-ack" line (FIX 10)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    // Guarded update matches zero rows → applyBackupStartedAck returns false.
+    vi.mocked(db.update).mockReturnValue(updateResult([]) as any);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({ started: true }),
+      })
+    } as any, ws as any);
+
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('started-ack from agent'));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring started-ack for already-terminal backup job'));
+    expect(refreshDispatchedExpectation).not.toHaveBeenCalled();
+    expect(consumeDispatchedExpectation).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it('legacy "command timed out" result is dropped without consuming the expectation or failing the job', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'failed',
+        error: 'command timed out after 10m0s',
+      })
+    } as any, ws as any);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(consumeDispatchedExpectation).not.toHaveBeenCalled();
+    expect(applyBackupCommandResultToJob).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring legacy 10-minute timed-out result'));
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+
+    warnSpy.mockRestore();
+  });
+
+  it('a genuine (non-timeout) failure result still consumes the expectation and fails the job', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: null,
+    });
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'failed',
+        error: 'disk full',
+      })
+    } as any, ws as any);
+
+    expect(consumeDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        orgId: 'org-123',
+        deviceId: 'device-123',
+        resultStatus: 'failed',
+      })
+    );
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('a completed result still consumes the expectation and completes the job', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: 'snap-db-1',
+      providerSnapshotId: 'snap-1',
+    });
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({ snapshotId: 'snap-1', filesBackedUp: 5, bytesBackedUp: 1000 }),
+      })
+    } as any, ws as any);
+
+    expect(consumeDispatchedExpectation).toHaveBeenCalledWith('backup', 'device-123', jobId);
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        resultStatus: 'completed',
+        result: expect.objectContaining({ snapshotId: 'snap-1' }),
+      })
+    );
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 });
 

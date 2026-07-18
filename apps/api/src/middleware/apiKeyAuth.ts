@@ -48,7 +48,7 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> {
+export async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> {
   const limit = envInt('API_KEY_PRELOOKUP_RATE_LIMIT', 300);
   const windowSeconds = envInt('API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS', 60);
   const clientIp = getTrustedClientIp(c, 'unknown');
@@ -344,4 +344,3 @@ export function requireApiKeyScope(...requiredScopes: string[]) {
     await next();
   };
 }
-

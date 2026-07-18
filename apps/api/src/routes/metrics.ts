@@ -14,7 +14,7 @@ import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryRea
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
-import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/verificationService';
+import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -26,11 +26,13 @@ import {
 } from '../services/backupMetrics';
 import {
   getS1MetricsSnapshot,
+  resetS1MetricsForTesting,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
+import { registerM365CustomerGraphReadPrometheusCounter } from '../services/m365ControlPlane/metrics';
 
 export {
   recordBackupCommandTimeout,
@@ -43,12 +45,16 @@ export {
 
 export const metricsRoutes = new Hono();
 const requireMetricsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
-const rawMetricsScrapeToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
-// Production hardening: refuse to run with obvious placeholder tokens.
-const METRICS_SCRAPE_TOKEN =
-  (process.env.NODE_ENV ?? 'development') === 'production' && (!rawMetricsScrapeToken || rawMetricsScrapeToken === 'REDACTED_DEV_TOKEN')
+
+function resolveMetricsScrapeToken(): string | undefined {
+  const rawToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
+  // Production hardening: refuse to run with obvious placeholder tokens.
+  return (process.env.NODE_ENV ?? 'development') === 'production' && (!rawToken || rawToken === 'REDACTED_DEV_TOKEN')
     ? undefined
-    : rawMetricsScrapeToken;
+    : rawToken;
+}
+
+let METRICS_SCRAPE_TOKEN = resolveMetricsScrapeToken();
 
 function envFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -69,14 +75,19 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 // Default: hide org IDs in Prometheus labels in production (they can leak tenant identifiers).
-const METRICS_INCLUDE_ORG_ID = envFlag(
-  'METRICS_INCLUDE_ORG_ID',
-  (process.env.NODE_ENV ?? 'development') !== 'production'
-);
+function resolveMetricsIncludeOrgId(): boolean {
+  return envFlag(
+    'METRICS_INCLUDE_ORG_ID',
+    (process.env.NODE_ENV ?? 'development') !== 'production'
+  );
+}
 
-const METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
+let METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
+
+let METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
 
 const register = new Registry();
+registerM365CustomerGraphReadPrometheusCounter(register);
 
 const httpRequestsTotal = new Counter({
   name: 'http_requests_total',
@@ -316,35 +327,39 @@ const nodejsVersionInfoGauge = new Gauge({
   registers: [register]
 });
 
-httpRequestsInFlight.set(0);
-devicesActiveGauge.set(0);
-organizationsTotalGauge.set(0);
-commandsTotalCounter.labels('script').inc(0);
-alertsTotalCounter.labels('info').inc(0);
-alertQueueLengthGauge.set(0);
-agentHeartbeatTotal.labels('success').inc(0);
-agentHeartbeatTotal.labels('failed').inc(0);
-scriptsExecutedTotal.inc(0);
-backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
-backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
-restoreTimeoutsTotal.labels('backup_restore').inc(0);
-backupCommandTimeoutsTotal.labels('backup_restore', 'reaper').inc(0);
-backupVerificationResultsTotal.labels('integrity', 'passed').inc(0);
-backupLowReadinessDevicesGauge.set(0);
-softwarePolicyEvaluationsTotal.labels('allowlist', 'compliant', 'evaluated').inc(0);
-softwarePolicyViolationsTotal.labels('allowlist').inc(0);
-softwareRemediationDecisionsTotal.labels('queued').inc(0);
-s1SyncRunsTotal.labels('sync-integration', 'success').inc(0);
-s1ActionDispatchTotal.labels('isolate', 'accepted').inc(0);
-s1ActionPollTransitionsTotal.labels('queued').inc(0);
-failedLoginsTotal.labels('invalid_password', 'redacted').inc(0);
-agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
-commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
-abuseSignalsFiredTotal.labels('alert').inc(0);
-abuseSweepRunsTotal.labels('success').inc(0);
-opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
-proxyTrustUntrustedPeerTotal.inc(0);
-nodejsVersionInfoGauge.labels(process.version).set(1);
+function initializeMetricDefaults(): void {
+  httpRequestsInFlight.set(0);
+  devicesActiveGauge.set(0);
+  organizationsTotalGauge.set(0);
+  commandsTotalCounter.labels('script').inc(0);
+  alertsTotalCounter.labels('info').inc(0);
+  alertQueueLengthGauge.set(0);
+  agentHeartbeatTotal.labels('success').inc(0);
+  agentHeartbeatTotal.labels('failed').inc(0);
+  scriptsExecutedTotal.inc(0);
+  backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
+  backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
+  restoreTimeoutsTotal.labels('backup_restore').inc(0);
+  backupCommandTimeoutsTotal.labels('backup_restore', 'reaper').inc(0);
+  backupVerificationResultsTotal.labels('integrity', 'passed').inc(0);
+  backupLowReadinessDevicesGauge.set(0);
+  softwarePolicyEvaluationsTotal.labels('allowlist', 'compliant', 'evaluated').inc(0);
+  softwarePolicyViolationsTotal.labels('allowlist').inc(0);
+  softwareRemediationDecisionsTotal.labels('queued').inc(0);
+  s1SyncRunsTotal.labels('sync-integration', 'success').inc(0);
+  s1ActionDispatchTotal.labels('isolate', 'accepted').inc(0);
+  s1ActionPollTransitionsTotal.labels('queued').inc(0);
+  failedLoginsTotal.labels('invalid_password', 'redacted').inc(0);
+  agentEnrollmentsTotal.labels('success', 'redacted').inc(0);
+  commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
+  abuseSignalsFiredTotal.labels('alert').inc(0);
+  abuseSweepRunsTotal.labels('success').inc(0);
+  opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
+  proxyTrustUntrustedPeerTotal.inc(0);
+  nodejsVersionInfoGauge.labels(process.version).set(1);
+}
+
+initializeMetricDefaults();
 
 interface CounterValue {
   labels: Record<string, string>;
@@ -630,44 +645,83 @@ export function recordSoftwareRemediationDecision(decision: string, count = 1): 
   }, safeCount);
 }
 
-setS1MetricsRecorder({
-  onSyncRun: (job, outcome, durationMs) => {
-    const safeDuration = Number.isFinite(durationMs) ? Math.max(durationMs, 0) : 0;
-    s1SyncRunsTotal.labels(job, outcome).inc();
-    s1SyncDurationSeconds.labels(job, outcome).observe(safeDuration / 1000);
-  },
-  onActionDispatch: (action, outcome) => {
-    s1ActionDispatchTotal.labels(action, outcome).inc();
-  },
-  onActionPollTransition: (status) => {
-    s1ActionPollTransitionsTotal.labels(status).inc();
-  }
-});
+function bindMetricsRecorders(): void {
+  setS1MetricsRecorder({
+    onSyncRun: (job, outcome, durationMs) => {
+      const safeDuration = Number.isFinite(durationMs) ? Math.max(durationMs, 0) : 0;
+      s1SyncRunsTotal.labels(job, outcome).inc();
+      s1SyncDurationSeconds.labels(job, outcome).observe(safeDuration / 1000);
+    },
+    onActionDispatch: (action, outcome) => {
+      s1ActionDispatchTotal.labels(action, outcome).inc();
+    },
+    onActionPollTransition: (status) => {
+      s1ActionPollTransitionsTotal.labels(status).inc();
+    }
+  });
 
-setBackupMetricsRecorder({
-  onDispatchFailure: recordBackupDispatchFailureMetric,
-  onVerificationSkip: recordBackupVerificationSkipMetric,
-  onRestoreTimeout: recordRestoreTimeoutMetric,
-  onCommandTimeout: recordBackupCommandTimeoutMetric,
-  onVerificationResult: recordBackupVerificationResultMetric,
-  onLowReadinessDevices: setLowReadinessDevicesMetric,
-});
+  setBackupMetricsRecorder({
+    onDispatchFailure: recordBackupDispatchFailureMetric,
+    onVerificationSkip: recordBackupVerificationSkipMetric,
+    onRestoreTimeout: recordRestoreTimeoutMetric,
+    onCommandTimeout: recordBackupCommandTimeoutMetric,
+    onVerificationResult: recordBackupVerificationResultMetric,
+    onLowReadinessDevices: setLowReadinessDevicesMetric,
+  });
 
-setAnomalyMetricsRecorder({
-  onFailedLogin: recordFailedLoginMetric,
-  onAgentEnrollment: recordAgentEnrollmentMetric,
-  onCommandDispatch: recordCommandDispatchMetric,
-});
+  setAnomalyMetricsRecorder({
+    onFailedLogin: recordFailedLoginMetric,
+    onAgentEnrollment: recordAgentEnrollmentMetric,
+    onCommandDispatch: recordCommandDispatchMetric,
+  });
 
-setAbuseMetricsRecorder({
-  onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
-  onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
-  onAlertDelivery: (channel, result) => opsAlertDeliveriesTotal.labels(normalizeMetricLabel(channel, 'unknown'), result).inc(),
-});
+  setAbuseMetricsRecorder({
+    onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
+    onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
+    onAlertDelivery: (channel, result) => opsAlertDeliveriesTotal.labels(normalizeMetricLabel(channel, 'unknown'), result).inc(),
+  });
 
-setProxyTrustMetricsRecorder({
-  onForwardedHeadersFromUntrustedPeer: () => proxyTrustUntrustedPeerTotal.inc(),
-});
+  setProxyTrustMetricsRecorder({
+    onForwardedHeadersFromUntrustedPeer: () => proxyTrustUntrustedPeerTotal.inc(),
+  });
+}
+
+bindMetricsRecorders();
+
+export function resetMetricsForTesting(): void {
+  METRICS_SCRAPE_TOKEN = resolveMetricsScrapeToken();
+  METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
+  METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
+
+  resetS1MetricsForTesting();
+  register.resetMetrics();
+  initializeMetricDefaults();
+
+  httpRequestState.clear();
+  agentHeartbeatState.clear();
+  softwarePolicyEvaluationState.clear();
+  softwareRemediationDecisionState.clear();
+  sensitiveDataFindingState.clear();
+  sensitiveDataRemediationState.clear();
+  backupDispatchFailureState.clear();
+  backupVerificationSkipState.clear();
+  restoreTimeoutState.clear();
+  backupCommandTimeoutState.clear();
+  backupVerificationResultState.clear();
+
+  backupLowReadinessDevices = 0;
+  sensitiveDataScansQueuedTotal = 0;
+  devicesActive = 0;
+  organizationsTotal = 0;
+  commandsTotal = 0;
+  alertsTotal = 0;
+  alertQueueLength = 0;
+  scriptsExecutedCount = 0;
+  inFlightRequests = 0;
+  softwarePolicyViolationsCount = 0;
+
+  bindMetricsRecorders();
+}
 
 async function refreshBackupOperationalGauges(): Promise<void> {
   try {

@@ -16,9 +16,15 @@ const namespaceDuplicateBaselines = {
     'ai.json': 1,
     'alerts.json': 43,
     'auth.json': 14,
-    'backup.json': 51,
-    'billing.json': 38,
-    'common.json': 89,
+    'backup.json': 52,
+    // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Status")
+    // legitimately identical to English.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 45,
+    // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
+    'common.json': 90,
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -30,7 +36,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     'scripts.json': 55,
     'security.json': 140,
-    'settings.json': 107,
+    'settings.json': 108,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
   },
@@ -39,8 +45,13 @@ const namespaceDuplicateBaselines = {
     'ai.json': 4,
     'alerts.json': 39,
     'auth.json': 14,
-    'backup.json': 29,
-    'billing.json': 32,
+    'backup.json': 30,
+    // +3: contract-template format strings ("v{{number}} · {{status}}",
+    // "v{{number}}", "{{name}} — v{{number}}") that are legitimately identical
+    // to English in es-419.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 38,
     'common.json': 75,
     'devices.json': 115,
     'discovery.json': 17,
@@ -62,8 +73,14 @@ const namespaceDuplicateBaselines = {
     'ai.json': 9,
     'alerts.json': 58,
     'auth.json': 13,
-    'backup.json': 58,
-    'billing.json': 38,
+    'backup.json': 59,
+    // +7: contract-template format strings + French cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Description",
+    // "Versions", "Documents" ×2) that are legitimately identical to English
+    // in fr-FR.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 48,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,
@@ -76,7 +93,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 139,
+    'settings.json': 141,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -85,9 +102,15 @@ const namespaceDuplicateBaselines = {
     'ai.json': 5,
     'alerts.json': 46,
     'auth.json': 15,
-    'backup.json': 62,
-    'billing.json': 26,
-    'common.json': 90,
+    'backup.json': 63,
+    // +6: contract-template format strings + German cognates ("v{{number}} ·
+    // {{status}}", "v{{number}}", "{{name}} — v{{number}}", "Name", "Status")
+    // that are legitimately identical to English in de-DE.
+    // +3: quote send composer — "Cc" (label + toggle) and the example email
+    // placeholder are locale-invariant.
+    'billing.json': 35,
+    // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
+    'common.json': 91,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
@@ -99,7 +122,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     'scripts.json': 53,
     'security.json': 166,
-    'settings.json': 161,
+    'settings.json': 163,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
   },

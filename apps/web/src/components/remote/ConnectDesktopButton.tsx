@@ -82,6 +82,14 @@ function desktopAccessUnavailableReason(
       return translate?.('connectDesktopButton.unavailable.virtualDisplay') ?? null;
     case 'helper_not_connected':
       return translate?.('connectDesktopButton.unavailable.helperNotConnected') ?? null;
+    case 'no_display_session':
+      return translate?.('connectDesktopButton.unavailable.noDisplaySession') ?? null;
+    case 'wayland_unsupported':
+      return translate?.('connectDesktopButton.unavailable.waylandUnsupported') ?? null;
+    case 'x11_connect_failed':
+      return translate?.('connectDesktopButton.unavailable.x11ConnectFailed') ?? null;
+    case 'x11_auth_failed':
+      return translate?.('connectDesktopButton.unavailable.x11AuthFailed') ?? null;
     default:
       return translate?.('connectDesktopButton.unavailable.default') ?? null;
   }

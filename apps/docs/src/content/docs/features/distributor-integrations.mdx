@@ -144,6 +144,8 @@ TD SYNNEX Pricing is a **live lookup + import** flow rather than a background sy
 - **Import to catalog** — import a result into your Product Catalog. The **sell price** is pre-filled from your partner default markup over cost (falling back to MSRP, then cost) and is editable. A live margin summary is shown, warning you if the sell price is below cost.
 - On import, Breeze records the product name, SKU (SYNNEX SKU or manufacturer part), description, your entered sell price, the cost basis, and whether the item is taxable (following your partner's hardware-tax policy).
 
+This same live lookup is also reachable through the AI/MCP surface via the `lookup_distributor_product` tool, with reseller cost hidden for organization-scoped callers — see the [MCP Server documentation](/features/mcp-server/#billing-tools).
+
 <Aside>
   Lookups require the integration to be **enabled** and connected. For the full catalog-import workflow, see [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
 </Aside>

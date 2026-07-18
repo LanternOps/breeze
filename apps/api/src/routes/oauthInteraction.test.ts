@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
+
+const configState = vi.hoisted(() => ({
+  billingUrl: undefined as string | undefined,
+}));
 
 const mocks = vi.hoisted(() => {
   class Grant {
@@ -31,8 +35,30 @@ const mocks = vi.hoisted(() => {
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
     computeEffectiveMcpScopes: vi.fn(),
+    authMiddleware: vi.fn(),
   };
 });
+
+vi.mock('../config/env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/env')>();
+  return Object.defineProperty({
+    ...actual,
+    MCP_OAUTH_ENABLED: true,
+    OAUTH_ISSUER: 'https://api.example',
+    OAUTH_RESOURCE_URL: 'https://api.example/mcp/server',
+  }, 'BILLING_URL', {
+    enumerable: true,
+    configurable: true,
+    get: () => configState.billingUrl ?? '',
+  });
+});
+
+vi.mock('../oauth/log', () => ({
+  ERROR_IDS: new Proxy({}, { get: (_target, property) => property }),
+  logOauthError: vi.fn(),
+  logOauthDebug: vi.fn(),
+  logOAuthEvent: vi.fn(),
+}));
 
 // Mock the effective-scope resolver so route tests exercise WIRING (is it
 // called with the right requested/displayed/partnerId/hasGrant args at the
@@ -61,19 +87,7 @@ vi.mock('../oauth/provider', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn(async (c: any, next: any) => {
-    c.set('auth', {
-      user: { id: 'u1', email: 'user@example.com', name: 'User One' },
-      token: {},
-      partnerId: '11111111-1111-4111-8111-111111111111',
-      orgId: 'current-org',
-      scope: 'partner',
-      accessibleOrgIds: null,
-      orgCondition: vi.fn(),
-      canAccessOrg: vi.fn(),
-    });
-    await next();
-  }),
+  authMiddleware: mocks.authMiddleware,
   // Pulled in transitively via monitorWorker.ts -> monitors.ts when the
   // routes module imports the agent WS layer. Stub as no-op middleware so
   // the import chain doesn't blow up at module-load time.
@@ -99,6 +113,8 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: auditMocks.writeRouteAudit,
   writeAuditEvent: vi.fn(),
 }));
+
+import { oauthInteractionRoutes } from './oauthInteraction';
 
 function details(overrides: Record<string, unknown> = {}): {
   uid: string;
@@ -184,11 +200,7 @@ function queueInsertGrantReturning(opts: { firstConsented: boolean }) {
   return { values, onConflictDoUpdate, returning };
 }
 
-async function loadApp(enabled = true) {
-  process.env.MCP_OAUTH_ENABLED = enabled ? 'true' : 'false';
-  process.env.OAUTH_RESOURCE_URL = 'https://api.example/mcp/server';
-  vi.resetModules();
-  const { oauthInteractionRoutes } = await import('./oauthInteraction');
+function loadApp() {
   const app = new Hono().route('/api/v1/oauth', oauthInteractionRoutes);
   app.onError((err, c) => {
     if (err instanceof HTTPException) {
@@ -207,6 +219,26 @@ async function request(app: Hono, path: string, init?: RequestInit) {
 describe('oauthInteractionRoutes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    configState.billingUrl = undefined;
+    mocks.interactionDetails.mockReset();
+    mocks.select.mockReset();
+    mocks.update.mockReset();
+    mocks.insert.mockReset();
+    mocks.computeEffectiveMcpScopes.mockReset();
+    mocks.authMiddleware.mockReset();
+    mocks.authMiddleware.mockImplementation(async (c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'u1', email: 'user@example.com', name: 'User One' },
+        token: {},
+        partnerId: '11111111-1111-4111-8111-111111111111',
+        orgId: 'current-org',
+        scope: 'partner',
+        accessibleOrgIds: null,
+        orgCondition: vi.fn(),
+        canAccessOrg: vi.fn(),
+      });
+      await next();
+    });
     mocks.Grant.instances.length = 0;
     auditMocks.writeRouteAudit.mockReset();
     // Default: no partner-policy narrowing — pass through whatever mcp:*
@@ -216,18 +248,13 @@ describe('oauthInteractionRoutes', () => {
     );
   });
 
-  afterEach(() => {
-    delete process.env.MCP_OAUTH_ENABLED;
-    delete process.env.OAUTH_RESOURCE_URL;
-  });
-
   it('returns 404 when Interaction.find returns undefined (not found / expired)', async () => {
     // The route now uses Interaction.find(uid) directly — see oauthInteraction.ts
     // intentional comment: this avoids relying on the _interaction cookie
     // which can lag the URL UID in multi-prompt flows. A missing/expired
     // interaction surfaces as `undefined`, which the route maps to 404.
     mocks.interactionDetails.mockResolvedValue(undefined);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(404);
   });
 
@@ -238,7 +265,7 @@ describe('oauthInteractionRoutes', () => {
     // oauth_clients so the consent UI can show the human-readable
     // `client_name` instead of the opaque `client_id`.
     queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body).toEqual({
@@ -277,7 +304,7 @@ describe('oauthInteractionRoutes', () => {
         partnerId === OTHER_PARTNER_ID ? ['mcp:read'] : ['mcp:read', 'mcp:write'],
     );
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json() as { partners: Array<{ partnerId: string; effectiveScopes: string[] }> };
     expect(res.status).toBe(200);
     expect(body.partners).toEqual([
@@ -302,7 +329,7 @@ describe('oauthInteractionRoutes', () => {
     }));
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     queueSelect([{ metadata: {} }], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json() as { client: { client_id: string; display_name: string } };
     expect(res.status).toBe(200);
     expect(body.client).toEqual({
@@ -327,7 +354,7 @@ describe('oauthInteractionRoutes', () => {
     }));
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     queueSelect([{ metadata: { client_name: 'Microsoft 365' } }], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json() as {
       client: { verification: string; redirect_uri: string; redirect_origin: string; display_name: string };
     };
@@ -353,7 +380,7 @@ describe('oauthInteractionRoutes', () => {
     }));
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     const body = await res.json() as { client: { redirect_uri: string; redirect_origin: string } };
     expect(res.status).toBe(200);
     expect(body.client.redirect_uri).toBe('');
@@ -364,12 +391,10 @@ describe('oauthInteractionRoutes', () => {
     // Route writes the result directly onto the interaction and calls
     // details.save() (rather than provider.interactionResult, which would
     // read the wrong UID from the cookie in multi-prompt flows). The
-    // canonical resume URL is `${OAUTH_ISSUER}/oauth/auth/<uid>` — note the
-    // OAUTH_ISSUER env isn't set in these tests so it stringifies as
-    // "undefined/oauth/auth/uid-1".
+    // canonical resume URL is `${OAUTH_ISSUER}/oauth/auth/<uid>`.
     const d = details();
     mocks.interactionDetails.mockResolvedValue(d);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: false }),
     });
@@ -384,7 +409,7 @@ describe('oauthInteractionRoutes', () => {
     mocks.interactionDetails.mockResolvedValue(details({
       params: { client_id: 'client-1', resource: 'https://evil.example/mcp' },
     }));
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -407,7 +432,7 @@ describe('oauthInteractionRoutes', () => {
     }));
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(200);
     const body = await res.json() as { resource: string };
     expect(body.resource).toBe('https://api.example/mcp/server/sse');
@@ -426,7 +451,7 @@ describe('oauthInteractionRoutes', () => {
       },
     });
     mocks.interactionDetails.mockResolvedValue(d);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: false }),
     });
@@ -436,7 +461,7 @@ describe('oauthInteractionRoutes', () => {
 
   it('rejects malformed consent JSON before membership checks', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: '{',
     });
@@ -449,14 +474,14 @@ describe('oauthInteractionRoutes', () => {
   it('rejects consent bodies with invalid approve or partner_id shape', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
 
-    const approveRes = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const approveRes = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: 'yes' }),
     });
     expect(approveRes.status).toBe(400);
     expect(await approveRes.json()).toEqual({ message: 'approve must be a boolean' });
 
-    const partnerRes = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const partnerRes = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: 'partner-1', approve: true }),
     });
@@ -467,7 +492,7 @@ describe('oauthInteractionRoutes', () => {
   it('rejects consent for partners where the user is not a member', async () => {
     mocks.interactionDetails.mockResolvedValue(details());
     queueSelect([], 'limit');
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -500,7 +525,7 @@ describe('oauthInteractionRoutes', () => {
     // `firstConsented: true` simulates a fresh row (firstConsentedAt ===
     // lastConsentedAt), which routes to the `partner_grant_recorded` audit.
     const grantInsert = queueInsertGrantReturning({ firstConsented: true });
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -561,7 +586,7 @@ describe('oauthInteractionRoutes', () => {
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -585,7 +610,7 @@ describe('oauthInteractionRoutes', () => {
     // JWT, they should NOT be able to finish another user's consent flow.
     const d = details({ session: { accountId: 'victim-id' } } as any);
     mocks.interactionDetails.mockResolvedValue(d);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -601,7 +626,7 @@ describe('oauthInteractionRoutes', () => {
     // leaks information about a victim's flow — fail closed on GET too.
     const d = details({ session: { accountId: 'victim-id' } } as any);
     mocks.interactionDetails.mockResolvedValue(d);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ message: 'interaction_user_mismatch' });
   });
@@ -612,7 +637,7 @@ describe('oauthInteractionRoutes', () => {
     // POST (by user B = u1 from authMiddleware mock) must be rejected.
     const d = details({ lastSubmission: { accountId: 'user-a-id' } } as any);
     mocks.interactionDetails.mockResolvedValue(d);
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -633,7 +658,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ status: 'active' }], 'limit'); // partner status check
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -664,7 +689,7 @@ describe('oauthInteractionRoutes', () => {
     // route classifies this as a re-consent (existing row, conflict-update).
     queueInsertGrantReturning({ firstConsented: false });
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -696,7 +721,7 @@ describe('oauthInteractionRoutes', () => {
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
-    const resA = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const resA = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -731,7 +756,7 @@ describe('oauthInteractionRoutes', () => {
     queueUpdate();
     queueInsertGrantReturning({ firstConsented: true });
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -768,7 +793,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
     queueSelect([{ status: 'active' }], 'limit'); // partner status check
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -795,7 +820,7 @@ describe('oauthInteractionRoutes', () => {
     queueUpdate(); // setGrantBreezeMeta on oauth_grants
     queueInsertGrantReturning({ firstConsented: true });
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -829,7 +854,7 @@ describe('oauthInteractionRoutes', () => {
     // down to mcp:read only — simulates a read-only partner.
     mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -875,7 +900,7 @@ describe('oauthInteractionRoutes', () => {
     queueInsertGrantReturning({ firstConsented: true });
     mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -926,7 +951,7 @@ describe('oauthInteractionRoutes', () => {
     // Selected partner's policy allows only mcp:read.
     mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
       method: 'POST',
       body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
     });
@@ -979,7 +1004,7 @@ describe('oauthInteractionRoutes', () => {
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme' }]);
     queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
 
-    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(200);
     const body = await res.json() as { scopes: string[] };
     expect(body.scopes).toEqual(['openid', 'offline_access', 'mcp:read', 'mcp:write']);
@@ -991,12 +1016,8 @@ describe('oauthInteractionRoutes', () => {
   // to the billing service (if BILLING_URL is set) or returns 402.
   // -------------------------------------------------------------------
   describe('consent redirects inactive partners to BILLING_URL', () => {
-    afterEach(() => {
-      delete process.env.BILLING_URL;
-    });
-
     it('returns redirectTo BILLING_URL when partner.status=pending and BILLING_URL is set', async () => {
-      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      configState.billingUrl = 'https://billing.example.com/setup';
       const d = details({
         session: { accountId: 'u1' },
         prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -1009,7 +1030,7 @@ describe('oauthInteractionRoutes', () => {
       // Queue 3: partner status check — returns 'pending'
       queueSelect([{ status: 'pending' }], 'limit');
 
-      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
         method: 'POST',
         body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
       });
@@ -1021,7 +1042,7 @@ describe('oauthInteractionRoutes', () => {
     });
 
     it('falls through to grant.save when partner.status=active', async () => {
-      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      configState.billingUrl = 'https://billing.example.com/setup';
       const d = details({
         session: { accountId: 'u1' },
         prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -1036,7 +1057,7 @@ describe('oauthInteractionRoutes', () => {
       queueUpdate(); // setGrantBreezeMeta on oauth_grants
       queueInsertGrantReturning({ firstConsented: true });
 
-      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
         method: 'POST',
         body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
       });
@@ -1049,7 +1070,7 @@ describe('oauthInteractionRoutes', () => {
     });
 
     it('returns 404 when partner row is missing despite confirmed membership', async () => {
-      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      configState.billingUrl = 'https://billing.example.com/setup';
       const d = details({
         session: { accountId: 'u1' },
         prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -1062,7 +1083,7 @@ describe('oauthInteractionRoutes', () => {
       // Queue 3: partner status check — returns [] (row missing, data integrity edge case)
       queueSelect([], 'limit');
 
-      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
         method: 'POST',
         body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
       });
@@ -1073,7 +1094,7 @@ describe('oauthInteractionRoutes', () => {
     });
 
     it('redirects to BILLING_URL when partner.status=suspended', async () => {
-      process.env.BILLING_URL = 'https://billing.example.com/setup';
+      configState.billingUrl = 'https://billing.example.com/setup';
       const d = details({
         session: { accountId: 'u1' },
         prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -1086,7 +1107,7 @@ describe('oauthInteractionRoutes', () => {
       // Queue 3: partner status check — returns 'suspended'
       queueSelect([{ status: 'suspended' }], 'limit');
 
-      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
         method: 'POST',
         body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
       });
@@ -1098,7 +1119,7 @@ describe('oauthInteractionRoutes', () => {
     });
 
     it('returns 402 subscription_required when status=pending and BILLING_URL is empty', async () => {
-      delete process.env.BILLING_URL;
+      configState.billingUrl = undefined;
       const d = details({
         session: { accountId: 'u1' },
         prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
@@ -1111,7 +1132,7 @@ describe('oauthInteractionRoutes', () => {
       // Queue 3: partner status check — returns 'pending', no BILLING_URL
       queueSelect([{ status: 'pending' }], 'limit');
 
-      const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
         method: 'POST',
         body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
       });
@@ -1121,14 +1142,9 @@ describe('oauthInteractionRoutes', () => {
     });
   });
 
-  it('does not mount routes when MCP_OAUTH_ENABLED is false', async () => {
-    const res = await request(await loadApp(false), '/api/v1/oauth/interaction/uid-1');
-    expect(res.status).toBe(404);
-  });
-
   it('returns 500 when interactionDetails throws an unexpected error', async () => {
     mocks.interactionDetails.mockRejectedValueOnce(new Error('boom'));
-    const res = await request(await loadApp(true), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(500);
   });
 
@@ -1141,7 +1157,7 @@ describe('oauthInteractionRoutes', () => {
     vi.mocked(authMod.authMiddleware).mockImplementationOnce(async () => {
       throw new HTTPException(401, { message: 'Missing or invalid authorization header' });
     });
-    const res = await request(await loadApp(true), '/api/v1/oauth/interaction/uid-1');
+    const res = await request(loadApp(), '/api/v1/oauth/interaction/uid-1');
     expect(res.status).toBe(401);
   });
 });

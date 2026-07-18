@@ -10,6 +10,19 @@ vi.mock("../../stores/auth", () => ({
   registerOrgIdProvider: vi.fn(),
   resolveApiOrigin: vi.fn(() => "https://us.2breeze.app"),
 }));
+// Token-capability gate: the partner config UI renders based on JWT claims,
+// never on the org selected in the header.
+const getJwtClaims = vi.fn(
+  (): { scope: string | null; orgId: string | null; partnerId: string | null } => ({
+    scope: "organization",
+    orgId: null,
+    partnerId: null,
+  }),
+);
+vi.mock("../../lib/authScope", () => ({
+  getJwtClaims: () => getJwtClaims(),
+  loginPathWithNext: () => "/login",
+}));
 vi.mock("../shared/Toast", () => ({
   showToast: (...args: unknown[]) => showToast(...args),
 }));
@@ -106,14 +119,35 @@ function mockPartnerLoad(
   });
 }
 
+/** Partner-scope token: can manage the partner connection regardless of org. */
+function asPartnerAdmin() {
+  getJwtClaims.mockReturnValue({
+    scope: "partner",
+    orgId: null,
+    partnerId: "partner-1",
+  });
+}
+
+/** Org-scope token: read-only per-org status views only. */
+function asOrgUser() {
+  getJwtClaims.mockReturnValue({
+    scope: "organization",
+    orgId: breezeOrg.id,
+    partnerId: "partner-1",
+  });
+}
+
 describe("SecurityIntegration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    asOrgUser();
     useOrgStore.setState({ currentOrgId: breezeOrg.id });
   });
 
-  it("renders the credential form and a mapping row in partner view", async () => {
-    useOrgStore.setState({ currentOrgId: null });
+  it("renders the credential form and a mapping row for a partner admin even with an org selected", async () => {
+    asPartnerAdmin();
+    // An org IS selected in the header — the config UI must still render.
+    useOrgStore.setState({ currentOrgId: breezeOrg.id });
     mockPartnerLoad({
       integration: existingIntegration,
       sites: [discoveredSite],
@@ -132,14 +166,35 @@ describe("SecurityIntegration", () => {
     expect(screen.getByText("Site mapping")).toBeInTheDocument();
     expect(screen.getByText("Acme Site")).toBeInTheDocument();
     expect(screen.getByTestId("s1-site-s1-site-1")).toBeInTheDocument();
+    // No "switch scope" prompts for a partner admin.
+    expect(
+      screen.queryByTestId("s1-org-not-connected"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("s1-org-unmapped")).not.toBeInTheDocument();
 
     expect(fetchWithAuth).toHaveBeenCalledWith("/s1/integration");
     expect(fetchWithAuth).toHaveBeenCalledWith("/s1/sites");
     expect(fetchWithAuth).toHaveBeenCalledWith("/orgs/organizations");
   });
 
-  it('shows a "pending sync" hint for provisional sites', async () => {
+  it("renders the config UI for a partner admin during the transient pre-hydration null org", async () => {
+    asPartnerAdmin();
     useOrgStore.setState({ currentOrgId: null });
+    mockPartnerLoad({
+      integration: existingIntegration,
+      sites: [discoveredSite],
+    });
+
+    render(<SecurityIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Partner connection")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Site mapping")).toBeInTheDocument();
+  });
+
+  it('shows a "pending sync" hint for provisional sites', async () => {
+    asPartnerAdmin();
     mockPartnerLoad({
       integration: existingIntegration,
       sites: [
@@ -160,7 +215,7 @@ describe("SecurityIntegration", () => {
   });
 
   it("maps a discovered site to a Breeze org and posts the right body", async () => {
-    useOrgStore.setState({ currentOrgId: null });
+    asPartnerAdmin();
     mockPartnerLoad({
       integration: existingIntegration,
       sites: [discoveredSite],
@@ -219,6 +274,29 @@ describe("SecurityIntegration", () => {
     // Coverage is shown read-only.
     expect(screen.getByTestId("s1-coverage")).toBeInTheDocument();
     // Partner-only endpoints are not called in org scope.
+    expect(fetchWithAuth).not.toHaveBeenCalledWith("/s1/sites");
+    expect(fetchWithAuth).not.toHaveBeenCalledWith("/orgs/organizations");
+  });
+
+  it("never renders the config UI for an org-scope token, even with no org selected", async () => {
+    // A null currentOrgId (e.g. transient pre-hydration state) must not be
+    // mistaken for partner capability — the token is org-scoped.
+    useOrgStore.setState({ currentOrgId: null });
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/s1/integration")
+        return jsonResponse({ data: existingIntegration });
+      if (url === "/s1/status") return jsonResponse({ summary, mapped: true });
+      return jsonResponse({}, 404);
+    });
+
+    render(<SecurityIntegration />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("s1-sync-status")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Partner connection")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("s1-name")).not.toBeInTheDocument();
+    expect(screen.queryByText("Site mapping")).not.toBeInTheDocument();
     expect(fetchWithAuth).not.toHaveBeenCalledWith("/s1/sites");
     expect(fetchWithAuth).not.toHaveBeenCalledWith("/orgs/organizations");
   });
@@ -283,7 +361,7 @@ describe("SecurityIntegration", () => {
   });
 
   it("saves credentials via runAction with the right body", async () => {
-    useOrgStore.setState({ currentOrgId: null });
+    asPartnerAdmin();
     mockPartnerLoad({ integration: null });
 
     render(<SecurityIntegration />);
@@ -325,7 +403,7 @@ describe("SecurityIntegration", () => {
   });
 
   it("surfaces a failed save to the user via an error toast", async () => {
-    useOrgStore.setState({ currentOrgId: null });
+    asPartnerAdmin();
     fetchWithAuth.mockImplementation(
       async (url: string, init?: RequestInit) => {
         if (url === "/s1/integration" && init?.method === "POST") {

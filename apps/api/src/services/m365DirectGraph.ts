@@ -132,7 +132,7 @@ export async function getToken(orgId: string): Promise<{ token: string } | Direc
   // The stored tenant id must still be a canonical Entra tenant GUID (the
   // M365TenantId brand acquireClientCredentialsToken requires); fail closed if not.
   const tenantId = row.tenantId;
-  if (!isM365TenantId(tenantId)) {
+  if (!tenantId || !isM365TenantId(tenantId)) {
     return { kind: 'error', code: 'connection_key_error', message: 'Stored Microsoft 365 tenant id is not a valid tenant GUID.' };
   }
   try {

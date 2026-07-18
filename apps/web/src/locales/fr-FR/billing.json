@@ -107,6 +107,22 @@
         "title": "Supprimer le contrat brouillon",
         "message": "Cette action supprime définitivement le contrat brouillon. Elle est irréversible.",
         "confirm": "Supprimer le brouillon"
+      },
+      "documents": {
+        "title": "Documents exécutés",
+        "columns": {
+          "template": "Modèle",
+          "signer": "Signataire",
+          "signedAt": "Signé",
+          "quote": "Devis"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Aucun document exécuté pour le moment.",
+        "loadError": "Impossible de charger les documents exécutés.",
+        "downloadError": "Impossible de télécharger le PDF.",
+        "download": "Télécharger le PDF",
+        "preparing": "Préparation…",
+        "viewQuote": "Voir le devis"
       }
     },
     "contractEditor": {
@@ -227,7 +243,6 @@
       },
       "filters": {
         "allStatuses": "Tous les statuts",
-        "allOrganizations": "Toutes les organisations",
         "searchPlaceholder": "Rechercher par nom ou org.",
         "searchAria": "Rechercher des contrats"
       },
@@ -296,6 +311,132 @@
       "errors": {
         "loadSubscriptions": "Impossible de charger les abonnements Pax8 de cette organisation."
       }
+    },
+    "tabs": {
+      "contracts": "Contrats",
+      "templates": "Modèles",
+      "documents": "Documents"
+    },
+    "templatesTab": {
+      "title": "Modèles de contrat",
+      "description": "Documents de contrat réutilisables à joindre aux devis acceptés.",
+      "newTemplate": "Nouveau modèle",
+      "includeArchived": "Afficher les archivés",
+      "allOrgs": "Toutes les org.",
+      "ownerOrg": "Organisation",
+      "noVersions": "Aucune version pour l’instant",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archiver",
+      "loadError": "Échec du chargement des modèles de contrat",
+      "createError": "Échec de la création du modèle",
+      "created": "Modèle créé",
+      "archiveError": "Échec de l’archivage du modèle",
+      "archiveSuccess": "Modèle archivé",
+      "columns": {
+        "name": "Nom",
+        "owner": "Propriétaire",
+        "status": "Statut",
+        "latestVersion": "Dernière version"
+      },
+      "status": {
+        "active": "Actif",
+        "archived": "Archivé"
+      },
+      "empty": {
+        "title": "Aucun modèle pour l’instant",
+        "description": "Créez votre premier modèle de contrat pour commencer."
+      },
+      "createDialog": {
+        "title": "Nouveau modèle de contrat",
+        "name": "Nom",
+        "namePlaceholder": "ex. Contrat-cadre de services",
+        "description": "Description",
+        "descriptionPlaceholder": "Résumé facultatif de ce modèle",
+        "scope": "Propriété",
+        "allOrganizations": "Toutes les organisations",
+        "partnerWide": "Modèle à l’échelle du partenaire",
+        "thisOrgOnly": "Cette organisation uniquement",
+        "organization": "Organisation",
+        "selectOrg": "Sélectionnez une organisation",
+        "orgRequired": "Sélectionnez une organisation pour un modèle appartenant à l’organisation.",
+        "nameRequired": "Saisissez un nom de modèle.",
+        "cancel": "Annuler",
+        "create": "Créer le modèle",
+        "creating": "Création…"
+      }
+    },
+    "documentsTab": {
+      "title": "Documents",
+      "description": "Documents de contrat exécutés non encore liés à un contrat.",
+      "empty": {
+        "title": "Aucun document non lié",
+        "description": "Les documents exécutés apparaissent ici jusqu'à ce qu'ils soient liés à un contrat."
+      },
+      "loadError": "Impossible de charger les documents.",
+      "columns": {
+        "template": "Modèle",
+        "signer": "Signataire",
+        "signedAt": "Signé",
+        "quote": "Devis",
+        "organization": "Organisation"
+      },
+      "download": "Télécharger le PDF",
+      "preparing": "Préparation…",
+      "viewQuote": "Voir le devis",
+      "linkAction": "Lier à un contrat",
+      "linkDialog": {
+        "title": "Lier à un contrat",
+        "contractLabel": "Contrat",
+        "selectContract": "Sélectionner un contrat",
+        "noContracts": "Aucun contrat trouvé pour cette organisation.",
+        "loadContractsError": "Échec du chargement des contrats. Veuillez réessayer.",
+        "cancel": "Annuler",
+        "confirm": "Lier",
+        "linking": "Liaison…"
+      },
+      "linkSuccess": "Document lié au contrat.",
+      "linkError": "Impossible de lier le document à ce contrat."
+    },
+    "templateEditor": {
+      "back": "Retour",
+      "loadError": "Échec du chargement du modèle",
+      "newVersion": "Nouvelle version",
+      "newVersionConfirm": {
+        "title": "Ignorer les modifications non enregistrées ?",
+        "message": "Démarrer une nouvelle version videra l'éditeur. Vos modifications non enregistrées de ce brouillon seront perdues.",
+        "confirm": "Démarrer une nouvelle version"
+      },
+      "uploadPdf": "Importer un PDF",
+      "versions": "Versions",
+      "noVersions": "Aucune version pour l’instant",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Brouillon",
+        "published": "Publiée"
+      },
+      "sourceType": {
+        "authored": "Rédigée",
+        "uploaded": "PDF importé"
+      },
+      "publish": "Publier",
+      "publishDirtyHint": "Enregistrez votre brouillon avant de publier",
+      "body": "Corps",
+      "bodyAria": "Corps du modèle de contrat",
+      "preview": "Aperçu",
+      "edit": "Modifier",
+      "saveDraft": "Enregistrer le brouillon",
+      "saving": "Enregistrement…",
+      "emptyBody": "Ajoutez du contenu avant d’enregistrer.",
+      "autoVariables": "Variables automatiques",
+      "manualVariables": "Variables manuelles",
+      "noManualVariables": "Aucune détectée",
+      "archivedNotice": "Ce modèle est archivé. Aucune nouvelle version ne peut être ajoutée.",
+      "saveError": "Échec de l’enregistrement de la version brouillon",
+      "saveSuccess": "Version brouillon enregistrée",
+      "uploadError": "Échec de l’import du PDF",
+      "uploadSuccess": "Version PDF importée",
+      "publishError": "Échec de la publication de la version",
+      "publishSuccess": "Version publiée"
     }
   },
   "quotes": {
@@ -362,7 +503,8 @@
         "heading": "Titre",
         "image": "Image",
         "pricingTable": "Tableau de prix",
-        "richText": "Texte enrichi"
+        "richText": "Texte enrichi",
+        "contract": "Contrat"
       },
       "catalog": {
         "addSome": "Ajoutez-en dans Product Catalog",
@@ -385,6 +527,11 @@
         "removeSectionWithLines_other": "Cette action supprime le tableau de prix et ses {{count}} lignes. Elle est irréversible.",
         "thisLine": "cette ligne",
         "removeSectionWithLines": "Cette action supprime le tableau de prix et ses lignes. Elle est irréversible."
+      },
+      "customer": {
+        "help": "Déplacer un brouillon vers une autre entreprise retire l’affectation de site et applique le taux de taxe de cette entreprise.",
+        "label": "Client",
+        "success": "Devis déplacé vers {{name}}."
       },
       "deposit": {
         "due": "Acompte dû",
@@ -420,6 +567,7 @@
         "reorderBlocks": "Impossible de réordonner les blocs.",
         "reorderLines": "Impossible de réordonner les lignes.",
         "reorderSections": "Impossible de réordonner les sections.",
+        "saveCustomer": "Impossible de changer le client.",
         "saveTerms": "Impossible d'enregistrer les conditions.",
         "saveTitle": "Impossible d'enregistrer le titre.",
         "unitPriceZeroOrMore": "Saisissez un prix unitaire supérieur ou égal à 0.",
@@ -427,7 +575,10 @@
         "updateDeposit": "Impossible de mettre à jour l'acompte.",
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
-        "uploadImage": "Impossible de téléverser l'image."
+        "uploadImage": "Impossible de téléverser l'image.",
+        "loadContractTemplates": "Impossible de charger les modèles de contrat",
+        "addContractSection": "Impossible d'ajouter la section de contrat",
+        "saveCoverPage": "Impossible d'enregistrer la page de couverture"
       },
       "image": {
         "alt": "Image du devis",
@@ -488,7 +639,8 @@
         "lineRemoved": "Ligne supprimée",
         "savedToCatalog": "Enregistré dans le catalogue",
         "sectionAdded": "Section ajoutée",
-        "sectionRemoved": "Section supprimée"
+        "sectionRemoved": "Section supprimée",
+        "contractSectionAdded": "Section de contrat ajoutée"
       },
       "symbols": {
         "check": "✓",
@@ -506,6 +658,7 @@
         "qty": "Qté",
         "recurrence": "Récurrence",
         "scrollAria": "Tableau de prix — faites défiler horizontalement pour la taxe, le total et les actions de ligne",
+        "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
@@ -523,9 +676,51 @@
       "units": {
         "perMonth": "/mois",
         "perYear": "/an"
+      },
+      "contract": {
+        "templateLabel": "Modèle de contrat",
+        "templatePlaceholder": "Sélectionnez un modèle…",
+        "noTemplates": "Aucun modèle de contrat pour le moment. Créez-en un dans Contrats → Modèles.",
+        "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'attacher.",
+        "pinnedVersion": "Épinglé à v{{version}}",
+        "autoVariablesTitle": "Rempli automatiquement à partir du devis",
+        "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
+        "manualVariablesTitle": "À remplir pour cette proposition",
+        "labelFieldLabel": "Libellé de la section",
+        "labelPlaceholder": "Libellé facultatif (p. ex. Contrat-cadre de services)",
+        "variableRequired": "Saisissez une valeur",
+        "variableUnresolved": "Cette variable n'est toujours pas résolue",
+        "untitledTemplate": "Contrat",
+        "readOnlyHint": "Supprimez et rajoutez cette section pour changer le modèle, la version ou les variables.",
+        "updateToVersion": "Mettre à jour vers v{{version}}",
+        "saveVariables": "Enregistrer les variables",
+        "unresolvedWarning": "Variables non résolues (bloqueront l'envoi) : {{names}}"
+      },
+      "coverPage": {
+        "title": "Page de couverture",
+        "enable": "Afficher une page de couverture",
+        "summaryOn": "Affichée comme première page de la proposition.",
+        "summaryOff": "Aucune page de couverture — la proposition commence par son contenu.",
+        "titleLabel": "Titre de la couverture",
+        "titlePlaceholder": "p. ex. Proposition de services informatiques gérés",
+        "preparedForLabel": "Préparé pour",
+        "preparedForPlaceholder": "Remplacer le nom du client",
+        "showPreparedBy": "Afficher « préparé par » (votre entreprise)",
+        "imageLabel": "Image de couverture",
+        "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
+        "removeImage": "Supprimer l'image"
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Entreprise",
+        "confirm": "Créer la copie",
+        "defaultTitle": "Copie de {{name}}",
+        "message": "Crée un nouveau brouillon avec le même contenu. Choisissez l’entreprise concernée et donnez-lui un titre.",
+        "retargetHint": "Le nouveau brouillon utilisera les informations de facturation et le taux de taxe de cette entreprise ; l’affectation de site sera retirée.",
+        "title": "Dupliquer le devis",
+        "titleLabel": "Titre"
+      },
       "cloneError": "Impossible de dupliquer le devis.",
       "cloneQuote": "Dupliquer le devis",
       "cloneSavingTitle": "Attendez la fin de l'enregistrement avant de dupliquer.",
@@ -540,11 +735,34 @@
       "deleteSuccess": "Brouillon supprimé",
       "downloadPdf": "Télécharger le PDF",
       "emptyHint": "Ajoutez au moins un article avant l'envoi.",
+      "moreActions": "Plus d’actions",
       "savingHint": "Enregistrement des modifications… L'envoi sera disponible une fois tout enregistré.",
       "savingTitle": "Enregistrement de vos modifications — l'envoi sera disponible une fois tout enregistré.",
       "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Joindre le PDF de la proposition",
+        "invalidEmail": "Adresse e-mail non valide : {{addresses}}",
         "message": "Nous enverrons cette proposition par e-mail à {{orgName}} et la marquerons Envoyée — {{amount}} dû à l'acceptation. Cette action est irréversible.",
-        "title": "Envoyer cette proposition ?"
+        "messageLabel": "Ajouter un message personnel (facultatif)",
+        "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans l'e-mail, au-dessus du lien d'acceptation.",
+        "paymentEnabled": "Le paiement en ligne est activé — le client peut payer par carte après acceptation.",
+        "paymentNoteNoStripe": "Aucun paiement en ligne ne sera proposé après l'acceptation. Connectez Stripe dans Paramètres → Intégrations pour l'activer.",
+        "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans Paramètres → Intégrations pour encaisser l'acompte à l'acceptation.",
+        "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
+        "subjectLabel": "Objet",
+        "subjectPlaceholder": "Proposition {{number}} de votre entreprise",
+        "subjectPlaceholderNoNumber": "Proposition de votre entreprise",
+        "title": "Envoyer cette proposition ?",
+        "toLabel": "À",
+        "toPlaceholder": "billing@customer.example.com",
+        "tooManyRecipients": "Utilisez au maximum {{max}} adresses."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
+        "noEmailService": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — l'e-mail n'est pas configuré sur ce serveur.",
+        "pdfRenderFailed": "Proposition marquée comme Envoyée, mais le PDF n'a pas pu être généré, aucun e-mail n'a donc été remis. Vérifiez les fichiers de contrat joints, puis renvoyez-la.",
+        "sendFailed": "Proposition marquée comme Envoyée, mais l'e-mail n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement."
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",
@@ -625,11 +843,19 @@
     },
     "document": {
       "additionalItems": "Articles supplémentaires",
+      "contract": {
+        "download": "Télécharger le contrat",
+        "previewTitle": "Document du contrat {{name}}",
+        "unavailable": "Fichier du contrat indisponible",
+        "versionFooter": "{{name}} — version {{version}}"
+      },
       "draft": "Brouillon",
       "empty": "Cette proposition n'a encore aucun contenu.",
       "imageUnavailable": "Image indisponible",
       "issued": "Émis",
       "preparedFor": "Préparé pour",
+      "taxId": "Identifiant fiscal : {{id}}",
+      "imageZoomAria": "Voir l'image en grand",
       "preview": {
         "description": "Voici ce que votre client voit sur son lien de proposition.",
         "downloadPdf": "Télécharger le PDF",
@@ -714,9 +940,7 @@
         "loadSites": "Impossible de charger les sites."
       },
       "filters": {
-        "allOrganizations": "Toutes les organisations",
         "allStatuses": "Tous les statuts",
-        "organizationAria": "Filtrer par organisation",
         "searchAria": "Rechercher des devis",
         "searchPlaceholder": "Rechercher par numéro ou org.",
         "statusAria": "Filtrer par statut"
@@ -1117,11 +1341,9 @@
       "loadSites": "Impossible de charger les sites."
     },
     "filters": {
-      "allOrganizations": "Toutes les organisations",
       "allStatuses": "Tous les statuts",
       "issuedFrom": "Émise depuis le",
       "issuedTo": "Émise jusqu'au",
-      "organizationAria": "Filtrer par organisation",
       "searchAria": "Rechercher des factures",
       "searchPlaceholder": "Rechercher par numéro ou org.",
       "statusAria": "Filtrer par statut"

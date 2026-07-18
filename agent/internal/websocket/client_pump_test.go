@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -240,6 +241,69 @@ func TestConnectResetsTerminalOutputBase64Capability(t *testing.T) {
 	}
 	if c.terminalOutputBase64Enabled() {
 		t.Fatal("expected capability reset on reconnect before connected message")
+	}
+}
+
+func TestHasServerCapability_ReflectsHandshakeCapabilityList(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		_ = conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"terminal_output_base64", "backup_run_async"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		_ = conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+
+	c.readPump()
+
+	if !c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected backup_run_async capability to be recognized")
+	}
+	if !c.HasServerCapability("terminal_output_base64") {
+		t.Fatal("expected terminal_output_base64 capability to still be recognized")
+	}
+	if c.HasServerCapability("some_unadvertised_capability") {
+		t.Fatal("expected unadvertised capability to be false")
+	}
+}
+
+func TestHasServerCapability_FalseBeforeHandshake(t *testing.T) {
+	c := newTestClient("http://127.0.0.1:1", noopHandler)
+	if c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected no capabilities before any connected handshake")
+	}
+}
+
+func TestConnectResetsServerCapabilities(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		_ = conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"backup_run_async"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		_ = conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+	c.readPump()
+
+	if !c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected capability enabled after connected message")
+	}
+
+	c.closeCurrentConn(false)
+	if c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected capability reset after disconnect")
 	}
 }
 
@@ -498,6 +562,145 @@ func TestWritePump_NilConnSkipsWrite(t *testing.T) {
 		// good
 	case <-time.After(2 * time.Second):
 		t.Fatal("writePump did not exit")
+	}
+}
+
+// TestWritePump_ResultWriteFailure_PreservedViaHook proves FIX 3: a command
+// result popped off resultChan that cannot be delivered — either because the
+// connection was already torn down (conn == nil) or because WriteMessage
+// errored — is handed to OnResultWriteFailed instead of being silently
+// dropped. This is the loss window where SendResult already reported success
+// (the frame reached the channel) yet the terminal result never made the wire.
+func TestWritePump_ResultWriteFailure_PreservedViaHook(t *testing.T) {
+	t.Run("conn nil re-enqueues", func(t *testing.T) {
+		c := newTestClient("http://localhost", noopHandler) // conn is nil
+
+		var mu sync.Mutex
+		var preserved []CommandResult
+		c.OnResultWriteFailed = func(r CommandResult) {
+			mu.Lock()
+			preserved = append(preserved, r)
+			mu.Unlock()
+		}
+
+		pumpDone := make(chan struct{})
+		writerDone := make(chan struct{})
+		go c.writePump(pumpDone, writerDone)
+
+		c.resultChan <- outboundResult{
+			data:   []byte(`{"type":"command_result","commandId":"cmd-nil"}`),
+			result: CommandResult{Type: "command_result", CommandID: "cmd-nil"},
+		}
+
+		deadline := time.After(2 * time.Second)
+		for {
+			mu.Lock()
+			n := len(preserved)
+			mu.Unlock()
+			if n == 1 {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("OnResultWriteFailed not called for conn==nil result")
+			default:
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		mu.Lock()
+		got := preserved[0].CommandID
+		mu.Unlock()
+		if got != "cmd-nil" {
+			t.Fatalf("preserved result commandId = %q, want cmd-nil", got)
+		}
+
+		close(pumpDone)
+		<-writerDone
+	})
+
+	t.Run("write error re-enqueues", func(t *testing.T) {
+		srv := newTestServer(t, func(conn *websocket.Conn) {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		})
+		defer srv.Close()
+
+		c := newTestClient(srv.URL, noopHandler)
+		if err := c.connect(); err != nil {
+			t.Fatalf("connect error: %v", err)
+		}
+
+		preserved := make(chan CommandResult, 1)
+		c.OnResultWriteFailed = func(r CommandResult) { preserved <- r }
+
+		pumpDone := make(chan struct{})
+		writerDone := make(chan struct{})
+		go c.writePump(pumpDone, writerDone)
+
+		// Close the underlying connection while c.conn stays non-nil, so
+		// writePump takes the WriteMessage-error path (not the conn==nil path)
+		// deterministically when the result is dequeued.
+		c.connMu.RLock()
+		conn := c.conn
+		c.connMu.RUnlock()
+		_ = conn.Close()
+
+		c.resultChan <- outboundResult{
+			data:   []byte(`{"type":"command_result","commandId":"cmd-err"}`),
+			result: CommandResult{Type: "command_result", CommandID: "cmd-err"},
+		}
+
+		select {
+		case r := <-preserved:
+			if r.CommandID != "cmd-err" {
+				t.Fatalf("preserved result commandId = %q, want cmd-err", r.CommandID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("OnResultWriteFailed not called on WriteMessage error")
+		}
+
+		// writePump returns on write error; writerDone must close.
+		select {
+		case <-writerDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("writePump did not exit after write error")
+		}
+	})
+}
+
+// TestReadPump_OnConnectedFiresEveryReconnect proves the property the backup-
+// result outbox flush depends on: OnConnected fires on EVERY (re)connect
+// handshake, not just the first. The outbox would strand pending results if a
+// later reconnect skipped the flush.
+func TestReadPump_OnConnectedFiresEveryReconnect(t *testing.T) {
+	var count atomic.Int32
+
+	// Each accepted connection sends one "connected" welcome frame then closes,
+	// forcing the client to reconnect.
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		_ = conn.WriteJSON(map[string]any{"type": "connected"})
+		time.Sleep(20 * time.Millisecond)
+		_ = conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	c.OnConnected = func() { count.Add(1) }
+
+	// Drive two connect + readPump cycles (two reconnects).
+	for i := 0; i < 2; i++ {
+		if err := c.connect(); err != nil {
+			t.Fatalf("connect cycle %d: %v", i, err)
+		}
+		c.readPump() // returns when the server closes the connection
+		c.closeCurrentConn(false)
+	}
+
+	if got := count.Load(); got != 2 {
+		t.Fatalf("OnConnected fired %d times across 2 reconnects, want 2", got)
 	}
 }
 

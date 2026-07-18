@@ -64,6 +64,8 @@ type Partner = {
   plan: string;
   // First-class partner timezone column (#1318); the canonical tz default.
   timezone?: string;
+  // Plain-text signature appended to outbound customer emails (quote sends).
+  emailSignature?: string | null;
   settings: PartnerSettings;
   createdAt: string;
 };
@@ -161,7 +163,7 @@ export async function runPartnerSave(
 
 export default function PartnerSettingsPage() {
   const { t } = useTranslation('settings');
-  const { currentPartnerId, isLoading: contextLoading, setPartner: setPartnerContext } = useOrgStore();
+  const { currentPartnerId, isLoading: contextLoading, adoptPartnerId } = useOrgStore();
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -189,6 +191,7 @@ export default function PartnerSettingsPage() {
   const [contactWebsite, setContactWebsite] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [address, setAddress] = useState<NonNullable<PartnerSettings['address']>>({});
+  const [emailSignature, setEmailSignature] = useState('');
 
   // IP allowlist status (drives "Add my current IP" + inactive banner)
   const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
@@ -209,7 +212,7 @@ export default function PartnerSettingsPage() {
   // compared against the baseline captured after fetch (and reset after save).
   // Drives the disabled-when-clean Save button and the per-tab dots in the nav.
   const currentSnapshot: Snapshot = useMemo(() => ({
-    company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite }),
+    company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature }),
     regional: JSON.stringify({ timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours }),
     security: JSON.stringify(securityData),
     notifications: JSON.stringify(notificationsData),
@@ -219,7 +222,7 @@ export default function PartnerSettingsPage() {
     aiBudgets: JSON.stringify(aiBudgetsData),
     remoteAccess: JSON.stringify(remoteAccessData),
   }), [
-    companyName, address, contactName, contactEmail, contactPhone, contactWebsite,
+    companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
     timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
     aiBudgetsData, remoteAccessData,
@@ -267,6 +270,7 @@ export default function PartnerSettingsPage() {
       const data: Partner = await response.json();
       setPartner(data);
       setCompanyName(data.name || '');
+      setEmailSignature(data.emailSignature || '');
 
       const settings = data.settings || {};
       // Prefer the legacy JSONB key the UI has always written, then the new
@@ -324,17 +328,20 @@ export default function PartnerSettingsPage() {
       return;
     }
     if (contextLoading) return;
-    // No partner context in store yet. Try to seed it from the JWT (handles
+    // No partner context in store yet. Seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
+    // adoptPartnerId, NOT setPartner: setPartner resets the org selection and
+    // the subsequent auto-select snapped scope to the first org — visiting
+    // this page silently hijacked the user's chosen context.
     // getJwtClaims returns all-null on a missing/undecodable token, so the
     // access-denied fall-through below covers those cases too.
     const { scope, partnerId } = getJwtClaims();
     if (scope === 'partner' && partnerId) {
-      setPartnerContext(partnerId);
+      adoptPartnerId(partnerId);
       return; // Re-render will follow with currentPartnerId set
     }
     setLoading(false); // JWT confirms non-partner scope; show access denied
-  }, [currentPartnerId, contextLoading, fetchPartner, setPartnerContext]);
+  }, [currentPartnerId, contextLoading, fetchPartner, adoptPartnerId]);
 
   // Deep-link support: open the tab named in the URL hash on mount (e.g.
   // `/settings/partner#ticketing`, which the legacy `/settings/ticketing` route
@@ -406,6 +413,9 @@ export default function PartnerSettingsPage() {
     const payload: Record<string, unknown> = { settings };
     const trimmedName = companyName.trim();
     if (trimmedName) payload.name = trimmedName;
+    // Top-level partner column (not settings JSONB). Always sent so clearing
+    // the field persists null; the server trims and stores empty as null too.
+    payload.emailSignature = emailSignature.trim() ? emailSignature : null;
 
     // Lockout guard before saving a non-empty allowlist:
     //  - status known and current IP not covered  -> precise warning
@@ -563,6 +573,8 @@ export default function PartnerSettingsPage() {
                 phone: contactPhone,
                 website: contactWebsite,
               }}
+              emailSignature={emailSignature}
+              onEmailSignatureChange={setEmailSignature}
               onNameChange={setCompanyName}
               onAddressChange={setAddress}
               onContactChange={(c) => {

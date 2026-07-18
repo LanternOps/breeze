@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"image"
+	"runtime"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -14,8 +15,10 @@ func init() {
 func handleComputerAction(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
-	// Service/headless mode: route through IPC to user helper which has a display
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil {
+	// Service/headless mode: route through IPC to user helper which has a display.
+	// Linux is excluded: no IPC helper on Linux in Phase 1, so take the direct
+	// path (ComputerActionWithCapture, whose capturer resolves the X display).
+	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		return h.executeToolViaHelper(tools.CmdComputerAction, cmd.Payload, start)
 	}
 

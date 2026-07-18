@@ -95,11 +95,21 @@ export default function AddDeviceModal({
 }: AddDeviceModalProps) {
   const { t } = useTranslation("devices");
   const userOS = detectUserOS();
-  const { currentOrgId, currentSiteId, sites } = useOrgStore();
+  // Sites are fetched lazily now (the switcher no longer preloads them), so the
+  // modal has to distinguish "still loading", "load failed", and "genuinely no
+  // sites" — otherwise a failed fetch looks identical to an unconfigured org and
+  // nudges the user to create a duplicate site.
+  const { currentOrgId, sites, fetchSites, isLoading: sitesLoading, error: sitesError } = useOrgStore();
   const orgSites = useMemo(
     () => sites.filter((s) => s.orgId === currentOrgId),
     [sites, currentOrgId],
   );
+
+  // Sites are fetched lazily now that the org switcher no longer preloads
+  // them; make sure the site picker has data when the modal opens.
+  useEffect(() => {
+    if (isOpen && currentOrgId && sites.length === 0) void fetchSites();
+  }, [isOpen, currentOrgId, sites.length, fetchSites]);
 
   // Tab state
   const [activeTab, setActiveTab] = useState<"installer" | "cli">(
@@ -169,12 +179,10 @@ export default function AddDeviceModal({
   // Initialize site selection
   useEffect(() => {
     if (!isOpen) return;
-    if (currentSiteId && orgSites.some((s) => s.id === currentSiteId)) {
-      setSelectedSiteId(currentSiteId);
-    } else if (orgSites.length > 0) {
+    if (orgSites.length > 0) {
       setSelectedSiteId(orgSites[0].id);
     }
-  }, [isOpen, currentSiteId, orgSites]);
+  }, [isOpen, orgSites]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -582,7 +590,22 @@ export default function AddDeviceModal({
         {/* Installer tab */}
         {activeTab === "installer" && (
           <div className="space-y-5">
-            {orgSites.length === 0 ? (
+            {orgSites.length === 0 && sitesLoading ? (
+              <div className="rounded-md border p-4 text-sm text-muted-foreground">
+                {t("addDeviceModal.sitesLoading")}
+              </div>
+            ) : orgSites.length === 0 && sitesError ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                {t("addDeviceModal.sitesLoadFailed")}{" "}
+                <button
+                  type="button"
+                  onClick={() => void fetchSites()}
+                  className="font-medium underline hover:no-underline"
+                >
+                  {t("addDeviceModal.retrySites")}
+                </button>
+              </div>
+            ) : orgSites.length === 0 ? (
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700">
                 {t("addDeviceModal.noSitesAvailablePlease")}{" "}
                 <a

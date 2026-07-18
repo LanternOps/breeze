@@ -488,3 +488,41 @@ describe('heartbeatSchema — agentRuntime gauges (#2389)', () => {
     expect(result.data.agentRuntime?.goroutines).toBe(validRuntime.goroutines);
   });
 });
+
+// desktopAccess.reason forward-compat: the Linux agent (Task 12) emits
+// no_display_session / wayland_unsupported / x11_connect_failed today, with
+// x11_auth_failed reserved for a future emitter. All four must round-trip
+// through the enum; an unrecognized reason must degrade to undefined via
+// .catch(undefined) rather than dropping the whole desktopAccess object.
+describe('desktopAccess Linux reasons', () => {
+  const base = {
+    status: 'ok' as const,
+    agentVersion: '0.65.15',
+    desktopAccess: {
+      mode: 'unavailable' as const,
+      loginUiReachable: false,
+      virtualDisplayReady: false,
+      checkedAt: '2026-07-17T00:00:00.000Z',
+    },
+  };
+
+  it.each(['no_display_session', 'wayland_unsupported', 'x11_connect_failed', 'x11_auth_failed'])(
+    'accepts Linux reason %s',
+    (reason) => {
+      const parsed = heartbeatSchema.parse({
+        ...base,
+        desktopAccess: { ...base.desktopAccess, reason },
+      });
+      expect(parsed.desktopAccess?.reason).toBe(reason);
+    },
+  );
+
+  it('keeps the object but drops an unknown reason (forward-compat)', () => {
+    const parsed = heartbeatSchema.parse({
+      ...base,
+      desktopAccess: { ...base.desktopAccess, reason: 'totally_new_reason' },
+    });
+    expect(parsed.desktopAccess).toBeDefined();
+    expect(parsed.desktopAccess?.reason).toBeUndefined();
+  });
+});

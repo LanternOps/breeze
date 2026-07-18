@@ -4,8 +4,9 @@ import { ChevronUp, ChevronDown, Eye, EyeOff, Loader2, FolderInput } from 'lucid
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
-import { runAction, handleActionError } from '../../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { useOrgStore } from '../../../stores/orgStore';
 import { formatPercent } from '@/lib/i18n/format';
 import {
   addBlock,
@@ -21,11 +22,20 @@ import {
   uploadQuoteImage,
   addQuoteImageFromUrl,
   quoteImageUrl,
+  updateQuote,
 } from '../../../lib/api/quotes';
-import type { QuoteBlockInput } from '@breeze/shared';
+import {
+  listContractTemplates,
+  getContractTemplate,
+  type ContractTemplateWithLatest,
+  type ContractTemplateDetail,
+  type TemplateVersionSummary,
+} from '../../../lib/api/contractTemplates';
+import type { QuoteBlockInput, CoverPage } from '@breeze/shared';
 import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
+import RichTextEditor from '../../common/RichTextEditor';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import PolishButton from '../../catalog/PolishButton';
@@ -39,6 +49,7 @@ import {
   type QuoteBlock,
   type QuoteLine,
   type QuoteLineRecurrence,
+  type ContractBlockContent,
   formatMoney,
   pctFromFraction,
   lineTaxAmount,
@@ -53,12 +64,13 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 // the file first (POST /:id/images), then adds the block with `{ imageId }`.
 // Heading/rich-text block content is editable in place via PATCH /:id/blocks/:blockId
 // (updateBlock); the block type itself is immutable.
-type AddableBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
+type AddableBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract';
 const ADD_BLOCK_OPTIONS: { value: AddableBlockType; labelKey: string }[] = [
   { value: 'heading', labelKey: 'quotes.editor.blockTypes.heading' },
   { value: 'rich_text', labelKey: 'quotes.editor.blockTypes.richText' },
   { value: 'image', labelKey: 'quotes.editor.blockTypes.image' },
   { value: 'line_items', labelKey: 'quotes.editor.blockTypes.pricingTable' },
+  { value: 'contract', labelKey: 'quotes.editor.blockTypes.contract' },
 ];
 
 const BLOCK_TYPE_LABEL_KEYS: Record<string, string> = {
@@ -66,7 +78,24 @@ const BLOCK_TYPE_LABEL_KEYS: Record<string, string> = {
   rich_text: 'quotes.editor.blockTypes.richText',
   image: 'quotes.editor.blockTypes.image',
   line_items: 'quotes.editor.blockTypes.pricingTable',
+  contract: 'quotes.editor.blockTypes.contract',
 };
+
+/** Latest PUBLISHED version of a template (design: attach pins the latest
+ *  published version, never a newer draft). Returns null when the template has
+ *  no published version yet — the picker blocks the attach in that case. */
+function latestPublishedVersion(detail: ContractTemplateDetail): TemplateVersionSummary | null {
+  // versions arrive newest-first (desc versionNumber), so the first published
+  // one is the latest published.
+  return detail.versions.find((v) => v.status === 'published') ?? null;
+}
+
+/** Parse the variable names out of a send-time 422 CONTRACT_VARIABLES_UNRESOLVED
+ *  message ("Contract variables unresolved: a, b") by substring-matching the
+ *  known names, so a wording change never silently drops the inline errors. */
+function unresolvedNamesFromMessage(message: string, knownNames: string[]): string[] {
+  return knownNames.filter((name) => message.includes(name));
+}
 
 // Changed-fields payload for an inline line edit. Subset of
 // updateQuoteLineSchema (description/quantity/unitPrice/taxable/recurrence) —
@@ -266,6 +295,22 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const [imageSource, setImageSource] = useState<'file' | 'url'>('file');
   const [imageUrl, setImageUrl] = useState('');
 
+  // ---- add contract block --------------------------------------------------
+  // The template library for the picker, loaded lazily the first time the
+  // "Contract" add type is opened. `contractTemplateId` is the picked template;
+  // `contractVersion` is its pinned latest-published version (id + declared
+  // variables). Manual variable inputs write into `contractVarValues`;
+  // `contractVarErrors` holds inline "required"/send-blocked errors keyed by
+  // variable name.
+  const [contractTemplates, setContractTemplates] = useState<ContractTemplateWithLatest[]>([]);
+  const [contractTemplatesLoaded, setContractTemplatesLoaded] = useState(false);
+  const [contractTemplateId, setContractTemplateId] = useState('');
+  const [contractVersion, setContractVersion] = useState<TemplateVersionSummary | null>(null);
+  const [contractNoPublished, setContractNoPublished] = useState(false);
+  const [contractVarValues, setContractVarValues] = useState<Record<string, string>>({});
+  const [contractVarErrors, setContractVarErrors] = useState<Record<string, string>>({});
+  const [contractLabel, setContractLabel] = useState('');
+
   useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
   useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
@@ -340,6 +385,57 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, t('quotes.editor.errors.saveTitle'));
     if (ok) flashTitleSaved();
   }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved, t]);
+
+  // ---- customer (organization) reassignment --------------------------------
+  // Company choices for the customer select: the partner's org list, with the
+  // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
+  // select always shows a valid current value.
+  const organizations = useOrgStore((s) => s.organizations);
+  const orgOptions = useMemo(() => {
+    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
+    if (!sorted.some((o) => o.id === quote.orgId)) {
+      sorted.unshift({
+        id: quote.orgId,
+        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
+      } as (typeof sorted)[number]);
+    }
+    return sorted;
+  }, [organizations, quote.orgId, detail.billTo?.name]);
+
+  // Local mirror so the select shows the chosen company instantly instead of
+  // snapping back to the prop value while the PATCH is in flight (same pattern
+  // as the deposit controls); resyncs from the server after each refresh().
+  const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
+  useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
+
+  // Reassign the draft to another company. The server clears the site + bill-to
+  // override and re-resolves the org's tax rate, so refresh() re-pulls the whole
+  // detail to land the recomputed totals and the new bill-to in one hop.
+  const saveCustomer = useCallback((orgId: string) => {
+    if (orgId === quote.orgId) return;
+    const name = orgOptions.find((o) => o.id === orgId)?.name ?? '';
+    setCustomerOrgId(orgId);
+    void runScoped('customer', async () => {
+      try {
+        await runAction({
+          request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+            method: 'PATCH', body: JSON.stringify({ orgId }),
+          }),
+          errorFallback: t('quotes.editor.errors.saveCustomer'),
+          successMessage: t('quotes.editor.customer.success', { name }),
+          onUnauthorized: UNAUTHORIZED,
+        });
+      } catch (err) {
+        // Snap back to the last-known server value, then re-pull: on an error
+        // the client can't know whether the move landed, so re-converge on
+        // server truth instead of asserting a rollback.
+        setCustomerOrgId(quote.orgId);
+        refresh();
+        throw err;
+      }
+      refresh();
+    }, t('quotes.editor.errors.saveCustomer'));
+  }, [quote.id, quote.orgId, orgOptions, refresh, runScoped, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -661,6 +757,129 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     [lines, lineOrder, lineBlockOverride],
   );
 
+  // ---- add contract block --------------------------------------------------
+  // Lazy-load the template library the first time the Contract add type opens,
+  // so the picker never fires a request for quotes the tech never attaches a
+  // contract to. Failure surfaces via runAction's toast; the picker then just
+  // shows "no templates".
+  useEffect(() => {
+    if (addType !== 'contract' || contractTemplatesLoaded) return;
+    setContractTemplatesLoaded(true);
+    void runAction<ContractTemplateWithLatest[]>({
+      request: () => listContractTemplates(),
+      errorFallback: t('quotes.editor.errors.loadContractTemplates'),
+      onUnauthorized: UNAUTHORIZED,
+      parseSuccess: (d) => (d as { data: ContractTemplateWithLatest[] }).data,
+    })
+      .then((list) => setContractTemplates(list))
+      .catch(() => { /* toast already shown; keep the empty picker */ });
+  }, [addType, contractTemplatesLoaded, t]);
+
+  // Pick a template → resolve its latest PUBLISHED version (fetch the detail so a
+  // newer unpublished draft never gets pinned) and seed the manual variable form.
+  const pickContractTemplate = useCallback((templateId: string) => {
+    setContractTemplateId(templateId);
+    setContractVersion(null);
+    setContractNoPublished(false);
+    setContractVarValues({});
+    setContractVarErrors({});
+    if (!templateId) return;
+    void runAction<ContractTemplateDetail>({
+      request: () => getContractTemplate(templateId),
+      errorFallback: t('quotes.editor.errors.loadContractTemplates'),
+      onUnauthorized: UNAUTHORIZED,
+      parseSuccess: (d) => (d as { data: ContractTemplateDetail }).data,
+    })
+      .then((tplDetail) => {
+        const version = latestPublishedVersion(tplDetail);
+        if (!version) { setContractNoPublished(true); return; }
+        setContractVersion(version);
+        // Seed manual variables to '' so the form is controlled from the start.
+        const seed: Record<string, string> = {};
+        for (const v of version.declaredVariables) {
+          if (v.kind === 'manual') seed[v.name] = '';
+        }
+        setContractVarValues(seed);
+      })
+      .catch(() => { /* toast already shown */ });
+  }, [t]);
+
+  const resetContractForm = useCallback(() => {
+    setContractTemplateId('');
+    setContractVersion(null);
+    setContractNoPublished(false);
+    setContractVarValues({});
+    setContractVarErrors({});
+    setContractLabel('');
+  }, []);
+
+  // ---- cover page ----------------------------------------------------------
+  // Local mirror of the persisted cover page, so the toggle/title/prepared-for
+  // update instantly; resynced from the server after each save's refresh().
+  const coverFromQuote = useCallback((cp: typeof quote.coverPage): CoverPage => ({
+    enabled: cp?.enabled ?? false,
+    showPreparedBy: cp?.showPreparedBy ?? true,
+    ...(cp?.title != null ? { title: cp.title } : {}),
+    ...(cp?.coverImageId != null ? { coverImageId: cp.coverImageId } : {}),
+    ...(cp?.preparedForName != null ? { preparedForName: cp.preparedForName } : {}),
+  }), []);
+  const [cover, setCover] = useState<CoverPage>(() => coverFromQuote(quote.coverPage));
+  // Guard the resync exactly like the ContractBlockEditor / heading / rich-text
+  // mirrors: only overwrite the local draft from the server when the user hasn't
+  // diverged (local === last-synced). Otherwise an unrelated save's refresh()
+  // would clobber un-blurred title/prepared-for keystrokes mid-edit.
+  const lastSyncedCover = useRef(JSON.stringify(coverFromQuote(quote.coverPage)));
+  useEffect(() => {
+    const next = coverFromQuote(quote.coverPage);
+    const nextStr = JSON.stringify(next);
+    // Capture the previously-synced value before mutating the ref so the
+    // comparison is deterministic regardless of when React runs the updater.
+    const previous = lastSyncedCover.current;
+    lastSyncedCover.current = nextStr;
+    setCover((cur) => (JSON.stringify(cur) === previous ? next : cur));
+  }, [quote.coverPage, coverFromQuote]);
+  // Always-current cover snapshot for async callbacks that must not capture a
+  // stale `cover` closure (uploadCoverImage's post-upload saveCover).
+  const coverRef = useRef(cover);
+  useEffect(() => { coverRef.current = cover; }, [cover]);
+
+  // Persist a cover-page change. Drops empty title/preparedForName so a cleared
+  // field round-trips as "unset" rather than an empty string, and always carries
+  // enabled + showPreparedBy forward (updateQuote replaces cover_page wholesale).
+  const saveCover = useCallback((next: CoverPage) => {
+    setCover(next);
+    const body: CoverPage = { enabled: next.enabled, showPreparedBy: next.showPreparedBy };
+    if (next.title?.trim()) body.title = next.title.trim();
+    if (next.coverImageId) body.coverImageId = next.coverImageId;
+    if (next.preparedForName?.trim()) body.preparedForName = next.preparedForName.trim();
+    void runScoped('cover-page', async () => {
+      await runAction({
+        request: () => updateQuote(quote.id, { coverPage: body }),
+        errorFallback: t('quotes.editor.errors.saveCoverPage'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      refresh();
+    }, t('quotes.editor.errors.saveCoverPage'));
+  }, [quote.id, refresh, runScoped, t]);
+
+  const uploadCoverImage = useCallback((file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+      handleActionError(new Error('image too large'), t('quotes.editor.errors.imageTooLarge'));
+      return;
+    }
+    void runScoped('cover-image', async () => {
+      const uploaded = await runAction<{ imageId: string }>({
+        request: () => uploadQuoteImage(quote.id, file),
+        errorFallback: t('quotes.editor.errors.uploadImage'),
+        onUnauthorized: UNAUTHORIZED,
+        parseSuccess: (d) => (d as { data: { imageId: string } }).data,
+      });
+      // Read the LATEST cover (ref, not the closure's `cover`) so a title typed
+      // during a slow upload isn't dropped by this post-upload save.
+      saveCover({ ...coverRef.current, coverImageId: uploaded.imageId });
+    }, t('quotes.editor.errors.uploadImage'));
+  }, [quote.id, saveCover, runScoped, t]);
+
   // ---- add block -----------------------------------------------------------
   const submitBlock = useCallback(async () => {
     // Image blocks have no block-update endpoint, so the file must exist before
@@ -709,6 +928,56 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       return;
     }
 
+    if (addType === 'contract') {
+      const version = contractVersion;
+      if (!contractTemplateId || !version) return;
+      const manualNames = version.declaredVariables.filter((v) => v.kind === 'manual').map((v) => v.name);
+      // Client-side gate: a blank manual variable would fail the send-time
+      // CONTRACT_VARIABLES_UNRESOLVED check, so catch it here with an inline error
+      // on the offending input rather than letting the doomed send happen later.
+      const missing = manualNames.filter((name) => !(contractVarValues[name] ?? '').trim());
+      if (missing.length > 0) {
+        setContractVarErrors(Object.fromEntries(missing.map((name) => [name, t('quotes.editor.contract.variableRequired')])));
+        return;
+      }
+      const variableValues: Record<string, string> = {};
+      for (const name of manualNames) variableValues[name] = (contractVarValues[name] ?? '').trim();
+      setContractVarErrors({});
+      await runScoped('add-block', async () => {
+        try {
+          await runAction({
+            request: () => addBlock(quote.id, {
+              blockType: 'contract' as const,
+              content: {
+                templateId: contractTemplateId,
+                templateVersionId: version.id,
+                variableValues,
+                ...(contractLabel.trim() ? { label: contractLabel.trim() } : {}),
+              },
+            } as QuoteBlockInput),
+            errorFallback: t('quotes.editor.errors.addContractSection'),
+            successMessage: t('quotes.editor.success.contractSectionAdded'),
+            onUnauthorized: UNAUTHORIZED,
+          });
+        } catch (err) {
+          // The attach route itself only rejects with INVALID_CONTRACT_TEMPLATE —
+          // the unresolved-variables gate (CONTRACT_VARIABLES_UNRESOLVED) fires at
+          // SEND, not here (the client-side gate above already blocks blank manual
+          // vars pre-attach). Kept defensively: if a future server change ever
+          // surfaces that code at attach, map the names back to inline input errors.
+          if (err instanceof ActionError && err.code === 'CONTRACT_VARIABLES_UNRESOLVED') {
+            const named = unresolvedNamesFromMessage(err.message, manualNames);
+            const targets = named.length > 0 ? named : manualNames;
+            setContractVarErrors(Object.fromEntries(targets.map((name) => [name, t('quotes.editor.contract.variableUnresolved')])));
+          }
+          throw err;
+        }
+        resetContractForm();
+        refresh();
+      }, t('quotes.editor.errors.addContractSection'));
+      return;
+    }
+
     let body;
     if (addType === 'heading') {
       if (!headingText.trim()) return;
@@ -732,7 +1001,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       setHeadingText(''); setRichText(''); setTableLabel('');
       refresh();
     }, t('quotes.editor.errors.addSection'));
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, quote.id, refresh, runScoped, t]);
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, quote.id, refresh, runScoped, t]);
 
   // Removing a line_items block cascades to every line under it (server-side), so
   // the card's Remove button opens a confirm step instead of deleting outright.
@@ -1125,21 +1394,142 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         </button>
       </div>
       {canWrite && (
-        <div className="max-w-xl">
-          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
-          <input
-            id="quote-title"
-            type="text"
-            value={title}
-            maxLength={200}
-            placeholder={t('quotes.editor.title.placeholder')}
-            onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-            onBlur={() => void saveTitle()}
-            disabled={isPending('title')}
-            data-testid="quote-title"
-            className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
-          />
-          <SrSaved show={titleSaved} testId="quote-title-saved" />
+        <div className="flex max-w-3xl flex-wrap items-start gap-3">
+          <div className="min-w-64 flex-1">
+            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
+            <input
+              id="quote-title"
+              type="text"
+              value={title}
+              maxLength={200}
+              placeholder={t('quotes.editor.title.placeholder')}
+              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+              onBlur={() => void saveTitle()}
+              disabled={isPending('title')}
+              data-testid="quote-title"
+              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
+            />
+            <SrSaved show={titleSaved} testId="quote-title-saved" />
+          </div>
+          {/* Customer reassignment (drafts only — this editor only mounts for
+              drafts). Selecting a company saves immediately; the server clears
+              the site + bill-to override and applies the new org's tax rate. */}
+          <div className="w-64 max-w-full">
+            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
+            <select
+              id="quote-customer"
+              value={customerOrgId}
+              onChange={(e) => saveCustomer(e.target.value)}
+              disabled={isPending('customer')}
+              title={t('quotes.editor.customer.help')}
+              data-testid="quote-customer"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            >
+              {orgOptions.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+      {canWrite && (
+        <div className="max-w-3xl rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-cover-page">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.coverPage.title')}</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-cover-page-summary">
+                {cover.enabled ? t('quotes.editor.coverPage.summaryOn') : t('quotes.editor.coverPage.summaryOff')}
+              </p>
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={cover.enabled}
+                onChange={(e) => saveCover({ ...cover, enabled: e.target.checked })}
+                disabled={isPending('cover-page')}
+                data-testid="quote-cover-page-enabled"
+                className="h-4 w-4"
+              />
+              {t('quotes.editor.coverPage.enable')}
+            </label>
+          </div>
+
+          {cover.enabled && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label htmlFor="quote-cover-page-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.titleLabel')}</label>
+                <input
+                  id="quote-cover-page-title"
+                  type="text"
+                  value={cover.title ?? ''}
+                  maxLength={200}
+                  placeholder={t('quotes.editor.coverPage.titlePlaceholder')}
+                  onChange={(e) => setCover((c) => ({ ...c, title: e.target.value }))}
+                  onBlur={() => saveCover(cover)}
+                  disabled={isPending('cover-page')}
+                  data-testid="quote-cover-page-title"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                />
+              </div>
+              <div>
+                <label htmlFor="quote-cover-page-prepared-for" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.preparedForLabel')}</label>
+                <input
+                  id="quote-cover-page-prepared-for"
+                  type="text"
+                  value={cover.preparedForName ?? ''}
+                  maxLength={255}
+                  placeholder={t('quotes.editor.coverPage.preparedForPlaceholder')}
+                  onChange={(e) => setCover((c) => ({ ...c, preparedForName: e.target.value }))}
+                  onBlur={() => saveCover(cover)}
+                  disabled={isPending('cover-page')}
+                  data-testid="quote-cover-page-prepared-for"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                />
+              </div>
+              <div className="flex items-end">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={cover.showPreparedBy}
+                    onChange={(e) => saveCover({ ...cover, showPreparedBy: e.target.checked })}
+                    disabled={isPending('cover-page')}
+                    data-testid="quote-cover-page-show-prepared-by"
+                    className="h-4 w-4"
+                  />
+                  {t('quotes.editor.coverPage.showPreparedBy')}
+                </label>
+              </div>
+              <div className="sm:col-span-2">
+                <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageLabel')}</span>
+                {cover.coverImageId ? (
+                  <div className="flex items-center gap-3">
+                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} />
+                    <button
+                      type="button"
+                      onClick={() => saveCover({ ...cover, coverImageId: null })}
+                      disabled={isPending('cover-page') || isPending('cover-image')}
+                      data-testid="quote-cover-page-image-remove"
+                      className="rounded-md border border-destructive/40 px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      {t('quotes.editor.coverPage.removeImage')}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
+                      disabled={isPending('cover-image')}
+                      data-testid="quote-cover-page-image-file"
+                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageHelp')}</p>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -1230,14 +1620,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               />
             )}
             {addType === 'rich_text' && (
-              <textarea
-                value={richText}
-                onChange={(e) => setRichText(e.target.value)}
-                placeholder={t('quotes.editor.addSection.richTextPlaceholder')}
-                rows={4}
-                data-testid="quote-block-rich-text"
-                className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
+              <div className="mb-3" data-testid="quote-block-rich-text">
+                <RichTextEditor
+                  value={richText}
+                  onChange={setRichText}
+                  ariaLabel={t('quotes.editor.addSection.richTextPlaceholder')}
+                  testId="quote-block-rich-text-editor"
+                />
+              </div>
             )}
             {addType === 'image' && (
               <div className="mb-3 space-y-2">
@@ -1302,6 +1692,114 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 className="mb-3 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             )}
+            {addType === 'contract' && (
+              <div className="mb-3 space-y-3" data-testid="quote-block-contract">
+                <div>
+                  <label htmlFor="quote-block-contract-template" className="mb-1 block text-xs text-muted-foreground">
+                    {t('quotes.editor.contract.templateLabel')}
+                  </label>
+                  <select
+                    id="quote-block-contract-template"
+                    value={contractTemplateId}
+                    onChange={(e) => pickContractTemplate(e.target.value)}
+                    data-testid="quote-block-contract-template"
+                    className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">{t('quotes.editor.contract.templatePlaceholder')}</option>
+                    {contractTemplates.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
+                    ))}
+                  </select>
+                  {contractTemplatesLoaded && contractTemplates.length === 0 && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="quote-block-contract-no-templates">
+                      {t('quotes.editor.contract.noTemplates')}
+                    </p>
+                  )}
+                </div>
+
+                {contractNoPublished && (
+                  <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground" data-testid="quote-block-contract-no-version">
+                    {t('quotes.editor.contract.noPublishedVersion')}
+                  </p>
+                )}
+
+                {contractVersion && (
+                  <>
+                    <p className="text-xs text-muted-foreground" data-testid="quote-block-contract-version">
+                      {t('quotes.editor.contract.pinnedVersion', { version: contractVersion.versionNumber })}
+                    </p>
+
+                    {contractVersion.declaredVariables.some((v) => v.kind === 'auto') && (
+                      <div>
+                        <p className="mb-1 text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.autoVariablesTitle')}</p>
+                        <ul className="space-y-1">
+                          {contractVersion.declaredVariables.filter((v) => v.kind === 'auto').map((v) => (
+                            <li
+                              key={v.name}
+                              data-testid={`quote-block-contract-auto-${v.name}`}
+                              className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1 text-xs"
+                            >
+                              <span className="font-medium">{v.label ?? v.name}</span>
+                              <span className="font-mono text-muted-foreground">{`{{${v.name}}}`}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="mt-1 text-[11px] text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
+                      </div>
+                    )}
+
+                    {contractVersion.declaredVariables.some((v) => v.kind === 'manual') && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.manualVariablesTitle')}</p>
+                        {contractVersion.declaredVariables.filter((v) => v.kind === 'manual').map((v) => (
+                          <div key={v.name}>
+                            <label htmlFor={`quote-block-contract-var-${v.name}`} className="mb-0.5 block text-xs text-muted-foreground">
+                              {v.label ?? v.name}
+                            </label>
+                            <input
+                              id={`quote-block-contract-var-${v.name}`}
+                              type="text"
+                              value={contractVarValues[v.name] ?? ''}
+                              onChange={(e) => {
+                                setContractVarValues((cur) => ({ ...cur, [v.name]: e.target.value }));
+                                setContractVarErrors((cur) => {
+                                  if (!cur[v.name]) return cur;
+                                  const next = { ...cur }; delete next[v.name]; return next;
+                                });
+                              }}
+                              data-testid={`quote-block-contract-var-${v.name}`}
+                              aria-invalid={contractVarErrors[v.name] ? true : undefined}
+                              className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${contractVarErrors[v.name] ? 'border-destructive' : ''}`}
+                            />
+                            {contractVarErrors[v.name] && (
+                              <p className="mt-0.5 text-xs text-destructive" data-testid={`quote-block-contract-var-error-${v.name}`}>
+                                {contractVarErrors[v.name]}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div>
+                      <label htmlFor="quote-block-contract-label" className="mb-0.5 block text-xs text-muted-foreground">
+                        {t('quotes.editor.contract.labelFieldLabel')}
+                      </label>
+                      <input
+                        id="quote-block-contract-label"
+                        type="text"
+                        value={contractLabel}
+                        maxLength={200}
+                        onChange={(e) => setContractLabel(e.target.value)}
+                        placeholder={t('quotes.editor.contract.labelPlaceholder')}
+                        data-testid="quote-block-contract-label"
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="flex justify-end">
               <button
@@ -1312,7 +1810,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   (addType === 'heading' && !headingText.trim()) ||
                   (addType === 'rich_text' && !richText.trim()) ||
                   (addType === 'image' && imageSource === 'file' && !imageFile) ||
-                  (addType === 'image' && imageSource === 'url' && !imageUrl.trim())
+                  (addType === 'image' && imageSource === 'url' && !imageUrl.trim()) ||
+                  (addType === 'contract' && !contractVersion)
                 }
                 data-testid="quote-add-block-submit"
                 className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -1650,6 +2149,7 @@ function BlockCard({
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
+  const showSubtotal = (block.content?.showSubtotal as boolean | undefined) === true;
   const imageId = (block.content?.imageId as string | undefined) ?? '';
   const imageCaption = (block.content?.caption as string | undefined) ?? '';
 
@@ -1665,12 +2165,16 @@ function BlockCard({
   const lastHeading = useRef(heading);
   const lastHtml = useRef(html);
   const lastLabel = useRef(tableLabel);
+  // Set right after our own rich_text save so the next html-prop resync adopts
+  // the server-normalized body unconditionally (see commitRich).
+  const forceRichResync = useRef(false);
   useEffect(() => {
     setHeadingDraft((cur) => (cur === lastHeading.current ? heading : cur));
     lastHeading.current = heading;
   }, [heading]);
   useEffect(() => {
-    setRichDraft((cur) => (cur === lastHtml.current ? html : cur));
+    setRichDraft((cur) => (forceRichResync.current || cur === lastHtml.current ? html : cur));
+    forceRichResync.current = false;
     lastHtml.current = html;
   }, [html]);
   useEffect(() => {
@@ -1696,15 +2200,33 @@ function BlockCard({
   };
   const commitRich = async () => {
     if (richDraft === html) return;
-    if (await onEditBlock(block, { html: richDraft })) flashSaved();
+    if (await onEditBlock(block, { html: richDraft })) {
+      // The server sanitizes the body on write (rel/attribute normalization), so
+      // the reloaded html prop is the source of truth. Force the next resync to
+      // adopt it — otherwise a residual TipTap-vs-sanitizer string mismatch would
+      // keep the block flagged "unsaved" and re-PATCH on every blur. Mirrors the
+      // force-reseed TemplateEditor uses after saveDraft.
+      forceRichResync.current = true;
+      flashSaved();
+    }
   };
   // Rename a pricing table. An empty label is a valid clear (the document falls
   // back to its "Pricing" default), so — unlike heading — we commit the trimmed
   // value even when blank, only skipping when nothing actually changed.
+  // Both the label and the subtotal toggle live in the SAME line_items content
+  // object, and onEditBlock REPLACES content wholesale — so each edit must carry
+  // the other's current value forward or it gets dropped.
+  const lineItemsContent = (nextLabel: string, nextSubtotal: boolean) => ({
+    ...(nextLabel.trim() ? { label: nextLabel.trim() } : {}),
+    ...(nextSubtotal ? { showSubtotal: true } : {}),
+  });
   const commitLabel = async () => {
     const label = labelDraft.trim();
     if (label === tableLabel.trim()) { setLabelDraft(tableLabel); return; }
-    if (await onEditBlock(block, label ? { label } : {})) flashSaved();
+    if (await onEditBlock(block, lineItemsContent(label, showSubtotal))) flashSaved();
+  };
+  const toggleSubtotal = async (next: boolean) => {
+    if (await onEditBlock(block, lineItemsContent(tableLabel, next))) flashSaved();
   };
 
   const submitManual = async () => {
@@ -1769,18 +2291,32 @@ function BlockCard({
         )}
         {block.blockType === 'rich_text' && (
           canWrite ? (
-            <textarea
-              value={richDraft}
-              aria-label={t('quotes.editor.block.richTextContentAria')}
-              onChange={(e) => setRichDraft(e.target.value)}
+            // The editor commits on blur (same as the old textarea). React's
+            // onBlur fires on focusout of the contenteditable; toolbar buttons
+            // preventDefault their mousedown so clicking them never blurs the
+            // editor and never triggers a spurious commit.
+            <div
               onBlur={() => void commitRich()}
-              disabled={blockBusy}
-              rows={4}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className={`w-full resize-y rounded-md border bg-background px-2 py-1 text-sm transition-shadow disabled:opacity-60 ${fieldRing(richDraft !== html, blockSaved)}`}
-            />
+              className={`rounded-md transition-shadow ${fieldRing(richDraft !== html, blockSaved)}`}
+            >
+              <RichTextEditor
+                value={richDraft}
+                onChange={setRichDraft}
+                ariaLabel={t('quotes.editor.block.richTextContentAria')}
+                testId={`quote-block-rich-editor-${block.id}`}
+              />
+            </div>
           ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
+            // Read-only (no write permission): the API sanitizes every rich_text
+            // block to the fixed p/br/strong/em/u/h3/h4/ul/ol/li/a allowlist on
+            // read serialization (richTextSanitize.ts), so rendering it as real
+            // HTML here is safe — same pattern as QuoteDocument.
+            <div
+              className="quote-rich-text prose prose-sm max-w-none text-sm text-foreground dark:prose-invert"
+              data-testid={`quote-block-rich-content-${block.id}`}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
           )
         )}
         {block.blockType === 'image' && (
@@ -1792,6 +2328,10 @@ function BlockCard({
           ) : (
             <p className="text-sm text-muted-foreground">{t('quotes.editor.block.imageSectionPdf')}</p>
           )
+        )}
+
+        {block.blockType === 'contract' && (
+          <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} />
         )}
 
         {isTable && (
@@ -1809,14 +2349,26 @@ function BlockCard({
                 className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
               />
             )}
+            {canWrite && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showSubtotal}
+                  onChange={(e) => void toggleSubtotal(e.target.checked)}
+                  disabled={blockBusy}
+                  data-testid={`quote-block-subtotal-toggle-${block.id}`}
+                />
+                {t('quotes.editor.table.showSubtotal')}
+              </label>
+            )}
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
             <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            <table className="w-full min-w-[800px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="min-w-[13rem] px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
                   <th className="px-2 py-2 font-medium">{t('quotes.editor.table.recurrence')}</th>
@@ -1872,8 +2424,8 @@ function BlockCard({
 
             {/* Add line to this pricing table */}
             {canWrite && (
-            <div className="rounded-md border bg-background/40 p-3" data-testid={`quote-block-add-line-${block.id}`}>
-              <div className="mb-2 flex gap-2">
+            <div className="mt-3 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
+              <div className="mb-3 flex gap-2">
                 {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : []), ...(pax8Active ? ['pax8'] as const : [])] as const).map((m) => (
                   <button
                     key={m}
@@ -1931,7 +2483,7 @@ function BlockCard({
                   />
                 )
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <CatalogEnrichButton
                       idSuffix={`quote-${block.id}`}
@@ -2036,8 +2588,10 @@ function BlockCard({
                       </select>
                     </label>
                   </div>
-                  {/* Internal-only cost & identity fields (never shown to the customer). */}
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
+                  {/* Internal-only cost & identity fields (never shown to the customer).
+                      Divider + top padding sets them apart from the customer-facing
+                      fields above so the two groups don't read as one dense block. */}
+                  <p className="mt-1 border-t pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_110px_100px]">
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.skuOptional')}</span>
@@ -2526,9 +3080,10 @@ function EditableLineRow({
   return (
     <>
     <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
-      <td className="px-2 py-2">
-        {/* min-w-0 lets the name input honour its own min-w-[12rem] floor rather
-            than the flex row's min-content, so a catalog thumbnail can't crush it. */}
+      {/* Column min-width (min-w-[13rem]) is declared on the cell so table
+          auto-layout reserves the name column instead of squeezing it below the
+          input's width (which used to overflow into the qty cell). */}
+      <td className="min-w-[13rem] px-2 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {line.imageId
             ? <LineImageThumb quoteId={quoteId} imageId={line.imageId} />
@@ -2543,7 +3098,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={fieldBusy('name')}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full min-w-[12rem] rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
           </div>
         </div>
@@ -2920,6 +3475,190 @@ function LineImageThumb({ quoteId, imageId }: { quoteId: string; imageId: string
   const { url } = useAuthedImage(quoteImageUrl(quoteId, imageId));
   if (!url) return null;
   return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border object-contain" data-testid="quote-line-image-thumb" />;
+}
+
+// A persisted `contract` block in the editor. The admin serialization attaches
+// the raw authoring fields (content.authoring), so — unlike portal/public — the
+// editor can render an editable manual-variable form (PATCH variableValues), an
+// explicit "Update to vN" nudge when the pin is behind the latest published
+// version, and an inline list of unresolved (empty) manual variables (the
+// send-time CONTRACT_VARIABLES_UNRESOLVED equivalent surfaced on the block).
+// Without authoring (legacy / uploaded / read-only user) it degrades to a
+// read-only summary card.
+function ContractBlockEditor({
+  block, canWrite, onEditBlock,
+}: {
+  block: QuoteBlock;
+  canWrite: boolean;
+  onEditBlock: (block: QuoteBlock, content: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const { t } = useTranslation('billing');
+  const c = (block.content ?? {}) as Partial<ContractBlockContent>;
+  const authoring = c.authoring;
+  const templateName = c.templateName?.trim() || t('quotes.editor.contract.untitledTemplate');
+  const versionNumber = c.versionNumber ?? 0;
+
+  const manualVars = useMemo(() => authoring?.declaredVariables.filter((v) => v.kind === 'manual') ?? [], [authoring]);
+  const autoVars = useMemo(() => authoring?.declaredVariables.filter((v) => v.kind === 'auto') ?? [], [authoring]);
+
+  const [draft, setDraft] = useState<Record<string, string>>(() => ({ ...(authoring?.variableValues ?? {}) }));
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
+  const flash = useCallback(() => {
+    setSaved(true);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+  }, []);
+
+  // Resync the draft from the server's persisted values after a save's refetch,
+  // but only when the user hasn't diverged (same guard as the heading/rich-text
+  // drafts): if the local draft no longer matches what we last synced, keep it.
+  const lastSynced = useRef(JSON.stringify(authoring?.variableValues ?? {}));
+  useEffect(() => {
+    const nextStr = JSON.stringify(authoring?.variableValues ?? {});
+    setDraft((cur) => (JSON.stringify(cur) === lastSynced.current ? { ...(authoring?.variableValues ?? {}) } : cur));
+    lastSynced.current = nextStr;
+  }, [authoring]);
+
+  const unfilled = useMemo(
+    () => manualVars.filter((v) => !(draft[v.name] ?? '').trim()).map((v) => v.name),
+    [manualVars, draft],
+  );
+  const latestNumber = authoring?.latestPublishedVersionNumber ?? null;
+  const latestId = authoring?.latestPublishedVersionId ?? null;
+  const canUpdate = latestId != null && latestNumber != null && latestNumber > versionNumber;
+
+  const commit = useCallback(async (versionOverride?: string) => {
+    if (!authoring) return;
+    const names = manualVars.map((v) => v.name);
+    const missing = names.filter((n) => !(draft[n] ?? '').trim());
+    if (missing.length > 0) {
+      setErrors(Object.fromEntries(missing.map((n) => [n, t('quotes.editor.contract.variableRequired')])));
+      return;
+    }
+    setErrors({});
+    const variableValues = Object.fromEntries(names.map((n) => [n, (draft[n] ?? '').trim()]));
+    const content: Record<string, unknown> = {
+      templateId: authoring.templateId,
+      templateVersionId: versionOverride ?? authoring.templateVersionId,
+      variableValues,
+      ...(c.label?.trim() ? { label: c.label.trim() } : {}),
+    };
+    setBusy(true);
+    try { if (await onEditBlock(block, content)) flash(); } finally { setBusy(false); }
+  }, [authoring, manualVars, draft, c.label, block, onEditBlock, flash, t]);
+
+  // No authoring (legacy/uploaded) or read-only user → read-only summary card.
+  if (!authoring || !canWrite) {
+    return (
+      <div className="space-y-2 text-sm" data-testid={`quote-block-contract-content-${block.id}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{c.label?.trim() || templateName}</span>
+          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+            {t('quotes.editor.contract.pinnedVersion', { version: versionNumber })}
+          </span>
+        </div>
+        {c.label?.trim() && <p className="text-xs text-muted-foreground">{templateName}</p>}
+        {!authoring && <p className="text-xs text-muted-foreground">{t('quotes.editor.contract.readOnlyHint')}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 text-sm" data-testid={`quote-block-contract-editor-${block.id}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{c.label?.trim() || templateName}</span>
+        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground" data-testid={`quote-block-contract-version-${block.id}`}>
+          {t('quotes.editor.contract.pinnedVersion', { version: versionNumber })}
+        </span>
+        <SrSaved show={saved} testId={`quote-block-contract-saved-${block.id}`} />
+        {canUpdate && (
+          <button
+            type="button"
+            onClick={() => void commit(latestId!)}
+            disabled={busy}
+            data-testid={`quote-block-contract-update-${block.id}`}
+            className="ml-auto rounded-md border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
+          >
+            {t('quotes.editor.contract.updateToVersion', { version: latestNumber })}
+          </button>
+        )}
+      </div>
+
+      {autoVars.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.autoVariablesTitle')}</p>
+          <ul className="space-y-1">
+            {autoVars.map((v) => (
+              <li
+                key={v.name}
+                data-testid={`quote-block-contract-auto-${block.id}-${v.name}`}
+                className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1 text-xs"
+              >
+                <span className="font-medium">{v.label ?? v.name}</span>
+                <span className="font-mono text-muted-foreground">{`{{${v.name}}}`}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {manualVars.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.manualVariablesTitle')}</p>
+          {manualVars.map((v) => (
+            <div key={v.name}>
+              <label htmlFor={`quote-block-contract-var-${block.id}-${v.name}`} className="mb-0.5 block text-xs text-muted-foreground">
+                {v.label ?? v.name}
+              </label>
+              <input
+                id={`quote-block-contract-var-${block.id}-${v.name}`}
+                type="text"
+                value={draft[v.name] ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDraft((cur) => ({ ...cur, [v.name]: val }));
+                  setErrors((cur) => { if (!cur[v.name]) return cur; const next = { ...cur }; delete next[v.name]; return next; });
+                }}
+                disabled={busy}
+                data-testid={`quote-block-contract-var-${block.id}-${v.name}`}
+                aria-invalid={errors[v.name] ? true : undefined}
+                className={`h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${errors[v.name] ? 'border-destructive' : ''}`}
+              />
+              {errors[v.name] && (
+                <p className="mt-0.5 text-xs text-destructive" data-testid={`quote-block-contract-var-error-${block.id}-${v.name}`}>
+                  {errors[v.name]}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {unfilled.length > 0 && (
+        <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground" data-testid={`quote-block-contract-unresolved-${block.id}`}>
+          {t('quotes.editor.contract.unresolvedWarning', { names: unfilled.join(', ') })}
+        </p>
+      )}
+
+      {manualVars.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => void commit()}
+            disabled={busy}
+            data-testid={`quote-block-contract-save-${block.id}`}
+            className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {t('quotes.editor.contract.saveVariables')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Editor image preview. GET /quotes/:id/images/:imageId requires the Bearer auth

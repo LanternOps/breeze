@@ -141,6 +141,10 @@ POST and PATCH on `/enrollment-keys` reject any field that isn't in the table ab
   In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime (for example 1 hour, 24 hours, 7 days, up to 1 year) without changing the server's environment default. The picker sends `ttlMinutes`.
 </Aside>
 
+<Aside type="note">
+  In the dashboard, the **Create key** form now includes a required **Site** selector (plus an **Organization** selector when the caller can see more than one org), so keys created in the UI are always correctly site-bound and pass the enrollment endpoint's `siteId` requirement.
+</Aside>
+
 **Response (201):**
 
 ```json

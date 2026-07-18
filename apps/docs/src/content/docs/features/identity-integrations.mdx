@@ -5,7 +5,7 @@ description: Connect Google Workspace and Microsoft 365 (Entra) tenants on the I
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The **Identity** tab of the Breeze Integrations page is where you connect a customer's directory to Breeze. It has two sub-tabs — **Google Workspace** and **Microsoft 365** — and each one collects the credentials Breeze needs to sign in to the provider on the customer's behalf. Once a tenant is connected, Breeze verifies the credentials live, encrypts them at rest, and never returns them to the browser again. From that point on, technicians can look up users, review posture, and run identity actions through the in-app AI assistant.
+The **Identity** tab of the Breeze Integrations page is where you connect a customer's directory to Breeze. It has two sub-tabs — **Google Workspace** and **Microsoft 365**. Microsoft 365 offers two separate connection methods: **Customer Graph Read** uses customer-administrator consent without asking you for a reusable secret, while **Legacy direct** accepts a tenant-specific app client secret for existing read and action workflows.
 
 Open it at **Integrations → Identity** (`/integrations#identity`). The two sub-tabs deep-link to `/integrations#google` (Google Workspace) and `/integrations#m365` (Microsoft 365).
 
@@ -14,14 +14,14 @@ Open it at **Integrations → Identity** (`/integrations#identity`). The two sub
 </Aside>
 
 <Aside type="caution" title="Off by default">
-  Both connectors are feature-flagged off by default. A host operator must enable `GOOGLE_WORKSPACE_ENABLED` (Google Workspace) and/or `M365_ENABLED` (Microsoft 365) on the API server before the sub-tab shows a connection form. While a flag is off, the sub-tab shows a calm "not enabled on this instance" message instead of the form, and the provider's AI actions are unavailable.
+  Both provider sub-tabs are feature-flagged off by default. A host operator must enable `GOOGLE_WORKSPACE_ENABLED` (Google Workspace) and/or `M365_ENABLED` (Microsoft 365). Customer Graph Read has an additional organization allowlist; if your organization is not enabled, its card remains visible but consent cannot be started. Host operators self-hosting Breeze: the environment variables that turn Customer Graph Read on are documented under [Customer Microsoft 365 Graph-read consent](/deploy/environment/#customer-microsoft-365-graph-read-consent-optional).
 </Aside>
 
 ---
 
 ## Connecting a tenant
 
-There is one connection per organization for each provider. Each sub-tab shows a **Connected / Not connected** badge, a collapsible "how to get the credentials" walkthrough, the connection form, and — once connected — a read-only details summary. Saving a new connection requires MFA verification, and Breeze verifies the credentials against the live provider before storing anything; the connection is only saved if that check succeeds.
+There is one Google Workspace connection per organization. Microsoft 365 can have one Customer Graph Read connection and one separate legacy direct connection per organization. Connecting, re-consenting, retesting, or disconnecting requires organization write permission and current MFA where shown.
 
 <Tabs>
   <TabItem label="Google Workspace">
@@ -55,9 +55,44 @@ The walkthrough card displays the exact comma-separated OAuth scope list to auth
   </TabItem>
   <TabItem label="Microsoft 365">
 
-Microsoft 365 lives on the sub-tab at `/integrations#m365`. Breeze authenticates as an **Entra (Azure AD) app registration** using the client-credentials flow, so you create an app in the customer's tenant, grant it Microsoft Graph application permissions, and hand Breeze the tenant ID, client ID, and a client secret.
+Microsoft 365 lives on the sub-tab at `/integrations#m365`. Choose the method that matches the work you intend to do. The cards are independent; connecting or disconnecting one does not change the other.
 
-### Credentials required
+### Customer Graph Read (recommended for read-only inventory)
+
+Customer Graph Read uses Breeze's dedicated multitenant, certificate-backed application. You do not enter a tenant ID, client ID, client secret, certificate, scope, or vault location. A customer **Global Administrator** or **Privileged Role Administrator** reviews Microsoft's permission screen and grants consent.
+
+<Steps>
+1. Set your Breeze scope to the customer organization and find the **Customer Graph Read** card.
+2. Review the nine required permissions shown on the card, then choose **Connect**.
+3. Complete Breeze MFA and sign in to Microsoft as a Global Administrator or Privileged Role Administrator for that customer tenant.
+4. Review Microsoft's consent screen carefully and accept only if it shows the expected application and exact permissions below.
+5. Complete the second Microsoft identity check. Breeze independently verifies the signed tenant identity, administrator role, service principal, exact grants, and organization probe.
+6. Confirm the card shows **Active**, the expected tenant name/GUID, manifest version 2, and no missing or unexpected permissions.
+</Steps>
+
+Customer Graph Read requests exactly these Microsoft Graph **application** permissions:
+
+| Permission | Why it is requested |
+|---|---|
+| `Application.Read.All` | Read the dedicated application's authoritative app-role assignments for drift detection |
+| `AuditLog.Read.All` | Read audit and sign-in inventory |
+| `Device.Read.All` | Read Entra device inventory |
+| `DeviceManagementConfiguration.Read.All` | Read Intune configuration inventory |
+| `DeviceManagementManagedDevices.Read.All` | Read Intune managed-device inventory |
+| `Group.Read.All` | Read groups and memberships |
+| `Organization.Read.All` | Verify and read the customer organization |
+| `Sites.Read.All` | Read SharePoint site inventory |
+| `User.Read.All` | Read users and directory profiles |
+
+The card shows required, observed, missing, and unexpected grants. **Active** requires exact equality. If Microsoft cannot complete authoritative reconciliation—for example, because `Application.Read.All` was removed—the card becomes **Degraded** and labels the retained observed list **Last-known**, rather than presenting it as current.
+
+Use **Retest** to check an already-bound tenant. Use **Re-consent** when permissions were changed or the manifest is stale. Customer Graph Read is read-only and does not authorize password resets, user disablement, other Graph mutations, Exchange PowerShell, or delegated mail/Teams access.
+
+### Legacy direct (existing client-secret method)
+
+Legacy direct uses a customer-specific **Entra app registration** and the client-credentials flow. You create the app in the customer's tenant, grant its permissions, and give Breeze the tenant ID, client ID, and client secret. This method remains available for existing identity read and action workflows.
+
+#### Credentials required
 
 | Field | Description |
 |---|---|
@@ -65,7 +100,7 @@ Microsoft 365 lives on the sub-tab at `/integrations#m365`. Breeze authenticates
 | **App (client) ID** | The Application (client) ID of the Entra app registration |
 | **Client secret** | The app's client secret value (not the secret ID), entered in a masked field |
 
-### Connect
+#### Connect legacy direct
 
 <Steps>
 1. Set your scope to the customer organization, then open **Integrations → Identity → Microsoft 365**.
@@ -77,7 +112,7 @@ Microsoft 365 lives on the sub-tab at `/integrations#m365`. Breeze authenticates
 7. Click **Save & Verify**. Breeze acquires a token and makes a live Microsoft Graph call to confirm the credentials and admin consent are in place, then stores the connection.
 </Steps>
 
-### Microsoft Graph permissions required
+#### Legacy direct Microsoft Graph permissions
 
 The connection card spells out which permissions back which capabilities:
 
@@ -92,8 +127,26 @@ Grant admin consent for these in the app registration before saving, or the live
 </Tabs>
 
 <Aside type="tip">
-  Stored secrets are encrypted at rest and never returned to the browser. When you re-save an already-connected tenant you can leave the secret field blank to keep the stored key or secret — the field shows a "stored, encrypted" placeholder. Only the domain/admin (Google) or tenant/client IDs (Microsoft) are echoed back in the read-only details summary.
+  Google Workspace and legacy direct secrets are encrypted at rest and never returned to the browser. Customer Graph Read never asks the browser for a reusable Microsoft credential: its certificate is confined to a private executor and only safe connection health is returned.
 </Aside>
+
+---
+
+## Remove Customer Graph Read consent
+
+**Disconnect from Breeze** immediately revokes Breeze's local connection, clears its executable tenant/grant state, and rejects delayed callbacks. It does **not** delete the Microsoft Enterprise application or remove tenant-wide admin consent.
+
+To remove Microsoft consent separately, a customer Entra administrator must:
+
+<Steps>
+1. First choose **Disconnect from Breeze** on the Customer Graph Read card and confirm the card shows **Revoked**.
+2. Open the Microsoft Entra admin center for the verified customer tenant.
+3. Go to **Identity → Applications → Enterprise applications**, find the dedicated Breeze Customer Graph Read application by its verified name and application ID, and open it. Do not modify an unrelated app registration.
+4. Use the Enterprise application's delete/remove option to remove that tenant's service principal and tenant-wide application consent. Microsoft labels can vary by portal version; verify the tenant and application before confirming.
+5. Confirm the Enterprise application is no longer present. If Breeze had not already been disconnected, a subsequent **Retest** would report an application verification failure; local status alone is not proof that Microsoft consent was removed.
+</Steps>
+
+Removing an individual permission is different from removing tenant-wide consent. In particular, removing only `Application.Read.All` prevents Breeze from authoritatively reading the current assignment set, so the card reports reconciliation unavailable and retains the prior list as last known.
 
 ---
 
@@ -112,6 +165,15 @@ The connector is feature-flagged off. Ask your host operator to enable `GOOGLE_W
 
 **The connection fails to save with a credentials error.**
 Both providers verify credentials live before storing them. For Google Workspace, confirm the service-account JSON key is valid and that domain-wide delegation was authorized with the exact scopes shown on the card, using the service account's numeric Client ID. For Microsoft 365, confirm the tenant ID and client ID are correct, the client secret **Value** (not the secret ID) was copied and has not expired, and admin consent has been granted for the required Graph permissions.
+
+**Customer Graph Read says an eligible administrator is required.**
+Complete both Microsoft steps as a Global Administrator or Privileged Role Administrator in the customer tenant. Other directory roles fail closed even if Microsoft allows them to reach a consent screen.
+
+**Customer Graph Read is degraded.**
+Review missing and unexpected grants on the card. Restore the exact nine-permission manifest, choose **Re-consent**, then **Retest**. If the card says reconciliation is unavailable, restore `Application.Read.All` first; the displayed observed list is last known, not a current assignment inventory.
+
+**Retest says the verification service is unavailable.**
+This does not mean Microsoft consent was removed. Existing active state is preserved during a transient executor outage. Ask the Breeze operator to restore the private verification service, then Retest again.
 
 **Save is disabled.**
 A fresh connection requires all fields. For Google Workspace: primary domain, super-admin email, and the service-account key. For Microsoft 365: tenant ID, client ID, and client secret. When updating an existing connection, the secret field may be left blank to keep the stored value.

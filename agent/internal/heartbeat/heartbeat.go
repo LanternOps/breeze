@@ -43,6 +43,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
@@ -149,35 +150,40 @@ type helperLifecycleController interface {
 }
 
 type Heartbeat struct {
-	config                *config.Config
-	secureToken           *secmem.SecureString
-	client                *http.Client
-	clientMu              sync.RWMutex
-	stopChan              chan struct{}
-	metricsCol            *collectors.MetricsCollector
-	hardwareCol           *collectors.HardwareCollector
-	softwareCol           *collectors.SoftwareCollector
-	inventoryCol          *collectors.InventoryCollector
-	vpnCol                *collectors.VPNCollector
-	changeTrackerCol      *collectors.ChangeTrackerCollector
-	sessionCol            *collectors.SessionCollector
-	policyStateCol        *collectors.PolicyStateCollector
-	patchCol              *collectors.PatchCollector
-	patchMgr              *patching.PatchManager
-	connectionsCol        *collectors.ConnectionsCollector
-	eventLogCol           *collectors.EventLogCollector
-	bootCol               *collectors.BootPerformanceCollector
-	reliabilityCol        *collectors.ReliabilityCollector
-	agentVersion          string
-	desktopMgr            *desktop.SessionManager
-	wsDesktopMgr          *desktop.WsSessionManager
-	terminalMgr           *terminal.Manager
-	tunnelMgr             *tunnel.Manager
-	executor              *executor.Executor
-	backupBinaryPath      string
-	rebootMgr             *patching.RebootManager
-	securityScanner       *security.SecurityScanner
-	wsClient              *websocket.Client
+	config           *config.Config
+	secureToken      *secmem.SecureString
+	client           *http.Client
+	clientMu         sync.RWMutex
+	stopChan         chan struct{}
+	metricsCol       *collectors.MetricsCollector
+	hardwareCol      *collectors.HardwareCollector
+	softwareCol      *collectors.SoftwareCollector
+	inventoryCol     *collectors.InventoryCollector
+	vpnCol           *collectors.VPNCollector
+	changeTrackerCol *collectors.ChangeTrackerCollector
+	sessionCol       *collectors.SessionCollector
+	policyStateCol   *collectors.PolicyStateCollector
+	patchCol         *collectors.PatchCollector
+	patchMgr         *patching.PatchManager
+	connectionsCol   *collectors.ConnectionsCollector
+	eventLogCol      *collectors.EventLogCollector
+	bootCol          *collectors.BootPerformanceCollector
+	reliabilityCol   *collectors.ReliabilityCollector
+	agentVersion     string
+	desktopMgr       *desktop.SessionManager
+	wsDesktopMgr     *desktop.WsSessionManager
+	terminalMgr      *terminal.Manager
+	tunnelMgr        *tunnel.Manager
+	executor         *executor.Executor
+	backupBinaryPath string
+	rebootMgr        *patching.RebootManager
+	securityScanner  *security.SecurityScanner
+	wsClient         *websocket.Client
+	// backupOutbox persists terminal backup results that failed to send over
+	// the WS connection, so a transient blip doesn't orphan the job
+	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
+	// nil in production — always constructed in NewWithVersion.
+	backupOutbox          *backupResultOutbox
 	mu                    sync.Mutex
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
@@ -199,27 +205,38 @@ type Heartbeat struct {
 	shutdownTimeout time.Duration
 	isService       bool
 	isHeadless      bool
-	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
-	helperFinder    func(targetSession string) *sessionbroker.Session
-	spawnHelper     func(targetSession string) error
+	// headlessCachedAt memoizes the Linux resolver-backed headless probe used by
+	// currentHeadless() for the outgoing heartbeat payload. Stores a
+	// headlessCache; an atomic.Value so the heartbeat and command-handler
+	// goroutines never race on a plain bool (isHeadless itself is never mutated
+	// after construction).
+	headlessCachedAt atomic.Value
+	scmSessionCh     chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	helperFinder     func(targetSession string) *sessionbroker.Session
+	spawnHelper      func(targetSession string) error
 
 	// Shutdown seams keep lifecycle ordering directly testable without opening
 	// sockets or spawning Windows processes. Production leaves these nil.
 	stopBrokerAcceptingAndWait func(context.Context) error
 	stopHelperLifecycleAndWait func(context.Context) error
 	closeSessionBroker         func()
-	// pamFindSession / pamRequestDialog default to the real broker methods in
-	// RunPamFlow when nil; overridden in pam_flow_test.go.
-	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
-	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// PAM seams default to the real broker methods in RunPamFlow/denyConsent
+	// when nil; overridden in pam_flow_test.go.
+	pamFindSession    func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog  func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamActuateMu serializes consent.exe actuation/dismissal so the local
 	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
 	// concurrently (e.g. an await_remote technician approval firing
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
-	pamActuateMu   sync.Mutex
-	wsDesktopStart func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners  sync.Map // desktop session ID -> helper session ID
+	pamActuateMu sync.Mutex
+	// pamDismissalUncertain is protected by pamActuateMu. It keeps later PAM
+	// input fail-closed after a broker failure until the helper's correlated
+	// response proves the old dismissal command has stopped.
+	pamDismissalUncertain bool
+	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -466,6 +483,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		healthMon:       health.NewMonitor(),
 		retryCfg:        httputil.DefaultRetryConfig(),
 		seenCommands:    make(map[string]time.Time),
+		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -534,21 +552,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
 			}),
 		)
-	} else if cfg.IsHeadless && h.sessionBroker != nil {
-		// macOS/Linux headless daemons: launch Breeze Helper via user-role
-		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
-			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
-			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
-			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
-				if err := h.sessionBroker.LaunchProcessViaUserHelperForSession(sessionKey, binaryPath, args...); err == nil {
-					return 0, nil // PID unknown when launched via IPC; refreshPID will reconcile
-				}
-				return 0, helper.ErrNoActiveSession
-			}),
-		)
 	} else {
+		// NOTE: h.sessionBroker is not constructed until later in this constructor
+		// (the needsBroker block below), so a broker-backed headless spawn arm here
+		// would always be dead code; the user-role IPC spawn path is wired via the
+		// session broker after it exists.
 		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
@@ -621,7 +629,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
 	// In service/headless mode this is handled via IPC from the user helper.
-	if !cfg.IsService && !cfg.IsHeadless {
+	// Linux always registers it: a Linux box may boot headless (no graphical
+	// session yet) but still serve desktop captures directly (there is no IPC
+	// helper on Linux in Phase 1), so its WebRTC disconnects must be reported
+	// here. The callback is nil-checked at every fire site and inert in helper
+	// mode, so registering it unconditionally on Linux is safe.
+	if (!cfg.IsService && !cfg.IsHeadless) || runtime.GOOS == "linux" {
 		h.desktopMgr.OnSessionStopped = func(sessionID string) {
 			h.sendDesktopDisconnectNotification(sessionID)
 		}
@@ -643,6 +656,42 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	if os.Getenv("BREEZE_TUNNEL_DIAG") == "1" && h.tunnelMgr != nil && ws != nil {
 		h.tunnelMgr.StartDiagLogger(5*time.Second, ws.BinaryFrameChanStats)
 	}
+	// Retry any backup results that couldn't be delivered before the last
+	// disconnect as soon as the handshake completes on every (re)connect —
+	// set here, before Start() is ever called on ws, so there's no race with
+	// the read pump goroutine that invokes it (terminal-result outbox).
+	if ws != nil {
+		ws.OnConnected = h.flushBackupResultOutbox
+		// Re-persist any command result that writePump popped but failed to
+		// deliver (conn torn down mid-write, or a WriteMessage error) so it
+		// isn't silently lost after SendResult already reported success. The
+		// next reconnect's OnConnected flush redelivers it. (FIX 3)
+		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+	}
+}
+
+// preserveUndeliveredResult persists a command result whose WS write failed to
+// the backup-result outbox for redelivery on the next reconnect. Invoked from
+// the websocket write pump (see Client.OnResultWriteFailed). This catches all
+// failed command-result writes, not just backup results — the write pump can't
+// distinguish them — which is safe: the outbox re-sends via SendResult and the
+// server tolerates a late or duplicate terminal result.
+func (h *Heartbeat) preserveUndeliveredResult(result websocket.CommandResult) {
+	if h.backupOutbox == nil {
+		return
+	}
+	h.backupOutbox.Enqueue(result)
+}
+
+// flushBackupResultOutbox retries delivery of any backup results persisted
+// because a prior SendResult failed (WS blip). Called on every WS
+// (re)connect via wsClient.OnConnected. A flush failure just leaves the
+// entry on disk for the next reconnect.
+func (h *Heartbeat) flushBackupResultOutbox() {
+	if h.backupOutbox == nil || h.wsClient == nil {
+		return
+	}
+	h.backupOutbox.Flush(h.wsClient.SendResult)
 }
 
 // SetAuthMonitor sets the shared auth-failure monitor.
@@ -718,9 +767,11 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		h.forgetDesktopOwner(notice.SessionID)
 		go h.sendDesktopDisconnectNotification(notice.SessionID)
 	case backupipc.TypeBackupResult:
-		if h.wsClient == nil {
-			return
-		}
+		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no
+		// live WS client, and a terminal backup result that arrives during
+		// startup or a WS teardown gap must still be persisted so the next
+		// reconnect flushes it — otherwise the server-side job is stuck
+		// "running" until a reaper falsely fails it. (FIX 2)
 		var backupResult backupipc.BackupCommandResult
 		if err := json.Unmarshal(env.Payload, &backupResult); err != nil {
 			log.Warn("invalid backup result payload", "error", err.Error())
@@ -745,8 +796,28 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 				result.Result = backupResult.Stdout
 			}
 		}
+
+		// No live WS client yet (startup) or the connection is torn down: skip
+		// the send entirely and persist to the outbox so redelivery happens on
+		// the next reconnect rather than dropping the result outright. (FIX 2)
+		if h.wsClient == nil {
+			if h.backupOutbox != nil {
+				log.Info("no WS client for terminal backup result, persisting to outbox for retry on reconnect",
+					"commandId", backupResult.CommandID)
+				h.backupOutbox.Enqueue(result)
+			} else {
+				log.Warn("dropping terminal backup result: no WS client and no outbox configured",
+					"commandId", backupResult.CommandID)
+			}
+			return
+		}
+
 		if err := h.wsClient.SendResult(result); err != nil {
-			log.Warn("failed to send backup result", "commandId", backupResult.CommandID, "error", err.Error())
+			log.Warn("failed to send backup result, persisting to outbox for retry on reconnect",
+				"commandId", backupResult.CommandID, "error", err.Error())
+			if h.backupOutbox != nil {
+				h.backupOutbox.Enqueue(result)
+			}
 		}
 	case backupipc.TypeBackupProgress:
 		if h.wsClient == nil {
@@ -2963,6 +3034,36 @@ func (h *Heartbeat) sendHeartbeatWithWatchdog() {
 	log.Debug("heartbeat sent", "duration_ms", time.Since(start).Milliseconds())
 }
 
+// headlessCache is the memoized result of a Linux headless probe.
+type headlessCache struct {
+	headless bool
+	at       time.Time
+}
+
+// currentHeadless reports whether the device currently lacks an attachable
+// graphical session, for the outgoing heartbeat payload ONLY. On non-Linux it
+// returns the boot-time flag. On Linux it is resolver-backed (cached ≤30s) so
+// xrdp session churn is reflected without an agent restart. It never mutates
+// h.isHeadless — that flag is read unsynchronized by pool-worker goroutines and
+// also drives helper stop-routing, so flipping it would both race and misroute.
+// The probe result is stored in an atomic so heartbeat and command-handler
+// goroutines never race on a plain bool.
+func (h *Heartbeat) currentHeadless() bool {
+	if runtime.GOOS != "linux" {
+		return h.isHeadless
+	}
+	now := time.Now()
+	if cached := h.headlessCachedAt.Load(); cached != nil {
+		if c, ok := cached.(headlessCache); ok && now.Sub(c.at) < 30*time.Second {
+			return c.headless
+		}
+	}
+	_, err := x11.SelectX11Target()
+	headless := err != nil
+	h.headlessCachedAt.Store(headlessCache{headless: headless, at: now})
+	return headless
+}
+
 func (h *Heartbeat) sendHeartbeat() {
 	// After a successful self-update, the old process continues running until
 	// the service manager kills it. Don't send heartbeats with stale version info.
@@ -3008,7 +3109,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		WatchdogVersion: h.installedWatchdogVersion(),
 		HealthStatus:    h.healthMon.Summary(),
 		DeviceRole:      deviceRole,
-		IsHeadless:      h.isHeadless,
+		IsHeadless:      h.currentHeadless(),
 	}
 
 	// Only report virtualization once background hardware collection has
@@ -3089,6 +3190,8 @@ func (h *Heartbeat) sendHeartbeat() {
 			}
 			payload.TCCPermissions = tccStatus
 		}
+		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
+	} else if runtime.GOOS == "linux" {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	}
 

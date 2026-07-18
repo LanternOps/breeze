@@ -1,0 +1,1 @@
+export const BACKUP_LOW_READINESS_THRESHOLD = 70;

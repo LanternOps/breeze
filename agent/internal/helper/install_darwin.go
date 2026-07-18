@@ -26,6 +26,9 @@ const destAppPath = "/Applications/Breeze Helper.app"
 // uninstallPackage removes the installed Breeze Helper.app bundle.
 // Idempotent: returns nil if the bundle is already gone.
 func uninstallPackage() error {
+	if _, statErr := os.Stat(destAppPath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	}
 	if err := os.RemoveAll(destAppPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove app bundle: %w", err)
 	}

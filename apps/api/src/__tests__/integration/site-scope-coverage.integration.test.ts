@@ -133,6 +133,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // ---- Agent / helper / viewer-token paths: authenticated by an AGENT or
   // helper/viewer token, NOT a user session, so there is no `permissions`
   // context and `allowedSiteIds` never applies. (Codex triage 2026-05-31.)
+  // Partner reconstruction API: machine service-principal auth
+  // (requirePartnerApiScope) — no user permissions context; results are
+  // clamped to the principal's partner-accessible orgs by the export query.
+  'routes/partnerApi/devices.ts:GET /devices',
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',

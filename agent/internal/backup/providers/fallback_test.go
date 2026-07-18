@@ -199,6 +199,42 @@ func TestFallbackList_UsesFirstProvider(t *testing.T) {
 	}
 }
 
+func TestFallbackProvider_BackupIdentity_DelegatesToPrimary(t *testing.T) {
+	primary := NewLocalProvider("/tmp/primary")
+	secondary := NewLocalProvider("/tmp/secondary")
+
+	fb := NewFallbackProvider(primary, secondary)
+	want := "fallback|" + primary.BackupIdentity()
+	if got := fb.BackupIdentity(); got != want {
+		t.Errorf("BackupIdentity() = %q, want %q (delegated to primary)", got, want)
+	}
+
+	// Swapping which provider is primary must change the identity — uploads
+	// only ever go to providers[0] (see UploadContext), so identity must
+	// track that, not just "any provider in the list."
+	fbSwapped := NewFallbackProvider(secondary, primary)
+	if fbSwapped.BackupIdentity() == fb.BackupIdentity() {
+		t.Error("swapping the primary provider must change the fallback identity")
+	}
+}
+
+func TestFallbackProvider_BackupIdentity_PrimaryWithoutJournalIdentity(t *testing.T) {
+	// mockProvider (this file) does not implement JournalIdentity — the
+	// fallback must degrade to a generic per-Go-type identity rather than
+	// panicking or returning an empty string.
+	fb := NewFallbackProvider(newMockProvider())
+	if got := fb.BackupIdentity(); got == "" || got == "fallback|empty" {
+		t.Errorf("BackupIdentity() = %q, want a non-empty generic fallback identity", got)
+	}
+}
+
+func TestFallbackProvider_BackupIdentity_NoProviders(t *testing.T) {
+	fb := NewFallbackProvider()
+	if got := fb.BackupIdentity(); got != "fallback|empty" {
+		t.Errorf("BackupIdentity() = %q, want %q", got, "fallback|empty")
+	}
+}
+
 func TestFallbackNoProviders(t *testing.T) {
 	fb := NewFallbackProvider()
 

@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateConfig } from './validate';
 
@@ -35,6 +38,7 @@ const validEnv = {
   AGENT_ENROLLMENT_SECRET: 'prod-test-agent-enrollment-secret-32-chars-min-strong-random',
   ENROLLMENT_KEY_PEPPER: 'prod-test-enrollment-pepper-32-chars-min-strong-random',
   MFA_RECOVERY_CODE_PEPPER: 'prod-test-mfa-recovery-pepper-32-chars-min-strong-random',
+  PARTNER_API_CURSOR_SIGNING_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'prod-test-release-manifest-public-key',
   // Production-required (#570 defense-in-depth): explicit boolean keeps the
   // many "production happy-path" tests below from tripping the new check.
@@ -68,6 +72,133 @@ describe('validateConfig', () => {
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('accepts a dedicated base64-encoded 32-byte partner export cursor key in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.PARTNER_API_CURSOR_SIGNING_KEY).toBe(validEnv.PARTNER_API_CURSOR_SIGNING_KEY);
+    });
+  });
+
+  it('rejects a missing partner export cursor signing key in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      PARTNER_API_CURSOR_SIGNING_KEY: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+    });
+  });
+
+  it('rejects invalid or shorter-than-32-byte partner export cursor keys in production', () => {
+    for (const key of ['not valid base64***', Buffer.alloc(31, 7).toString('base64')]) {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        PARTNER_API_CURSOR_SIGNING_KEY: key,
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+      }, () => {
+        expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+        expect(() => validateConfig()).toThrow('32 bytes');
+      });
+    }
+  });
+
+  it('rejects reusing JWT_SECRET as the partner export cursor signing key', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      JWT_SECRET: validEnv.PARTNER_API_CURSOR_SIGNING_KEY,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('must not reuse secret material');
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+    });
+  });
+
+  it('rejects cursor bytes that equal UTF-8 JWT_SECRET despite different encodings', () => {
+    const jwtSecret = '0123456789abcdef0123456789ABCDEF';
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      JWT_SECRET: jwtSecret,
+      PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from(jwtSecret, 'utf8').toString('base64'),
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+      expect(() => validateConfig()).toThrow('JWT_SECRET key material');
+    });
+  });
+
+  describe('M365 customer Graph-read onboarding', () => {
+    const descriptorEnv = (signingJwkFile: string) => ({
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '33333333-3333-4333-8333-333333333333',
+      M365_CUSTOMER_GRAPH_READ_VAULT_REF:
+        'akv://customer-vault.vault.azure.net/m365-customer-graph-read/0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: '0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: '11111111-1111-4111-8111-111111111111',
+      M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test',
+      M365_GRAPH_READ_EXECUTOR_AUDIENCE: 'm365-graph-read-executor',
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: signingJwkFile,
+      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: 'graph-read-api-1',
+      PUBLIC_URL: 'https://console.example.test',
+    });
+
+    it('refuses boot when onboarding is enabled without a complete descriptor', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_READ_CLIENT_ID/);
+      });
+    });
+
+    it('validates the complete descriptor at boot when onboarding is enabled', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-boot-'));
+      const signingJwkFile = join(dir, 'signing.jwk');
+      writeFileSync(signingJwkFile, JSON.stringify({
+        kty: 'OKP',
+        crv: 'Ed25519',
+        alg: 'EdDSA',
+        use: 'sig',
+        kid: 'graph-read-api-1',
+        x: Buffer.alloc(32, 1).toString('base64url'),
+        d: Buffer.alloc(32, 2).toString('base64url'),
+      }), { mode: 0o600 });
+      chmodSync(signingJwkFile, 0o600);
+
+      try {
+        withEnv({ ...validEnv, ...descriptorEnv(signingJwkFile) }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not require or parse descriptor fields when onboarding is disabled', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: 'not-a-uuid',
+        M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: '/missing/signing.jwk',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
     });
   });
 

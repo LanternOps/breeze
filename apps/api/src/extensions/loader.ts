@@ -1,29 +1,30 @@
-//
-// Extension sub-apps mount on the outer app. Middleware added to the `api`
-// instance via api.use('*') does not apply to them, so the loader itself
-// default-denies every mounted extension route: `/agent/*` paths get
-// agentAuthMiddleware, everything else gets authMiddleware, and only
-// manifest-declared `publicRoutes` sub-paths skip auth. The global rate-limit
-// exemption for `/agent/` is granted only for prefixes the loader actually
-// wrapped — manifest trust alone never lifts the limiter. Core injects the
-// ALS-bound database, column-bound secrets, and async audit capability.
+// Legacy source-directory extensions register against an isolated staging
+// adapter. The stable gateway owns routing and auth; this loader publishes no
+// route or AI contribution until all registration and tenancy checks pass.
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
 import type {
   AiToolLike,
   BreezeExtension,
   ExtensionContext,
   ExtensionDatabase,
-  ExtensionManifest,
 } from '@breeze/extension-api';
-import { discoverExtensions } from './discovery';
+import {
+  parseExtensionManifestV1,
+  type ExtensionManifestV1,
+} from '@breeze/extension-sdk';
+import { discoverExtensions, type DiscoveredExtension } from './discovery';
+import {
+  ExtensionContributionRegistry,
+  type StagedExtensionContributions,
+} from './contributionRegistry';
+import {
+  legacyExtensionAgentAuthMiddleware,
+  legacyExtensionAuthMiddleware,
+} from './gateway';
 import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
-import { aiTools } from '../services/aiTools';
-import { authMiddleware } from '../middleware/auth';
-import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { aiTools, hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -44,152 +45,137 @@ async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
   return ext;
 }
 
-// Records WHICH core auth the loader guard already ran for this request, so a
-// ctx-injected middleware can no-op instead of running the (side-effectful:
-// per-agent/per-IP rate counters) core auth twice when an extension redundantly
-// applies the SAME one itself.
-//
-// This stores the KIND, not a boolean, and that distinction is load-bearing.
-// `authMiddleware` and `agentAuthMiddleware` are not interchangeable — they
-// accept disjoint credentials and set disjoint context vars (auth+permissions
-// vs agent). With a boolean, an extension applying `ctx.agentAuthMiddleware` to
-// a route NOT under /agent/ would have it silently evaporate after the loader
-// ran USER auth: the route would fall back to "any authenticated user token"
-// with `c.get('agent')` undefined, downgrading a device-bound ingest route into
-// a cross-tenant primitive. So a MISMATCHED kind must still run — the request
-// then needs both and 401s (fail closed) — and is never silently skipped.
-type LoaderAuthKind = 'user' | 'agent';
-const LOADER_AUTH_KIND = 'extensionLoaderAuthKind';
-
-/**
- * Default-deny auth guard for one extension namespace. Evaluated per request
- * against the sub-path relative to /api/v1/<routeNamespace>:
- *   1. `/agent` and `/agent/*` → core agentAuthMiddleware (manifest cannot
- *      opt these public — enforced by the manifest schema too).
- *   2. manifest.publicRoutes exact/wildcard match → no core auth.
- *   3. everything else → core authMiddleware.
- * Exported for tests.
- */
-export function buildExtensionAuthGuard(
-  mountPrefix: string,
-  manifest: ExtensionManifest,
-): MiddlewareHandler {
-  const publicExact = new Set<string>();
-  const publicPrefixes: string[] = [];
-  for (const route of manifest.publicRoutes ?? []) {
-    if (route.endsWith('/*')) {
-      publicPrefixes.push(route.slice(0, -1)); // keep the trailing '/'
-    } else {
-      publicExact.add(route);
-    }
-  }
-  return async (c, next) => {
-    const rel = c.req.path.slice(mountPrefix.length) || '/';
-    if (rel === '/agent' || rel.startsWith('/agent/')) {
-      c.set(LOADER_AUTH_KIND, 'agent');
-      return agentAuthMiddleware(c, next);
-    }
-    if (publicExact.has(rel) || publicPrefixes.some((p) => rel.startsWith(p))) {
-      return next();
-    }
-    c.set(LOADER_AUTH_KIND, 'user');
-    return authMiddleware(c, next);
+function synthesizeLegacyManifest(extension: DiscoveredExtension): ExtensionManifestV1 {
+  return {
+    apiVersion: 'breeze.extensions/v1',
+    name: extension.name,
+    version: '0.0.0',
+    routeNamespace: extension.manifest.routeNamespace,
+    requires: {
+      breeze: '*',
+      serverSdk: '^1.0.0',
+      capabilities: ['server.routes.v1'],
+    },
+    server: { entry: 'dist/index.cjs' },
+    migrationsDir: extension.manifest.migrationsDir,
+    schemaCompatibilityFloor: '0.0.0',
+    publicRoutes: extension.manifest.publicRoutes,
+    agentRoutes: extension.manifest.agentRoutes,
+    jobs: [],
+    aiTools: [],
+    tenancy: extension.manifest.tenancy,
   };
 }
 
-/**
- * Wrap a core auth middleware so it no-ops ONLY when the loader guard already
- * ran the SAME kind of auth for this request. A mismatched kind still runs —
- * skipping it would silently strip the guarantee the extension asked for.
- */
-function skipIfLoaderAuthed(inner: MiddlewareHandler, kind: LoaderAuthKind): MiddlewareHandler {
-  return (c, next) => {
-    if (c.get(LOADER_AUTH_KIND) === kind) return next();
-    return inner(c, next);
+async function stageLegacyExtension(
+  extension: DiscoveredExtension,
+  registry: ExtensionContributionRegistry,
+): Promise<StagedExtensionContributions> {
+  const loaded = await loadEntry(extension.dir, extension.manifest.entry);
+  const manifest = synthesizeLegacyManifest(extension);
+  const session = registry.begin(manifest);
+  const stagedAiTools = new Map<string, AiToolLike>(aiTools as Map<string, AiToolLike>);
+
+  const stagedAiToolMap = new Proxy(stagedAiTools, {
+    get(target, prop) {
+      if (prop === 'set') {
+        return (key: string, value: AiToolLike) => {
+          if (hasCoreAiToolName(key) || target.has(key)) {
+            throw new Error(
+              `[extensions] AI tool "${key}" already registered (extension "${extension.name}")`,
+            );
+          }
+          manifest.aiTools.push({ name: key });
+          session.registrar.registerAiTool(key, value);
+          target.set(key, value);
+          return stagedAiToolMap;
+        };
+      }
+      if (prop === 'delete' || prop === 'clear') {
+        return () => {
+          throw new Error('[extensions] legacy AI tool staging does not support delete or clear');
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const context: ExtensionContext = {
+    mountRoute: (subApp) => session.registrar.mountRoute(subApp),
+    authMiddleware: legacyExtensionAuthMiddleware,
+    agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
+    db: db as unknown as ExtensionDatabase,
+    secrets: {
+      encryptForColumn: (table, column, plaintext) =>
+        encryptSecret(plaintext, { aad: `${table}.${column}` }) ?? '',
+      decryptForColumn: (table, column, ciphertext) =>
+        decryptForColumn(table, column, ciphertext) ?? '',
+    },
+    audit: (event) => createAuditLogAsync({
+      ...event,
+      initiatedBy: event.actorType === 'agent' ? 'agent' : 'manual',
+    }),
+    aiTools: stagedAiToolMap,
+    log: (message) => console.log(`[extensions:${extension.name}] ${message}`),
   };
+
+  await loaded.register(context);
+  parseExtensionManifestV1(manifest);
+  return session.finish();
 }
 
-export async function mountExtensions(app: Hono, root?: string): Promise<void> {
+/**
+ * Adapts source-directory extensions to the staged v1 contribution registry.
+ * No route or AI contribution becomes live until every extension has
+ * registered, validated, and passed both tenancy tripwires.
+ */
+export async function loadSourceExtensions(
+  registry: ExtensionContributionRegistry,
+  root?: string,
+): Promise<void> {
   if (process.env.BREEZE_EXTENSIONS_ENABLED === 'false') {
     console.log('[extensions] disabled via BREEZE_EXTENSIONS_ENABLED=false');
     return;
   }
+
   const discovered = discoverExtensions(root);
   if (discovered.length === 0) return;
 
-  for (const d of discovered) {
-    const ext = await loadEntry(d.dir, d.manifest.entry);
-    await assertExtensionTenancyRls(d.name, d.manifest.tenancy);
-    const mountPrefix = `/api/v1/${d.manifest.routeNamespace}`;
-    let mounted = false;
-    const ctx: ExtensionContext = {
-      mountRoute: (subApp) => {
-        // Each mountRoute call registers its own `use('*', guard)` at the same
-        // prefix, and Hono runs EVERY matching wildcard — so a second call would
-        // run core auth twice per request (double-incrementing the per-agent /
-        // per-IP rate counters, so agents 429 at half the intended rate) while
-        // silently shadowing the first sub-app for any overlapping route. Both
-        // are exactly the quiet misconfiguration these tripwires exist to kill.
-        if (mounted) {
-          throw new Error(
-            `[extensions] "${d.name}" called ctx.mountRoute more than once — `
-              + `a second sub-app at ${mountPrefix} would double-run core auth and `
-              + 'shadow the first. Compose your routes into a single Hono app before mounting.',
-          );
-        }
-        mounted = true;
-        const guarded = new Hono();
-        guarded.use('*', buildExtensionAuthGuard(mountPrefix, d.manifest));
-        guarded.route('/', subApp);
-        app.route(mountPrefix, guarded);
-        // Rate-limit exemption only for a prefix the loader just wrapped with
-        // agentAuthMiddleware — never on manifest trust alone.
-        if (d.manifest.agentRoutes === true) {
-          registerGlobalRateLimitSkipPrefix(`${mountPrefix}/agent/`);
-        }
-      },
-      authMiddleware: skipIfLoaderAuthed(authMiddleware, 'user'),
-      agentAuthMiddleware: skipIfLoaderAuthed(agentAuthMiddleware, 'agent'),
-      db: db as unknown as ExtensionDatabase,
-      secrets: {
-        encryptForColumn: (table, column, plaintext) =>
-          encryptSecret(plaintext, { aad: `${table}.${column}` }) ?? '',
-        decryptForColumn: (table, column, ciphertext) =>
-          decryptForColumn(table, column, ciphertext) ?? '',
-      },
-      audit: (event) => createAuditLogAsync({
-        ...event,
-        initiatedBy: event.actorType === 'agent' ? 'agent' : 'manual',
-      }),
-      aiTools: new Proxy(aiTools as Map<string, AiToolLike>, {
-        get(target, prop, receiver) {
-          if (prop === 'set') {
-            return (key: string, value: AiToolLike) => {
-              if (target.has(key)) {
-                throw new Error(`[extensions] AI tool "${key}" already registered (extension "${d.name}")`);
-              }
-              return target.set(key, value);
-            };
-          }
-          const v = Reflect.get(target, prop, target);
-          return typeof v === 'function' ? v.bind(target) : v;
-        },
-      }),
-      log: (message) => console.log(`[extensions:${d.name}] ${message}`),
-    };
-    await ext.register(ctx);
-    // Don't claim a mount that never happened — an extension can register AI
-    // tools / audit hooks without calling mountRoute, and a confident
-    // "mounted at /api/v1/x" line for a namespace serving nothing has sent
-    // people hunting phantom routing bugs.
-    console.log(
-      mounted
-        ? `[extensions] mounted "${d.name}" at ${mountPrefix}`
-        : `[extensions] registered "${d.name}" (no routes mounted — ctx.mountRoute was never called)`,
-    );
+  const staged: StagedExtensionContributions[] = [];
+  for (const extension of discovered) {
+    const contributions = await stageLegacyExtension(extension, registry);
+    await assertExtensionTenancyRls(extension.name, extension.manifest.tenancy);
+    staged.push(contributions);
   }
 
-  // Runs once, AFTER every extension is accounted for: catches an extension
-  // table that dodged its own prefix scan by simply not using the prefix.
-  await assertNoUnaccountedPublicTables(discovered.map((d) => d.manifest.tenancy));
+  await assertNoUnaccountedPublicTables(discovered.map((extension) => extension.manifest.tenancy));
+
+  const aiToolOwners = new Map<string, string>();
+  for (const contributions of staged) {
+    for (const name of contributions.aiTools.keys()) {
+      const owner = aiToolOwners.get(name);
+      if (owner) {
+        throw new Error(
+          `[extensions] AI tool "${name}" is registered by both "${owner}" and "${contributions.name}"`,
+        );
+      }
+      aiToolOwners.set(name, contributions.name);
+    }
+  }
+
+  for (const contributions of staged) {
+    registry.activate(contributions);
+    if (contributions.routeApp && contributions.manifest.agentRoutes === true) {
+      registerGlobalRateLimitSkipPrefix(`/api/v1/ext/${contributions.name}/agent/`);
+      registerGlobalRateLimitSkipPrefix(
+        `/api/v1/${contributions.manifest.routeNamespace}/agent/`,
+      );
+    }
+    console.log(
+      contributions.routeApp
+        ? `[extensions] activated "${contributions.name}" at /api/v1/ext/${contributions.name}`
+        : `[extensions] activated "${contributions.name}" (no routes registered)`,
+    );
+  }
 }

@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,12 @@ import (
 var spawnGuards sync.Map
 
 const maxGUIUserUIDs = 64
+
+// ErrLinuxDesktopHelperUnsupported is returned by spawnHelperForDesktop on
+// Linux (and any other non-darwin/non-windows GOOS) until a real Linux
+// desktop-helper spawn branch exists (Phase 2 of the Linux remote-desktop
+// plan). findOrSpawnHelper treats it as terminal — there is nothing to poll for.
+var ErrLinuxDesktopHelperUnsupported = errors.New("linux desktop-helper not yet supported")
 
 // sessionSpawnMu returns a mutex for the given session key, creating one if needed.
 func sessionSpawnMu(sessionKey string) *sync.Mutex {
@@ -346,6 +353,11 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 	if err := h.spawnDesktopHelper(targetSession); err != nil {
 		log.Warn("helper spawn failed", "error", err.Error())
+		if errors.Is(err, ErrLinuxDesktopHelperUnsupported) {
+			// Terminal: no helper can ever connect on this platform yet, so the
+			// 10s poll and disconnected-session fallback are pointless.
+			return nil
+		}
 		// Don't give up yet — fall through to disconnected-session fallback below.
 	}
 
@@ -450,6 +462,9 @@ var darwinHelperPlists = map[string]string{
 // ensureDarwinHelperPlists writes any missing LaunchAgent plists to disk.
 // The agent runs as root so it can write to /Library/LaunchAgents/.
 func ensureDarwinHelperPlists() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
 	for path, content := range darwinHelperPlists {
 		if _, err := os.Stat(path); err == nil {
 			continue // already exists
@@ -465,7 +480,7 @@ func ensureDarwinHelperPlists() {
 // spawnHelperForDesktop spawns a user helper in the target session.
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS == "darwin" {
 		// Ensure LaunchAgent plists exist on disk before any kickstart/bootstrap.
 		ensureDarwinHelperPlists()
 
@@ -509,6 +524,14 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			log.Warn("launchctl bootstrap loginwindow also failed", "error", err.Error())
 		}
 		return fmt.Errorf("no desktop-helper connected; ensure the LaunchAgents are loaded")
+	}
+
+	if runtime.GOOS != "windows" {
+		// Linux (and any other non-darwin GOOS): no desktop-helper binary is
+		// shipped yet. Phase 2 replaces this with a loginctl-based per-session
+		// spawn. Return a terminal sentinel so findOrSpawnHelper does not waste
+		// 10s polling for a helper that can never connect.
+		return ErrLinuxDesktopHelperUnsupported
 	}
 
 	if targetSession == "" {
@@ -595,6 +618,9 @@ func KickstartDesktopHelpers() {
 // self-update restart to force helpers to reconnect to the new IPC socket
 // immediately instead of waiting for their reconnect backoff.
 func kickstartDarwinDesktopHelpers() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
 	ensureDarwinHelperPlists()
 
 	uids := findGUIUserUIDs()

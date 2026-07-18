@@ -107,6 +107,19 @@ const NOT_DEVICES_FK: ReadonlySet<string> = new Set([
   'snmp_metrics',          // device_id → snmp_devices.id
 ]);
 
+/**
+ * Device-scoped tables the application must not write directly: rows are
+ * maintained exclusively by SECURITY DEFINER triggers (breeze_app has
+ * INSERT/UPDATE/DELETE revoked in ensureAppRole.ts and direct writes are
+ * rejected by a BEFORE trigger), and the device_id FK declares
+ * ON DELETE CASCADE, so the RI trigger removes the row when the devices row
+ * is deleted. Putting one of these in getDeviceCascadeDeleteTables() would
+ * make the hard-delete path fail with 42501.
+ */
+const DB_TRIGGER_MAINTAINED: ReadonlySet<string> = new Set([
+  'partner_export_device_material_state',
+]);
+
 function getTableColumns(table: PgTable<any>): any[] {
   return Object.values(
     (table as any)[Symbol.for('drizzle:Columns')] ?? {}
@@ -128,6 +141,7 @@ describe('device hard-delete table coverage contract', () => {
     for (const table of allSchemaTables()) {
       const tableName = getTableName(table);
       if (NOT_DEVICES_FK.has(tableName)) continue;
+      if (DB_TRIGGER_MAINTAINED.has(tableName)) continue;
 
       const hasDeviceId = getTableColumns(table).some((col) => col.name === 'device_id');
       if (!hasDeviceId) continue;

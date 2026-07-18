@@ -5,6 +5,7 @@ import InvoicesPage from './InvoicesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
   // usePermissions() (billing-RBAC UI gating) reads grants off the store; grant
   // the admin wildcard so every gated control renders and these tests exercise
@@ -135,7 +136,7 @@ describe('InvoicesPage', () => {
     expect(screen.getByTestId('invoices-card-link-inv-1')).not.toHaveAttribute('aria-label');
   });
 
-  it('writes filter selections to the URL hash', async () => {
+  it('writes filter selections to the URL hash (no org filter — the header switcher owns org scoping)', async () => {
     wireDefault();
     render(<InvoicesPage />);
     await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
@@ -143,8 +144,8 @@ describe('InvoicesPage', () => {
     fireEvent.change(screen.getByTestId('invoices-filter-status'), { target: { value: 'overdue' } });
     expect(window.location.hash).toContain('status=overdue');
 
-    fireEvent.change(screen.getByTestId('invoices-filter-org'), { target: { value: 'org-1' } });
-    expect(window.location.hash).toContain('orgId=org-1');
+    expect(screen.queryByTestId('invoices-filter-org')).toBeNull();
+    expect(window.location.hash).not.toContain('orgId=');
   });
 
   it('surfaces a Drafts shortcut that filters to drafts', async () => {

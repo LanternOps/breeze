@@ -268,8 +268,6 @@
     "reviewQueue": "Review queue",
     "archived": "Archived",
     "searchPlaceholder": "Search tickets",
-    "filterByOrganization": "Filter by organization",
-    "allOrganizations": "All organizations",
     "filterByPriority": "Filter by priority",
     "allPriorities": "All priorities",
     "filterByCategory": "Filter by category",

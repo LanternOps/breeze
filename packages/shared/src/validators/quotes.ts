@@ -12,7 +12,7 @@ const taxRate = z.number().min(0).max(1);
 export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
-export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items']);
+export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract']);
 export const quoteDepositTypeSchema = z.enum(['none', 'percent', 'selected_lines']);
 
 // Whole-percent, 2dp, exclusive bounds per spec (100% = "no deposit" — rejected).
@@ -22,13 +22,29 @@ const depositPercent = z.number().gt(0).lt(100).multipleOf(0.01);
 const headingContent = z.object({ text: z.string().min(1).max(300), level: z.number().int().min(1).max(3).default(2) });
 const richTextContent = z.object({ html: z.string().max(50_000) });
 const imageContent = z.object({ imageId: z.string().guid(), caption: z.string().max(500).optional(), width: z.number().int().min(50).max(2000).optional() });
-const lineItemsContent = z.object({ label: z.string().max(200).optional() });
+// `showSubtotal` opts this pricing table into a per-table subtotal row (summed
+// from its own lines, split by recurrence). Off by default so existing tables
+// render unchanged.
+const lineItemsContent = z.object({ label: z.string().max(200).optional(), showSubtotal: z.boolean().optional() });
+// A rendered contract embedded in the quote: references a specific (immutable)
+// published template version, plus manual-variable fill-ins keyed by
+// contractVariableSchema's `name` (validated at render time, not here — a
+// quote block shouldn't need to know a template's declared variable set to
+// parse). `variableValues` defaults to {} so a fresh block round-trips without
+// the caller pre-seeding an empty object.
+const contractContent = z.object({
+  templateId: z.string().guid(),
+  templateVersionId: z.string().guid(),
+  variableValues: z.record(z.string(), z.string().max(2000)).default({}),
+  label: z.string().max(200).optional(),
+});
 
 export const quoteBlockInputSchema = z.discriminatedUnion('blockType', [
   z.object({ blockType: z.literal('heading'), content: headingContent }),
   z.object({ blockType: z.literal('rich_text'), content: richTextContent }),
   z.object({ blockType: z.literal('image'), content: imageContent }),
   z.object({ blockType: z.literal('line_items'), content: lineItemsContent }),
+  z.object({ blockType: z.literal('contract'), content: contractContent }),
 ]);
 
 export const quoteLineInputSchema = z.object({
@@ -87,7 +103,36 @@ export const createQuoteSchema = z.object({
   termsAndConditions: z.string().max(20_000).optional(),
 });
 
+// Optional retarget/rename for POST /quotes/:id/clone. Omitted fields fall back
+// to the source quote. `.strict()` so a mis-keyed field is a 400, not silently
+// ignored (mirrors sendBodySchema).
+export const cloneQuoteSchema = z.object({
+  orgId: z.string().guid().optional(),
+  title: z.string().max(200).optional(),
+}).strict();
+
+// Enhanced-proposals cover page (docs/superpowers/specs/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
+// Stored as quotes.cover_page jsonb; `enabled: false` is a valid, minimal
+// payload (the customer-visible cover page toggled off) — every other field
+// is optional/nullable so a partial edit doesn't force re-sending the whole
+// object. `showPreparedBy` defaults true so existing quotes (no stored
+// cover_page yet) that opt in for the first time show the preparer by default.
+export const coverPageSchema = z.object({
+  enabled: z.boolean(),
+  title: z.string().max(200).optional(),
+  coverImageId: z.string().guid().nullable().optional(),
+  preparedForName: z.string().max(255).nullable().optional(),
+  showPreparedBy: z.boolean().default(true),
+});
+
+export type CoverPage = z.infer<typeof coverPageSchema>;
+
 export const updateQuoteSchema = z.object({
+  // Reassign the draft to another organization of the same partner. The service
+  // clears the site, and clears the billToName override / re-resolves the tax
+  // rate for the new org unless the same patch provides them (drafts only, like
+  // every other header field here — see updateQuote in quoteService).
+  orgId: z.string().guid().optional(),
   siteId: z.string().guid().nullable().optional(),
   title: z.string().max(200).nullable().optional(),
   expiryDate: isoDate.nullable().optional(),
@@ -98,6 +143,9 @@ export const updateQuoteSchema = z.object({
   billToName: z.string().max(255).nullable().optional(),
   depositType: quoteDepositTypeSchema.optional(),
   depositPercent: depositPercent.nullable().optional(),
+  // Null clears a previously-set cover page back to "none stored"; omitted
+  // leaves it untouched (same convention as every other nullable field here).
+  coverPage: coverPageSchema.nullable().optional(),
 }).refine(
   // A percent value is only meaningful for a 'percent' deposit. Reject a patch
   // that pairs a non-percent type with a percent in the same request, so the
@@ -154,6 +202,7 @@ export const bulkQuoteIdsSchema = z.object({
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
+export type CloneQuoteInput = z.infer<typeof cloneQuoteSchema>;
 export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;
 export type ListQuotesQuery = z.infer<typeof listQuotesQuerySchema>;
 export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;

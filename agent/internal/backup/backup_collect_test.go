@@ -8,49 +8,6 @@ import (
 	"time"
 )
 
-func TestShouldIncludeFile(t *testing.T) {
-	tests := []struct {
-		name    string
-		modTime time.Time
-		cutoff  time.Time
-		want    bool
-	}{
-		{
-			name:    "zero cutoff includes everything",
-			modTime: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
-			cutoff:  time.Time{},
-			want:    true,
-		},
-		{
-			name:    "file modified after cutoff is included",
-			modTime: time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC),
-			cutoff:  time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
-			want:    true,
-		},
-		{
-			name:    "file modified before cutoff is excluded",
-			modTime: time.Date(2026, 3, 13, 8, 0, 0, 0, time.UTC),
-			cutoff:  time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
-			want:    false,
-		},
-		{
-			name:    "file modified exactly at cutoff is excluded",
-			modTime: time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
-			cutoff:  time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
-			want:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := shouldIncludeFile(tt.modTime, tt.cutoff)
-			if got != tt.want {
-				t.Errorf("shouldIncludeFile(%v, %v) = %v, want %v", tt.modTime, tt.cutoff, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCollectBackupFiles_SingleFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "collect.txt", "collect test")
@@ -59,7 +16,7 @@ func TestCollectBackupFiles_SingleFile(t *testing.T) {
 		Paths: []string{file1},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
@@ -85,7 +42,7 @@ func TestCollectBackupFiles_Directory(t *testing.T) {
 		Paths: []string{subDir},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
@@ -106,7 +63,7 @@ func TestCollectBackupFiles_SortedBySnapshotPath(t *testing.T) {
 		Paths: []string{subDir},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
@@ -126,7 +83,7 @@ func TestCollectBackupFiles_EmptyPath(t *testing.T) {
 		Paths: []string{""},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -140,7 +97,7 @@ func TestCollectBackupFiles_NonexistentPath(t *testing.T) {
 		Paths: []string{"/nonexistent/path/for/backup"},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err == nil {
 		t.Fatal("expected error for nonexistent path")
 	}
@@ -164,7 +121,7 @@ func TestCollectBackupFiles_SkipsSymlinks(t *testing.T) {
 		Paths: []string{subDir},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
@@ -177,37 +134,33 @@ func TestCollectBackupFiles_SkipsSymlinks(t *testing.T) {
 	}
 }
 
-func TestCollectBackupFiles_WithCutoff(t *testing.T) {
+// A file's snapshot from a prior run must not silently exclude files that
+// haven't changed since — every snapshot is a complete restore point (no
+// mtime-cutoff filtering; see backup.go collectBackupFilesFromPaths).
+func TestCollectBackupFiles_UnmodifiedFileStillIncluded(t *testing.T) {
 	tmpDir := t.TempDir()
-	subDir := pathpkg.Join(tmpDir, "cutoff_test")
+	subDir := pathpkg.Join(tmpDir, "unmodified_test")
 	os.MkdirAll(subDir, 0755)
 
 	oldFile := createTempFile(t, subDir, "old.txt", "old")
-	newFile := createTempFile(t, subDir, "new.txt", "new")
-
-	// Set old file's mod time to the past
 	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	os.Chtimes(oldFile, oldTime, oldTime)
-
-	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	mgr := NewBackupManager(BackupConfig{
 		Paths: []string{subDir},
 	})
 
-	files, err := mgr.collectBackupFiles(cutoff)
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
 
-	// Only new file should be included
 	if len(files) != 1 {
-		t.Fatalf("expected 1 file (old excluded by cutoff), got %d", len(files))
+		t.Fatalf("expected 1 file (old mtime must not be filtered out), got %d", len(files))
 	}
-	if !strings.Contains(files[0].sourcePath, "new.txt") {
-		t.Errorf("expected new.txt, got %q", files[0].sourcePath)
+	if !strings.Contains(files[0].sourcePath, "old.txt") {
+		t.Errorf("expected old.txt, got %q", files[0].sourcePath)
 	}
-	_ = newFile
 }
 
 func TestCollectBackupFiles_MixedValidAndInvalid(t *testing.T) {
@@ -218,7 +171,7 @@ func TestCollectBackupFiles_MixedValidAndInvalid(t *testing.T) {
 		Paths: []string{validFile, "/nonexistent/invalid_path"},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	// Should still collect valid file even though one path is invalid
 	if len(files) != 1 {
 		t.Fatalf("expected 1 valid file, got %d", len(files))
@@ -242,7 +195,7 @@ func TestCollectBackupFiles_PathLabeling(t *testing.T) {
 		Paths: []string{dir1, dir2},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}

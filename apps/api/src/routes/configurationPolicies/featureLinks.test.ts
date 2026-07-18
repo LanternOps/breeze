@@ -294,6 +294,44 @@ describe('featureLinks routes', () => {
     });
   });
 
+  describe('feature link reserved export material validation', () => {
+    it.each([
+      'security', 'software_policy', 'peripheral_control',
+      'warranty', 'helper', 'vulnerability',
+    ] as const)('rejects nested reserved material on POST for %s before service work', async (featureType) => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType,
+          inlineSettings: {
+            nested: { __breezePatchInlineMirror: 'attacker-value' },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(await res.text()).not.toMatch(/__breezePatchInlineMirror|attacker-value/u);
+    });
+
+    it('rejects nested reserved material on PATCH before service work', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inlineSettings: {
+            nested: [{ __breezePatchInlineMirror: 'attacker-value' }],
+          },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+      expect(await res.text()).not.toMatch(/__breezePatchInlineMirror|attacker-value/u);
+    });
+  });
+
   // ============================================================
   // POST /:id/features — org-scoped features rejected on partner-wide (#1724)
   // ============================================================

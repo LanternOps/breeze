@@ -286,6 +286,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `manage_invoices` | 2/3 | Invoice lifecycle. Draft create/update/delete, line management (manual, catalog, bundle, and contract lines), assembling a draft from an organization's billable period or from a ticket's billable time and parts, and creating a Stripe payment link are Tier 2. Financial finalization — issue, void, record payment, void payment — is Tier 3. |
 | `search_catalog` | 2 | Search the partner product catalog (hardware, software, services, bundles) by name or type. |
 | `get_catalog_item` | 2 | Full detail for one catalog item, including bundle components. |
+| `lookup_distributor_product` | 2 | Live TD SYNNEX (EC Express) price &amp; availability lookup for a single distributor SKU or manufacturer part number that isn't in your catalog yet — returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Partner-scoped: organization-scoped callers get availability but reseller cost is redacted, and a caller with no partner in context receives an error with no outbound call made. |
 | `manage_catalog` | 2 | Catalog maintenance: create, update, and archive items; set or remove per-organization price overrides; manage bundle components. All actions are Tier 2. |
 | `list_contracts` | 2 | List recurring contracts across accessible organizations, newest first, with optional filters. |
 | `get_contract` | 2 | Full contract view — header, lines, and billing-period history. |
@@ -293,7 +294,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 | `manage_quotes` | 2/3 | Quote/proposal lifecycle. Draft, content-block, and line management, declining a quote, and creating a payment link are Tier 2. Sending a quote to the customer is Tier 3. |
 
 <Aside type="note">
-  The billing read tools (`list_invoices`, `get_invoice`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`) are deliberately classified Tier 2 even though they are read-only — financial data requires the `ai:write` scope, not just `ai:read`. In earlier releases these six tools appeared in the catalogue but every call failed; they work as of v0.89.0. All ticketing and billing tools additionally require the matching role permission on the API key's creator (for example, issuing an invoice requires the invoices *send* grant, and contract lifecycle changes require the contracts *manage* grant).
+  The billing read tools (`list_invoices`, `get_invoice`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`) are deliberately classified Tier 2 even though they are read-only — financial data requires the `ai:write` scope, not just `ai:read`. In earlier releases these six tools appeared in the catalogue but every call failed; they work as of v0.89.0. `lookup_distributor_product` is Tier 2 for a different reason — it is read-only, but each call makes a billed outbound request to the TD SYNNEX distributor API, so it is gated on `ai:write` rather than plain `ai:read`. All ticketing and billing tools additionally require the matching role permission on the API key's creator (for example, issuing an invoice requires the invoices *send* grant, and contract lifecycle changes require the contracts *manage* grant).
 </Aside>
 
 <Aside>

@@ -172,6 +172,24 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
     expect(screen.getByRole('button', { name: /connect desktop/i })).not.toBeDisabled();
   });
 
+  it('shows the no-display tooltip for a Linux headless-server reason', () => {
+    render(
+      <ConnectDesktopButton
+        deviceId="dev-1"
+        desktopAccess={{
+          mode: 'unavailable',
+          loginUiReachable: false,
+          virtualDisplayReady: false,
+          reason: 'no_display_session',
+          checkedAt: '2026-07-17T00:00:00.000Z',
+        }}
+      />,
+    );
+    const btn = screen.getByRole('button');
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute('title')).toMatch(/no active graphical session|log in/i);
+  });
+
   it('clears a stale "Connection failed" error and shows the offline tooltip when the device goes offline', async () => {
     // GET /devices/:id (no launcher), then the sessions POST fails — drives the
     // button into its error state while it is still enabled.

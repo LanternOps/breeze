@@ -69,6 +69,14 @@ services:
     platform: linux/amd64
     container_name: breeze-api
     restart: unless-stopped
+    # Keep the root filesystem writable while redis_password is environment-backed;
+    # standalone Compose supports only file-backed secrets for read-only services.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       NODE_ENV: production
       API_PORT: 3001
@@ -85,6 +93,7 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
       # Backup control-plane URL pushed to agents via heartbeat (#2288);
       # see docs/deploy/agent-server-url-migration.md
@@ -125,6 +134,19 @@ services:
       # stays dark (env.ts defaults to ''). Threaded through compose so the feature
       # can be enabled from .env. Same gap class as IS_HOSTED above.
       CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+      # Optional customer Graph-read onboarding. The executor is intentionally
+      # not part of this generic Compose stack: deploy it separately with a
+      # workload identity, private ingress, and controlled HTTPS egress.
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:-false}
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS:-}
+      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: ${M365_CUSTOMER_GRAPH_READ_CLIENT_ID:-}
+      M365_CUSTOMER_GRAPH_READ_CALLBACK_URL: ${M365_CUSTOMER_GRAPH_READ_CALLBACK_URL:-}
+      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION:-}
+      M365_CUSTOMER_GRAPH_READ_VAULT_REF: ${M365_CUSTOMER_GRAPH_READ_VAULT_REF:-}
+      M365_GRAPH_READ_EXECUTOR_URL: ${M365_GRAPH_READ_EXECUTOR_URL:-}
+      M365_GRAPH_READ_EXECUTOR_AUDIENCE: ${M365_GRAPH_READ_EXECUTOR_AUDIENCE:-m365-graph-read-executor}
+      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ${M365_GRAPH_READ_EXECUTOR_SIGNING_KID:-}
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_read_executor_signing_private_jwk
       APP_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
@@ -181,6 +203,8 @@ services:
       - binaries:/data/binaries:ro
     secrets:
       - redis_password
+      - source: m365_graph_read_executor_signing_private_jwk
+        target: m365_graph_read_executor_signing_private_jwk
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -363,3 +387,8 @@ volumes:
 secrets:
   redis_password:
     environment: REDIS_PASSWORD
+  # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
+  # target attributes. /dev/null keeps dark deployments optional; when enabled,
+  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  m365_graph_read_executor_signing_private_jwk:
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

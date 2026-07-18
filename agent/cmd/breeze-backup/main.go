@@ -398,6 +398,29 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	}
 
 	start := time.Now()
+
+	// Async backup_run: ack the request envelope immediately with
+	// {"started":true} so the agent's forward wait (session.SendCommand)
+	// returns in seconds instead of blocking on the full run, then keep
+	// running the real backup and deliver the terminal result later as an
+	// unsolicited envelope. Only ever set by the agent when the connected
+	// server has advertised the backup_run_async capability — an old server
+	// would otherwise parse this ack as a malformed terminal result, so this
+	// branch must never fire unless req.Async was explicitly set upstream.
+	if req.CommandType == "backup_run" && req.Async {
+		ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"started":true}`}
+		if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, ack); err != nil {
+			slog.Error("failed to send backup ack", "commandId", req.CommandID, "error", err.Error())
+		}
+		result := executeCommand(req, mgr, vaultState, conn, commandCanceller)
+		result.CommandID = req.CommandID
+		result.DurationMs = time.Since(start).Milliseconds()
+		if err := sendUnsolicitedResult(conn, result); err != nil {
+			slog.Error("failed to send final backup result", "commandId", req.CommandID, "error", err.Error())
+		}
+		return
+	}
+
 	var result backupipc.BackupCommandResult
 	if req.CommandType == "backup_restore" {
 		ctx, cleanup := commandCanceller.track(req.CommandID)
@@ -412,6 +435,19 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, result); err != nil {
 		slog.Error("failed to send result", "commandId", req.CommandID, "error", err.Error())
 	}
+}
+
+// sendUnsolicitedResult sends a terminal backup_result envelope that is not
+// a reply to any pending request — used for the async backup_run flow's real
+// result, delivered after the immediate ack. It mirrors how the ack/sync
+// reply is sent but always with a fresh envelope ID (never env.ID / the
+// request's CommandID), so it cannot match a still-pending entry in the
+// broker's session.pending map and instead falls through
+// dispatchHelperMessage to the heartbeat's unsolicited-result handler (see
+// heartbeat.go, case backupipc.TypeBackupResult).
+func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult) error {
+	id := fmt.Sprintf("%s-final-%d", result.CommandID, time.Now().UnixNano())
+	return conn.SendTyped(id, backupipc.TypeBackupResult, result)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
@@ -450,6 +486,13 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return execBackupVerify(req.Payload, mgr, vaultState)
 		case "backup_test_restore":
 			return execBackupTestRestore(req.Payload, mgr, vaultState)
+		case "backup_stop":
+			// Server-dispatched backup_runs build ephemeral payload managers
+			// tracked only by the canceller — a device with no agent.yaml
+			// backup config still has runs to stop. Falling through to
+			// "backup not configured" made Stop a silent no-op for every
+			// policy-managed device.
+			return ok(fmt.Sprintf(`{"stopped":%t}`, commandCanceller.cancelAll()))
 		default:
 			return fail("backup not configured on this device")
 		}
@@ -465,7 +508,23 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		if err != nil {
 			return fail(err.Error())
 		}
-		result := marshalResult(mgr.RunBackupWithExcludes(excludes))
+		// Track this command with the canceller so backup_stop's cancelAll()
+		// can abort the run even though mgr may be an ephemeral
+		// payload-built manager that never goes through Stop() (see
+		// managerFromBackupRunPayload above).
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		// mgr here may be the ephemeral payload-built manager resolved above
+		// (not the long-lived agent.yaml manager), so the progress fn is set
+		// on it directly, right before the run that actually uses it.
+		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
+				CommandID: req.CommandID, Phase: "uploading",
+				Current: bytesDone, Total: bytesTotal,
+				FilesDone: filesDone, FilesTotal: filesTotal,
+			})
+		})
+		result := marshalResult(mgr.RunBackupContext(ctx, excludes))
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
 			go autoSyncToVault(result.Stdout, vaultState, conn)
@@ -571,6 +630,19 @@ func marshalResult(v any, err error) backupipc.BackupCommandResult {
 func sendError(conn *ipc.Conn, id, msg string) {
 	result := backupipc.BackupCommandResult{Success: false, Stderr: msg}
 	_ = conn.SendTyped(id, backupipc.TypeBackupResult, result)
+}
+
+// sendBackupRunProgress sends a backup_run progress envelope to the agent
+// over conn, mirroring how execBackupRestoreWithProgress sends restore
+// progress. Send failures are log-only: progress is best-effort telemetry,
+// never a reason to fail or abort the backup run itself.
+func sendBackupRunProgress(conn *ipc.Conn, id string, progress backupipc.BackupProgress) {
+	if conn == nil {
+		return
+	}
+	if err := conn.SendTyped("", backupipc.TypeBackupProgress, progress); err != nil {
+		slog.Warn("failed to send backup_run progress", "commandId", id, "error", err.Error())
+	}
 }
 
 func isTimeoutError(err error) bool {

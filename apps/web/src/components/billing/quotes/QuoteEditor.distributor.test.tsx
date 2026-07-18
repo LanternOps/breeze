@@ -32,7 +32,7 @@ const newItem = { id: 'cat-1', sku: 'ABC123', name: 'Widget', unitPrice: '120.00
 
 // Minimal detail with one line_items block.
 const detail: QuoteDetail = {
-  quote: { id: 'q1', currencyCode: 'USD', termsAndConditions: '', status: 'draft' } as never,
+  quote: { id: 'q1', orgId: 'org-1', currencyCode: 'USD', termsAndConditions: '', status: 'draft' } as never,
   blocks: [{ id: 'blk1', blockType: 'line_items', sortOrder: 0, content: {} } as never],
   lines: [],
 };

@@ -3,8 +3,7 @@ import "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarClock, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
-import { useOrgStore } from "../../stores/orgStore";
-import { getJwtClaims } from "@/lib/authScope";
+import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { friendlyFetchError } from "@/lib/utils";
 import AccessDenied from "../shared/AccessDenied";
@@ -99,16 +98,10 @@ export default function SecurityPolicyEditor({
   const [exclusions, setExclusions] = useState<string[]>([]);
   const [newExclusion, setNewExclusion] = useState("");
   // Ownership axis (#2127, mirrors software/config policies): partner-scope
-  // creators may own the baseline partner-wide ("all orgs"). Gate on the JWT
-  // scope; default to partner-wide when viewing All orgs. Create-only —
-  // ownership is immutable after create.
-  const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === "partner" && !!jwtPartnerId;
-  const [ownerScope, setOwnerScope] = useState<"organization" | "partner">(
-    isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization",
-  );
+  // creators may own the baseline partner-wide. Create-only — ownership is
+  // immutable after create.
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const [ownerScope, setOwnerScope] = useState<"organization" | "partner">(defaultOwnerScope);
   const fetchPolicy = useCallback(async () => {
     // Reset BEFORE the no-policyId bail: otherwise a policyId -> undefined
     // transition (edit -> create) would strand a stale AccessDenied over the

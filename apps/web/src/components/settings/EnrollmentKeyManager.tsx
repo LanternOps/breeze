@@ -37,7 +37,7 @@ type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
   const { t } = useTranslation('settings');
-  const { currentOrgId, currentSiteId, sites: storeSites, organizations, isLoading: storeLoading } = useOrgStore();
+  const { currentOrgId, organizations } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -68,6 +68,11 @@ export default function EnrollmentKeyManager() {
   const [formSiteId, setFormSiteId] = useState('');
   const [formSites, setFormSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
+  // Track a failed site load so the form can offer a retry instead of showing
+  // the "this org has no sites" empty state — a 500 must not read as an
+  // unconfigured org. The nonce lets the retry button re-run the load effect.
+  const [sitesError, setSitesError] = useState(false);
+  const [sitesReloadNonce, setSitesReloadNonce] = useState(0);
 
   const fetchKeys = useCallback(async (page = 1) => {
     try {
@@ -107,25 +112,19 @@ export default function EnrollmentKeyManager() {
     return () => document.removeEventListener('click', handler);
   }, [downloadDropdownId]);
 
-  // Load the site list for the create form's selected org. Reuses the
-  // already-fetched org-switcher sites when the form's org matches the
-  // globally active org (the common case); only issues a fresh request when
-  // a partner admin picks a different org from the form's own selector.
+  // Load the site list for the create form's selected org.
   useEffect(() => {
     if (modalMode !== 'create' || !formOrgId) {
       setFormSites([]);
       return;
     }
-    if (formOrgId === currentOrgId) {
-      setFormSites(storeSites.filter((s) => s.orgId === formOrgId));
-      return;
-    }
-    // Cross-org: clear the previously-selected org's sites immediately so the
+    // Clear the previously-selected org's sites immediately so the
     // default-site effect falls back to '' until the correct list loads. Without
     // this, switching the Org dropdown leaves the old org's sites in place and a
     // stale siteId could be defaulted (and submitted) for the newly-picked org.
     let cancelled = false;
     setFormSites([]);
+    setSitesError(false);
     setSitesLoading(true);
     fetchWithAuth(`/orgs/sites?organizationId=${formOrgId}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
@@ -139,7 +138,10 @@ export default function EnrollmentKeyManager() {
         setFormSites(list);
       })
       .catch(() => {
-        if (!cancelled) setFormSites([]);
+        if (!cancelled) {
+          setFormSites([]);
+          setSitesError(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setSitesLoading(false);
@@ -147,19 +149,14 @@ export default function EnrollmentKeyManager() {
     return () => {
       cancelled = true;
     };
-  }, [modalMode, formOrgId, currentOrgId, storeSites]);
+  }, [modalMode, formOrgId, sitesReloadNonce]);
 
-  // Default the site selection once the list loads: prefer the globally
-  // active site if it belongs to this org, otherwise the first available.
+  // Default the site selection once the list loads: first available site.
   useEffect(() => {
     if (modalMode !== 'create') return;
     if (formSiteId && formSites.some((s) => s.id === formSiteId)) return;
-    if (currentSiteId && formSites.some((s) => s.id === currentSiteId)) {
-      setFormSiteId(currentSiteId);
-    } else {
-      setFormSiteId(formSites[0]?.id ?? '');
-    }
-  }, [modalMode, formSites, currentSiteId, formSiteId]);
+    setFormSiteId(formSites[0]?.id ?? '');
+  }, [modalMode, formSites, formSiteId]);
 
   const handleCopyKey = async (key: string, id: string) => {
     try {
@@ -392,12 +389,10 @@ export default function EnrollmentKeyManager() {
     );
   }
 
-  // Whether the create form's site list reflects a completed load. For the
-  // common same-org case we lean on the store's load flag (its sites are fetched
-  // globally by the org switcher); for a cross-org pick we track it locally.
-  // Only once resolved do we show the "no sites yet" empty state — otherwise it
-  // flashes before the async site list has actually landed.
-  const formSitesResolved = formOrgId === currentOrgId ? !storeLoading : !sitesLoading;
+  // Whether the create form's site list reflects a completed load. Only once
+  // resolved do we show the "no sites yet" empty state — otherwise it flashes
+  // before the async site list has actually landed.
+  const formSitesResolved = !sitesLoading;
 
   return (
     <div className="space-y-6">
@@ -684,7 +679,18 @@ export default function EnrollmentKeyManager() {
               )}
               <div>
                 <label className="text-sm font-medium">{t('common:labels.site')}</label>
-                {formSitesResolved && formSites.length === 0 ? (
+                {formSitesResolved && sitesError ? (
+                  <div className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                    {t('enrollmentKeys.sitesLoadFailed')}{' '}
+                    <button
+                      type="button"
+                      onClick={() => setSitesReloadNonce((n) => n + 1)}
+                      className="font-medium underline hover:no-underline"
+                    >
+                      {t('enrollmentKeys.retrySites')}
+                    </button>
+                  </div>
+                ) : formSitesResolved && formSites.length === 0 ? (
                   <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                     {t('enrollmentKeys.noSitesForOrg')}{' '}
                     <a

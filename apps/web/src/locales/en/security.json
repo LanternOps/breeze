@@ -1253,7 +1253,7 @@
     "empty": "No policies yet. Create one to get started.",
     "badges": {
       "partnerWideTitle": "Partner-wide policy — scans devices in every organization",
-      "allOrgs": "All orgs"
+      "allOrgs": "Partner-wide"
     },
     "deleteDialog": {
       "title": "Delete Scan Policy",

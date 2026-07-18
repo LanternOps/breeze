@@ -20,6 +20,19 @@ func NewFallbackProvider(providers ...BackupProvider) *FallbackProvider {
 	return &FallbackProvider{providers: providers}
 }
 
+// BackupIdentity implements JournalIdentity by delegating to the primary
+// provider — the only one uploads ever go to (see UploadContext), so it's
+// the only one relevant to journal resume.
+func (f *FallbackProvider) BackupIdentity() string {
+	if len(f.providers) == 0 {
+		return "fallback|empty"
+	}
+	if idp, ok := f.providers[0].(JournalIdentity); ok {
+		return "fallback|" + idp.BackupIdentity()
+	}
+	return fmt.Sprintf("fallback|%T", f.providers[0])
+}
+
 // Upload sends the file to the FIRST (primary) provider only.
 func (f *FallbackProvider) Upload(localPath, remotePath string) error {
 	return f.UploadContext(context.Background(), localPath, remotePath)

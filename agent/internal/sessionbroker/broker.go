@@ -1448,6 +1448,70 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	return result, nil
 }
 
+// DismissPamConsent asks the SYSTEM PAM helper to dismiss the active Windows
+// consent process and waits for the correlated result.
+func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	var zero ipc.PamDismissConsentResult
+	if session == nil {
+		return zero, fmt.Errorf("nil PAM helper session")
+	}
+	if session.HelperRole != ipc.HelperRoleSystem {
+		return zero, fmt.Errorf("PAM consent dismissal requires a SYSTEM helper session")
+	}
+	if !session.HasScope(ipc.ScopePam) {
+		return zero, fmt.Errorf("PAM SYSTEM helper session is missing %q scope", ipc.ScopePam)
+	}
+	deadline, err := pamDismissConsentDeadline(time.Now(), timeout)
+	if err != nil {
+		return zero, err
+	}
+
+	resp, quiesced, err := session.sendCommandWithQuiescence(
+		id,
+		ipc.TypePamDismissConsent,
+		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()},
+		timeout,
+	)
+	if err != nil {
+		if quiesced != nil {
+			return zero, &PamDismissUncertainError{Cause: err, Quiesced: quiesced}
+		}
+		return zero, err
+	}
+	if resp.Error != "" {
+		return zero, fmt.Errorf("PAM consent dismissal helper error: %s", resp.Error)
+	}
+
+	var result ipc.PamDismissConsentResult
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return zero, fmt.Errorf("decode PAM consent dismissal result: %w", err)
+	}
+	return result, nil
+}
+
+// pamDismissConsentDeadline reserves enough of the broker timeout for the
+// helper to serialize and return its result after input injection stops. The
+// deadline is truncated to the request's millisecond wire precision.
+func pamDismissConsentDeadline(now time.Time, timeout time.Duration) (time.Time, error) {
+	if timeout <= 0 {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout must be positive")
+	}
+
+	grace := timeout / 5
+	if grace > time.Second {
+		grace = time.Second
+	}
+	if grace <= 0 {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout is too small")
+	}
+
+	deadline := now.Add(timeout - grace).Truncate(time.Millisecond)
+	if !deadline.After(now) {
+		return time.Time{}, fmt.Errorf("PAM consent dismissal timeout is too small for millisecond deadline precision")
+	}
+	return deadline, nil
+}
+
 // sendPreAuthRejectAndClose wraps rawConn, sends a PreAuthReject envelope
 // with a short write timeout so the broker isn't held up by a stuck client,
 // then closes the connection. All errors are ignored — this is best-effort.

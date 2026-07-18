@@ -12,6 +12,7 @@ import {
   notificationChannels,
   alertNotifications,
   devices,
+  organizations,
   tickets,
   ticketAlertLinks,
 } from '../../db/schema';
@@ -249,11 +250,15 @@ alertsRoutes.get(
         suppressedUntil: alerts.suppressedUntil,
         createdAt: alerts.createdAt,
         deviceHostname: devices.hostname,
-        ruleName: alertRules.name
+        ruleName: alertRules.name,
+        // Org name for the fleet (All-organizations) view, where the web list
+        // shows an Organization column so cross-org rows stay legible.
+        orgName: organizations.name
       })
       .from(alerts)
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
       .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+      .leftJoin(organizations, eq(alerts.orgId, organizations.id))
       .where(whereCondition)
       .orderBy(desc(alerts.triggeredAt))
       .limit(limit)

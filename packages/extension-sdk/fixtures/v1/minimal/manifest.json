@@ -1,0 +1,23 @@
+{
+  "apiVersion": "breeze.extensions/v1",
+  "name": "sdk-v1-minimal",
+  "version": "1.0.0",
+  "routeNamespace": "sdk-v1-minimal",
+  "requires": {
+    "breeze": ">=1.0.0",
+    "serverSdk": "^1.0.0",
+    "capabilities": ["server.routes.v1"]
+  },
+  "server": {
+    "entry": "server/index.cjs"
+  },
+  "migrationsDir": "migrations",
+  "schemaCompatibilityFloor": "1.0.0",
+  "jobs": [],
+  "aiTools": [],
+  "tenancy": {
+    "orgCascadeDeleteTables": [],
+    "deviceCascadeDeleteTables": [],
+    "deviceOrgDenormalizedTables": []
+  }
+}

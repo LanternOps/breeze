@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -340,6 +340,81 @@ describe('PartnerSettingsPage Company tab', () => {
     expect(body.name).toBe('Acme MSP Inc.');
     expect(body.settings.address.city).toBe('Denver');
   });
+
+  const partnerWithSignature = (emailSignature: string | null) => ({
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    emailSignature,
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  });
+
+  it('shows the saved email signature and sends an edited value at the payload top level', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse(partnerWithSignature('Best regards,\nAcme MSP'))
+    );
+    // Response to the PATCH — shape doesn't matter for the assertion.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ id: 'partner-1', name: 'Acme MSP', settings: {} })
+    );
+
+    render(<PartnerSettingsPage />);
+
+    const textarea = await screen.findByTestId('partner-email-signature') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('Best regards,\nAcme MSP');
+
+    const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+
+    const user = userEvent.setup();
+    await user.clear(textarea);
+    await user.type(textarea, 'Cheers, The Acme Team');
+    expect(saveBtn.disabled).toBe(false);
+    await user.click(saveBtn);
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.emailSignature).toBe('Cheers, The Acme Team');
+  });
+
+  it('sends emailSignature: null when the field is cleared', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse(partnerWithSignature('Old signature'))
+    );
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ id: 'partner-1', name: 'Acme MSP', settings: {} })
+    );
+
+    render(<PartnerSettingsPage />);
+
+    const textarea = await screen.findByTestId('partner-email-signature') as HTMLTextAreaElement;
+    const user = userEvent.setup();
+    await user.clear(textarea);
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.emailSignature).toBeNull();
+  });
 });
 
 describe('PartnerSettingsPage Ticketing tab', () => {
@@ -528,6 +603,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: null,
       isLoading: true,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
 
@@ -547,6 +623,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: 'partner-1',
       isLoading: false,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
@@ -557,6 +634,27 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
     expect(screen.queryByText('Partner Access Required')).toBeNull();
   });
 
+  it('seeds a missing partner id from the JWT via adoptPartnerId — never the context-resetting setPartner', async () => {
+    // Regression: visiting /settings/partner with currentPartnerId unset used
+    // to call setPartner, whose reset + auto-select silently snapped the org
+    // scope to the first org (context hijack).
+    const setPartner = vi.fn();
+    const adoptPartnerId = vi.fn();
+    useOrgStoreMock.mockReturnValue({
+      currentPartnerId: null,
+      isLoading: false,
+      setPartner,
+      adoptPartnerId,
+    } as never);
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<PartnerSettingsPage />);
+
+    await waitFor(() => expect(adoptPartnerId).toHaveBeenCalledWith('partner-1'));
+    expect(setPartner).not.toHaveBeenCalled();
+  });
+
   it('shows access-denied once resolution confirms a genuine non-partner user', async () => {
     // Context finished resolving (isLoading false) with no partner, and the JWT
     // confirms a non-partner scope — the genuine denied case.
@@ -564,6 +662,7 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       currentPartnerId: null,
       isLoading: false,
       setPartner: vi.fn(),
+      adoptPartnerId: vi.fn(),
     } as never);
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
 

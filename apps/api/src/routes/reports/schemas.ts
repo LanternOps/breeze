@@ -24,16 +24,25 @@ export const securityCompliancePostureConfigSchema = z.object({
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7),
   // Include the CIS hardening section. Defaults on; renders "Not yet assessed"
   // until baseline scans exist, or is omitted entirely when set false.
-  includeCis: z.boolean().optional().default(true)
+  includeCis: z.boolean().optional().default(true),
+  backupRequired: z.boolean().optional().default(true)
 });
 
-const securityCompliancePostureConfigFields = {
+/**
+ * The same posture keys as `securityCompliancePostureConfigSchema` but without
+ * its `.default()`s — persistence stores only what the user actually set, and
+ * generation applies defaults at read time. The two lists are hand-parallel;
+ * `schemas.config.test.ts` holds them in sync, because a key missing here is
+ * silently stripped on save and then reappears at generation as its default.
+ */
+export const securityCompliancePostureConfigFields = {
   sites: z.array(z.string().guid()).optional(),
   windowDays: z.number().int().min(1).max(365).optional(),
   minPasswordLength: z.number().int().min(1).max(64).optional(),
   maxLocalAdmins: z.number().int().min(0).max(50).optional(),
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional(),
-  includeCis: z.boolean().optional()
+  includeCis: z.boolean().optional(),
+  backupRequired: z.boolean().optional()
 };
 
 /**

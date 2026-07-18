@@ -1,7 +1,10 @@
 {
   "peripheralPage": {
     "title": "Peripheral Control",
-    "tabs": { "policies": "Policies", "activity": "Activity Log" }
+    "tabs": {
+      "policies": "Policies",
+      "activity": "Activity Log"
+    }
   },
   "peripheralActivityLog": {
     "errors": {
@@ -59,7 +62,7 @@
       "created": "Created"
     },
     "partnerWideTitle": "Partner-wide policy — enforced on devices in every organization",
-    "allOrgs": "All orgs"
+    "allOrgs": "Partner-wide"
   },
   "peripheralPolicyForm": {
     "errors": {

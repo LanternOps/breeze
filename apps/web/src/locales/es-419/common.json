@@ -67,6 +67,19 @@
     "dashboard": "Panel",
     "profileSettings": "Configuración de perfil"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formato",
+    "bold": "Negrita",
+    "italic": "Cursiva",
+    "underline": "Subrayado",
+    "heading3": "Título",
+    "heading4": "Subtítulo",
+    "bulletList": "Lista con viñetas",
+    "orderedList": "Lista numerada",
+    "link": "Enlace",
+    "linkPrompt": "Introduce una URL (http:// o https://)",
+    "linkInvalid": "Solo se permiten enlaces http:// y https://"
+  },
   "actions": {
     "save": "Guardar",
     "cancel": "Cancelar",
@@ -502,21 +515,12 @@
     "breadcrumb": "Ruta de navegación",
     "redirectingToLogin": "Redirigiendo para iniciar sesión…",
     "scope": {
-      "shared": "Compartido en todas las organizaciones",
-      "allOrganizations": "Todas las organizaciones"
+      "catalogLine": "Catálogo — igual para todas las organizaciones",
+      "fleetLine": "Mostrando todas las organizaciones · {{count}}",
+      "orgRequiredLine": "Esta página muestra una organización a la vez; elige una para continuar."
     },
     "org": {
-      "allSites": "Todos los sitios",
-      "deviceCount": "dispositivos {{count}}",
-      "deviceCount_one": "dispositivo {{count}}",
-      "deviceCount_other": "dispositivos {{count}}",
-      "scopeLabel": "Alcance de la organización",
-      "current": "Actual",
-      "allOrgs": "Todas las organizaciones",
-      "currentTitle": "Mostrar datos solo para la organización seleccionada",
-      "allTitle": "Muestre datos en todas las organizaciones accesibles",
       "allOrganizations": "Todas las organizaciones",
-      "globalTitle": "Esta página muestra todas las organizaciones.",
       "selectTitle": "Seleccionar organización (Cmd+O)",
       "switching": "Cambiando…",
       "organizations": "Organizaciones",
@@ -530,9 +534,13 @@
       "toast": {
         "showingAll": "Mostrando todas las organizaciones",
         "showing": "Mostrando {{name}}",
-        "switched": "Cambiado a {{name}}",
-        "showingAllSites": "Mostrando todos los sitios"
-      }
+        "switched": "Cambiado a {{name}}"
+      },
+      "fleetView": "Vista de flota · {{count}} organizaciones",
+      "noSelection": "Seleccionar organización",
+      "searchOrganizations": "Buscar organizaciones…",
+      "noMatches": "Ninguna organización coincide",
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
     },
     "header": {
       "menu": "Menú",
@@ -563,6 +571,7 @@
       "account": "Cuenta",
       "profile": "Perfil",
       "apiKeys": "API Claves",
+      "partnerServicePrincipals": "Principales de servicio",
       "billingSupport": "Facturación y soporte",
       "opening": "Abriendo…",
       "billing": "Facturación",
@@ -622,6 +631,16 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
       "closeMenu": "Cerrar menú"
+    },
+    "orgRequired": {
+      "title": "Selecciona una organización",
+      "description": "Esta página muestra una organización a la vez.",
+      "moreHint": "¿Buscas otra organización? Usa el selector de arriba (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "No se pudieron cargar tus organizaciones",
+      "description": "Ocurrió un error al cargar la lista de organizaciones. Verifica tu conexión e inténtalo de nuevo.",
+      "retry": "Reintentar"
     }
   },
   "longTail": {
@@ -1562,7 +1581,7 @@
         "pauseSnmpPolling": "Pausar el sondeo SNMP",
         "resumeSnmpPolling": "Reanudar el sondeo SNMP",
         "disableAllActiveMonitoring": "Deshabilitar todo el monitoreo activo para este activo",
-        "needsOrgSelection": "Los activos de monitoreo de red están destinados a una sola organización. Cambie el alcance en la barra superior de <0>Todas las organizaciones</0> a una organización específica para ver sus activos de monitoreo.",
+        "needsOrgSelection": "Los activos de monitoreo de red pertenecen a una sola organización.",
         "loadingAssets": "Cargando recursos de monitoreo...",
         "showingAllDiscoveredAssets": "Mostrando todos los activos descubiertos",
         "showingMonitoredAssets": "Mostrando activos monitoreados",
@@ -1714,7 +1733,7 @@
         "loading": "Cargando incidencias...",
         "tryAgain": "Intentar otra vez",
         "title": "Incidentes",
-        "description": "Seguimiento de incidentes y hallazgos de EDR en toda su organización.",
+        "description": "Seguimiento de incidentes y hallazgos de EDR en todas sus organizaciones.",
         "filters": {
           "tracked": "Rastreado",
           "findings": "Hallazgos"

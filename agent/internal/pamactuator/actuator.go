@@ -38,6 +38,8 @@ package pamactuator
 
 import "context"
 
+const dismissCancelledReason = "dismiss_cancelled"
+
 // Request is the input to Actuator.Trigger. Carries everything needed to
 // drive a single consent.exe prompt to completion. Username + password are
 // the cleartext dormant-admin credentials to type — they live in process
@@ -96,8 +98,9 @@ type Result struct {
 	// Reason is a short stable code suitable for switch statements on
 	// the server side. One of: "ok", "no_consent_window", "desktop_open_failed",
 	// "set_thread_desktop_failed", "send_input_failed", "consent_did_not_close",
-	// "unsupported_platform". Dismiss returns from this same code set (it shares
-	// Trigger's desktop-attach / input / close-verification failure reasons).
+	// "unsupported_platform", "dismiss_cancelled". Dismiss returns from this
+	// same code set (it shares Trigger's desktop-attach / input /
+	// close-verification failure reasons).
 	//
 	// The above codes are the sendinput (Path A) strategy's set. The
 	// token_launch (Path B) strategy — tokenLaunchActuator, in
@@ -127,8 +130,32 @@ type Actuator interface {
 	// "no_consent_window" if none was found, or one of Trigger's failure
 	// reasons for desktop-attach / input / close-verification failures
 	// ("desktop_open_failed", "set_thread_desktop_failed", "send_input_failed",
-	// "consent_did_not_close", "unsupported_platform").
+	// "consent_did_not_close", "unsupported_platform", "dismiss_cancelled").
 	Dismiss(ctx context.Context) Result
+}
+
+// dismissCancellationResult gives every platform implementation the same
+// stable result when the caller's input-injection window has closed.
+func dismissCancellationResult(ctx context.Context) (Result, bool) {
+	if err := ctx.Err(); err != nil {
+		return Result{
+			Success:       false,
+			Reason:        dismissCancelledReason,
+			DetailMessage: "PAM consent dismissal cancelled before input: " + err.Error(),
+		}, true
+	}
+	return Result{}, false
+}
+
+func dismissPostInputCancellationResult(ctx context.Context) (Result, bool) {
+	if err := ctx.Err(); err != nil {
+		return Result{
+			Success:       false,
+			Reason:        dismissCancelledReason,
+			DetailMessage: "PAM consent dismissal cancelled after Escape while waiting for consent.exe to close: " + err.Error(),
+		}, true
+	}
+	return Result{}, false
 }
 
 // New returns the platform-default Actuator. On non-Windows this returns

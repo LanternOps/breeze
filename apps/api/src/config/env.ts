@@ -7,6 +7,19 @@ export function envFlag(name: string, fallback = false): boolean {
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
+/** Strictly decode the dedicated partner export cursor HMAC key from base64. */
+export function decodePartnerApiCursorSigningKey(value: string | undefined): Buffer | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(trimmed)) {
+    return null;
+  }
+  const decoded = Buffer.from(trimmed, 'base64');
+  return decoded.toString('base64') === trimmed ? decoded : null;
+}
+
+export const PARTNER_API_CURSOR_SIGNING_KEY =
+  decodePartnerApiCursorSigningKey(process.env.PARTNER_API_CURSOR_SIGNING_KEY) ?? Buffer.alloc(0);
+
 // Google Workspace identity tools. Defaults OFF everywhere; an org must also
 // have an explicit google_workspace_connections row before any tool is usable.
 // Gates tool registration (aiAgentSdkTools.ts) and the connect routes.
@@ -16,6 +29,13 @@ export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', fals
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.
 export const M365_ENABLED = envFlag('M365_ENABLED', false);
+
+// New customer Graph-read consent initiation is dark by default and rolled out
+// independently per organization. Read at call time so disabling initiation
+// does not require module reloads and does not gate existing connection flows.
+export function m365CustomerGraphReadOnboardingEnabled(): boolean {
+  return envFlag('M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED', false);
+}
 
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
 // (client) ID of the multi-tenant add-in app registration. Empty = the whole

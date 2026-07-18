@@ -67,6 +67,19 @@
     "dashboard": "Dashboard",
     "profileSettings": "Profileinstellungen"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formatierung",
+    "bold": "Fett",
+    "italic": "Kursiv",
+    "underline": "Unterstrichen",
+    "heading3": "Überschrift",
+    "heading4": "Zwischenüberschrift",
+    "bulletList": "Aufzählungsliste",
+    "orderedList": "Nummerierte Liste",
+    "link": "Link",
+    "linkPrompt": "Geben Sie eine URL ein (http:// oder https://)",
+    "linkInvalid": "Nur http://- und https://-Links sind zulässig"
+  },
   "actions": {
     "save": "Speichern",
     "cancel": "Abbrechen",
@@ -502,21 +515,12 @@
     "breadcrumb": "Brotkrümelnavigation",
     "redirectingToLogin": "Weiterleitung zur Anmeldung…",
     "scope": {
-      "shared": "Für alle Organisationen freigegeben",
-      "allOrganizations": "Alle Organisationen"
+      "catalogLine": "Katalog — für alle Organisationen gleich",
+      "fleetLine": "Alle Organisationen · {{count}}",
+      "orgRequiredLine": "Diese Seite zeigt jeweils eine Organisation — wählen Sie eine aus, um fortzufahren."
     },
     "org": {
-      "allSites": "Alle Standorte",
-      "deviceCount": "{{count}} Geräte",
-      "deviceCount_one": "{{count}} Gerät",
-      "deviceCount_other": "{{count}} Geräte",
-      "scopeLabel": "Organisationsbereich",
-      "current": "Aktuell",
-      "allOrgs": "Alle Organisationen",
-      "currentTitle": "Nur Daten der ausgewählten Organisation anzeigen",
-      "allTitle": "Daten aller zugänglichen Organisationen anzeigen",
       "allOrganizations": "Alle Organisationen",
-      "globalTitle": "Diese Seite zeigt alle Organisationen",
       "selectTitle": "Organisation auswählen (Cmd+O)",
       "switching": "Wird gewechselt…",
       "organizations": "Organisationen",
@@ -530,9 +534,13 @@
       "toast": {
         "showingAll": "Alle Organisationen werden angezeigt",
         "showing": "{{name}} wird angezeigt",
-        "switched": "Zu {{name}} gewechselt",
-        "showingAllSites": "Alle Standorte werden angezeigt"
-      }
+        "switched": "Zu {{name}} gewechselt"
+      },
+      "fleetView": "Flottenansicht · {{count}} Organisationen",
+      "noSelection": "Organisation auswählen",
+      "searchOrganizations": "Organisationen durchsuchen…",
+      "noMatches": "Keine passenden Organisationen",
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
     },
     "header": {
       "menu": "Menü",
@@ -563,6 +571,7 @@
       "account": "Konto",
       "profile": "Profil",
       "apiKeys": "API-Schlüssel",
+      "partnerServicePrincipals": "Dienstprinzipale",
       "billingSupport": "Abrechnung und Support",
       "opening": "Wird geöffnet…",
       "billing": "Abrechnung",
@@ -622,6 +631,16 @@
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
       "closeMenu": "Menü schließen"
+    },
+    "orgRequired": {
+      "title": "Organisation auswählen",
+      "description": "Diese Seite zeigt jeweils eine Organisation.",
+      "moreHint": "Eine andere Organisation? Nutzen Sie den Umschalter oben (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Organisationen konnten nicht geladen werden",
+      "description": "Beim Laden Ihrer Organisationsliste ist ein Fehler aufgetreten. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "retry": "Erneut versuchen"
     }
   },
   "longTail": {
@@ -1562,7 +1581,7 @@
         "pauseSnmpPolling": "SNMP-Abfrage pausieren",
         "resumeSnmpPolling": "Setzen Sie die SNMP-Abfrage fort",
         "disableAllActiveMonitoring": "Deaktivieren Sie alle aktiven Überwachungen für dieses Asset",
-        "needsOrgSelection": "Netzwerküberwachungs-Assets sind auf eine einzelne Organisation beschränkt. Ändern Sie den Bereich in der oberen Leiste von <0>Alle Organisationen</0> auf eine bestimmte Organisation, um deren Überwachungs-Assets anzuzeigen.",
+        "needsOrgSelection": "Netzwerküberwachungs-Assets sind auf eine einzelne Organisation beschränkt.",
         "loadingAssets": "Überwachungs-Assets werden geladen...",
         "showingAllDiscoveredAssets": "Alle entdeckten Assets werden angezeigt",
         "showingMonitoredAssets": "Überwachte Assets werden angezeigt",
@@ -1714,7 +1733,7 @@
         "loading": "Vorfälle werden geladen...",
         "tryAgain": "Versuchen Sie es erneut",
         "title": "Vorfälle",
-        "description": "Verfolgen Sie Vorfälle und EDR-Befunde in Ihrer gesamten Organisation.",
+        "description": "Verfolgen Sie Vorfälle und EDR-Befunde in all Ihren Organisationen.",
         "filters": {
           "tracked": "Verfolgt",
           "findings": "Befunde"
@@ -1870,7 +1889,7 @@
             "description": "Ihre am häufigsten verwendeten Werkzeuge sind immer sichtbar. Erweitern Sie Abschnitte wie „Sicherheit“ oder „Betrieb“, um mehr zu finden."
           },
           "search": {
-          "title": "Alles durchsuchen",
+            "title": "Alles durchsuchen",
             "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen, Benutzer oder Einstellungen sofort zu finden."
           },
           "switchOrgs": {

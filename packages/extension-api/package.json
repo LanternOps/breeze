@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@breeze/extension-sdk": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -27,6 +27,8 @@ The core stack (`docker-compose.yml`) includes:
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 
+An optional **`m365-graph-read-executor`** sidecar (published as `ghcr.io/lanternops/breeze/m365-graph-read-executor`) isolates the Microsoft 365 customer Graph-read certificate and Key Vault access away from the API. It is only exercised when Customer Graph-read consent is enabled (`M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=true`); otherwise it sits idle and can be left undeployed. It is not part of the bundled compose files by default — see [Customer Microsoft 365 Graph-read consent](/deploy/environment/#customer-microsoft-365-graph-read-consent-optional) for the full variable contract, including the private base URL and read-only signing-key mount it depends on.
+
 <Aside type="note" title="Customer portal lives at /portal">
 The customer portal is served under the `/portal` path on your main domain (for example `https://breeze.example.com/portal/login`) — no separate hostname or TLS certificate is required. It reaches the API on the same origin, so there is no extra CORS configuration. Set `PUBLIC_PORTAL_URL` (default `https://${BREEZE_DOMAIN}/portal`) so customer-facing links in emails resolve correctly. If you maintain a **custom Compose file**, a `BREEZE_VERSION` bump alone won't add the portal — make sure the `portal` service and the Caddy `/portal` route are present, then `docker compose up -d portal && docker compose restart caddy`.
 </Aside>

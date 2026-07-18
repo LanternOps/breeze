@@ -1,0 +1,17 @@
+# golangci-lint config for the Breeze Go agent.
+#
+# Introduced red-safe: CI runs this with `--new-from-rev=origin/<base>` so only
+# issues on code a PR actually changes are reported. The pre-existing backlog
+# (including ~20 unformatted files on main) is NOT gated — it can be burned down
+# separately. `go vet` runs as an unconditional gate because the tree is already
+# vet-clean.
+version: "2"
+
+linters:
+  # Standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+formatters:
+  # gofmt is reported (new code only via --new-from-rev); does not rewrite.
+  enable:
+    - gofmt

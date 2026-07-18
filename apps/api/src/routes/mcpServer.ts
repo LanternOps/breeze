@@ -334,6 +334,18 @@ mcpServerRoutes.get(
     sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
 
     return streamSSE(c, async (stream) => {
+      let alive = true;
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      const cleanup = () => {
+        alive = false;
+        sseSessionQueues.delete(sessionId);
+        if (keepalive) {
+          clearInterval(keepalive);
+          keepalive = undefined;
+        }
+      };
+      stream.onAbort(cleanup);
+
       // Send endpoint event so client knows where to POST messages.
       //
       // The scheme/host come from the configured public base URL
@@ -353,15 +365,8 @@ mcpServerRoutes.get(
         data: messageUrl
       });
 
-      // Poll for messages to send back to the client
-      let alive = true;
-      const cleanup = () => {
-        alive = false;
-        sseSessionQueues.delete(sessionId);
-      };
-
       // Send keepalive pings
-      const keepalive = setInterval(async () => {
+      keepalive = setInterval(async () => {
         try {
           await stream.writeSSE({ event: 'ping', data: '' });
         } catch (err) {
@@ -388,7 +393,6 @@ mcpServerRoutes.get(
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       } finally {
-        clearInterval(keepalive);
         cleanup();
       }
     });

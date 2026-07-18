@@ -11,6 +11,11 @@ import { devices, alerts } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import {
+  extensionContributionRegistry,
+  type ExtensionContributionRegistry,
+  type RegistryAiTool,
+} from '../extensions/contributionRegistry';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -258,12 +263,52 @@ registerVulnerabilityTools(aiTools);
 // Exports
 // ============================================
 
-export function getToolDefinitions(): Anthropic.Tool[] {
-  return Array.from(aiTools.values()).map(t => t.definition);
+export function hasCoreAiToolName(toolName: string): boolean {
+  return aiTools.has(toolName)
+    || m365ToolTiers[toolName] !== undefined
+    || googleToolTiers[toolName] !== undefined;
 }
 
-export function getToolTier(toolName: string): AiToolTier | undefined {
-  return aiTools.get(toolName)?.tier ?? m365ToolTiers[toolName] ?? googleToolTiers[toolName];
+extensionContributionRegistry.configureReservedAiToolNames(hasCoreAiToolName);
+
+function resolveExtensionTool(
+  toolName: string,
+  registry: ExtensionContributionRegistry,
+): RegistryAiTool | undefined {
+  const extensionTool = registry.getAiTool(toolName);
+  if (extensionTool && hasCoreAiToolName(toolName)) {
+    throw new Error(`AI tool name collision with core registry: ${toolName}`);
+  }
+  return extensionTool;
+}
+
+export function getToolDefinitions(
+  registry: ExtensionContributionRegistry = extensionContributionRegistry,
+): Anthropic.Tool[] {
+  const extensionDefinitions = registry.listAiTools().map((tool) => {
+    if (hasCoreAiToolName(tool.definition.name)) {
+      throw new Error(`AI tool name collision with core registry: ${tool.definition.name}`);
+    }
+    return tool.definition as Anthropic.Tool;
+  });
+  return [
+    ...Array.from(aiTools.values(), (tool) => tool.definition),
+    ...extensionDefinitions,
+  ];
+}
+
+export function getToolTier(
+  toolName: string,
+  registry: ExtensionContributionRegistry = extensionContributionRegistry,
+): AiToolTier | undefined {
+  const coreTier = aiTools.get(toolName)?.tier
+    ?? m365ToolTiers[toolName]
+    ?? googleToolTiers[toolName];
+  const extensionTool = registry.getAiTool(toolName);
+  if (coreTier !== undefined && extensionTool) {
+    throw new Error(`AI tool name collision with core registry: ${toolName}`);
+  }
+  return coreTier ?? extensionTool?.tier;
 }
 
 /**
@@ -320,9 +365,12 @@ export function applyHelperDeviceScope(
 export async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
-  auth: AuthContext
+  auth: AuthContext,
+  registry: ExtensionContributionRegistry = extensionContributionRegistry,
 ): Promise<string> {
-  const tool = aiTools.get(toolName);
+  const coreTool = aiTools.get(toolName);
+  const extensionTool = resolveExtensionTool(toolName, registry);
+  const tool = coreTool ?? extensionTool;
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
   // Helper device-scope gate (finding A): force the tool onto the Helper's own
@@ -334,8 +382,11 @@ export async function executeTool(
     effectiveInput = scoped.input;
   }
 
-  // Validate input against Zod schema before execution
-  const validation = validateToolInput(toolName, effectiveInput);
+  // Core tools retain their Zod table; extension tools carry the Ajv validator
+  // compiled into the same immutable contribution snapshot as their handler.
+  const validation = extensionTool
+    ? extensionTool.validateInput(effectiveInput)
+    : validateToolInput(toolName, effectiveInput);
   if (!validation.success) {
     return JSON.stringify({ error: validation.error });
   }

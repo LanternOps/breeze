@@ -25,6 +25,7 @@ export interface QuoteActor {
 export type QuoteServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'QUOTE_NOT_FOUND'
   | 'NOT_A_DRAFT'
@@ -34,6 +35,12 @@ export type QuoteServiceErrorCode =
   | 'IMAGE_NOT_FOUND'
   | 'INVALID_IMAGE'
   | 'CATALOG_ITEM_NOT_FOUND'
+  // Contract block validation (addBlock/updateBlock, blockType='contract'): the
+  // referenced template version must exist, belong to the named template, be
+  // published, the template must not be archived, and it must be visible to
+  // this quote's org/partner (org-owned → same org; partner-owned → same
+  // partner). Any violation collapses to this single 422 code.
+  | 'INVALID_CONTRACT_TEMPLATE'
   | 'INVALID_STATE'
   | 'QUOTE_EXPIRED'
   | 'NOT_CONVERTED'
@@ -49,12 +56,23 @@ export type QuoteServiceErrorCode =
   // become unsatisfiable since it was set (e.g. the last one-time line was
   // deleted) blocks the send with this single code, regardless of which
   // underlying validateQuoteDeposit rule failed.
-  | 'DEPOSIT_INVALID';
+  | 'DEPOSIT_INVALID'
+  // Send-time contract-variable gate (quoteLifecycle.sendQuote, Task 12): a
+  // contract block still has one or more declared variables (auto or manual)
+  // with no resolved value — sending would ship a raw `{{token}}` placeholder
+  // into a legal document.
+  | 'CONTRACT_VARIABLES_UNRESOLVED'
+  // Accept-time legal-snapshot gate (quoteAcceptService, Task 15): a quote that
+  // embeds one or more contract blocks was accepted without the pre-fetched
+  // render data those blocks need to produce their executed-document snapshot.
+  // An accept must never silently skip its legal snapshot, so this hard-fails
+  // (500) and rolls the whole accept back rather than recording a bare acceptance.
+  | 'CONTRACT_RENDER_DATA_MISSING';
 
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 | 410 | 500 = 400,
+    public status: 400 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
     public code?: QuoteServiceErrorCode
   ) {
     super(message);

@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Layers,
   AlertTriangle,
-  Globe,
   Pencil,
   Plus,
   ShieldCheck,
   Trash2,
   Wrench,
-  X,
-} from "lucide-react";
+  X,} from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
-import { getJwtClaims } from "@/lib/authScope";
+import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { showToast } from "../shared/Toast";
 import PolicyForm, { type PolicyFormValues } from "./PolicyForm";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -98,14 +97,9 @@ export default function ComplianceDashboard({
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Ownership axis (#2126, mirrors ConfigPolicyCreatePage #1724): partner-scope
-  // creators may own a policy partner-wide ("all orgs"). Gate on the JWT scope,
-  // not useOrgStore().partners; default to partner-wide when viewing All orgs.
+  // creators may own a policy partner-wide.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const allOrgs = useOrgStore((s) => s.allOrgs);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const isPartnerScope = jwtScope === "partner" && !!jwtPartnerId;
-  const defaultOwnerScope: PolicyFormValues["ownerScope"] =
-    isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization";
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -514,7 +508,7 @@ export default function ComplianceDashboard({
                           )}
                           data-testid="software-policy-partner-wide-badge"
                         >
-                          <Globe className="h-3 w-3" />
+                          <Layers className="h-3 w-3" />
                           {i18n.t(
                             "policies:software.complianceDashboard.allOrgs",
                           )}
