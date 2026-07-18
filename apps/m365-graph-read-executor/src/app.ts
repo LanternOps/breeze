@@ -1,10 +1,14 @@
 import {
   completeConsentRequestSchema,
   completeConsentResultSchema,
+  readActionRequestSchema,
+  readActionResultSchema,
   retestRequestSchema,
   retestResultSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
+  type ReadActionRequest,
+  type ReadActionResult,
   type RetestRequest,
   type RetestResult,
 } from '@breeze/shared/m365';
@@ -17,6 +21,7 @@ export interface ExecutorAppDependencies {
   authenticator: InternalRequestAuthenticator;
   completeConsent(request: CompleteConsentRequest): Promise<CompleteConsentResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
+  readAction(request: ReadActionRequest): Promise<ReadActionResult>;
   maxBodyBytes?: number;
 }
 
@@ -115,6 +120,19 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
         return context.json({ error: 'internal_error' }, 500);
       }
     }
+    if (operation === 'read-action') {
+      const request = readActionRequestSchema.safeParse(parsed);
+      if (!request.success) return context.json({ error: 'invalid_request' }, 400);
+      if (request.data.correlationId !== authentication.correlationId) {
+        return context.json({ error: 'unauthorized' }, 401);
+      }
+      try {
+        const result = readActionResultSchema.safeParse(await dependencies.readAction(request.data));
+        return result.success ? context.json(result.data) : context.json({ error: 'internal_error' }, 500);
+      } catch {
+        return context.json({ error: 'internal_error' }, 500);
+      }
+    }
     const request = retestRequestSchema.safeParse(parsed);
     if (!request.success) return context.json({ error: 'invalid_request' }, 400);
     if (request.data.correlationId !== authentication.correlationId) {
@@ -133,6 +151,7 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
   app.get('/healthz', (context) => context.json({ status: 'ok' }));
   app.post('/v1/complete-consent', (context) => execute(context, 'complete-consent'));
   app.post('/v1/retest', (context) => execute(context, 'retest'));
+  app.post('/v1/read-action', (context) => execute(context, 'read-action'));
   app.notFound((context) => context.json({ error: 'not_found' }, 404));
   app.onError((_error, context) => context.json({ error: 'internal_error' }, 500));
   return app;

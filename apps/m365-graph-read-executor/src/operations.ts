@@ -1,9 +1,12 @@
 import {
   completeConsentResultSchema,
+  readActionResultSchema,
   retestResultSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
   type ExecutorFailureCode,
+  type ReadActionRequest,
+  type ReadActionResult,
   type RetestRequest,
   type RetestResult,
 } from '@breeze/shared/m365';
@@ -14,6 +17,7 @@ import {
   verifyMicrosoftAdminIdentity,
   type VerifiedMicrosoftAdminIdentity,
 } from './microsoft/identity';
+import { executeGraphReadAction } from './microsoft/readActions';
 import { reconcileCustomerGraphRead } from './microsoft/reconcile';
 import {
   createMicrosoftTokenClient,
@@ -204,6 +208,41 @@ export async function retestOperation(
   }
 }
 
+export async function readActionOperation(
+  request: ReadActionRequest,
+  dependencies: ExecutorOperationDependencies,
+): Promise<ReadActionResult> {
+  if (!CANONICAL_UUID.test(request.tenantId)) {
+    return { success: false, errorCode: 'graph_response_invalid' };
+  }
+  const credential = await fetchCredential(dependencies);
+  if (typeof credential === 'string') {
+    return { success: false, errorCode: credential === 'credential_unavailable' ? 'credential_unavailable' : 'application_token_invalid' };
+  }
+  let tokenClient: MicrosoftTokenClient | undefined;
+  try {
+    try {
+      tokenClient = dependencies.createTokenClient(credential);
+    } catch {
+      return { success: false, errorCode: 'credential_unavailable' };
+    }
+    let accessToken;
+    try {
+      accessToken = await tokenClient.acquireGraphAppToken({ tenantId: request.tenantId });
+    } catch {
+      return { success: false, errorCode: 'application_token_invalid' };
+    }
+    return readActionResultSchema.parse(await executeGraphReadAction(request.action, {
+      accessToken,
+      graphClient: dependencies.graphClient,
+    }));
+  } finally {
+    tokenClient = undefined;
+    credential.certificatePem = '';
+    credential.privateKeyPem = '';
+  }
+}
+
 export function createExecutorOperations(config: {
   clientId: string;
   callbackUrl: string;
@@ -222,5 +261,6 @@ export function createExecutorOperations(config: {
   return {
     completeConsent: (request: CompleteConsentRequest) => completeConsentOperation(request, dependencies),
     retest: (request: RetestRequest) => retestOperation(request, dependencies),
+    readAction: (request: ReadActionRequest) => readActionOperation(request, dependencies),
   };
 }
