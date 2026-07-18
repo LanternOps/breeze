@@ -54,6 +54,80 @@ interface FixtureOptions {
   tamperMember?: string;
   signWith?: KeyObject;
   manifestOverrides?: Record<string, unknown>;
+  /**
+   * Rewrite the finished archive bytes before they are hashed and written. The
+   * pinned digest is taken from the RESULT, so a post-processed fixture is still
+   * a correctly-pinned, correctly-signed bundle whose only defect is whatever
+   * this callback introduced.
+   */
+  postProcessArchive?: (archive: Buffer) => Buffer;
+}
+
+const EOCD_SIGNATURE = 0x06054b50;
+const CENTRAL_FILE_HEADER_SIGNATURE = 0x02014b50;
+const CENTRAL_FILE_HEADER_FIXED_SIZE = 46;
+
+/**
+ * Forge a ZIP whose central directory lists `memberName` TWICE.
+ *
+ * No ordinary ZIP writer emits true duplicate paths, so this cannot be produced
+ * through JSZip's API — the bytes have to be edited directly. Rather than
+ * hand-rolling a whole archive (which would risk the verifier rejecting it for
+ * some unrelated malformation, proving nothing), this takes a VALID signed
+ * archive and appends one extra copy of an existing central-directory record,
+ * then fixes up the end-of-central-directory record:
+ *
+ *   • entry counts (both "this disk" and "total") += 1
+ *   • central-directory size += the duplicated record's length
+ *   • central-directory OFFSET is unchanged — the record is appended at the end
+ *     of the existing directory, so where the directory starts does not move.
+ *
+ * The duplicate record points at the same local file header, so both entries are
+ * individually readable and every other structure in the file stays correct.
+ * That is exactly the zip-confusion primitive the control exists to stop: a
+ * verifier that hashes one instance while an extractor writes the other.
+ */
+function duplicateCentralDirectoryEntry(archive: Buffer, memberName: string): Buffer {
+  let eocd = -1;
+  for (let i = archive.length - 22; i >= 0; i -= 1) {
+    if (archive.readUInt32LE(i) === EOCD_SIGNATURE) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('fixture: end-of-central-directory record not found');
+
+  const diskEntries = archive.readUInt16LE(eocd + 8);
+  const totalEntries = archive.readUInt16LE(eocd + 10);
+  const directorySize = archive.readUInt32LE(eocd + 12);
+  const directoryOffset = archive.readUInt32LE(eocd + 16);
+
+  let cursor = directoryOffset;
+  let record: Buffer | undefined;
+  for (let i = 0; i < diskEntries; i += 1) {
+    if (archive.readUInt32LE(cursor) !== CENTRAL_FILE_HEADER_SIGNATURE) {
+      throw new Error('fixture: malformed central directory record');
+    }
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    const recordLength = CENTRAL_FILE_HEADER_FIXED_SIZE + nameLength + extraLength + commentLength;
+    const name = archive
+      .subarray(cursor + CENTRAL_FILE_HEADER_FIXED_SIZE, cursor + CENTRAL_FILE_HEADER_FIXED_SIZE + nameLength)
+      .toString('utf8');
+    if (name === memberName) {
+      record = Buffer.from(archive.subarray(cursor, cursor + recordLength));
+    }
+    cursor += recordLength;
+  }
+  if (!record) throw new Error(`fixture: member "${memberName}" not found in the central directory`);
+
+  const eocdCopy = Buffer.from(archive.subarray(eocd));
+  eocdCopy.writeUInt16LE(diskEntries + 1, 8);
+  eocdCopy.writeUInt16LE(totalEntries + 1, 10);
+  eocdCopy.writeUInt32LE(directorySize + record.length, 12);
+
+  return Buffer.concat([archive.subarray(0, directoryOffset + directorySize), record, eocdCopy]);
 }
 
 const scratchDirs: string[] = [];
@@ -94,7 +168,8 @@ async function makeSignedFixture(options: FixtureOptions = {}): Promise<Fixture>
     zip.file(options.extraEntry, Buffer.from('malicious', 'utf8'));
   }
 
-  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const generated = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const buf = options.postProcessArchive ? options.postProcessArchive(generated) : generated;
   const dir = mkdtempSync(path.join(os.tmpdir(), 'breeze-ext-bundle-'));
   scratchDirs.push(dir);
   const archivePath = path.join(dir, 'demo.breeze-ext');
@@ -172,6 +247,23 @@ describe('verifyExtensionBundle', () => {
     ).rejects.toThrow(/version/i);
   });
 
+  // A duplicate member path is a verification-BYPASS primitive, not a mere
+  // malformation: the verifier hashes whichever instance its reader keeps while
+  // an extractor (or any other consumer with different dedup semantics) may
+  // write the other one. The signed inventory would then cover bytes that never
+  // reach disk. This bundle is signed, pinned and otherwise completely valid —
+  // the duplicate path is the ONLY defect — so a pass here proves the control
+  // itself fires rather than some incidental check.
+  it('rejects a signed bundle whose central directory lists a member path twice', async () => {
+    const fixture = await makeSignedFixture({
+      postProcessArchive: (archive) => duplicateCentralDirectoryEntry(archive, 'server/index.cjs'),
+    });
+
+    await expect(
+      verifyExtensionBundle(fixture.path, fixture.selection, fixture.trust),
+    ).rejects.toThrow(/duplicate member paths/i);
+  });
+
   it('rejects when the trusted publisher does not match the selection', async () => {
     const archive = await makeSignedFixture();
     await expect(
@@ -183,6 +275,16 @@ describe('verifyExtensionBundle', () => {
 describe('readBoundedZipDirectory', () => {
   afterEach(() => {
     // scratch dirs are left in the OS temp dir; the OS reclaims them.
+  });
+
+  // The check lives in this reader, so cover it at the level that owns it too:
+  // the central directory declares N+1 entries while the deduped map holds N.
+  it('rejects an archive whose central directory declares a duplicate member path', async () => {
+    const fixture = await makeSignedFixture({
+      postProcessArchive: (archive) => duplicateCentralDirectoryEntry(archive, 'manifest.json'),
+    });
+
+    await expect(readBoundedZipDirectory(fixture.path)).rejects.toThrow(/duplicate member paths/i);
   });
 
   it('rejects an archive whose member count exceeds the limit', async () => {

@@ -257,6 +257,88 @@ async function isExtractedTreeVerified(
 }
 
 /**
+ * The basename of an INCOMPLETE extraction staging directory, exactly as
+ * {@link extractVerifiedPayload} names it: `<dest>.tmp-<pid>-<base36 millis>`,
+ * where `<dest>` is itself `sha256-<64 hex>`. Anchored at both ends.
+ *
+ * This pattern is the whole safety argument for the prune. A COMMITTED tree is
+ * named `sha256-<hex>` with no `.tmp-` infix, so it cannot match — a committed
+ * directory (with or without its `.verified` marker) is structurally out of
+ * reach here, not merely skipped by a check that could be reordered away.
+ * Anything else an operator or another subsystem parked under `extracted/` also
+ * cannot match, so the prune only ever claims directories this extractor itself
+ * created and abandoned.
+ */
+const STALE_EXTRACTION_TEMP_DIR = /^sha256-[0-9a-f]{64}\.tmp-\d+-[0-9a-z]+$/;
+
+/**
+ * A temp directory younger than this may belong to an extraction still running
+ * in a concurrent boot, so it is left alone. Extraction is bounded by the
+ * archive limits (128 MiB total), so a real one never approaches this age.
+ */
+const STALE_EXTRACTION_MIN_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove extraction staging directories orphaned by a crash.
+ *
+ * {@link extractVerifiedPayload} writes into a temp directory and renames it
+ * into place, so a process that dies mid-extract leaves a partial tree behind
+ * that nothing else ever collects; on a long-lived volume they accumulate. This
+ * runs once at reconcile start, before any extraction of our own exists.
+ *
+ * Deliberately conservative on every axis: it only descends into
+ * `<storeRoot>/extracted`, only considers DIRECTORIES whose basename matches
+ * {@link STALE_EXTRACTION_TEMP_DIR}, and only those older than
+ * {@link STALE_EXTRACTION_MIN_AGE_MS}. Committed `sha256-<hex>` trees cannot
+ * match the pattern.
+ *
+ * BOOT SAFETY: housekeeping must never be able to break startup. Every failure
+ * — an unreadable root, a permission error on one entry — is logged and stepped
+ * over; this function does not throw. Only our own store paths are logged (the
+ * point: the operator needs to know what to remove); no bundle bytes, no secrets
+ * and no raw exception objects.
+ */
+export async function pruneStaleExtractionDirs(
+  storeRoot: string,
+  now: number = Date.now(),
+): Promise<number> {
+  const extractedRoot = path.join(storeRoot, 'extracted');
+  let entries;
+  try {
+    entries = await readdir(extractedRoot, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    // A store that has never extracted anything has no `extracted/` dir. That is
+    // the ordinary first-boot case, not a problem worth logging.
+    if (code !== 'ENOENT') {
+      console.warn(
+        `[extensions] could not scan ${extractedRoot} for stale extraction directories (${code ?? 'unknown error'}); continuing`,
+      );
+    }
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !STALE_EXTRACTION_TEMP_DIR.test(entry.name)) continue;
+    const target = path.join(extractedRoot, entry.name);
+    try {
+      if (now - (await stat(target)).mtimeMs < STALE_EXTRACTION_MIN_AGE_MS) continue;
+      await rm(target, { recursive: true, force: true });
+      removed += 1;
+      console.warn(`[extensions] removed stale extraction directory ${target}`);
+    } catch (error) {
+      console.warn(
+        `[extensions] could not remove stale extraction directory ${target} (${
+          (error as NodeJS.ErrnoException)?.code ?? 'unknown error'
+        }); continuing`,
+      );
+    }
+  }
+  return removed;
+}
+
+/**
  * Extract a verified bundle's payload members to a content-addressed directory
  * under `<storeRoot>/extracted/sha256-<hex>`. Only members in `bundle.files` are
  * written — i.e. members the verifier already hashed against the signed
@@ -325,7 +407,13 @@ export async function extractVerifiedPayload(
     // but only on the same re-verification the fast path uses.
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
     if (await isExtractedTreeVerified(bundle, dest)) return dest;
-    throw new Error('failed to commit the extracted extension payload');
+    // Name the directory: this is OUR store path, and without it an operator has
+    // no way to tell what to remove to clear the wedge. Still sanitized — no
+    // bundle bytes, no raw exception.
+    throw new Error(
+      `failed to commit the extracted extension payload to ${dest}; `
+      + 'remove that directory and restart to re-extract from the verified archive',
+    );
   }
   return dest;
 }
@@ -495,6 +583,10 @@ export async function reconcileExtensions(
     // Absent config OR zero extensions: clean no-op. No DB client is opened.
     return summary;
   }
+
+  // Housekeeping, once per boot, only now that we know this deployment actually
+  // uses extensions. Never throws — see pruneStaleExtractionDirs.
+  await pruneStaleExtractionDirs(storeRoot);
 
   const sql = ports.createMigrationSql();
   try {
