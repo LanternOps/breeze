@@ -35,6 +35,11 @@ const (
 
 	pamDesktopGenericAll = 0x10000000
 	pamUOIName           = 2
+
+	// pamDialogTitle is the window/dialog caption for the elevation prompt.
+	// Defined here (windows-only) because only the Win32 dialog and MessageBox
+	// renderings use it; the cross-platform content helpers do not.
+	pamDialogTitle = "Breeze — Elevation Request"
 )
 
 func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {

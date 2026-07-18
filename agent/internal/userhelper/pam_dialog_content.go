@@ -16,9 +16,6 @@ type pamDialogField struct {
 	Value string
 }
 
-// pamDialogTitle is the window/dialog caption for the elevation prompt.
-const pamDialogTitle = "Breeze — Elevation Request"
-
 // pamDialogHeadline names the requesting program: "msiexec.exe is requesting
 // elevation". Falls back to a generic line when the path is unknown.
 func pamDialogHeadline(req ipc.PamRequestDialog) string {

@@ -105,13 +105,13 @@ func TestResolveSubjectSessionWith(t *testing.T) {
 
 func TestBareUsername(t *testing.T) {
 	cases := map[string]string{
-		`CORP\alice`:       "alice",
-		`DELL70601\pamtest`: "pamtest",
-		"bob":              "bob",
-		"carol@corp.com":   "carol",
+		`CORP\alice`:         "alice",
+		`DELL70601\pamtest`:  "pamtest",
+		"bob":                "bob",
+		"carol@corp.com":     "carol",
 		`CORP\dave@corp.com`: "dave",
-		"  spacey  ":       "spacey",
-		"":                 "",
+		"  spacey  ":         "spacey",
+		"":                   "",
 	}
 	for in, want := range cases {
 		if got := bareUsername(in); got != want {
