@@ -18,9 +18,10 @@
  */
 import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
-import type {
-  ExtensionContributionRegistry,
-  StagedExtensionContributions,
+import {
+  extensionContributionRegistry,
+  type ExtensionContributionRegistry,
+  type StagedExtensionContributions,
 } from './contributionRegistry';
 import type { ExtensionStateStore } from './stateStore';
 import { recordExtensionJob } from './metrics';
@@ -194,6 +195,37 @@ export async function initializeExtensionJobHost(
     { connection: getBullMQConnection(), concurrency: WORKER_CONCURRENCY },
   );
   await host.sync(getExtensionJobsQueue());
+}
+
+/**
+ * Reconcile repeatable schedules against the CURRENT registry, on demand.
+ *
+ * `initializeExtensionJobHost` only syncs at boot, so an extension disabled
+ * through the admin API would keep its BullMQ repeatable entries until the next
+ * restart — the processor skips a disabled extension's ticks, but the schedules
+ * themselves linger. The enable/disable endpoints call this immediately after
+ * flipping `installed_extensions.enabled`, so "disable removes future repeat
+ * schedules" holds without a restart (and enable restores them).
+ *
+ * `sync` derives its desired set from `registry.listActive()`, which excludes
+ * withdrawn (disabled) snapshots — so a withdraw followed by this call is
+ * exactly the removal we want.
+ *
+ * CALLER CONTRACT: this touches Redis and therefore can throw. The enabled flag
+ * is authoritative on its own, so callers treat a failure here as deferred work,
+ * not as a failed operation.
+ */
+export async function resyncExtensionSchedules(
+  registry: JobHostRegistry = extensionContributionRegistry,
+  queue: JobHostQueue = getExtensionJobsQueue(),
+): Promise<void> {
+  // `store` is only consulted by `process`, never by `sync`; supply a
+  // never-called stub so the host can be built without a database.
+  const host = new ExtensionJobHost({
+    registry,
+    store: { isEnabled: async () => true },
+  });
+  await host.sync(queue);
 }
 
 export async function shutdownExtensionJobHost(): Promise<void> {

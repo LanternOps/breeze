@@ -17,6 +17,8 @@
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
     "metric-anomalies:backfill": "tsx scripts/metric-anomaly-backfill.ts",
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
+    "breezectl": "node dist/scripts/breezectl.cjs",
+    "breezectl:dev": "tsx scripts/breezectl.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",

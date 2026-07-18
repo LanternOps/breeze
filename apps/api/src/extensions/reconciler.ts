@@ -18,11 +18,6 @@
 //
 // Every dependency is an injectable PORT (mirroring the state-store backend
 // seam) so the failure-policy unit tests need no bundle, filesystem, or DB.
-import {
-  createPublicKey,
-  type KeyObject,
-} from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -50,6 +45,7 @@ import {
   type TrustedPublisher,
   type VerifiedExtensionBundle,
 } from './bundleVerifier';
+import { resolveTrustedPublisher } from './trust';
 import type { ExtensionHostDescriptor } from './compatibility';
 import { assertCompatible, HOST_DESCRIPTOR } from './hostDescriptor';
 import {
@@ -377,20 +373,6 @@ async function defaultValidateTenancy(
   await assertNoUnaccountedPublicTables(getExtensionTenancy());
 }
 
-/** Resolve a publisher's public key into a {@link TrustedPublisher}. */
-function defaultTrustFor(
-  config: ExtensionDeploymentConfig,
-  publisher: string,
-): TrustedPublisher {
-  const declared = config.publishers[publisher];
-  if (!declared) {
-    throw new Error(`unknown publisher "${publisher}"`);
-  }
-  const pem = readFileSync(declared.publicKeyFile);
-  const publicKey: KeyObject = createPublicKey(pem);
-  return { publisher, publicKey };
-}
-
 function buildDefaultPorts(args: ReconcileExtensionsArgs): ReconcilePorts {
   const artifactStore = createArtifactStore();
   return {
@@ -410,7 +392,7 @@ function buildDefaultPorts(args: ReconcileExtensionsArgs): ReconcilePorts {
     ),
     hostDescriptor: HOST_DESCRIPTOR,
     acquire: (source) => artifactStore.acquire(source),
-    trustFor: defaultTrustFor,
+    trustFor: resolveTrustedPublisher,
     verify: verifyExtensionBundle,
     assertCompatible,
     extractVerifiedPayload,

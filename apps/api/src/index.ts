@@ -154,6 +154,7 @@ import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
+import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
@@ -959,6 +960,11 @@ api.route('/m365', m365CustomerGraphReadRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
+// Runtime-extension operations. Mounted BEFORE `/admin` on purpose: it carries
+// its own platformAdminMiddleware, and registering the more specific path first
+// means adminRoutes' `use('*')` gate never also fires for these requests (which
+// would authenticate and audit-log the same request twice).
+api.route('/admin/extensions', extensionsAdminRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
 
