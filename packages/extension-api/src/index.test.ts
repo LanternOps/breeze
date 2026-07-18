@@ -44,6 +44,23 @@ describe('parseExtensionManifest', () => {
     expect(m.tenancy.deviceOrgMoveDeleteTables).toEqual(['demo_things']);
   });
 
+  it('accepts helperRoutes flag', () => {
+    const m = parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      helperRoutes: true,
+      tenancy: {},
+    });
+    expect(m.helperRoutes).toBe(true);
+  });
+
+  it('defaults helperRoutes to false', () => {
+    const m = parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      tenancy: {},
+    });
+    expect(m.helperRoutes).toBe(false);
+  });
+
   it('rejects unprefixed tables in deviceOrgMoveDeleteTables', () => {
     expect(() => parseExtensionManifest({
       name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
@@ -86,6 +103,12 @@ describe('parseExtensionManifest', () => {
   it('rejects publicRoutes under /agent/ — they must stay behind agentAuthMiddleware', () => {
     for (const route of ['/agent', '/agent/hook', '/agent/*']) {
       expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow(/agent/i);
+    }
+  });
+
+  it('rejects publicRoutes under /helper/ — they must stay behind core helper auth', () => {
+    for (const route of ['/helper', '/helper/search', '/helper/*']) {
+      expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow(/helper/i);
     }
   });
 

@@ -118,6 +118,10 @@ const manifestSchema = z
     // loader grants the exemption only for prefixes it wraps with
     // agentAuthMiddleware itself — manifest trust alone never lifts the limit.
     agentRoutes: z.boolean().optional(),
+    // Routes /api/v1/<routeNamespace>/helper/ through the core helper
+    // (Breeze Assist device-token) auth middleware instead of user auth.
+    // Helper paths can never be listed in publicRoutes.
+    helperRoutes: z.boolean().default(false),
     // Default-deny escape hatch: sub-paths (relative to /api/v1/<routeNamespace>)
     // served WITHOUT core auth. Exact paths ('/health') or prefix wildcards
     // ('/webhooks/*'). Everything not listed here gets authMiddleware
@@ -134,6 +138,9 @@ const manifestSchema = z
           })
           .refine((p) => p !== '/agent' && !p.startsWith('/agent/'), {
             message: 'publicRoutes may not expose /agent/ paths — they must stay behind agentAuthMiddleware (they are exempt from the global rate limiter)',
+          })
+          .refine((p) => p !== '/helper' && !p.startsWith('/helper/'), {
+            message: 'publicRoutes may not expose /helper/ paths — they must stay behind the core helper auth middleware',
           }),
       )
       .optional(),
@@ -201,6 +208,18 @@ export interface AiToolLike {
   deviceArgs?: readonly string[];
 }
 
+/** Helper-device identity injected by the core helper authentication middleware. */
+export interface ExtensionHelperDevice {
+  id: string;
+  agentId: string;
+  orgId: string;
+  siteId: string | null;
+  hostname: string;
+  osType: string;
+  osVersion: string;
+  agentVersion: string;
+}
+
 /** Agent identity injected by the core agent authentication middleware. */
 export interface ExtensionAgentContext {
   deviceId: string;
@@ -254,6 +273,12 @@ export interface LegacyExtensionContext {
   authMiddleware: MiddlewareHandler;
   /** Core agent auth middleware; sets `c.get('agent')` and opens the org RLS context. */
   agentAuthMiddleware: MiddlewareHandler;
+  /**
+   * Core helper (Breeze Assist device-token) auth; sets `c.get('helperDevice')`
+   * and an org-scoped synthetic auth, opens org RLS. Only meaningful when
+   * manifest.helperRoutes is true.
+   */
+  helperAuthMiddleware: MiddlewareHandler;
   /** Core ALS-bound Drizzle handle; active RLS GUCs apply. */
   db: ExtensionDatabase;
   /** Core column-bound encryption helpers. */

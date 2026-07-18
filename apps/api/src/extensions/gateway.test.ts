@@ -5,7 +5,7 @@ import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { ExtensionContributionRegistry } from './contributionRegistry';
 
-const authLifetime = new AsyncLocalStorage<'user' | 'agent'>();
+const authLifetime = new AsyncLocalStorage<'user' | 'agent' | 'helper'>();
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (
@@ -39,14 +39,38 @@ vi.mock('../middleware/agentAuth', () => ({
   }),
 }));
 
+vi.mock('../middleware/helperAuth', () => ({
+  helperAuth: vi.fn(async (
+    c: {
+      req: { header(name: string): string | undefined };
+      json(body: unknown, status: 401): Response;
+      set(key: string, value: unknown): void;
+    },
+    next: () => Promise<void>,
+  ) => {
+    if (!c.req.header('Authorization')) {
+      return c.json({ error: 'missing helper auth' }, 401);
+    }
+    c.set('helperDevice', { id: 'dev-1', orgId: 'org-1' });
+    c.set('auth', { orgId: 'org-1', helperDeviceId: 'dev-1', scope: 'organization' });
+    await authLifetime.run('helper', next);
+  }),
+}));
+
 import {
   legacyExtensionAgentAuthMiddleware,
   mountExtensionGateway,
 } from './gateway';
 import { authMiddleware } from '../middleware/auth';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { helperAuth } from '../middleware/helperAuth';
 
-function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
+// `helperRoutes` is a legacy-manifest flag carried on the staged manifest for
+// the gateway guard; it is not part of the v1 wire schema yet (see the TODO in
+// packages/extension-sdk/src/manifest.ts).
+type GatewayTestManifest = ExtensionManifestV1 & { helperRoutes?: boolean };
+
+function makeManifest(overrides: Partial<GatewayTestManifest> = {}): GatewayTestManifest {
   return {
     apiVersion: 'breeze.extensions/v1',
     name: 'demo',
@@ -169,6 +193,52 @@ describe('mountExtensionGateway', () => {
 
     expect(response.status).toBe(401);
     expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+    expect(authMiddleware).not.toHaveBeenCalled();
+  });
+
+  it('routes /helper/* through helper auth when the manifest opts in', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({
+      deviceId: (c.get('helperDevice') as { id: string }).id,
+      authLifetime: authLifetime.getStore(),
+    }));
+    const manifest = makeManifest({ helperRoutes: true });
+    const { app } = makeGatewayFixture({ routeApp, manifest });
+
+    expect((await app.request('/api/v1/ext/demo/helper/search?q=x')).status).toBe(401);
+    const response = await app.request('/api/v1/ext/demo/helper/search?q=x', {
+      headers: { Authorization: 'Bearer brz_helper-test' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deviceId: 'dev-1', authLifetime: 'helper' });
+    expect(helperAuth).toHaveBeenCalledTimes(2);
+    expect(authMiddleware).not.toHaveBeenCalled();
+    expect(agentAuthMiddleware).not.toHaveBeenCalled();
+  });
+
+  it('keeps /helper/* on user auth when the manifest does not opt in', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({ ok: true }));
+    const { app } = makeGatewayFixture({ routeApp });
+
+    const response = await app.request('/api/v1/ext/demo/helper/search');
+
+    expect(response.status).toBe(200);
+    expect(authMiddleware).toHaveBeenCalledTimes(1);
+    expect(helperAuth).not.toHaveBeenCalled();
+  });
+
+  it('uses helper auth for helper paths and never public-route exemptions', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({ ok: true }));
+    const manifest = makeManifest({ helperRoutes: true, publicRoutes: ['/helper/*'] });
+    const { app } = makeGatewayFixture({ routeApp, manifest });
+
+    const response = await app.request('/api/v1/ext/demo/helper/search');
+
+    expect(response.status).toBe(401);
+    expect(helperAuth).toHaveBeenCalledTimes(1);
     expect(authMiddleware).not.toHaveBeenCalled();
   });
 

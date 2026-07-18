@@ -180,6 +180,8 @@ const manifestSchemaV1 = z.object({
       }),
   ).optional(),
   agentRoutes: z.boolean().optional(),
+  // TODO(runtime-platform): carry legacy helperRoutes forward as capability
+  // 'server.helper-routes.v1' (see internal/plans/2026-07-18-workspace-finder-phase3-plan.md).
   jobs: z.array(jobSchema),
   aiTools: z.array(aiToolSchema),
   tenancy: tenancySchema.default({

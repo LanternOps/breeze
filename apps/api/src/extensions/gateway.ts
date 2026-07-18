@@ -4,12 +4,13 @@ import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { authMiddleware } from '../middleware/auth';
+import { helperAuth } from '../middleware/helperAuth';
 import type {
   ExtensionContributionRegistry,
   StagedExtensionContributions,
 } from './contributionRegistry';
 
-type LoaderAuthKind = 'user' | 'agent';
+type LoaderAuthKind = 'user' | 'agent' | 'helper';
 const LOADER_AUTH_KIND = 'extensionLoaderAuthKind';
 
 function skipIfLoaderAuthed(
@@ -24,6 +25,14 @@ function skipIfLoaderAuthed(
 
 export const legacyExtensionAuthMiddleware = skipIfLoaderAuthed(authMiddleware, 'user');
 export const legacyExtensionAgentAuthMiddleware = skipIfLoaderAuthed(agentAuthMiddleware, 'agent');
+export const legacyExtensionHelperAuthMiddleware = skipIfLoaderAuthed(helperAuth, 'helper');
+
+/**
+ * `helperRoutes` is a legacy-manifest flag the loader carries on the staged
+ * manifest for this guard; it is not part of the v1 wire schema yet (see the
+ * TODO in packages/extension-sdk/src/manifest.ts).
+ */
+type GatewayManifest = Pick<ExtensionManifestV1, 'publicRoutes'> & { helperRoutes?: boolean };
 
 /**
  * Default-deny auth selection for an extension namespace.
@@ -34,7 +43,7 @@ export const legacyExtensionAgentAuthMiddleware = skipIfLoaderAuthed(agentAuthMi
  */
 export function buildExtensionAuthGuard(
   mountPrefix: string,
-  manifest: Pick<ExtensionManifestV1, 'publicRoutes'>,
+  manifest: GatewayManifest,
 ): MiddlewareHandler {
   const publicExact = new Set<string>();
   const publicPrefixes: string[] = [];
@@ -52,6 +61,15 @@ export function buildExtensionAuthGuard(
       if (c.get(LOADER_AUTH_KIND) === 'agent') return next();
       c.set(LOADER_AUTH_KIND, 'agent');
       return agentAuthMiddleware(c, next);
+    }
+    if (
+      manifest.helperRoutes
+      && (relativePath === '/helper' || relativePath.startsWith('/helper/'))
+    ) {
+      // Before the publicRoutes check — helper paths can never be public.
+      if (c.get(LOADER_AUTH_KIND) === 'helper') return next();
+      c.set(LOADER_AUTH_KIND, 'helper');
+      return helperAuth(c, next);
     }
     if (
       publicExact.has(relativePath)

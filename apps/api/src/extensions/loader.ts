@@ -22,6 +22,7 @@ import {
 import {
   legacyExtensionAgentAuthMiddleware,
   legacyExtensionAuthMiddleware,
+  legacyExtensionHelperAuthMiddleware,
 } from './gateway';
 import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
 import { aiTools, hasCoreAiToolName } from '../services/aiTools';
@@ -45,7 +46,17 @@ async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
   return ext;
 }
 
-function synthesizeLegacyManifest(extension: DiscoveredExtension): ExtensionManifestV1 {
+/**
+ * The staged manifest carries the legacy `helperRoutes` flag for the gateway's
+ * auth guard, but the flag is NOT part of the v1 wire schema yet — it must be
+ * stripped before `parseExtensionManifestV1` (strict) validates the rest.
+ * TODO(runtime-platform): drop this once helperRoutes lands in the v1 manifest
+ * as capability 'server.helper-routes.v1' (see the TODO in
+ * packages/extension-sdk/src/manifest.ts).
+ */
+type StagedLegacyManifest = ExtensionManifestV1 & { helperRoutes?: boolean };
+
+function synthesizeLegacyManifest(extension: DiscoveredExtension): StagedLegacyManifest {
   return {
     apiVersion: 'breeze.extensions/v1',
     name: extension.name,
@@ -61,6 +72,7 @@ function synthesizeLegacyManifest(extension: DiscoveredExtension): ExtensionMani
     schemaCompatibilityFloor: '0.0.0',
     publicRoutes: extension.manifest.publicRoutes,
     agentRoutes: extension.manifest.agentRoutes,
+    helperRoutes: extension.manifest.helperRoutes,
     jobs: [],
     aiTools: [],
     tenancy: extension.manifest.tenancy,
@@ -105,6 +117,7 @@ async function stageLegacyExtension(
     mountRoute: (subApp) => session.registrar.mountRoute(subApp),
     authMiddleware: legacyExtensionAuthMiddleware,
     agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
+    helperAuthMiddleware: legacyExtensionHelperAuthMiddleware,
     db: db as unknown as ExtensionDatabase,
     secrets: {
       encryptForColumn: (table, column, plaintext) =>
@@ -121,7 +134,8 @@ async function stageLegacyExtension(
   };
 
   await loaded.register(context);
-  parseExtensionManifestV1(manifest);
+  const { helperRoutes: _legacyHelperRoutes, ...v1Manifest } = manifest;
+  parseExtensionManifestV1(v1Manifest);
   return session.finish();
 }
 
