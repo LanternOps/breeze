@@ -7,9 +7,16 @@ import {
   parsePendingMfa,
   evaluatePendingMfa,
   getClientRateLimitKey,
+  isRequestConnectionSecure,
+  buildRefreshTokenCookie,
+  buildCsrfTokenCookie,
+  buildClearRefreshTokenCookie,
+  setRefreshTokenCookie,
+  clearRefreshTokenCookie,
   type PendingMfaRecord,
 } from './helpers';
 import type { RequestLike } from '../../services/auditEvents';
+import type { Context } from 'hono';
 
 // Mirrors the canonical shim in services/clientIp.test.ts.
 function makeContext(headers: Record<string, string | undefined>, remoteAddress?: string): RequestLike {
@@ -295,5 +302,122 @@ describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
     const key = getClientRateLimitKey(makeContext({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77'));
     expect(key).toBe('ip:203.0.113.5');
     delete process.env.TRUSTED_PROXY_CIDRS;
+  });
+});
+
+// Build a minimal Hono-ish Context for the auth-cookie helpers: a request with
+// header lookup + url, and a `header()` sink that records appended Set-Cookie
+// values so we can assert on the exact cookie strings emitted.
+function makeCookieContext(opts: { forwardedProto?: string; url?: string }): {
+  c: Context;
+  setCookies: string[];
+} {
+  const setCookies: string[] = [];
+  const headers: Record<string, string> = {};
+  if (opts.forwardedProto !== undefined) headers['x-forwarded-proto'] = opts.forwardedProto;
+  const c = {
+    req: {
+      header: (name: string) => headers[name.toLowerCase()],
+      url: opts.url ?? 'http://api:3001/api/v1/auth/refresh',
+    },
+    header: (name: string, value: string) => {
+      if (name.toLowerCase() === 'set-cookie') setCookies.push(value);
+    },
+  } as unknown as Context;
+  return { c, setCookies };
+}
+
+describe('isRequestConnectionSecure (#1618 — Secure flag tracks real transport)', () => {
+  it('true when X-Forwarded-Proto is https (Caddy behind TLS)', () => {
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'https' }).c)).toBe(true);
+  });
+
+  it('false when X-Forwarded-Proto is http (browser reached the site over HTTP)', () => {
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'http' }).c)).toBe(false);
+  });
+
+  it('uses the first (client-facing) hop of a proxy chain', () => {
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'https, http' }).c)).toBe(true);
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'http, https' }).c)).toBe(false);
+  });
+
+  it('treats an https:// request URL as a positive signal when no X-Forwarded-Proto is present (direct-to-API TLS)', () => {
+    expect(isRequestConnectionSecure(makeCookieContext({ url: 'https://api.example.com/x' }).c)).toBe(true);
+  });
+
+  it('does NOT downgrade on an ambiguous http:// internal hop with no X-Forwarded-Proto — falls back to NODE_ENV', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    try {
+      // In the standard topology c.req.url is the internal Caddy->API hop (http),
+      // which must not force non-Secure on a genuinely HTTPS deployment whose
+      // proxy stripped the header.
+      process.env.NODE_ENV = 'production';
+      expect(isRequestConnectionSecure(makeCookieContext({ url: 'http://api:3001/x' }).c)).toBe(true);
+      process.env.NODE_ENV = 'development';
+      expect(isRequestConnectionSecure(makeCookieContext({ url: 'http://api:3001/x' }).c)).toBe(false);
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+});
+
+describe('auth cookie Secure flag (#1618 regression)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    delete process.env.AUTH_COOKIE_FORCE_SECURE;
+    delete process.env.AUTH_COOKIE_SAME_SITE;
+  });
+
+  it('REGRESSION: production served over HTTP issues NON-Secure cookies so the browser keeps them', () => {
+    process.env.NODE_ENV = 'production';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies).toHaveLength(2);
+    const [refresh, csrf] = setCookies;
+    expect(refresh).toContain('breeze_refresh_token=');
+    expect(refresh).not.toContain('Secure');
+    expect(csrf).not.toContain('Secure');
+    // Attributes that must survive regardless of transport.
+    expect(refresh).toContain('HttpOnly');
+    expect(refresh).toContain('SameSite=Lax');
+  });
+
+  it('production served over HTTPS still issues Secure cookies', () => {
+    process.env.NODE_ENV = 'production';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('; Secure');
+    expect(setCookies[1]).toContain('; Secure');
+  });
+
+  it('AUTH_COOKIE_FORCE_SECURE overrides an http transport (paranoid setups)', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.AUTH_COOKIE_FORCE_SECURE = 'true';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('; Secure');
+    expect(setCookies[1]).toContain('; Secure');
+  });
+
+  it('clear cookies mirror the set-cookie Secure flag for the same transport', () => {
+    process.env.NODE_ENV = 'production';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    clearRefreshTokenCookie(c);
+    expect(setCookies).toHaveLength(2);
+    expect(setCookies[0]).toContain('Max-Age=0');
+    expect(setCookies[0]).not.toContain('Secure'); // an http clear must NOT be Secure or the browser ignores it
+    expect(setCookies[1]).not.toContain('Secure');
+  });
+
+  it('build* functions default to the NODE_ENV heuristic when no transport is threaded', () => {
+    process.env.NODE_ENV = 'production';
+    expect(buildRefreshTokenCookie('t')).toContain('; Secure');
+    expect(buildCsrfTokenCookie('t')).toContain('; Secure');
+    expect(buildClearRefreshTokenCookie()).toContain('; Secure');
+    // explicit transport wins over the default
+    expect(buildRefreshTokenCookie('t', false)).not.toContain('Secure');
   });
 });
