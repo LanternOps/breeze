@@ -455,3 +455,172 @@ describe('MicrosoftGraphClient', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+function jsonResponder(body: unknown) {
+  return vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => json(body));
+}
+
+function statusResponder(status: number, body: unknown, headers: Record<string, string> = {}) {
+  return vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  }));
+}
+
+function clientWithStatus(status: number, body: unknown, headers: Record<string, string> = {}) {
+  return createMicrosoftGraphClient(
+    { applicationId: APPLICATION_ID },
+    { fetch: statusResponder(status, body, headers) as typeof fetch },
+  );
+}
+
+function twoPageClient() {
+  const nextLink = 'https://graph.microsoft.com/v1.0/users?$skiptoken=page2';
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(json({
+      value: [{ id: '1' }, { id: '2' }, { id: '3' }],
+      '@odata.nextLink': nextLink,
+    }))
+    .mockResolvedValueOnce(json({
+      value: [{ id: '4' }, { id: '5' }, { id: '6' }],
+    }));
+  return createMicrosoftGraphClient(
+    { applicationId: APPLICATION_ID },
+    { fetch: fetch as unknown as typeof globalThis.fetch },
+  );
+}
+
+describe('graph read methods', () => {
+  it('readResource projects nothing itself and returns the parsed object', async () => {
+    const fetchStub = jsonResponder({ id: 'u1', displayName: 'Ada' });
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetchStub as unknown as typeof fetch },
+    );
+    const resource = await graph.readResource({
+      accessToken: ACCESS_TOKEN,
+      path: '/users/u1',
+      select: ['id', 'displayName'],
+    });
+    expect(resource).toEqual({ id: 'u1', displayName: 'Ada' });
+    expect(new URL(fetchStub.mock.calls[0]![0] as string).searchParams.get('$select')).toBe('id,displayName');
+  });
+
+  it('maps 403 to graph_permission_missing and license 403 to graph_license_required', async () => {
+    await expect(clientWithStatus(403, { error: { code: 'Authorization_RequestDenied' } })
+      .readResource({ accessToken: ACCESS_TOKEN, path: '/users/u1', select: ['id'] }))
+      .rejects.toMatchObject({ code: 'graph_permission_missing' });
+    await expect(clientWithStatus(403, { error: { code: 'Authentication_RequestFromNonPremiumTenantOrB2CTenant' } })
+      .readCollection({ accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', query: {}, maxItems: 10, maxPages: 1 }))
+      .rejects.toMatchObject({ code: 'graph_license_required' });
+  });
+
+  it('maps 404 to graph_not_found and 429 to graph_throttled with bounded retryAfterSeconds', async () => {
+    await expect(clientWithStatus(404, {})
+      .readResource({ accessToken: ACCESS_TOKEN, path: '/users/nope', select: ['id'] }))
+      .rejects.toMatchObject({ code: 'graph_not_found' });
+    await expect(clientWithStatus(429, {}, { 'retry-after': '17' })
+      .readCollection({ accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 10, maxPages: 1 }))
+      .rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 17 });
+  });
+
+  it('clamps retryAfterSeconds to [1, 300] and defaults to 60 when the header is missing or invalid', async () => {
+    await expect(clientWithStatus(429, {})
+      .readCollection({ accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 10, maxPages: 1 }))
+      .rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 60 });
+    await expect(clientWithStatus(429, {}, { 'retry-after': '9000' })
+      .readCollection({ accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 10, maxPages: 1 }))
+      .rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 300 });
+  });
+
+  it('maps other non-OK statuses to graph_provider_rejected', async () => {
+    await expect(clientWithStatus(500, {})
+      .readResource({ accessToken: ACCESS_TOKEN, path: '/users/u1', select: ['id'] }))
+      .rejects.toMatchObject({ code: 'graph_provider_rejected' });
+  });
+
+  it('truncates instead of throwing when maxItems is reached before nextLink is exhausted', async () => {
+    const result = await twoPageClient().readCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 4, maxPages: 5,
+    });
+    expect(result.items).toHaveLength(4);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('truncates instead of throwing when maxPages is reached with more pages remaining', async () => {
+    const result = await twoPageClient().readCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 100, maxPages: 1,
+    });
+    expect(result.items).toHaveLength(3);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('does not truncate when every page fits within maxItems and maxPages', async () => {
+    const result = await twoPageClient().readCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 100, maxPages: 5,
+    });
+    expect(result.items).toHaveLength(6);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('sets ConsistencyLevel header and passes query through only when consistencyLevelEventual', async () => {
+    const fetchStub = jsonResponder({ value: [] });
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetchStub as unknown as typeof fetch },
+    );
+    await graph.readCollection({
+      accessToken: ACCESS_TOKEN,
+      path: '/users',
+      query: { '$search': '"displayName:ada"' },
+      consistencyLevelEventual: true,
+      maxItems: 10,
+      maxPages: 1,
+    });
+    const [url, init] = fetchStub.mock.calls[0]!;
+    expect(new URL(url as string).searchParams.get('$search')).toBe('"displayName:ada"');
+    expect((init as RequestInit).headers).toMatchObject({ ConsistencyLevel: 'eventual' });
+  });
+
+  it('omits the ConsistencyLevel header when consistencyLevelEventual is not set', async () => {
+    const fetchStub = jsonResponder({ value: [] });
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetchStub as unknown as typeof fetch },
+    );
+    await graph.readCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 10, maxPages: 1,
+    });
+    const [, init] = fetchStub.mock.calls[0]!;
+    expect((init as RequestInit).headers).not.toHaveProperty('ConsistencyLevel');
+  });
+
+  it('rejects a path that does not start with a slash without making a network call', async () => {
+    const fetchStub = jsonResponder({});
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetchStub as unknown as typeof fetch },
+    );
+    await expect(graph.readResource({ accessToken: ACCESS_TOKEN, path: 'users/u1', select: ['id'] }))
+      .rejects.toMatchObject({ code: 'graph_request_invalid' });
+    await expect(graph.readCollection({
+      accessToken: ACCESS_TOKEN, path: 'users', query: {}, maxItems: 10, maxPages: 1,
+    })).rejects.toMatchObject({ code: 'graph_request_invalid' });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsafe @odata.nextLink for readCollection reusing fixedCollectionNextLink', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({
+        value: [{ id: '1' }],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/differentCollection?$skiptoken=x',
+      }));
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetch as unknown as typeof globalThis.fetch },
+    );
+    await expect(graph.readCollection({
+      accessToken: ACCESS_TOKEN, path: '/users', query: {}, maxItems: 10, maxPages: 5,
+    })).rejects.toMatchObject({ code: 'graph_response_invalid' });
+  });
+});

@@ -103,6 +103,7 @@ Policy inheritance flows top-down; lower levels override higher with priority or
 - **Playbooks**: list_playbooks, execute_playbook, get_playbook_history
 - **Notifications**: manage_notification_channels (list/test/create/update/delete)
 - **Documentation**: search_documentation (search how-to guides, feature docs, and reference material)
+- **Microsoft 365**: m365_query_users, m365_query_signins, m365_query_intune_devices, m365_query_groups, m365_query_org, m365_query_sites (read live from the customer's Microsoft 365 tenant; only available when Microsoft 365 Graph read tools are enabled for the organization)
 
 ## Documentation References
 When users ask "how do I..." or "how to..." questions about Breeze features, use the search_documentation tool to find relevant docs and include links to https://docs.breezermm.com in your response. Format doc links as markdown: [Title](url).

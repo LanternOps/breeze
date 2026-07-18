@@ -265,3 +265,68 @@ Reviewer sign-off:
 ```
 
 Any secret observation, unexpected permission, tenant mismatch, duplicate ownership disclosure, stale-result state change, or inability to prove exact assignments is a failed run. Disable onboarding and preserve only sanitized evidence while the issue is investigated.
+
+## Read-action acceptance
+
+Use this section only after scenario 1 (successful consent and tenant binding) is accepted and Org A is `active` against the disposable tenant. It validates the twelve typed Microsoft Graph read actions exposed by the six `m365_query_*` AI tools, executed through `POST /v1/read-action` on the same isolated executor. It is independent of, and does not replace, scenarios 1–13: those validate connection lifecycle; this validates per-call read behavior, projection, permission/licensing drift, and budget enforcement. It carries the same safety rules as the rest of this runbook — disposable tenant only, redacted evidence only, no raw Graph payload in any artifact.
+
+### Prerequisites
+
+- Org A `active` on the `customer-graph-read` profile (scenario 1 complete).
+- `M365_GRAPH_READ_TOOLS_ENABLED=true` on every API instance, with Org A's canonical UUID present in `M365_GRAPH_READ_TOOLS_ORG_IDS` (or `*`). This flag is independent of `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` — confirm it separately rather than assuming onboarding being enabled implies it.
+- An AI chat session scoped to Org A that is not site-restricted (a site-scoped session is refused with `site_scope_denied` before any tool call reaches the connection).
+- The same approved tenant-local `appRoleAssignment` procedure, reviewer, and restore discipline used for scenarios 6–8.
+
+### Acceptance matrix
+
+| # | Scenario | Expected Breeze state | Expected stable error/outcome | Required evidence |
+|---:|---|---|---|---|
+| R1 | Execute all twelve read actions once via the six AI tools | Org A remains `active`; every returned item/resource contains only its action's allowlisted fields | `ok` for all twelve actions | Redacted tool transcripts, per-action field diff against the projection allowlist, audit rows, metric deltas |
+| R2 | Remove `AuditLog.Read.All` via the approved tenant-local procedure, then call all six tools | Org A `degraded` (consistent with scenario 6); the five tools not requiring `AuditLog.Read.All` keep succeeding while degraded | `m365_query_signins` → `graph_permission_missing` with the Retest hint; the other five tools → `ok` | Pre/post assignment snapshots, tool responses for both outcomes, audit rows, unchanged home-manifest digest |
+| R3 | Call `m365_query_signins` against a disposable tenant/organization without Entra ID P1/P2 | Connection status and observed grants unchanged | `graph_license_required`, message references the Entra ID P1/P2 requirement, no Retest hint | Tool response, audit row, confirmation the tenant lacks the premium SKU |
+| R4 | Issue 31 rapid `m365_query_users` calls within one minute | Org A unaffected; the first 30 calls execute normally | Call 31 → `read_rate_limited` with a positive `retryAfterSeconds`; the limited call writes no audit/metric row | Ordered call log with outcomes, the returned `retryAfterSeconds` value, metric deltas covering only the 30 successful calls |
+| R5 | Cross-check audit and metric evidence for R1–R4 | — | — | Exactly one `m365.customer_graph_read.action_executed` audit row per executed attempt, fields limited to `actionType`/`outcome`/`itemCount`/`truncated`; `breeze_m365_graph_read_actions_total{action,outcome}` deltas match the audit counts exactly |
+
+### R1. Execute every typed read action
+
+1. Confirm Org A's status (`active` or `degraded` from a prior main-flow scenario) and that `M365_GRAPH_READ_TOOLS_ENABLED`/`M365_GRAPH_READ_TOOLS_ORG_IDS` cover Org A.
+2. In an AI chat session scoped to Org A, call each tool at least once so that all twelve action IDs execute:
+   - `m365_query_users` — list and get modes (`m365.user.list`, `m365.user.get`)
+   - `m365_query_signins` — (`m365.signins.list`)
+   - `m365_query_intune_devices` — list and get modes, get mode takes `intuneDeviceId` (`m365.intune.device.list`, `m365.intune.device.get`)
+   - `m365_query_groups` — list, get, and members modes (`m365.group.list`, `m365.group.get`, `m365.group.members.list`)
+   - `m365_query_org` — org and SKU modes (`m365.org.get`, `m365.org.skus.list`)
+   - `m365_query_sites` — list and get modes (`m365.sites.list`, `m365.site.get`)
+3. For each response, diff its field set against that action's fixed projection allowlist. Confirm no additional Graph field, nested object, or raw payload beyond the allowlisted fields is present.
+4. Confirm each call recorded exactly one `m365.customer_graph_read.action_executed` audit row with `outcome: 'ok'` and a plausible `itemCount`, and incremented `breeze_m365_graph_read_actions_total{action="<id>",outcome="ok"}` by one.
+
+### R2. Permission drift: sign-in reads degrade in isolation
+
+1. Repeat the approved tenant-local pre-write resolution/snapshot checks used for scenarios 6–8.
+2. Delete only the tenant-local `AuditLog.Read.All` `appRoleAssignment` (app role ID `b0afded3-3588-46d8-8b3d-9842eff778da`).
+3. Choose **Retest**. Confirm the connection is `degraded` with `grant_missing`, consistent with scenario 6.
+4. Call `m365_query_signins`. Confirm it returns `graph_permission_missing` with the "run Retest on the Microsoft 365 card" guidance.
+5. Call the remaining five tools. Confirm each still returns `ok` while the connection is `degraded` — reads execute in both `active` and `degraded` states, and one action's missing grant does not block unrelated actions.
+6. Recreate only that same tenant-local assignment, verify the exact nine-role set is restored, verify the home manifest/`requiredResourceAccess` digest is unchanged, and confirm no other object or tenant changed before continuing.
+
+### R3. Non-premium tenant: sign-in reads require Entra ID P1/P2
+
+1. Using a disposable tenant/organization without an Entra ID P1 or P2 license assigned, call `m365_query_signins`.
+2. Confirm the outcome is `graph_license_required` and the surfaced message references the Entra ID P1/P2 requirement for sign-in logs — not a consent or grant problem, and distinct from `graph_permission_missing` in R2.
+3. Confirm the connection status and observed grants are unchanged and no Retest-style remediation prompt is shown; this is a licensing fact about the tenant, not a drift event.
+
+### R4. Budget enforcement
+
+1. With Org A `active`, issue 31 `m365_query_users` calls in rapid succession within the same 60-second window, against the same connection.
+2. Confirm the first 30 calls execute normally, each writing one audit row and one metric increment with `outcome: 'ok'`.
+3. Confirm the 31st call is refused with `read_rate_limited` and a positive `retryAfterSeconds`, and that it writes **no** audit row or metric increment — the budget check runs before the executor call, so a denied call leaves no per-action trace beyond the Redis counter itself.
+4. Wait past the reported `retryAfterSeconds` and confirm a subsequent call succeeds again.
+5. Confirm the day budget (2,000 actions/connection/day) by log/metric review rather than issuing 2,000 live calls against the disposable tenant.
+
+### R5. Audit and metric cross-check
+
+1. For every call made in R1–R4, confirm exactly one `m365.customer_graph_read.action_executed` audit row exists per executed attempt (rate-limited refusals excluded, per R4), with `details` limited to `actionType`, `outcome`, `itemCount`, and `truncated`.
+2. Confirm no audit row contains a Graph item, field value, or raw payload — only the four allowlisted metadata fields.
+3. Confirm `breeze_m365_graph_read_actions_total{action,outcome}` counter deltas for the acceptance window match the audit row counts exactly, action-by-action and outcome-by-outcome.
+
+Any read action returning a field outside its projection allowlist, any audit/metric row carrying Graph payload content, or any budget/permission/licensing outcome that does not match the table above is a failed run. Treat it the same as a failed scenario 1–13 run: disable the tools flag and preserve only sanitized evidence while the issue is investigated.

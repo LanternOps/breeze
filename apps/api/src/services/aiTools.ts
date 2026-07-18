@@ -72,7 +72,7 @@ import { registerPamTools } from './aiToolsPam';
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
-import { m365ToolTiers } from './aiToolsM365';
+import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolTiers } from './aiToolsGoogle';
 
 // ============================================
@@ -258,6 +258,7 @@ registerAgentMgmtTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
 registerVulnerabilityTools(aiTools);
+registerM365Tools(aiTools);
 
 // ============================================
 // Exports

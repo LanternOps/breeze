@@ -10,6 +10,7 @@ describe('executor HTTP app', () => {
       authenticator: { verify },
       completeConsent,
       retest: vi.fn(),
+      readAction: vi.fn(),
     });
 
     const response = await app.request('/v1/complete-consent', {
@@ -30,7 +31,7 @@ describe('executor HTTP app', () => {
     });
     const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
     const retest = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
-    const app = createExecutorApp({ authenticator: { verify }, completeConsent: vi.fn(), retest });
+    const app = createExecutorApp({ authenticator: { verify }, completeConsent: vi.fn(), retest, readAction: vi.fn() });
 
     const response = await app.request('/v1/retest', {
       method: 'POST',
@@ -53,6 +54,7 @@ describe('executor HTTP app', () => {
       authenticator: { verify },
       completeConsent: vi.fn(),
       retest: vi.fn(),
+      readAction: vi.fn(),
       maxBodyBytes: 8,
     });
     const oversized = await app.request('/v1/retest', {
@@ -72,6 +74,7 @@ describe('executor HTTP app', () => {
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' }) },
       completeConsent: vi.fn(),
       retest: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
+      readAction: vi.fn(),
     });
     const response = await app.request('/v1/retest', {
       method: 'POST',
@@ -92,10 +95,88 @@ describe('executor HTTP app', () => {
       authenticator: { verify: vi.fn() },
       completeConsent: vi.fn(),
       retest: vi.fn(),
+      readAction: vi.fn(),
     });
     const server = startExecutorServer(app, { bindHost: '10.20.30.40', port: 8788 }, serve);
     expect(serve).toHaveBeenCalledWith({ fetch: app.fetch, hostname: '10.20.30.40', port: 8788 });
     server.close();
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('serves POST /v1/read-action with the stubbed dependency result', async () => {
+    const correlationId = '11111111-1111-4111-8111-111111111111';
+    const verify = vi.fn().mockResolvedValue({ correlationId });
+    const stubbedResult = { success: true, kind: 'resource', resource: { id: 'x' } };
+    const readAction = vi.fn().mockResolvedValue(stubbedResult);
+    const app = createExecutorApp({
+      authenticator: { verify },
+      completeConsent: vi.fn(),
+      retest: vi.fn(),
+      readAction,
+    });
+
+    const response = await app.request('/v1/read-action', {
+      method: 'POST',
+      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        correlationId,
+        tenantId: '22222222-2222-4222-8222-222222222222',
+        action: { type: 'm365.org.get' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(stubbedResult);
+    expect(verify).toHaveBeenCalledWith(expect.objectContaining({ operation: 'read-action' }));
+    expect(readAction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a read-action body whose correlationId does not match the authenticated one', async () => {
+    const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
+    const readAction = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      completeConsent: vi.fn(),
+      retest: vi.fn(),
+      readAction,
+    });
+
+    const response = await app.request('/v1/read-action', {
+      method: 'POST',
+      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        correlationId: '99999999-9999-4999-8999-999999999999',
+        tenantId: '22222222-2222-4222-8222-222222222222',
+        action: { type: 'm365.org.get' },
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(readAction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid read-action body', async () => {
+    const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
+    const readAction = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      completeConsent: vi.fn(),
+      retest: vi.fn(),
+      readAction,
+    });
+
+    const response = await app.request('/v1/read-action', {
+      method: 'POST',
+      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        correlationId: '11111111-1111-4111-8111-111111111111',
+        tenantId: 'not-a-guid',
+        action: { type: 'm365.org.get' },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_request' });
+    expect(readAction).not.toHaveBeenCalled();
   });
 });

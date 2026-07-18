@@ -12,6 +12,7 @@ import { INVOICE_STATUSES } from '@breeze/shared';
 import { backupProfileSelectionsSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
+import { m365ToolSchemas } from './aiToolSchemasM365';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -1274,6 +1275,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Fleet orchestration tools
   ...fleetToolInputSchemas,
+
+  // Microsoft 365 typed Graph read-query tools (extracted to aiToolSchemasM365.ts)
+  ...m365ToolSchemas,
 };
 
 /**

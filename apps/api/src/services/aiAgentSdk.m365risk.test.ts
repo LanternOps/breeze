@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildM365RiskSummary } from './aiAgentSdk';
 import { TOOL_TIERS } from './aiAgentSdkTools';
+import { aiTools } from './aiTools';
 
 describe('buildM365RiskSummary', () => {
   it('includes customer, user, and reason for reset_password', () => {
@@ -41,5 +42,35 @@ describe('TOOL_TIERS — M365 helpdesk tools', () => {
     expect(TOOL_TIERS['m365_list_group_memberships']).toBe(1);
     expect(TOOL_TIERS['m365_disable_user']).toBe(3);
     expect(TOOL_TIERS['m365_reset_password']).toBe(3);
+  });
+});
+
+// Regression guard for the chat-surface wiring gap: the 6 typed Graph
+// read-query tools (m365_query_*) were registered as tier-1 AiTools in the
+// shared `aiTools` map but were never added to TOOL_TIERS, so
+// createSessionPreToolUse (aiAgentSdk.ts) rejected them as "Unknown tool"
+// before executeTool ever ran — reachable via the external MCP API-key
+// surface but not the in-product streaming chat UI. Assert both maps agree
+// so the two sources of truth can't silently drift apart again.
+describe('TOOL_TIERS — M365 typed Graph read-query tools', () => {
+  const queryToolNames = [
+    'm365_query_users',
+    'm365_query_signins',
+    'm365_query_intune_devices',
+    'm365_query_groups',
+    'm365_query_org',
+    'm365_query_sites',
+  ] as const;
+
+  it('registers all 6 query tools as tier 1 in TOOL_TIERS', () => {
+    for (const name of queryToolNames) {
+      expect(TOOL_TIERS[name]).toBe(1);
+    }
+  });
+
+  it('TOOL_TIERS agrees with the aiTools registry tier for every query tool', () => {
+    for (const name of queryToolNames) {
+      expect(TOOL_TIERS[name]).toBe(aiTools.get(name)?.tier);
+    }
   });
 });

@@ -170,6 +170,15 @@ export const TOOL_TIERS = {
   m365_list_group_memberships: 1,
   m365_disable_user: 3,
   m365_reset_password: 3,
+  // M365 typed Graph read-query tools (Task 9) — registered in the shared
+  // `aiTools` map (see aiToolsM365.ts's registerM365Tools) and executed via
+  // makeHandler/executeTool like list_organizations, not session-aware.
+  m365_query_users: 1,
+  m365_query_signins: 1,
+  m365_query_intune_devices: 1,
+  m365_query_groups: 1,
+  m365_query_org: 1,
+  m365_query_sites: 1,
   // Google Workspace helpdesk tools (DWD service-account-backed)
   google_lookup_user: 1,
   google_reset_password: 3,
@@ -1790,6 +1799,94 @@ export function createBreezeMcpServer(
         email: z.string().email().max(255).optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Microsoft 365 typed Graph read-query tools (Task 9) — registered as
+    // standard AiTools in the shared aiTools map (aiToolsM365.ts's
+    // registerM365Tools), so unlike the session-bound M365 helpdesk tools
+    // below they're wired the same way as list_organizations: a plain
+    // makeHandler() -> executeTool() delegation, no session/Delegant binding.
+    // Only visible to the model when the organization's M365 Graph read
+    // integration is configured — executeM365ReadAction (Task 8) refuses
+    // otherwise, so no separate gating list is needed here.
+
+    tool(
+      'm365_query_users',
+      'Query Microsoft 365 users (list or get one). Returns up to 50 users per page, max 4 pages (200 users). Data is read live from the customer\'s Microsoft 365 tenant.',
+      {
+        mode: z.enum(['list', 'get']),
+        search: z.string().max(120).optional(),
+        userIdOrUpn: z.string().min(1).max(320).optional(),
+        accountEnabled: z.boolean().optional(),
+        department: z.string().max(120).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_users', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'm365_query_signins',
+      'Query recent Microsoft 365 sign-in activity, optionally filtered to one user. Returns up to 50 sign-ins per page, max 2 pages (100 sign-ins), covering up to the last 168 hours. Data is read live from the customer\'s Microsoft 365 tenant. Requires the tenant to have Entra ID P1/P2.',
+      {
+        userPrincipalName: z.string().min(1).max(320).optional(),
+        sinceHours: z.number().int().min(1).max(168).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_signins', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'm365_query_intune_devices',
+      'Query Intune-managed devices (list or get one). Returns up to 50 devices per page, max 4 pages (200 devices). Data is read live from the customer\'s Microsoft 365 tenant.',
+      {
+        mode: z.enum(['list', 'get']),
+        // Named intuneDeviceId (not deviceId) — this is a foreign Microsoft
+        // Graph/Intune managed-device id, unrelated to Breeze's own `devices`
+        // table. See the matching comment in aiToolsM365.ts.
+        intuneDeviceId: z.string().min(1).max(300).optional(),
+        complianceState: z.enum(['compliant', 'noncompliant', 'inGracePeriod', 'unknown']).optional(),
+        operatingSystem: z.enum(['Windows', 'macOS', 'iOS', 'Android', 'Linux']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_intune_devices', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'm365_query_groups',
+      'Query Microsoft 365 groups (list, get one, or list a group\'s members). Returns up to 50 groups or 100 members per page, max 4 pages (200 groups, 400 members). Data is read live from the customer\'s Microsoft 365 tenant.',
+      {
+        mode: z.enum(['list', 'get', 'members']),
+        groupId: z.string().min(1).max(300).optional(),
+        search: z.string().max(120).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_groups', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'm365_query_org',
+      'Get the Microsoft 365 tenant\'s organization profile or its license/SKU inventory. Each call returns a single organization record or the full SKU list (no client-settable limit). Data is read live from the customer\'s Microsoft 365 tenant.',
+      {
+        include: z.enum(['profile', 'licenses']),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_org', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'm365_query_sites',
+      'Query SharePoint sites (search or get one). List mode returns a single page of results with no client-settable limit. Data is read live from the customer\'s Microsoft 365 tenant.',
+      {
+        mode: z.enum(['list', 'get']),
+        search: z.string().max(120).optional(),
+        siteId: z.string().min(1).max(300).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('m365_query_sites', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)

@@ -10,14 +10,23 @@ vi.mock('./m365DirectGraph', () => ({
   hasDirectM365Connection: vi.fn().mockResolvedValue(false),
   invokeDirect: vi.fn(),
 }));
+// Task 9 typed Graph read-query tools delegate entirely to executeM365ReadAction
+// (the Task 8 control-plane service) — mocked here per the brief so these tests
+// exercise only the input -> M365ReadAction mapping and result serialization.
+vi.mock('./m365ControlPlane/readActionService', () => ({
+  executeM365ReadAction: vi.fn(),
+}));
 
 import { invokeDelegantTool } from './delegantClient';
 import { loadSession, loadConnection } from './m365Helpers';
 import { hasDirectM365Connection, invokeDirect } from './m365DirectGraph';
+import { executeM365ReadAction } from './m365ControlPlane/readActionService';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
-  m365DisableUserHandler, m365ResetPasswordHandler, m365ToolTiers,
+  m365DisableUserHandler, m365ResetPasswordHandler, m365ToolTiers, registerM365Tools,
 } from './aiToolsM365';
+import type { AiTool } from './aiTools';
+import type { AuthContext } from '../middleware/auth';
 
 const auth = { orgId: 'org-A', user: { id: 'tech-1', email: 't@x.com' } } as any;
 const activeConn = {
@@ -196,5 +205,291 @@ describe('direct Graph backend (no Delegant)', () => {
     expect(names).toContain('reset_user_password');
     expect(invokeDelegantTool as any).not.toHaveBeenCalled();
     expect(out).toBeTruthy();
+  });
+});
+
+// ============================================
+// Typed Graph read-query tools (Task 9)
+// ============================================
+
+describe('registerM365Tools', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerM365Tools(toolMap);
+
+  const EXPECTED_TOOLS = [
+    'm365_query_users',
+    'm365_query_signins',
+    'm365_query_intune_devices',
+    'm365_query_groups',
+    'm365_query_org',
+    'm365_query_sites',
+  ] as const;
+
+  it('registers all 6 tools at tier 1 with no deviceArgs', () => {
+    for (const name of EXPECTED_TOOLS) {
+      const tool = toolMap.get(name);
+      expect(tool, `missing tool ${name}`).toBeDefined();
+      expect(tool!.tier).toBe(1);
+      expect(tool!.deviceArgs).toBeUndefined();
+    }
+  });
+
+  it('every description states a cap and that data is read live from the tenant', () => {
+    for (const name of EXPECTED_TOOLS) {
+      const description = toolMap.get(name)!.definition.description ?? '';
+      expect(description.toLowerCase(), `${name} description`).toMatch(/microsoft 365 tenant/);
+    }
+  });
+});
+
+describe('m365_query_* handlers', () => {
+  const queryAuth: AuthContext = { orgId: 'org-A', user: { id: 'tech-1', email: 't@x.com' } } as any;
+  const toolMap = new Map<string, AiTool>();
+  registerM365Tools(toolMap);
+
+  function handlerFor(name: string) {
+    return toolMap.get(name)!.handler;
+  }
+
+  beforeEach(() => {
+    vi.mocked(executeM365ReadAction).mockReset();
+  });
+
+  describe('m365_query_users', () => {
+    it('maps list mode to m365.user.list with defaults and optional filters', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [{ id: 'u1' }], truncated: false });
+      const out = await handlerFor('m365_query_users')({ mode: 'list', search: 'ada', accountEnabled: true, department: 'eng' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.user.list', search: 'ada', accountEnabled: true, department: 'eng', pageSize: 25 },
+        undefined,
+      );
+      expect(JSON.parse(out)).toEqual({ items: [{ id: 'u1' }], truncated: false });
+    });
+
+    it('maps get mode to m365.user.get with userIdOrUpn', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'u1' } });
+      const out = await handlerFor('m365_query_users')({ mode: 'get', userIdOrUpn: 'ada@contoso.com' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+        undefined,
+      );
+      expect(JSON.parse(out)).toEqual({ resource: { id: 'u1' } });
+    });
+
+    it('clamps an excessive limit to the per-action max (50)', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_users')({ mode: 'list', limit: 9999 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.user.list', pageSize: 50 },
+        undefined,
+      );
+    });
+
+    it('threads an explicit orgId through to executeM365ReadAction', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_users')({ mode: 'list', orgId: 'org-B' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(queryAuth, expect.anything(), 'org-B');
+    });
+
+    it('returns the generic invalid-parameters error without calling the service when userIdOrUpn is missing', async () => {
+      const out = await handlerFor('m365_query_users')({ mode: 'get' }, queryAuth);
+      expect(JSON.parse(out)).toEqual({ error: 'Invalid parameters for this Microsoft 365 query.' });
+      expect(executeM365ReadAction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('m365_query_signins', () => {
+    it('maps to m365.signins.list with userPrincipalName and sinceHours', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_signins')({ userPrincipalName: 'ada@contoso.com', sinceHours: 48 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.signins.list', userPrincipalName: 'ada@contoso.com', sinceHours: 48, pageSize: 25 },
+        undefined,
+      );
+    });
+
+    it('clamps limit to the per-action max (50)', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_signins')({ limit: 500 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.signins.list', pageSize: 50 },
+        undefined,
+      );
+    });
+  });
+
+  describe('m365_query_intune_devices', () => {
+    it('maps list mode with complianceState/operatingSystem filters', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_intune_devices')({ mode: 'list', complianceState: 'noncompliant', operatingSystem: 'Windows' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.intune.device.list', complianceState: 'noncompliant', operatingSystem: 'Windows', pageSize: 25 },
+        undefined,
+      );
+    });
+
+    it('maps get mode with intuneDeviceId', async () => {
+      const deviceId = '11111111-2222-3333-4444-555555555555';
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'resource', resource: { id: deviceId } });
+      await handlerFor('m365_query_intune_devices')({ mode: 'get', intuneDeviceId: deviceId }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.intune.device.get', deviceId },
+        undefined,
+      );
+    });
+
+    it('clamps limit to the per-action max (50)', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_intune_devices')({ mode: 'list', limit: 1000 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.intune.device.list', pageSize: 50 },
+        undefined,
+      );
+    });
+  });
+
+  describe('m365_query_groups', () => {
+    const groupId = '11111111-2222-3333-4444-555555555555';
+
+    it('maps list mode with search', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_groups')({ mode: 'list', search: 'staff' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.group.list', search: 'staff', pageSize: 25 },
+        undefined,
+      );
+    });
+
+    it('maps get mode with groupId', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'resource', resource: { id: groupId } });
+      await handlerFor('m365_query_groups')({ mode: 'get', groupId }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.group.get', groupId },
+        undefined,
+      );
+    });
+
+    it('maps members mode with groupId and clamps limit to 100', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_groups')({ mode: 'members', groupId, limit: 5000 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.group.members.list', groupId, pageSize: 100 },
+        undefined,
+      );
+    });
+
+    it('clamps list-mode limit to 50 (not the members cap of 100)', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_groups')({ mode: 'list', limit: 5000 }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.group.list', pageSize: 50 },
+        undefined,
+      );
+    });
+  });
+
+  describe('m365_query_org', () => {
+    it('maps include=profile to m365.org.get', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'org1' } });
+      await handlerFor('m365_query_org')({ include: 'profile' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(queryAuth, { type: 'm365.org.get' }, undefined);
+    });
+
+    it('maps include=licenses to m365.org.skus.list', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_org')({ include: 'licenses' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(queryAuth, { type: 'm365.org.skus.list' }, undefined);
+    });
+  });
+
+  describe('m365_query_sites', () => {
+    it('maps list mode with a required search term', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [], truncated: false });
+      await handlerFor('m365_query_sites')({ mode: 'list', search: 'intranet' }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.sites.list', search: 'intranet' },
+        undefined,
+      );
+    });
+
+    it('maps get mode with siteId', async () => {
+      const siteId = 'contoso.sharepoint.com,111,222';
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'resource', resource: { id: siteId } });
+      await handlerFor('m365_query_sites')({ mode: 'get', siteId }, queryAuth);
+      expect(executeM365ReadAction).toHaveBeenCalledWith(
+        queryAuth,
+        { type: 'm365.site.get', siteId },
+        undefined,
+      );
+    });
+
+    it('returns the generic invalid-parameters error when search is missing in list mode', async () => {
+      const out = await handlerFor('m365_query_sites')({ mode: 'list' }, queryAuth);
+      expect(JSON.parse(out)).toEqual({ error: 'Invalid parameters for this Microsoft 365 query.' });
+      expect(executeM365ReadAction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refusal serialization', () => {
+    it('serializes a service refusal as { error, code, retryAfterSeconds }', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({
+        ok: false,
+        code: 'connection_not_ready',
+        message: 'Microsoft 365 is not connected for this organization. Connect Microsoft 365 in Integrations settings.',
+      });
+      const out = await handlerFor('m365_query_users')({ mode: 'list' }, queryAuth);
+      expect(JSON.parse(out)).toEqual({
+        error: 'Microsoft 365 is not connected for this organization. Connect Microsoft 365 in Integrations settings.',
+        code: 'connection_not_ready',
+      });
+    });
+
+    it('includes retryAfterSeconds when the service provides one', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({
+        ok: false,
+        code: 'read_rate_limited',
+        message: 'Microsoft 365 Graph read actions are rate limited for this connection. Try again shortly.',
+        retryAfterSeconds: 42,
+      });
+      const out = await handlerFor('m365_query_signins')({}, queryAuth);
+      expect(JSON.parse(out)).toEqual({
+        error: 'Microsoft 365 Graph read actions are rate limited for this connection. Try again shortly.',
+        code: 'read_rate_limited',
+        retryAfterSeconds: 42,
+      });
+    });
+  });
+
+  describe('truncated collection note', () => {
+    it('adds a narrowing note when the service reports truncation', async () => {
+      vi.mocked(executeM365ReadAction).mockResolvedValue({ ok: true, kind: 'collection', items: [{ id: 'u1' }], truncated: true });
+      const out = await handlerFor('m365_query_users')({ mode: 'list' }, queryAuth);
+      expect(JSON.parse(out)).toEqual({
+        items: [{ id: 'u1' }],
+        truncated: true,
+        note: 'Result capped; narrow the query for more.',
+      });
+    });
+  });
+
+  describe('safeHandler crash containment', () => {
+    it('returns a generic error and never throws when executeM365ReadAction rejects', async () => {
+      vi.mocked(executeM365ReadAction).mockRejectedValue(new Error('boom'));
+      const out = await handlerFor('m365_query_users')({ mode: 'list' }, queryAuth);
+      expect(JSON.parse(out)).toEqual({ error: 'Operation failed. Check server logs for details.' });
+    });
   });
 });
