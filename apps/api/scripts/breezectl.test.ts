@@ -209,6 +209,84 @@ describe('advisory lock', () => {
     expect(parsed.extensions).toHaveLength(2);
     expect(out.join('\n')).toMatch(/stale lock/i);
   });
+
+  // Two runs that both judge the SAME lock stale interleave: the second unlinks
+  // the first's FRESH lockfile and creates its own. Without an owner marker the
+  // first run's release would unlink the second's live lock. The nonce makes
+  // both acquisition and release conditional on still owning the file.
+  it('stamps an owner nonce into the lockfile', async () => {
+    const lock = `${configPath}${LOCK_SUFFIX}`;
+    let observed: { pid?: number; nonce?: string } | null = null;
+    await runBreezectl(
+      ['extensions', 'install', ...NEW_ARGS],
+      opts({
+        log: (line: string) => {
+          out.push(line);
+          // Read the lockfile while the edit is still in flight.
+          observed ??= JSON.parse(readFileSync(lock, 'utf8'));
+        },
+      }),
+    );
+    expect(observed?.pid).toBe(process.pid);
+    expect(typeof observed?.nonce).toBe('string');
+    expect(observed?.nonce).not.toHaveLength(0);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('does not remove a lockfile that another run now owns', async () => {
+    const lock = `${configPath}${LOCK_SUFFIX}`;
+    await runBreezectl(
+      ['extensions', 'install', ...NEW_ARGS],
+      opts({
+        log: (line: string) => {
+          out.push(line);
+          // Simulate a concurrent run breaking our lock and taking the path.
+          if (existsSync(lock)) {
+            writeFileSync(lock, JSON.stringify({ pid: 424242, nonce: 'someone-elses' }));
+          }
+        },
+      }),
+    );
+    // The other run's lock survives our release, and we say so.
+    expect(existsSync(lock)).toBe(true);
+    expect(JSON.parse(readFileSync(lock, 'utf8')).nonce).toBe('someone-elses');
+    expect(out.join('\n')).toMatch(/not releasing/i);
+  });
+});
+
+describe('required flag', () => {
+  it('promotes with --required and demotes with --not-required', async () => {
+    await runBreezectl(
+      ['extensions', 'upgrade', '--name', 'demo', '--version', '2.0.0', '--required'],
+      opts(),
+    );
+    let parsed = loadYaml(readFileSync(configPath, 'utf8')) as {
+      extensions: Array<{ name: string; required: boolean }>;
+    };
+    expect(parsed.extensions.find((e) => e.name === 'demo')?.required).toBe(true);
+
+    // Carried forward when neither flag is given.
+    await runBreezectl(['extensions', 'upgrade', '--name', 'demo', '--version', '3.0.0'], opts());
+    parsed = loadYaml(readFileSync(configPath, 'utf8')) as typeof parsed;
+    expect(parsed.extensions.find((e) => e.name === 'demo')?.required).toBe(true);
+
+    // Demoted only by the explicit flag.
+    await runBreezectl(
+      ['extensions', 'upgrade', '--name', 'demo', '--version', '4.0.0', '--not-required'],
+      opts(),
+    );
+    parsed = loadYaml(readFileSync(configPath, 'utf8')) as typeof parsed;
+    expect(parsed.extensions.find((e) => e.name === 'demo')?.required).toBe(false);
+  });
+
+  it('rejects --required together with --not-required', async () => {
+    await expect(
+      runBreezectl(
+        ['extensions', 'upgrade', '--name', 'demo', '--required', '--not-required'],
+        opts(),
+      ),
+    ).rejects.toThrow(/mutually exclusive/i);
+  });
 });
 
 describe('admin API verbs', () => {

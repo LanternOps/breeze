@@ -16,12 +16,21 @@
  * which edits the YAML.
  *
  * ── FLEET SEMANTICS ─────────────────────────────────────────────────────────
- * The `enabled` flag is the cross-replica contract: the request gateway
- * consults it per request (enabledGate.ts, no caching) and the job processor
- * re-checks it per tick (jobHost.ts), so every replica honors a flip
- * immediately. The registry mutation and schedule resync below are the LOCAL
- * replica's fast path plus the fleet-wide schedule cleanup — see
- * `applyEnabled` for why both are needed.
+ * The `enabled` flag is the cross-replica contract, and it is honored by an
+ * UNCACHED re-read of the flag at each point where extension code could run:
+ *   • the request gateway reads it per request (enabledGate.ts);
+ *   • the job processor reads it per tick (jobHost.ts `process`);
+ *   • `executeTool` reads it before invoking an extension-contributed AI tool
+ *     handler (aiTools.ts).
+ * That is what makes a flip fleet-wide: no replica trusts its own in-memory
+ * registry snapshot to decide whether extension code may execute, because a
+ * disable landing on one replica does not invalidate any other replica's
+ * snapshot. Schedule reconciliation reads the flag too (jobHost.ts `sync`), so a
+ * stale replica cannot resurrect a disabled extension's repeatables.
+ *
+ * The registry mutation and schedule resync below are the LOCAL replica's fast
+ * path plus the fleet-wide schedule cleanup — see `applyEnabled` for why both
+ * are needed.
  *
  * ── SANITIZATION ────────────────────────────────────────────────────────────
  * Nothing derived from a raw error, a filesystem path, a key file, or a config

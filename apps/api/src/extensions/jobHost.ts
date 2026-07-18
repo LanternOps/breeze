@@ -23,7 +23,7 @@ import {
   type ExtensionContributionRegistry,
   type StagedExtensionContributions,
 } from './contributionRegistry';
-import type { ExtensionStateStore } from './stateStore';
+import { createExtensionStateStore, type ExtensionStateStore } from './stateStore';
 import { recordExtensionJob } from './metrics';
 
 export const EXTENSION_JOBS_QUEUE = 'breeze-extension-jobs';
@@ -125,6 +125,13 @@ export class ExtensionJobHost {
    * alone would leave the old schedule in place and `add` a second one, so the
    * job would run on both patterns forever, accumulating one more schedule per
    * change. Same rationale as `jobs/auditRetention.ts`.
+   *
+   * The desired set is `listActive()` INTERSECTED with the durable `enabled`
+   * flag. `listActive()` alone reflects only this replica's in-memory snapshot,
+   * so a replica that never saw the disable would re-add the disabled
+   * extension's repeatables on its next sync — permanently, since nothing else
+   * converges it. Reading the flag makes any replica's sync produce the same
+   * desired set.
    */
   async sync(
     queue: JobHostQueue,
@@ -132,6 +139,7 @@ export class ExtensionJobHost {
   ): Promise<void> {
     const desired = new Map<string, { extension: string; job: string; cron: string }>();
     for (const snapshot of active) {
+      if (!(await this.store.isEnabled(snapshot.name))) continue;
       for (const definition of snapshot.jobs.values()) {
         const id = extensionJobId(snapshot.name, definition.name);
         desired.set(id, { extension: snapshot.name, job: definition.name, cron: definition.cron });
@@ -207,9 +215,10 @@ export async function initializeExtensionJobHost(
  * flipping `installed_extensions.enabled`, so "disable removes future repeat
  * schedules" holds without a restart (and enable restores them).
  *
- * `sync` derives its desired set from `registry.listActive()`, which excludes
- * withdrawn (disabled) snapshots — so a withdraw followed by this call is
- * exactly the removal we want.
+ * `sync` derives its desired set from `registry.listActive()` INTERSECTED with
+ * the durable `enabled` flag, so a withdraw followed by this call is exactly the
+ * removal we want — and a replica whose registry never saw the disable still
+ * computes the same desired set instead of re-adding the dead schedule.
  *
  * CALLER CONTRACT: this touches Redis and therefore can throw. The enabled flag
  * is authoritative on its own, so callers treat a failure here as deferred work,
@@ -218,13 +227,12 @@ export async function initializeExtensionJobHost(
 export async function resyncExtensionSchedules(
   registry: JobHostRegistry = extensionContributionRegistry,
   queue: JobHostQueue = getExtensionJobsQueue(),
+  store: JobHostStore = createExtensionStateStore(),
 ): Promise<void> {
-  // `store` is only consulted by `process`, never by `sync`; supply a
-  // never-called stub so the host can be built without a database.
-  const host = new ExtensionJobHost({
-    registry,
-    store: { isEnabled: async () => true },
-  });
+  // The REAL store: `sync` intersects the registry's replica-local view with the
+  // durable enabled flag, so a stub returning `true` would let a stale replica
+  // resurrect a disabled extension's repeatables.
+  const host = new ExtensionJobHost({ registry, store });
   await host.sync(queue);
 }
 

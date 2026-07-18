@@ -6,8 +6,10 @@
  * recover-stuck-agents.ts / .lib.ts, which keeps the logic unit-testable
  * without executing a `main()` on import).
  *
- * Usage inside the container:
- *   pnpm breezectl extensions list
+ * Usage inside the container (WORKDIR /app/apps/api; the runner stage is a bare
+ * node:24-alpine with no package manager, so invoke the built bundle directly —
+ * `pnpm breezectl` works only in a local dev checkout):
+ *   node dist/scripts/breezectl.cjs extensions list
  *   node dist/scripts/breezectl.cjs extensions disable demo
  *
  * Run `breezectl extensions` with no verb for the full flag reference.

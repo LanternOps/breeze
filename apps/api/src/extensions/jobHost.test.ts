@@ -186,6 +186,34 @@ describe('ExtensionJobHost.sync', () => {
     expect(removed).toEqual([]);
   });
 
+  // A disable landing on replica A never invalidates replica B's in-memory
+  // registry, so B's listActive() still reports the extension as enabled. If
+  // sync trusted that flag alone, B's next sync (triggered by ANY enable/disable
+  // of ANY extension) would re-add the disabled extension's repeatable — and it
+  // would tick forever, because nothing ever converges B without a restart.
+  it('does not schedule an extension whose durable enabled flag is false, even when the local registry still lists it active', async () => {
+    const registry = makeRegistry([
+      makeSnapshot('stale-disabled', { sweep: { name: 'sweep', cron: '0 * * * *', handler: vi.fn() } }),
+      makeSnapshot('healthy', { tidy: { name: 'tidy', cron: '5 * * * *', handler: vi.fn() } }),
+    ]);
+    // The stale-replica state: the snapshot says enabled, the database says no.
+    expect(registry.listActive().map((s) => s.name))
+      .toEqual(['stale-disabled', 'healthy']);
+    const isEnabled = vi.fn(async (name: string) => name !== 'stale-disabled');
+    const host = new ExtensionJobHost({ registry, store: { isEnabled } });
+    const { queue, removed, added } = makeFakeQueue([
+      // the disabled extension's repeatable is still in Redis
+      { key: 'stale-key', name: 'sweep', id: 'extension-stale-disabled-sweep', pattern: '0 * * * *' },
+    ]);
+
+    await host.sync(queue);
+
+    // Removed, not re-added.
+    expect(removed).toEqual(['stale-key']);
+    expect(added).toHaveLength(1);
+    expect(added[0]?.opts.jobId).toBe('extension-healthy-tidy');
+  });
+
   it('drives sync from the active registry snapshot when none is passed', async () => {
     const registry = makeRegistry([
       makeSnapshot('demo', { sweep: { name: 'sweep', cron: '*/5 * * * *', handler: vi.fn() } }),
