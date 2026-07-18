@@ -116,7 +116,7 @@ export const readActionFailureCodeSchema = z.enum([
 
 export type ReadActionFailureCode = z.infer<typeof readActionFailureCodeSchema>;
 
-const readActionItemSchema = z.record(z.unknown());
+const readActionItemSchema = z.record(z.string(), z.unknown());
 
 export const readActionResultSchema = z.union([
   z.object({
