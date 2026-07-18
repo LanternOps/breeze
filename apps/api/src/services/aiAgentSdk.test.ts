@@ -99,6 +99,15 @@ vi.mock('./pamToolActionGovernance', () => ({
   mirrorElevationDecisionToExecution: vi.fn(),
 }));
 
+const mockCreateActionIntent = vi.fn();
+const mockWaitForIntentDecision = vi.fn();
+const mockTransitionIntent = vi.fn();
+vi.mock('./actionIntents/intentService', () => ({
+  createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
+  waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
+  transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
+}));
+
 // ============================================
 // Test helpers
 // ============================================
@@ -169,6 +178,21 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
     allowedTools: undefined,
     ...overrides,
   } as any;
+}
+
+function makeIntentSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'intent-1',
+    status: 'pending_approval',
+    actionName: 'execute_command',
+    argumentDigest: 'digest-1',
+    source: 'chat',
+    expiresAt: new Date(Date.now() + 300_000),
+    result: null,
+    errorCode: null,
+    approvalRequestIds: ['appr-1'],
+    ...overrides,
+  };
 }
 
 // ============================================
@@ -492,101 +516,211 @@ describe('createSessionPreToolUse', () => {
     expect(waitForApproval).not.toHaveBeenCalled();
   });
 
-  it('keeps Tier 3 tools pending under auto-approve', async () => {
-    vi.mocked(checkGuardrails).mockReturnValue({
-      allowed: true,
-      tier: 3,
-      requiresApproval: true,
-      description: 'Execute command',
-    } as any);
-    const { values } = mockInsertReturning({ id: 'exec-1' });
-    mockGetUserPushTokens.mockResolvedValue([]);
-    vi.mocked(waitForApproval).mockResolvedValue(false);
-    const session = makeActiveSession({ approvalMode: 'auto_approve' });
+  describe('Tier 3: durable action-intents backing (spec §6.1)', () => {
+    beforeEach(() => {
+      mockCreateActionIntent.mockReset();
+      mockWaitForIntentDecision.mockReset();
+      mockTransitionIntent.mockReset();
+    });
 
-    const result = await createSessionPreToolUse(session)('execute_command', {});
+    it('creates a chat-sourced action intent and blocks on waitForIntentDecision, even under auto-approve', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-1' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-1', approvalRequestIds: ['appr-1'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
 
-    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'session-1',
-      toolName: 'execute_command',
-      status: 'pending',
-    }));
-    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'approval_required',
-      executionId: 'exec-1',
-      toolName: 'execute_command',
-    }));
-    expect(waitForApproval).toHaveBeenCalledWith('exec-1', 300_000, expect.any(AbortSignal));
-  });
+      const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-  it('inserts a linked approval_requests row and emits approvalRequestId on per-step approval', async () => {
-    vi.mocked(checkGuardrails).mockReturnValue({
-      allowed: true,
-      tier: 3,
-      requiresApproval: true,
-      description: 'Execute command on host-1',
-    } as any);
-    const { values } = mockInsertReturning({ id: 'exec-1' });
-    mockGetUserPushTokens.mockResolvedValue([
-      { token: 'ExponentPushToken[abc]', platform: 'ios', provider: 'expo' },
-    ]);
-    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 1, dispatched: 1, errors: 0 });
-    vi.mocked(waitForApproval).mockResolvedValue(true);
-    const session = makeActiveSession({ approvalMode: 'per_step' });
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+        toolName: 'execute_command',
+        input: { deviceId: 'd-1' },
+        source: 'chat',
+        reason: 'Execute command',
+        orgId: 'org-1',
+      }));
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-1',
+        approvalRequestId: 'appr-1',
+        toolName: 'execute_command',
+      }));
+      expect(mockWaitForIntentDecision).toHaveBeenCalledWith('intent-1', 300_000, expect.any(AbortSignal));
+      // The old direct approval_requests bridge + push are gone — createActionIntent owns both now.
+      expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+      expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    });
 
-    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+    it('executes inline when the session wins the approved -> executing release CAS', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command on host-1',
+      } as any);
+      mockInsertReturning({ id: 'exec-2' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-2', approvalRequestIds: ['appr-2'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
 
-    expect(result).toEqual({ allowed: true });
+      const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-    // Both inserts fire: ai_tool_executions THEN approval_requests.
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'session-1',
-      toolName: 'execute_command',
-      status: 'pending',
-    }));
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'user-1',
-      executionId: 'exec-1',
-      requestingClientLabel: 'Breeze AI',
-      actionToolName: 'execute_command',
-      riskTier: 'high',
-      status: 'pending',
-    }));
+      expect(result).toEqual({ allowed: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', { executedAt: null });
+      // ai_tool_executions ledger row marked executing (the inline path today's UX).
+      expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
+    });
 
-    // Push dispatched (best-effort).
-    expect(mockGetUserPushTokens).toHaveBeenCalledWith('user-1');
-    expect(mockDispatchApprovalPushToTokens).toHaveBeenCalled();
+    it('does NOT execute inline when the session loses the release CAS to the durable worker (no double execution)', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-3' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3', approvalRequestIds: ['appr-3'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
 
-    // SSE event includes BOTH executionId and approvalRequestId.
-    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'approval_required',
-      executionId: 'exec-1',
-      approvalRequestId: 'exec-1',
-      toolName: 'execute_command',
-      description: 'Execute command on host-1',
-    }));
-  });
+      const result = await createSessionPreToolUse(session)('execute_command', {});
 
-  it('maps tier 2 → medium and tier 3 → high in approval_requests', async () => {
-    // Tier 2 in per_step mode also requires approval.
-    vi.mocked(checkGuardrails).mockReturnValue({
-      allowed: true,
-      tier: 2,
-      requiresApproval: false,
-      description: 'Take screenshot',
-    } as any);
-    const { values } = mockInsertReturning({ id: 'exec-2' });
-    mockGetUserPushTokens.mockResolvedValue([]);
-    vi.mocked(waitForApproval).mockResolvedValue(true);
-    const session = makeActiveSession({ approvalMode: 'per_step' });
+      expect(result).toEqual({
+        allowed: false,
+        error: 'This action is already being completed by the approval worker; it will not run twice.',
+      });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null });
+      // No inline execution: the "mark as executing" update never fires.
+      expect(db.update).not.toHaveBeenCalled();
+    });
 
-    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+    it('returns allowed:false without touching the intent when rejected/cancelled/expired', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-4' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-4', approvalRequestIds: ['appr-4'] }));
+      mockWaitForIntentDecision.mockResolvedValue('expired');
+      const session = makeActiveSession({ approvalMode: 'per_step' });
 
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      executionId: 'exec-2',
-      riskTier: 'medium',
-    }));
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('leaves the intent pending_approval on a chat timeout — durable, no mutation', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-5' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-5', approvalRequestIds: ['appr-5'] }));
+      mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Approval still pending; this action will complete once approved.',
+      });
+      // The intent is left exactly as-is: no release CAS attempted.
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('CASes the intent executing -> completed once the inline tool call finishes successfully', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-6' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-6', approvalRequestIds: ['appr-6'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const preResult = await createSessionPreToolUse(session)('execute_command', {});
+      expect(preResult).toEqual({ allowed: true });
+
+      mockTransitionIntent.mockClear();
+      const postToolUse = createSessionPostToolUse(session);
+      await postToolUse('execute_command', {}, JSON.stringify({ status: 'completed' }), false, 10);
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-6', 'executing', 'completed', expect.objectContaining({
+        executedAt: expect.any(Date),
+        result: expect.objectContaining({ status: 'completed' }),
+      }));
+    });
+
+    it('CASes the intent executing -> failed with an error code when the inline tool call fails', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-7' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-7', approvalRequestIds: ['appr-7'] }));
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const preResult = await createSessionPreToolUse(session)('execute_command', {});
+      expect(preResult).toEqual({ allowed: true });
+
+      mockTransitionIntent.mockClear();
+      const postToolUse = createSessionPostToolUse(session);
+      await postToolUse('execute_command', {}, JSON.stringify({ error: 'boom' }), true, 10);
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-7', 'executing', 'failed', expect.objectContaining({
+        executedAt: expect.any(Date),
+        errorCode: 'boom',
+      }));
+    });
+
+    it('does not touch any intent from postToolUse when this session never won an inline release CAS', async () => {
+      // Tier >= 2 so postToolUse takes the update branch that checks
+      // pendingIntentBySession — but preToolUse was never called on this
+      // session (e.g. a Tier-2 auto-approve execution, or a Tier-3 call that
+      // lost the CAS / timed out earlier), so nothing should have been
+      // tracked for it.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+      } as any);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      mockInsertValues();
+      const session = makeActiveSession();
+      const postToolUse = createSessionPostToolUse(session);
+
+      await postToolUse('take_screenshot', {}, JSON.stringify({ status: 'completed' }), false, 5);
+
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
   });
 
   it('blocks tools outside the session allowlist before approval handling', async () => {

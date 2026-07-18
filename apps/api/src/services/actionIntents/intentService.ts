@@ -504,3 +504,62 @@ export async function transitionIntent(
     return rows.length > 0;
   });
 }
+
+// ---------------------------------------------------------------------------
+// waitForIntentDecision — chat SDK's blocking poll (spec §6.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `aiAgent.ts`'s `waitForApproval` poll/backoff loop (500ms initial
+ * interval, ×1.5 backoff capped at 3s, abort-signal aware, system-scoped
+ * reads) but polls `action_intents.status` instead of
+ * `ai_tool_executions.status`, and returns the STATUS itself rather than a
+ * boolean.
+ *
+ * Unlike `waitForApproval`, this function never writes anything — a timeout
+ * simply returns the last-read status (almost always still
+ * `pending_approval`) and leaves the intent row untouched. That is the whole
+ * point of the durable design (spec §6.1): the caller (chat SDK) can give up
+ * waiting without cancelling the intent, and an approver can still decide it
+ * — and the release worker (`jobs/intentReleaseWorker.ts`) will execute it —
+ * after this session has moved on or died.
+ *
+ * Returns as soon as the status leaves `pending_approval` (any of
+ * approved/executing/completed/failed/rejected/expired/cancelled), so a
+ * caller only needs to special-case `pending_approval` to detect "still
+ * waiting" vs. "a decision (or a worker) already moved this."
+ */
+export async function waitForIntentDecision(
+  intentId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ActionIntentStatus> {
+  const startTime = Date.now();
+  let pollInterval = 500;
+  let lastStatus: ActionIntentStatus = 'pending_approval';
+
+  while (Date.now() - startTime < timeoutMs) {
+    if (signal?.aborted) return lastStatus;
+
+    try {
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({ status: actionIntents.status })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1),
+      );
+
+      if (!row) return lastStatus;
+      lastStatus = row.status;
+      if (lastStatus !== 'pending_approval') return lastStatus;
+    } catch (err) {
+      console.error(`[intentService] waitForIntentDecision poll error for intent ${intentId}:`, err);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    pollInterval = Math.min(pollInterval * 1.5, 3000);
+  }
+
+  return lastStatus;
+}

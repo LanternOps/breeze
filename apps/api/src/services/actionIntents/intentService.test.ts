@@ -178,6 +178,7 @@ import {
   getActionIntent,
   cancelActionIntent,
   transitionIntent,
+  waitForIntentDecision,
   ActionIntentTierError,
   ActionIntentNotFoundError,
   ActionIntentAuthorizationError,
@@ -599,5 +600,65 @@ describe('cancelActionIntent', () => {
     dbState.selectActionIntentsResults.push([{ status: 'completed' }]); // re-read
     const result = await cancelActionIntent(makeAuth(), 'intent-1');
     expect(result).toEqual({ ok: false, status: 'completed' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// waitForIntentDecision — chat SDK's blocking poll (spec §6.1)
+// ---------------------------------------------------------------------------
+
+describe('waitForIntentDecision', () => {
+  it('returns promptly, without sleeping, once the status leaves pending_approval', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'approved' }]);
+    const result = await waitForIntentDecision('intent-1', 5000);
+    expect(result).toBe('approved');
+  });
+
+  it('returns each of the non-pending terminal-ish statuses verbatim', async () => {
+    for (const status of ['rejected', 'expired', 'cancelled', 'executing', 'completed', 'failed'] as const) {
+      dbState.selectActionIntentsResults.push([{ status }]);
+      // eslint-disable-next-line no-await-in-loop
+      await expect(waitForIntentDecision('intent-1', 5000)).resolves.toBe(status);
+    }
+  });
+
+  it('never mutates the intent — only ever reads via db.select', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'rejected' }]);
+    await waitForIntentDecision('intent-1', 5000);
+    expect(dbState.updateActionIntentsSets).toHaveLength(0);
+  });
+
+  it('polls again on pending_approval and returns the last-read status when the timeout elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      // Every poll still observes pending_approval — plenty of reads queued
+      // so the loop never runs dry before the timeout fires.
+      for (let i = 0; i < 10; i++) {
+        dbState.selectActionIntentsResults.push([{ status: 'pending_approval' }]);
+      }
+      const promise = waitForIntentDecision('intent-1', 1200);
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+      expect(result).toBe('pending_approval');
+      // More than one read happened — it actually polled, not just checked once.
+      expect(dbState.selectActionIntentsResults.length).toBeLessThan(10);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling immediately and returns the last-read (initial) status when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await waitForIntentDecision('intent-1', 5000, controller.signal);
+    expect(result).toBe('pending_approval');
+    // Aborted before the first read — no db call made.
+    expect(dbState.selectActionIntentsResults).toHaveLength(0);
+  });
+
+  it('returns the pending_approval default when the intent row cannot be found', async () => {
+    dbState.selectActionIntentsResults.push([]);
+    const result = await waitForIntentDecision('missing-intent', 5000);
+    expect(result).toBe('pending_approval');
   });
 });
