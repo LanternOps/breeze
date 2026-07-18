@@ -182,12 +182,20 @@ function sortValue(value: unknown, seen: WeakSet<object>): unknown {
   }
   if (seen.has(value as object)) throw new TypeError('circular argument structure');
   seen.add(value as object);
-  if (Array.isArray(value)) return value.map((item) => sortValue(item, seen));
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    const item = (value as Record<string, unknown>)[key];
-    if (item !== undefined) out[key] = sortValue(item, seen);
+  // DFS path-marking: remove on backtrack so `seen` holds only ancestors on the
+  // current path. A shared (non-cyclic) object reused twice must NOT throw.
+  let out: unknown;
+  if (Array.isArray(value)) {
+    out = value.map((item) => sortValue(item, seen));
+  } else {
+    const obj: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item !== undefined) obj[key] = sortValue(item, seen);
+    }
+    out = obj;
   }
+  seen.delete(value as object);
   return out;
 }
 export function canonicalizeArguments(input: Record<string, unknown>): string {
