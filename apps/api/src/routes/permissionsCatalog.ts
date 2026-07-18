@@ -32,7 +32,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   sso: 'Single Sign-On',
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
-  ai_sessions: 'AI Sessions'
+  ai_sessions: 'AI Sessions',
+  approvals: 'Approvals'
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -48,7 +49,8 @@ const ACTION_LABELS: Record<string, string> = {
   send: 'Send',
   admin: 'Administer',
   accept_risk: 'Accept Risk',
-  read_all: 'Read All'
+  read_all: 'Read All',
+  decide: 'Decide'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

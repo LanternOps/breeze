@@ -123,6 +123,10 @@ export const PERMISSION_GRANTS = {
   // cross-user admin/audit surface must NOT be gated on organizations:read.
   AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
 
+  // Action intents / durable approvals — gates who may decide (approve/deny) a
+  // pending action-intent approval, distinct from creating/reading intents.
+  APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },
 } as const;

@@ -58,6 +58,7 @@ import {
   clearPermissionCache,
   isAssignablePermission,
   isKnownPermission,
+  userCanDecideApprovals,
   PERMISSIONS,
   type UserPermissions
 } from './permissions';
@@ -601,6 +602,74 @@ describe('permissions service', () => {
       const p = { resource: 'sso', action: 'admin' };
       expect(isKnownPermission(p)).toBe(true);
       expect(isAssignablePermission(p)).toBe(true);
+    });
+  });
+
+  describe('approvals:decide permission (action intents approval layer, §4)', () => {
+    it('is defined in the catalog as resource=approvals action=decide', () => {
+      expect(PERMISSIONS.APPROVALS_DECIDE).toEqual({ resource: 'approvals', action: 'decide' });
+    });
+
+    it('is a known, assignable permission', () => {
+      const p = { resource: 'approvals', action: 'decide' };
+      expect(isKnownPermission(p)).toBe(true);
+      expect(isAssignablePermission(p)).toBe(true);
+    });
+
+    describe('userCanDecideApprovals', () => {
+      it('returns true for an Org Admin-shaped grant (explicit approvals:decide)', () => {
+        const userPerms: UserPermissions = {
+          permissions: [{ resource: 'approvals', action: 'decide' }],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-org-admin',
+          scope: 'organization'
+        };
+
+        expect(userCanDecideApprovals(userPerms)).toBe(true);
+      });
+
+      it('returns true for a Partner Admin-shaped grant via the *:* wildcard', () => {
+        const userPerms: UserPermissions = {
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: 'partner-1',
+          orgId: null,
+          roleId: 'role-partner-admin',
+          scope: 'partner'
+        };
+
+        expect(userCanDecideApprovals(userPerms)).toBe(true);
+      });
+
+      it('returns false for an Org Technician-shaped grant (no approvals:decide)', () => {
+        const userPerms: UserPermissions = {
+          permissions: [
+            { resource: 'devices', action: 'read' },
+            { resource: 'devices', action: 'write' },
+            { resource: 'devices', action: 'execute' },
+            { resource: 'scripts', action: 'read' },
+            { resource: 'scripts', action: 'execute' }
+          ],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-org-technician',
+          scope: 'organization'
+        };
+
+        expect(userCanDecideApprovals(userPerms)).toBe(false);
+      });
+
+      it('returns false for empty permissions', () => {
+        const userPerms: UserPermissions = {
+          permissions: [],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization'
+        };
+
+        expect(userCanDecideApprovals(userPerms)).toBe(false);
+      });
     });
   });
 });
