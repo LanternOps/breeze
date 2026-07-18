@@ -13,8 +13,27 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
+// Real AsyncLocalStorage-backed context tracking — NOT a bare identity
+// pass-through. This is the #1105 regression the new test below exists to
+// catch: an identity `withSystemDbAccessContext: fn => fn()` mock would make
+// `hasDbAccessContext()` always report false and could never prove the
+// enqueue loop runs outside a held DB context. Self-contained inside the
+// factory (no outer-scope references) so vi.mock hoisting can't reorder it
+// ahead of its dependencies.
 vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>();
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  const contextStorage = new AsyncLocalStorage<true>();
+
+  const hasDbAccessContext = (): boolean => contextStorage.getStore() !== undefined;
+
+  const withSystemDbAccessContext = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (contextStorage.getStore()) return fn();
+    return contextStorage.run(true, fn);
+  };
+
+  const runOutsideDbContext = <T>(fn: () => T): T => contextStorage.exit(fn);
+
   return {
     ...actual,
     db: {
@@ -22,7 +41,9 @@ vi.mock('../db', async (importOriginal) => {
       execute: (...args: unknown[]) => executeMock(...(args as [])),
       update: (...args: unknown[]) => updateMock(...(args as [])),
     },
-    withSystemDbAccessContext: async <T>(fn: () => Promise<T>) => fn(),
+    hasDbAccessContext,
+    withSystemDbAccessContext,
+    runOutsideDbContext,
   };
 });
 
@@ -45,6 +66,7 @@ vi.mock('../services/sentry', () => ({
 
 import { publishOutboxRows } from './intentOutboxPublisher';
 import { captureException } from '../services/sentry';
+import * as dbModule from '../db';
 
 function makeUpdateChain(returningValue: unknown = undefined) {
   const where = vi.fn(() => Promise.resolve(returningValue));
@@ -171,5 +193,50 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
     expect(result).toEqual({ published: 0, skipped: 0 });
     expect(updateMock).not.toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  // #1105 regression: publishOutboxRows must release its DB access context
+  // before calling queue.add(). Previously the whole function (claim +
+  // enqueue + mark-published) ran inside a single caller-provided
+  // withSystemDbAccessContext, so this Redis round-trip pinned a pooled
+  // Postgres connection idle-in-transaction on every claimed row, every 5s.
+  // The `../db` mock above is a REAL AsyncLocalStorage-backed context
+  // tracker (not an identity pass-through), so `hasDbAccessContext()` here
+  // reflects the actual context boundary `publishOutboxRows` establishes —
+  // a mock that stubbed `withSystemDbAccessContext` as `fn => fn()` could
+  // never have caught this, because `hasDbAccessContext()` would report
+  // false unconditionally regardless of where the enqueue actually ran.
+  it('releases the DB access context before enqueueing — #1105', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 5,
+          intent_id: 'intent-5',
+          event_type: 'intent_created',
+          publish_attempts: 1,
+        },
+      ],
+    });
+    const chain = makeUpdateChain();
+    updateMock.mockReturnValue({ set: chain.set });
+
+    let sawContextDuringEnqueue: boolean | undefined;
+    addMock.mockImplementation(async () => {
+      sawContextDuringEnqueue = dbModule.hasDbAccessContext();
+      return { id: 'bullmq-job-5' };
+    });
+
+    const result = await publishOutboxRows();
+
+    expect(result).toEqual({ published: 1, skipped: 0 });
+    expect(addMock).toHaveBeenCalledTimes(1);
+    // The load-bearing assertion: queue.add() ran with NO DB access context
+    // held. `false` here (not `undefined`) also proves the callback actually
+    // ran and made the check, not just that it was skipped.
+    expect(sawContextDuringEnqueue).toBe(false);
+    // Sanity: the DB context helper itself is not held after the full pass
+    // either — the claim and mark-published contexts both closed cleanly.
+    expect(dbModule.hasDbAccessContext()).toBe(false);
   });
 });

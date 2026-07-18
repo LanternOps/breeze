@@ -21,24 +21,33 @@ import { captureException } from '../services/sentry';
  *  2. Atomically claim up to MAX_PUBLISH_PER_RUN live rows (`published_at IS
  *     NULL`, `publish_attempts <= MAX_PUBLISH_ATTEMPTS`, `FOR UPDATE SKIP
  *     LOCKED`) and bump `publish_attempts` in the same statement — so a crash
- *     between claim and enqueue still counts as a used attempt.
+ *     between claim and enqueue still counts as a used attempt. Steps 1-2 run
+ *     inside a short `withSystemDbAccessContext` call that closes (commits)
+ *     before step 3 starts.
  *  3. For each claimed row, enqueue an `action-intents` job with a
  *     hyphen-only, dedupe-stable jobId (`intent-<eventType>-<intentId>` — see
  *     BullMQ jobId rule: colons collide with BullMQ's own key delimiter).
- *     This step runs AFTER the claiming transaction has committed (not
- *     inside it) so a Redis round-trip per row never pins a pooled DB
- *     connection idle-in-transaction (#1105).
+ *     This step runs explicitly OUTSIDE any DB access context
+ *     (`runOutsideDbContext`) so a Redis round-trip per row never pins a
+ *     pooled DB connection idle-in-transaction (#1105) — `queue.add()` is
+ *     instrumented (`createInstrumentedQueue`) to warn/throw if it ever runs
+ *     while a context is still held.
  *  4. Mark `published_at = now()` for whichever rows actually enqueued
- *     successfully. Rows that failed to enqueue keep `published_at IS NULL`
- *     and are naturally retried next pass (their attempt was already
- *     counted in step 2). Re-publishing is harmless: `intentReleaseWorker`
- *     consumers are CAS-idempotent and BullMQ's jobId dedupe collapses
- *     duplicate enqueues of the same event for the same intent.
+ *     successfully, in a SECOND short `withSystemDbAccessContext` call. Rows
+ *     that failed to enqueue keep `published_at IS NULL` and are naturally
+ *     retried next pass (their attempt was already counted in step 2).
+ *     Re-publishing is harmless: `intentReleaseWorker` consumers are
+ *     CAS-idempotent and BullMQ's jobId dedupe collapses duplicate enqueues
+ *     of the same event for the same intent.
  *
- * Runs every 5 seconds inside `withSystemDbAccessContext` — `intent_outbox`
- * has RLS disabled entirely (system-scoped, workers only; same precedent as
- * `device_commands`), but the DB-context helper is used uniformly across
- * background jobs regardless of RLS status.
+ * Runs every 5 seconds. `publishOutboxRows` itself opens and closes the two
+ * short `withSystemDbAccessContext` transactions (claim, then mark-published)
+ * around the enqueue step — the worker processor must NOT wrap the whole
+ * function in a single outer context, or the enqueue loop would run inside a
+ * held transaction (the exact #1105 anti-pattern this module exists to
+ * avoid). `intent_outbox` has RLS disabled entirely (system-scoped, workers
+ * only; same precedent as `device_commands`), but the DB-context helper is
+ * used uniformly across background jobs regardless of RLS status.
  */
 
 const REAPER_QUEUE_NAME = 'intent-outbox-publisher';
@@ -59,6 +68,18 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
     );
   }
   return withSystem(fn);
+};
+
+// #1105 — explicitly exits any DB access context before running `fn`. Used to
+// wrap the enqueue loop so a Redis round-trip per row can never run while a
+// pooled connection is pinned idle-in-transaction, even if a future caller
+// mistakenly invokes `publishOutboxRows` from inside an existing context.
+const runOutsideDbContext = <T>(fn: () => Promise<T>): Promise<T> => {
+  const runOutside = dbModule.runOutsideDbContext;
+  if (typeof runOutside !== 'function') {
+    return fn();
+  }
+  return runOutside(fn);
 };
 
 let reaperQueue: Queue<PublisherJobData> | null = null;
@@ -109,12 +130,18 @@ export interface PublishOutboxResult {
   skipped: number;
 }
 
+interface ClaimResult {
+  stuckRows: StuckOutboxRow[];
+  claimedRows: ClaimedOutboxRow[];
+}
+
 /**
- * Single pass over `intent_outbox`. Returns the number of rows successfully
- * published and the number of rows skipped as permanently stuck.
+ * Phase 1 (CLAIM) — DB-only work. Runs inside its own short
+ * `withSystemDbAccessContext` transaction (opened by the caller) so the held
+ * connection covers only these two statements, never the enqueue loop.
  */
-export async function publishOutboxRows(): Promise<PublishOutboxResult> {
-  // Step 1: read-only alarm scan — never locked, never mutated.
+async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
+  // Read-only alarm scan — never locked, never mutated.
   const stuck = await db.execute<StuckOutboxRow>(sql`
     SELECT id, intent_id, event_type, publish_attempts
     FROM ${intentOutbox}
@@ -132,7 +159,7 @@ export async function publishOutboxRows(): Promise<PublishOutboxResult> {
     captureException(new Error(message));
   }
 
-  // Step 2: atomically claim live rows and bump publish_attempts.
+  // Atomically claim live rows and bump publish_attempts.
   const claimed = await db.execute<ClaimedOutboxRow>(sql`
     WITH due AS (
       SELECT id
@@ -151,14 +178,19 @@ export async function publishOutboxRows(): Promise<PublishOutboxResult> {
   `);
   const claimedRows = extractRows<ClaimedOutboxRow>(claimed);
 
-  if (claimedRows.length === 0) {
-    return { published: 0, skipped: stuckRows.length };
-  }
+  return { stuckRows, claimedRows };
+}
 
-  // Step 3: enqueue outside the claiming transaction (already committed by now).
+/**
+ * Phase 2 (ENQUEUE) — no DB context. Caller must invoke this via
+ * `runOutsideDbContext` so `queue.add()` (instrumented by
+ * `createInstrumentedQueue`) never runs while a pooled connection is pinned
+ * idle-in-transaction (#1105).
+ */
+async function enqueueClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
   const queue = getActionIntentsQueue();
   const publishedIds: number[] = [];
-  for (const row of claimedRows) {
+  for (const row of rows) {
     try {
       await queue.add(
         row.event_type,
@@ -176,13 +208,48 @@ export async function publishOutboxRows(): Promise<PublishOutboxResult> {
       // Leave published_at NULL — next pass retries; attempt already counted above.
     }
   }
+  return publishedIds;
+}
 
-  // Step 4: mark successfully-enqueued rows published.
+/**
+ * Phase 3 (MARK PUBLISHED) — DB-only work, its own short
+ * `withSystemDbAccessContext` transaction opened by the caller, entirely
+ * separate from the claim transaction so it never overlaps the enqueue loop.
+ */
+async function markOutboxRowsPublished(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(intentOutbox)
+    .set({ publishedAt: sql`now()` })
+    .where(inArray(intentOutbox.id, ids));
+}
+
+/**
+ * Single pass over `intent_outbox`. Returns the number of rows successfully
+ * published and the number of rows skipped as permanently stuck.
+ *
+ * Orchestrates its own DB-context boundaries (claim → enqueue → mark
+ * published) so no caller may accidentally hold a DB transaction open across
+ * the enqueue loop (#1105). Callers must invoke this directly, never wrapped
+ * in an outer `withSystemDbAccessContext`.
+ */
+export async function publishOutboxRows(): Promise<PublishOutboxResult> {
+  // Phase 1: claim, inside a short DB context that closes before we return.
+  const { stuckRows, claimedRows } = await runWithSystemDbAccess(scanAndClaimOutboxRows);
+
+  if (claimedRows.length === 0) {
+    return { published: 0, skipped: stuckRows.length };
+  }
+
+  // Phase 2: enqueue, explicitly outside any DB context — the claiming
+  // transaction from phase 1 has already committed, but we exit defensively
+  // in case a future caller nests `publishOutboxRows` inside its own context.
+  const publishedIds = await runOutsideDbContext(() => enqueueClaimedRows(claimedRows));
+
+  // Phase 3: mark successfully-enqueued rows published, in a second short
+  // DB context that never overlaps the enqueue loop above.
   if (publishedIds.length > 0) {
-    await db
-      .update(intentOutbox)
-      .set({ publishedAt: sql`now()` })
-      .where(inArray(intentOutbox.id, publishedIds));
+    await runWithSystemDbAccess(() => markOutboxRowsPublished(publishedIds));
   }
 
   if (claimedRows.length === MAX_PUBLISH_PER_RUN) {
@@ -199,7 +266,11 @@ function createWorker(): Worker<PublisherJobData> {
     REAPER_QUEUE_NAME,
     async (_job: Job<PublisherJobData>) => {
       try {
-        const { published, skipped } = await runWithSystemDbAccess(publishOutboxRows);
+        // publishOutboxRows manages its own DB-context boundaries internally
+        // (claim → enqueue → mark-published) — it must NOT be wrapped in an
+        // outer withSystemDbAccessContext here, or the enqueue loop would run
+        // inside a held transaction (#1105).
+        const { published, skipped } = await publishOutboxRows();
         if (published > 0 || skipped > 0) {
           console.log(
             `[IntentOutboxPublisher] Published ${published} outbox row(s), ${skipped} stuck`,
