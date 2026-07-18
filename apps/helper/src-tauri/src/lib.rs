@@ -1,4 +1,5 @@
 mod ipc;
+mod workspace_open;
 
 use crate::ipc::token::HelperToken;
 use futures_util::StreamExt;
@@ -1010,6 +1011,7 @@ pub fn run() {
             update_chat_active,
             helper_token_ready,
             submit_consent,
+            workspace_open::open_workspace_path,
         ])
         .setup(|app| {
             // Create main window manually (not from config) so we can set

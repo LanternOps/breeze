@@ -1030,6 +1030,12 @@ body {
   color: var(--success);
 }
 
+.helper-file-open-error {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+
 .helper-workspace-browse {
   flex: 1;
   display: flex;

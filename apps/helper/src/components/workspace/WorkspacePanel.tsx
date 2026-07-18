@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useWorkspaceStore, type FinderFile } from '../../stores/workspaceStore';
 import { useChatStore } from '../../stores/chatStore';
+import { getTauriInvoke } from '../../lib/helperFetch';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -27,6 +28,7 @@ function FileRow({
   sourceName,
   timestamp,
   copied,
+  openError,
   onCopyPath,
   onReveal,
   onOpen,
@@ -35,9 +37,11 @@ function FileRow({
   sourceName?: string;
   timestamp?: string | null;
   copied: boolean;
+  /** Set when opening this row's file failed; shows the copy-path fallback note. */
+  openError?: boolean;
   onCopyPath: (file: FinderFile) => void;
   onReveal?: (file: FinderFile) => void;
-  /** Open-in-place — wired up by the open_workspace_path Tauri command task. */
+  /** Open-in-place via the open_workspace_path Tauri command. */
   onOpen?: (file: FinderFile) => void;
 }) {
   const metaParts = [
@@ -51,6 +55,12 @@ function FileRow({
       <div className="helper-file-main">
         <span className="helper-file-name">{file.isDir ? `${file.name}/` : file.name}</span>
         <span className="helper-file-meta">{metaParts.join(' · ')}</span>
+        {openError && (
+          <span className="helper-file-open-error">
+            Couldn't open — the share may be unreachable from this machine. Path copied
+            instead.
+          </span>
+        )}
       </div>
       <div className="helper-file-actions">
         {copied && <span className="helper-file-copied">Copied</span>}
@@ -114,6 +124,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [openErrorId, setOpenErrorId] = useState<string | null>(null);
 
   const sourceName = (id: string) => sources.find((s) => s.id === id)?.displayName;
 
@@ -148,6 +159,23 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
       })
       .catch(() => {});
     recordActivity(file.id, 'copy_path', username);
+  };
+
+  const handleOpen = async (file: FinderFile) => {
+    if (!file.openPath) return;
+    setOpenErrorId((cur) => (cur === file.id ? null : cur));
+    await recordActivity(file.id, 'open', username);
+    try {
+      const invoke = await getTauriInvoke();
+      if (!invoke) {
+        throw new Error('Opening files requires the desktop app');
+      }
+      await invoke('open_workspace_path', { input: { path: file.openPath } });
+    } catch {
+      // Fallback: put the path on the clipboard and say so on the row.
+      navigator.clipboard.writeText(file.openPath).catch(() => {});
+      setOpenErrorId(file.id);
+    }
   };
 
   const handleReveal = (file: FinderFile) => {
@@ -242,8 +270,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                   file={file}
                   sourceName={sourceName(file.sourceId)}
                   copied={copiedId === file.id}
+                  openError={openErrorId === file.id}
                   onCopyPath={handleCopyPath}
                   onReveal={handleReveal}
+                  onOpen={handleOpen}
                 />
               ))}
           </div>
@@ -316,7 +346,9 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                       key={entry.id}
                       file={entry}
                       copied={copiedId === entry.id}
+                      openError={openErrorId === entry.id}
                       onCopyPath={handleCopyPath}
+                      onOpen={handleOpen}
                     />
                   ),
                 )}
@@ -343,8 +375,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     file={file}
                     sourceName={sourceName(file.sourceId)}
                     copied={copiedId === file.id}
+                    openError={openErrorId === file.id}
                     onCopyPath={handleCopyPath}
                     onReveal={handleReveal}
+                    onOpen={handleOpen}
                   />
                 ))}
                 <div className="helper-workspace-section-title">
@@ -360,8 +394,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     sourceName={sourceName(file.sourceId)}
                     timestamp={file.lastActivityAt}
                     copied={copiedId === file.id}
+                    openError={openErrorId === file.id}
                     onCopyPath={handleCopyPath}
                     onReveal={handleReveal}
+                    onOpen={handleOpen}
                   />
                 ))}
               </>
