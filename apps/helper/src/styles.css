@@ -1196,6 +1196,13 @@ body {
   white-space: normal;
 }
 
+.ws-file-table-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .ws-file-table-name {
   font-size: var(--ws-text-13);
   font-weight: 500;
@@ -1203,6 +1210,22 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.ws-file-table-source {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .ws-file-table-meta {

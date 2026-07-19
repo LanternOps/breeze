@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import {
-  useWorkspaceStore, sortRows, type FinderFile, type SortCol, type View,
+  useWorkspaceStore, sortRows,
+  type FinderFile, type SortCol, type View, type WorkspaceSource,
 } from '../../stores/workspaceStore';
 
 const COLUMNS: Array<{ key: SortCol; label: string }> = [
@@ -45,14 +46,27 @@ export interface FileTableProps {
   onReveal?: (file: FinderFile) => void;
   /** Optional second line under the file name — snippet, mismatch banner, etc. */
   renderMeta?: (file: FinderFile) => ReactNode;
+  /**
+   * All configured sources. When more than one is configured, a small
+   * initial badge renders next to the file name (tooltip = full display
+   * name) so multi-share results stay distinguishable — the row's second
+   * line is reserved for snippet/mismatch/open-error content only, so this
+   * lives inline with the name instead. Single-source setups render nothing.
+   */
+  sources?: WorkspaceSource[];
+}
+
+function sourceLabel(file: FinderFile, sources: WorkspaceSource[]): string {
+  return sources.find((s) => s.id === file.sourceId)?.displayName ?? file.sourceId;
 }
 
 /** Sortable list-table for the search/browse/recents file views. */
 export function FileTable(props: FileTableProps) {
-  const { view, rows, onOpen, renderMeta } = props;
+  const { view, rows, onOpen, renderMeta, sources } = props;
   const sort = useWorkspaceStore((s) => s.sort[view]);
   const setSort = useWorkspaceStore((s) => s.setSort);
   const sorted = sortRows(rows, sort, { dirsFirst: view === 'browse' });
+  const showSource = (sources?.length ?? 0) > 1;
 
   return (
     <div className="ws-file-table" role="table">
@@ -78,9 +92,19 @@ export function FileTable(props: FileTableProps) {
           return (
             <div key={file.id} className="ws-file-table-row" role="row">
               <div className="ws-file-table-cell ws-file-table-name-cell">
-                <span className="ws-file-table-name" title={file.relPath}>
-                  {file.isDir ? `${file.name}/` : file.name}
-                </span>
+                <div className="ws-file-table-name-row">
+                  <span className="ws-file-table-name" title={file.relPath}>
+                    {file.isDir ? `${file.name}/` : file.name}
+                  </span>
+                  {showSource && (
+                    <span
+                      className="ws-file-table-source"
+                      title={sourceLabel(file, sources!)}
+                    >
+                      {sourceLabel(file, sources!).slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                </div>
                 {meta != null && <div className="ws-file-table-meta">{meta}</div>}
               </div>
               <div className="ws-file-table-cell ws-file-table-secondary">

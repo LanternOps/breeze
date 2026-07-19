@@ -361,6 +361,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                 onCopy={handleCopyPath}
                 onReveal={handleReveal}
                 renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
+                sources={sources}
               />
             )}
           </div>
@@ -475,6 +476,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     onCopy={handleCopyPath}
                     onReveal={handleReveal}
                     renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
+                    sources={sources}
                   />
                 )}
                 <div className="helper-workspace-section-title">
@@ -493,6 +495,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     onCopy={handleCopyPath}
                     onReveal={handleReveal}
                     renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
+                    sources={sources}
                   />
                 )}
               </>
