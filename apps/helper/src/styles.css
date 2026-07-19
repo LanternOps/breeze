@@ -964,6 +964,139 @@ body {
   outline: none;
 }
 
+/* ----------------------------------------------------------
+   Filter chips (Search toolbar) — plain positioned listbox for now;
+   Task 7 swaps the menu body for a Radix DropdownMenu.
+   ---------------------------------------------------------- */
+.ws-filter-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 8px;
+  flex-shrink: 0;
+}
+
+.ws-filter-chip-wrap {
+  position: relative;
+}
+
+.ws-filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  background: var(--ws-surface);
+  color: var(--ws-text-secondary);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-12);
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background var(--ws-dur-fast) var(--ws-ease), color var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-filter-chip:hover {
+  color: var(--ws-ink);
+}
+
+.ws-filter-chip-active {
+  border-color: transparent;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+}
+
+.ws-filter-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  border-radius: 50%;
+  padding: 1px;
+}
+
+.ws-filter-chip-close:hover {
+  background: hsl(0 0% 0% / 0.08);
+}
+
+.ws-filter-chip-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  min-width: 180px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+}
+
+.ws-filter-chip-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  border-radius: var(--ws-radius-control);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-filter-chip-menu-item:hover {
+  background: var(--ws-accent-soft);
+}
+
+.ws-filter-chip-menu-empty {
+  padding: 6px 8px;
+  color: var(--ws-text-tertiary);
+  font-size: var(--ws-text-12);
+}
+
+.ws-filter-chip-menu-date {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ws-filter-chip-menu-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--ws-border-subtle);
+}
+
+.ws-filter-chip-menu-custom label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+}
+
+.ws-filter-chip-menu-custom input[type='date'] {
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-12);
+  padding: 3px 5px;
+}
+
 .helper-workspace-list {
   flex: 1;
   overflow-y: auto;

@@ -6,6 +6,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { FileTable } from './FileTable';
+import { FilterChips } from './FilterChips';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -197,6 +198,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     error,
     filingBusy,
     browsePath,
+    filters,
     search,
     browse,
     loadRecents,
@@ -204,23 +206,25 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     loadFilings,
     classifyEmail,
     assignFiling,
+    setFilter,
+    clearFilter,
   } = useWorkspaceStore();
   const username = useChatStore((s) => s.username);
 
   const [tab, setTab] = useState<WorkspaceTab>('search');
   const [query, setQuery] = useState('');
-  const [sourceFilter, setSourceFilter] = useState('');
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
 
-  // Debounced search (300 ms).
+  // Debounced search (300 ms). Filter chips re-issue this fetch too — they
+  // only ever change the store's `filters`, which this effect already watches.
   useEffect(() => {
     const q = query.trim();
     if (!q) return;
     const timer = setTimeout(() => {
-      search(q, sourceFilter ? { sourceId: sourceFilter } : undefined);
+      search(q, filters);
     }, 300);
     return () => clearTimeout(timer);
-  }, [query, sourceFilter, search]);
+  }, [query, filters, search]);
 
   // Load recents when the tab is shown.
   useEffect(() => {
@@ -331,22 +335,14 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
               className="helper-workspace-search-input"
               autoFocus
             />
-            {sources.length > 1 && (
-              <select
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value)}
-                className="helper-workspace-select"
-                title="Limit search to one source"
-              >
-                <option value="">All sources</option>
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.displayName}
-                  </option>
-                ))}
-              </select>
-            )}
           </div>
+          <FilterChips
+            rows={results}
+            sources={sources}
+            filters={filters}
+            onSetFilter={setFilter}
+            onClearFilter={clearFilter}
+          />
           <div className="helper-workspace-list">
             {loading && <LoadingRow />}
             {!loading && !query.trim() && (

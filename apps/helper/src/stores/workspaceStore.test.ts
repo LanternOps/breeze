@@ -8,7 +8,7 @@ vi.mock('../lib/helperFetch', () => ({
 
 import { helperRequest } from '../lib/helperFetch';
 import { useChatStore } from './chatStore';
-import { useWorkspaceStore, sortRows, type FinderFile } from './workspaceStore';
+import { useWorkspaceStore, sortRows, buildSearchParams, type FinderFile } from './workspaceStore';
 
 const helperRequestMock = vi.mocked(helperRequest);
 
@@ -54,9 +54,54 @@ beforeEach(() => {
     error: null,
     filingBusy: null,
     browsePath: null,
+    filters: {},
     // Neutral baseline for sort tests — the store's real production defaults
     // (browse: name/asc, recents: mtime/desc) are asserted separately.
     sort: { search: null, browse: null, recents: null },
+  });
+});
+
+describe('buildSearchParams', () => {
+  it('maps dateFrom/dateTo to modifiedAfter/modifiedBefore and passes q + docType through', () => {
+    const params = buildSearchParams('x', { docType: 'easement', dateFrom: '2020-01-01' });
+    expect(params.toString()).toBe('q=x&docType=easement&modifiedAfter=2020-01-01T00%3A00%3A00.000Z');
+  });
+
+  it('maps kind to ext and passes project/sourceId through unchanged', () => {
+    const params = buildSearchParams('henderson', {
+      project: 'Henderson Water Main Replacement', sourceId: 's1', kind: 'pdf',
+    });
+    expect(params.get('q')).toBe('henderson');
+    expect(params.get('project')).toBe('Henderson Water Main Replacement');
+    expect(params.get('sourceId')).toBe('s1');
+    expect(params.get('ext')).toBe('pdf');
+    expect(params.has('kind')).toBe(false);
+  });
+
+  it('maps dateTo to modifiedBefore', () => {
+    const params = buildSearchParams('x', { dateTo: '2020-06-30' });
+    expect(params.get('modifiedBefore')).toBe('2020-06-30T00:00:00.000Z');
+  });
+
+  it('omits absent filters and defaults to just q', () => {
+    const params = buildSearchParams('x', {});
+    expect(params.toString()).toBe('q=x');
+    expect(buildSearchParams('x').toString()).toBe('q=x');
+  });
+});
+
+describe('filters slice', () => {
+  it('setFilter/clearFilter round-trip', () => {
+    useWorkspaceStore.getState().setFilter('docType', 'easement');
+    expect(useWorkspaceStore.getState().filters.docType).toBe('easement');
+    useWorkspaceStore.getState().setFilter('project', 'Henderson Water Main Replacement');
+    expect(useWorkspaceStore.getState().filters).toEqual({
+      docType: 'easement', project: 'Henderson Water Main Replacement',
+    });
+    useWorkspaceStore.getState().clearFilter('docType');
+    expect(useWorkspaceStore.getState().filters).toEqual({
+      project: 'Henderson Water Main Replacement',
+    });
   });
 });
 
@@ -118,7 +163,7 @@ describe('search', () => {
     const row = file();
     helperRequestMock.mockResolvedValueOnce(ok({ results: [row] }));
 
-    await useWorkspaceStore.getState().search('quarterly report', { sourceId: 's1', ext: 'pdf' });
+    await useWorkspaceStore.getState().search('quarterly report', { sourceId: 's1', kind: 'pdf' });
 
     const s = useWorkspaceStore.getState();
     expect(s.results).toEqual([row]);

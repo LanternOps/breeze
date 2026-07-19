@@ -90,6 +90,37 @@ export interface WorkspaceSource {
   kind: string;
 }
 
+// ---------------------------------------------------------------------------
+// Filter chips (Search view; content-preview fields are absent when the flag
+// is off, so those chips simply have nothing to list).
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceFilters {
+  project?: string;
+  docType?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sourceId?: string;
+  kind?: string;
+}
+
+/**
+ * Pure query-param builder for /helper/search: dateFrom/dateTo become
+ * modifiedAfter/modifiedBefore (ISO datetimes, as the extension's schema
+ * requires), kind becomes ext (the wire field name), everything else passes
+ * through unchanged. Insertion order matches the filters' declared order.
+ */
+export function buildSearchParams(q: string, filters: WorkspaceFilters = {}): URLSearchParams {
+  const params = new URLSearchParams({ q });
+  if (filters.sourceId) params.set('sourceId', filters.sourceId);
+  if (filters.kind) params.set('ext', filters.kind);
+  if (filters.project) params.set('project', filters.project);
+  if (filters.docType) params.set('docType', filters.docType);
+  if (filters.dateFrom) params.set('modifiedAfter', new Date(filters.dateFrom).toISOString());
+  if (filters.dateTo) params.set('modifiedBefore', new Date(filters.dateTo).toISOString());
+  return params;
+}
+
 export type ActivityAction = 'open' | 'reveal' | 'copy_path';
 
 interface WorkspaceState {
@@ -111,9 +142,10 @@ interface WorkspaceState {
   filingBusy: string | null; // fileIndexId being classified/assigned
   browsePath: { sourceId: string; parentPath: string } | null;
   sort: Record<View, SortSpec | null>;
+  filters: WorkspaceFilters;
 
   probe: () => Promise<void>;
-  search: (q: string, filters?: { sourceId?: string; ext?: string }) => Promise<void>;
+  search: (q: string, filters?: WorkspaceFilters) => Promise<void>;
   browse: (sourceId: string, parentPath: string) => Promise<void>;
   loadRecents: (helperUser: string | null) => Promise<void>;
   recordActivity: (
@@ -125,6 +157,8 @@ interface WorkspaceState {
   classifyEmail: (fileIndexId: string) => Promise<void>;
   assignFiling: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
   setSort: (view: View, col: SortCol) => void;
+  setFilter: <K extends keyof WorkspaceFilters>(key: K, value: WorkspaceFilters[K]) => void;
+  clearFilter: (key: keyof WorkspaceFilters) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +203,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   error: null,
   filingBusy: null,
   browsePath: null,
+  filters: {},
   sort: { search: null, browse: { col: 'name', dir: 'asc' }, recents: { col: 'mtime', dir: 'desc' } },
 
   probe: async () => {
@@ -222,9 +257,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const config = agentConfig();
     if (!config) return;
 
-    const params = new URLSearchParams({ q });
-    if (filters?.sourceId) params.set('sourceId', filters.sourceId);
-    if (filters?.ext) params.set('ext', filters.ext);
+    const params = buildSearchParams(q, filters);
 
     set({ loading: true, error: null });
 
@@ -434,5 +467,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ? (current.dir === 'asc' ? 'desc' : 'asc')
       : 'asc';
     set({ sort: { ...get().sort, [view]: { col, dir } } });
+  },
+
+  setFilter: (key, value) => {
+    set({ filters: { ...get().filters, [key]: value } });
+  },
+
+  clearFilter: (key) => {
+    const next = { ...get().filters };
+    delete next[key];
+    set({ filters: next });
   },
 }));
