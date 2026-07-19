@@ -69,6 +69,7 @@ import {
 import {
   legacyExtensionAgentAuthMiddleware,
   legacyExtensionAuthMiddleware,
+  legacyExtensionHelperAuthMiddleware,
 } from './gateway';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 import { aiTools, hasCoreAiToolName } from '../services/aiTools';
@@ -494,6 +495,7 @@ async function defaultStageExtension(
     registerJob: (job) => session.registrar.registerJob(job),
     authMiddleware: legacyExtensionAuthMiddleware,
     agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
+    helperAuthMiddleware: legacyExtensionHelperAuthMiddleware,
     db: db as unknown as ExtensionDatabase,
     secrets: {
       encryptForColumn: (table, column, plaintext) =>
