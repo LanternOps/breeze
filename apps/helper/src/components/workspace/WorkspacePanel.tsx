@@ -139,7 +139,19 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // failed fetch left no valid content to protect, so a later revisit
   // re-attempting the fetch is fine (and is the only way it'd ever recover
   // without the user retyping).
-  const lastSearchKeyRef = useRef<string | null>(null);
+  const lastSuccessKeyRef = useRef<string | null>(null);
+  // Browse's analogue: key (sourceId, parentPath, project, docType) of the
+  // last browse that completed successfully. The Browse chip/tab effect below
+  // re-runs on browsePath *and* tab changes now, so without this a rail
+  // click (which already fetched) or a tab revisit with unchanged state would
+  // redundantly re-fetch. Seeded from the initial browsePath: if a folder is
+  // already loaded when the panel first renders (a preloaded view, or a
+  // remount while a browse was showing), entering Browse must not re-fetch it.
+  const lastBrowseKeyRef = useRef<string | null>(
+    browsePath
+      ? JSON.stringify([browsePath.sourceId, browsePath.parentPath, filters.project, filters.docType])
+      : null,
+  );
 
   // `error` is a single store field shared by all four views (Search,
   // Browse, Recents, Filing), cleared only when the view whose fetch set it
@@ -175,12 +187,32 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const runSearch = (q: string, searchFilters: typeof filters) => {
     const key = JSON.stringify([q, searchFilters]);
     void search(q, searchFilters).then(() => {
-      if (!useWorkspaceStore.getState().error) lastSearchKeyRef.current = key;
+      if (!useWorkspaceStore.getState().error) lastSuccessKeyRef.current = key;
     });
   };
 
-  // Debounced search (300 ms). Filter chips re-issue this fetch too — they
-  // only ever change the store's `filters`, which this effect already watches.
+  // Browse's single choke point (mirrors runSearch): every browse call site —
+  // the mount "open first source" effect, the chip/tab effect, rail clicks,
+  // breadcrumbs, drill-down, reveal, and the ErrorRow retry — routes through
+  // here so the (sourceId, parentPath, filters) key is recorded on success
+  // only. That lets the chip/tab effect below skip re-fetching a folder that's
+  // already loaded (browse() reads the same `filters` slice via getState()).
+  const runBrowse = (sourceId: string, parentPath: string) => {
+    const { project, docType } = useWorkspaceStore.getState().filters;
+    const key = JSON.stringify([sourceId, parentPath, project, docType]);
+    void browse(sourceId, parentPath).then(() => {
+      if (!useWorkspaceStore.getState().error) lastBrowseKeyRef.current = key;
+    });
+  };
+
+  // Debounced search (300 ms). This effect is reactive ONLY to user-meaningful
+  // inputs — query, filters, tab. It is deliberately NOT reactive to `error`
+  // or `loading`: making `error` a dependency creates an auto-retry loop,
+  // because `search()` writes `error` (null → message) on every failed attempt,
+  // which would re-run the effect, re-arm the timer, and refetch the failing
+  // query forever. Instead the effect reads transient store state
+  // non-reactively via `getState()` when it runs (the standard zustand
+  // pattern — no dependency entry, no eslint-disable needed for those reads).
   //
   // `tab` is a dependency (not just read once) so that navigating away from
   // Search runs this effect's cleanup — cancelling any pending timer —
@@ -188,39 +220,36 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // Without this, a timer armed while on Search could still fire after the
   // user switched to another (already-loaded) tab: `search()` would resolve
   // later and set the store's global `error`, masking that other tab's
-  // correct content with a stale, wrong-context ErrorRow — the exact async-
-  // completion race the tab-switch and mount-time error clears don't cover,
-  // since both only clear `error` at the moment of switching/mounting, not
-  // when a since-abandoned view's in-flight fetch settles afterward.
+  // correct content with a stale, wrong-context ErrorRow.
   //
-  // But `tab` being a dependency also means this effect re-runs every time
-  // the user navigates *back into* Search, even when neither `query` nor
-  // `filters` changed — which would otherwise re-arm a fresh timer that
-  // redundantly refetches an already-loaded result set, flipping the
-  // correct FileTable back to SkeletonRows (and, on a flaky refetch, behind
-  // a stale ErrorRow) for no reason. Guard against that by skipping the
-  // (re)arm when this exact query/filters combo already succeeded.
+  // Empty query: if an ErrorRow is currently showing (e.g. the user just
+  // cleared a failed query), clear the store `error` so the "Search your
+  // firm's files" EmptyState shows instead of a stale error, then return
+  // without arming a timer.
   //
-  // That key-only guard has its own gap, though: it doesn't check whether
-  // `error` is currently set. Search "alder" (succeeds, key recorded),
-  // search "boblegal" (fails — failures don't update the key), then retype
-  // "alder" exactly — the key matches, so the guard would bail with no
-  // fetch and nothing else clears `error` mid-tab, leaving the stale
-  // ErrorRow masking alder's valid results indefinitely. So also require
-  // `!error` to skip; `error` is a real dependency (not read via
-  // getState()) so the effect re-evaluates the instant it's set.
+  // Skip guard: skip arming ONLY when the (query, filters) key matches the
+  // last *successful* search AND no error is currently set. The `error == null`
+  // half is what lets "search alder (ok) → search boblegal (fails) → retype
+  // alder" recover: the key matches alder's earlier success, but because an
+  // error is set the guard falls through and refetches (clearing the error).
+  // Reading `error` via getState() here — not as a dependency — is exactly
+  // what keeps a failing query's own `error` writes from re-running the effect.
   useEffect(() => {
     if (tab !== 'search') return;
     const q = query.trim();
-    if (!q) return;
+    const store = useWorkspaceStore.getState();
+    if (!q) {
+      if (store.error) useWorkspaceStore.setState({ error: null });
+      return;
+    }
     const key = JSON.stringify([q, filters]);
-    if (key === lastSearchKeyRef.current && !error) return;
+    if (key === lastSuccessKeyRef.current && store.error == null) return;
     const timer = setTimeout(() => {
       runSearch(q, filters);
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, query, filters, search, error]);
+  }, [tab, query, filters, search]);
 
   // Load recents when the tab is shown.
   useEffect(() => {
@@ -236,19 +265,34 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // Open the first source when Browse is shown for the first time.
   useEffect(() => {
     if (tab !== 'browse' || browsePath || sources.length === 0) return;
-    browse(sources[0].id, '');
-  }, [tab, browsePath, sources, browse]);
+    runBrowse(sources[0].id, '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, browsePath, sources]);
 
   // Browse's own chip row (Project/Doc type only — see FilterChips' `chips`
   // prop below) writes to the same `filters` slice Search's chips use.
   // Selecting or clearing either one re-issues the current folder's browse
-  // fetch with the new filters. Chips only render while browsePath is set
-  // (folder already loaded), so this never fights the mount effect above.
+  // fetch with the new filters.
+  //
+  // `tab` is a dependency (mirroring the search effect): the shared `filters`
+  // slice can change while the user is on *another* tab (Search's chip row
+  // writes the same filters.project/docType). Without `tab` here, returning to
+  // Browse after such a change wouldn't re-run this effect, leaving Browse
+  // showing active chips over a stale list. `browsePath` is a dependency too so
+  // a rail click / drill-down re-evaluates the guard. The lastBrowseKeyRef
+  // guard then skips the redundant re-fetch when nothing that browse() reads
+  // (sourceId, parentPath, project, docType) actually changed — so a rail
+  // click (which already fetched via runBrowse) or a tab revisit with
+  // unchanged state doesn't double-fetch.
   useEffect(() => {
     if (tab !== 'browse' || !browsePath) return;
-    browse(browsePath.sourceId, browsePath.parentPath);
+    const key = JSON.stringify([
+      browsePath.sourceId, browsePath.parentPath, filters.project, filters.docType,
+    ]);
+    if (key === lastBrowseKeyRef.current) return;
+    runBrowse(browsePath.sourceId, browsePath.parentPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.project, filters.docType]);
+  }, [tab, browsePath, filters.project, filters.docType]);
 
   // Cmd/Ctrl+F focuses the search input from anywhere in Files, switching to
   // the Search tab first if another tab is active.
@@ -301,13 +345,13 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const handleReveal = (file: FinderFile) => {
     recordActivity(file.id, 'reveal', username);
     switchTab('browse');
-    browse(file.sourceId, file.parentPath);
+    runBrowse(file.sourceId, file.parentPath);
   };
 
   // Browse's Open drills into directories instead of opening them in place.
   const handleBrowseOpen = (file: FinderFile) => {
     if (file.isDir) {
-      if (browsePath) browse(browsePath.sourceId, file.relPath);
+      if (browsePath) runBrowse(browsePath.sourceId, file.relPath);
       return;
     }
     handleOpen(file);
@@ -419,7 +463,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                 className={`helper-workspace-rail-item${
                   browsePath?.sourceId === s.id ? ' helper-workspace-rail-item-active' : ''
                 }`}
-                onClick={() => browse(s.id, '')}
+                onClick={() => runBrowse(s.id, '')}
                 title={s.displayName}
               >
                 {s.displayName}
@@ -444,7 +488,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
               <div className="helper-workspace-breadcrumb">
                 <button
                   className="helper-workspace-crumb"
-                  onClick={() => browse(browsePath.sourceId, '')}
+                  onClick={() => runBrowse(browsePath.sourceId, '')}
                 >
                   {activeSource?.displayName ?? 'Top'}
                 </button>
@@ -454,7 +498,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     <button
                       className="helper-workspace-crumb"
                       onClick={() =>
-                        browse(browsePath.sourceId, crumbSegments.slice(0, i + 1).join('/'))
+                        runBrowse(browsePath.sourceId, crumbSegments.slice(0, i + 1).join('/'))
                       }
                     >
                       {seg}
@@ -470,8 +514,8 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                   message={error}
                   onRetry={() =>
                     browsePath
-                      ? browse(browsePath.sourceId, browsePath.parentPath)
-                      : sources[0] && browse(sources[0].id, '')
+                      ? runBrowse(browsePath.sourceId, browsePath.parentPath)
+                      : sources[0] && runBrowse(sources[0].id, '')
                   }
                 />
               )}

@@ -285,3 +285,111 @@ it('retyping a previously-successful query clears a stale error left by an inter
     vi.useRealTimers();
   }
 });
+
+// Regression test for the Critical auto-retry loop: the store's search() writes
+// `error` twice per attempt (null → message). When `error` was a dependency of
+// the debounce effect, those writes re-ran the effect, re-armed the timer, and
+// refetched a persistently failing query forever. With `error` read via
+// getState() (not a dependency), a single failing query must issue exactly ONE
+// search and hold a stable ErrorRow no matter how far fake timers advance.
+it('a persistently failing query issues exactly one search and holds a stable ErrorRow (no auto-retry loop)', async () => {
+  vi.useFakeTimers();
+  try {
+    const searchSpy = vi.fn(async () => {
+      // Mirror the real store search()'s two error writes per attempt — the
+      // exact writes that used to re-arm the debounce timer.
+      useWorkspaceStore.setState({ loading: true, error: null });
+      useWorkspaceStore.setState({ loading: false, error: 'Search is unavailable right now.' });
+    });
+    useWorkspaceStore.setState({ search: searchSpy });
+
+    render(<WorkspacePanel onClose={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('Search shared files...'), {
+      target: { value: 'boblegal' },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Search is unavailable right now.')).toBeInTheDocument();
+
+    // Advance well past many debounce windows with NO further input.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    // Still exactly one call; the ErrorRow is stable (no flicker/retry loop).
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Search is unavailable right now.')).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// Regression test for the empty-query stale-error mask: a failed search leaves
+// the single global `error` set; clearing the input to '' must clear that
+// error (via the effect's empty-query branch) so the "Search your firm's
+// files" EmptyState shows instead of the stale ErrorRow.
+it('clearing the query to empty while an ErrorRow shows restores the empty state', async () => {
+  vi.useFakeTimers();
+  try {
+    const searchSpy = vi.fn(async () => {
+      useWorkspaceStore.setState({ error: 'Search is unavailable right now.', loading: false });
+    });
+    useWorkspaceStore.setState({ search: searchSpy });
+
+    render(<WorkspacePanel onClose={() => {}} />);
+    const input = screen.getByPlaceholderText('Search shared files...');
+
+    fireEvent.change(input, { target: { value: 'boblegal' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.getByText('Search is unavailable right now.')).toBeInTheDocument();
+
+    // Clear the input — the empty-query branch clears the store error.
+    fireEvent.change(input, { target: { value: '' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.queryByText('Search is unavailable right now.')).not.toBeInTheDocument();
+    expect(screen.getByText("Search your firm's files")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// Regression test for the Browse tab/filter desync: the chip effect omitted
+// `tab` from its deps, so a filters.project change made while on another tab
+// (Search's chip row writes the same shared slice) left Browse showing active
+// chips over a stale list when the user returned. With `tab` in the deps and a
+// lastBrowseKeyRef guard, returning to Browse after such a change must re-issue
+// the current folder's browse with the new filter.
+it('re-fetches Browse on return when a shared filter changed while off the tab', async () => {
+  const browseSpy = vi.fn().mockResolvedValue(undefined);
+  useWorkspaceStore.setState({
+    browse: browseSpy,
+    browsePath: { sourceId: 's1', parentPath: 'docs' },
+    entries: [file({ id: 'f1', name: 'alder-easement.pdf' })],
+  });
+
+  render(<WorkspacePanel onClose={() => {}} />);
+
+  // Enter Browse: the folder is already loaded (browsePath preset), so the
+  // seeded key means no redundant re-fetch on entry.
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+  expect(browseSpy).not.toHaveBeenCalled();
+
+  // Leave Browse, then change the shared filters.project slice from another tab.
+  fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
+  act(() => {
+    useWorkspaceStore.getState().setFilter('project', 'Henderson Water Main Replacement');
+  });
+  expect(browseSpy).not.toHaveBeenCalled(); // still off Browse → no fetch yet
+
+  // Return to Browse: the filter changed, so the current folder must re-fetch.
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', 'docs'));
+});
