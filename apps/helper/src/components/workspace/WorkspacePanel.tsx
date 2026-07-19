@@ -4,6 +4,7 @@ import {
 } from '../../stores/workspaceStore';
 import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
+import { SegmentedControl } from '../ui/SegmentedControl';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -354,20 +355,16 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="helper-workspace-tabs">
-        {([
-          ['search', 'Search'],
-          ['browse', 'Browse'],
-          ['recents', 'Recents'],
-          ...(filingEnabled ? ([['filing', 'Filing']] as const) : []),
-        ] as ReadonlyArray<readonly [WorkspaceTab, string]>).map(([t, label]) => (
-          <button
-            key={t}
-            className={`helper-workspace-tab${tab === t ? ' helper-workspace-tab-active' : ''}`}
-            onClick={() => setTab(t)}
-          >
-            {label}
-          </button>
-        ))}
+        <SegmentedControl
+          options={[
+            { key: 'search', label: 'Search' },
+            { key: 'browse', label: 'Browse' },
+            { key: 'recents', label: 'Recents' },
+            ...(filingEnabled ? [{ key: 'filing', label: 'Filing' }] : []),
+          ]}
+          value={tab}
+          onChange={(key) => setTab(key as WorkspaceTab)}
+        />
       </div>
 
       {error && (
