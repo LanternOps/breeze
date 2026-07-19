@@ -313,6 +313,24 @@ export function getToolTier(
 }
 
 /**
+ * True iff a tool is recognized (getToolTier defined) but NOT executable by the
+ * headless `executeTool` path — i.e. it only runs via the inline chat path's
+ * makeSessionAwareHandler, which threads a live SSE session id to reach the
+ * per-tenant M365/Google OAuth connection. Covers the M365 mutation helpdesk
+ * tools (m365_disable_user, m365_reset_password) and ALL Google tools (there is
+ * no registerGoogleTools into the core map). The durable release worker uses
+ * this to fail such intents with `session_required` instead of `Unknown tool`.
+ * Phase 2 (headless dispatch) would make these executable and flip this to false.
+ */
+export function requiresLiveSession(
+  toolName: string,
+  registry: ExtensionContributionRegistry = extensionContributionRegistry,
+): boolean {
+  const executableHeadless = aiTools.has(toolName) || registry.getAiTool(toolName) !== undefined;
+  return !executableHeadless && getToolTier(toolName, registry) !== undefined;
+}
+
+/**
  * Helper device-scoping (security finding A, Phase 0).
  * Maps each tool the Breeze Helper may run to the input field naming its
  * target device. A tool absent from this map is org-wide and is DENIED under

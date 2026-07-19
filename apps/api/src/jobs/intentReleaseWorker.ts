@@ -9,7 +9,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
-import { executeTool } from '../services/aiTools';
+import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 
@@ -240,6 +240,17 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
   const { auth } = revalidation;
+
+  // Phase-1 guard: the headless worker cannot run session-aware M365/Google
+  // Tier-3 tools — they need a live SSE session's per-tenant OAuth connection
+  // (see services/aiAgentSdkTools.ts makeSessionAwareHandler). executeTool would
+  // throw `Unknown tool`; fail with an explicit, categorized code instead. The
+  // inline chat path still runs these under its live session. Headless dispatch
+  // is deferred (Phase 2).
+  if (requiresLiveSession(intent.actionName)) {
+    await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
+    return;
+  }
 
   // Step 3: execute through the existing dispatch (guardrails, device
   // gates, and whatever per-tool audit/ledger writes the handler itself

@@ -18,7 +18,7 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
-    aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn() },
+    aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
     aiGuardrailsMock: { checkToolPermission: vi.fn() },
     authMock: { dbAccessContextFromAuth: vi.fn((auth: unknown) => ({ mock: 'dbContext', auth })) },
     auditMock: {
@@ -84,6 +84,7 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/aiTools', () => ({
   getToolTier: aiToolsMock.getToolTier,
   executeTool: aiToolsMock.executeTool,
+  requiresLiveSession: aiToolsMock.requiresLiveSession,
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
@@ -447,6 +448,23 @@ describe('releaseApprovedIntent', () => {
       }),
     );
     expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+  });
+
+  it('fails a session-aware tool with session_required and never calls executeTool', async () => {
+    const intent = baseIntent({ id: 'intent-2', actionName: 'm365_disable_user' });
+    primeThroughRevalidation(intent);
+    aiToolsMock.requiresLiveSession.mockReturnValueOnce(true);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent('intent-2');
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+      'intent-2',
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'session_required' }),
+    );
   });
 
   it('executeTool throws -> failed:execution_error, with executedAt stamped', async () => {
