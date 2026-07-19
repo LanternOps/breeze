@@ -45,6 +45,14 @@ struct AgentConfigFull {
 // ---------------------------------------------------------------------------
 
 fn agent_config_path() -> PathBuf {
+    // Debug builds honor BREEZE_AGENT_CONFIG so a dev rig can point the helper
+    // at a seeded agent.yaml without touching the machine's real enrollment.
+    #[cfg(debug_assertions)]
+    if let Ok(p) = std::env::var("BREEZE_AGENT_CONFIG") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         PathBuf::from("/Library/Application Support/Breeze/agent.yaml")
