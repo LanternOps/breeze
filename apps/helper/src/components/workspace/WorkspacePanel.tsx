@@ -146,6 +146,20 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     setTab(next);
   };
 
+  // `error` lives in the module-level store, so it survives this component's
+  // own unmount/remount (WorkspacePanel is conditionally rendered by
+  // App.tsx's `showWorkspace` gate — closing and reopening Files is a normal
+  // user action, not a tab switch, so `switchTab`'s guard above never runs
+  // for it). Without this, a leftover error from a session before the panel
+  // was last closed (or before the user ever switched tabs) would render as
+  // a stale `ErrorRow` on whichever tab mounts first (`search`), masking
+  // that tab's correct empty/loaded state. Clear it once, on mount, the same
+  // way `switchTab` clears it on an in-panel tab change.
+  useEffect(() => {
+    useWorkspaceStore.setState({ error: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Debounced search (300 ms). Filter chips re-issue this fetch too — they
   // only ever change the store's `filters`, which this effect already watches.
   useEffect(() => {
