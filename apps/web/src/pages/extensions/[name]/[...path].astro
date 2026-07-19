@@ -1,0 +1,41 @@
+---
+// ONE generic route for every runtime extension page — never generate a file
+// per extension. `[name]` is the extension name; `[...path]` is the rest of
+// the URL within that extension's own web namespace (see the parseExtensionHostEventV1
+// namespace check in @breeze/extension-web-sdk, which expects exactly this
+// `/extensions/<name>/<...>` shape).
+//
+// The real authority on "does this page exist / is it enabled" is the
+// registry-driven lookup inside <ExtensionPageHost> (client-side, since the
+// registry is fetched from the API) — a disabled/withdrawn extension omits
+// itself from that live-rechecked response. The validation here is a fast,
+// well-formedness-only guard: it can't match a registry entry either way, but
+// rejecting an obviously malformed `name`/`path` (a) sets an accurate 404
+// status for crawlers/monitoring and (b) avoids handing the island frankly
+// unsafe strings (backslashes, `..`) even though it would only ever do an
+// exact string comparison against the fetched registry.
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import ExtensionPageHost from '../../../components/extensions/ExtensionPageHost';
+
+const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;
+
+const { name } = Astro.params;
+const rawPath = Astro.params.path; // rest param: undefined | 'a' | 'a/b/c'
+const pathSegments = rawPath ? rawPath.split('/') : [];
+
+const nameValid = typeof name === 'string' && NAME_RE.test(name);
+const pathValid = pathSegments.every(
+  (segment) => segment !== '' && segment !== '.' && segment !== '..' && !segment.includes('\\'),
+);
+
+if (!nameValid || !pathValid) {
+  Astro.response.status = 404;
+}
+
+const extensionName = nameValid ? (name as string) : '';
+const extensionPath = pathValid ? '/' + pathSegments.join('/') : '/';
+---
+
+<DashboardLayout title="Extension">
+  <ExtensionPageHost extensionName={extensionName} path={extensionPath} client:load />
+</DashboardLayout>

@@ -21,6 +21,9 @@ export default defineConfig({
       '@breeze/shared': fileURLToPath(
         new URL('../../packages/shared/src/index.ts', import.meta.url)
       ),
+      '@breeze/extension-web-sdk': fileURLToPath(
+        new URL('../../packages/extension-web-sdk/src/index.ts', import.meta.url)
+      ),
       'astro:transitions/client': fileURLToPath(
         new URL('./src/__mocks__/astro-transitions-client.ts', import.meta.url)
       ),
