@@ -1382,6 +1382,96 @@ body {
   white-space: normal;
 }
 
+/* ----------------------------------------------------------
+   Empty state
+   ---------------------------------------------------------- */
+.ws-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.ws-empty-state-title {
+  font-size: var(--ws-text-15);
+  font-weight: 600;
+  color: var(--ws-text-secondary);
+}
+
+.ws-empty-state-hint {
+  font-size: var(--ws-text-13);
+  color: var(--ws-text-tertiary);
+  max-width: 320px;
+}
+
+/* ----------------------------------------------------------
+   Skeleton rows (loading)
+   ---------------------------------------------------------- */
+.ws-skeleton-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+}
+
+.ws-skeleton-bar {
+  display: block;
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-border-subtle);
+  animation: ws-shimmer 1.2s ease-in-out infinite;
+}
+
+.ws-skeleton-bar-name {
+  width: 60%;
+  height: var(--ws-text-13);
+}
+
+.ws-skeleton-bar-meta {
+  width: 30%;
+  height: var(--ws-text-11);
+}
+
+@keyframes ws-shimmer {
+  0%, 100% {
+    background-color: var(--ws-border-subtle);
+  }
+  50% {
+    background-color: var(--ws-canvas);
+  }
+}
+
+/* ----------------------------------------------------------
+   Error row (list-level fetch failure, with retry)
+   ---------------------------------------------------------- */
+.ws-error-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 20px;
+  font-size: var(--ws-text-13);
+  color: var(--ws-danger);
+  text-align: center;
+}
+
+.ws-error-retry {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .helper-file-copied {
   font-size: 11px;
   color: var(--success);

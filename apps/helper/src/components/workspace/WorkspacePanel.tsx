@@ -4,6 +4,8 @@ import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { Toaster, toast } from '../ui/Toaster';
+import { EmptyState } from '../ui/EmptyState';
+import { SkeletonRows } from '../ui/SkeletonRows';
 import { FileTable } from './FileTable';
 import { FilterChips } from './FilterChips';
 import { FilingCard } from './FilingCard';
@@ -80,11 +82,14 @@ function renderFileMeta(file: FinderFile, openError: boolean): ReactNode {
   );
 }
 
-function LoadingRow() {
+/** List-level fetch failure: the store's error message plus a retry action. */
+function ErrorRow({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="helper-history-loading">
-      <span className="helper-spinner" />
-      <span>Loading...</span>
+    <div className="ws-error-row">
+      <span>{message}</span> —{' '}
+      <button type="button" className="ws-error-retry" onClick={onRetry}>
+        retry
+      </button>
     </div>
   );
 }
@@ -264,12 +269,6 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
         />
       </div>
 
-      {error && (
-        <div className="helper-error-banner">
-          <span>{error}</span>
-        </div>
-      )}
-
       {tab === 'search' && (
         <div className="helper-workspace-body">
           <div className="helper-workspace-toolbar">
@@ -291,16 +290,23 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
             onClearFilter={clearFilter}
           />
           <div className="helper-workspace-list">
-            {loading && <LoadingRow />}
-            {!loading && !query.trim() && (
-              <div className="helper-history-empty">
-                Search your company's shared files by name.
-              </div>
+            {loading && <SkeletonRows />}
+            {!loading && error && (
+              <ErrorRow message={error} onRetry={() => search(query.trim(), filters)} />
             )}
-            {!loading && query.trim() && results.length === 0 && (
-              <div className="helper-history-empty">No files matched.</div>
+            {!loading && !error && !query.trim() && (
+              <EmptyState
+                title="Search your firm's files"
+                hint="Everything indexed from your shares, searchable by name and content."
+              />
             )}
-            {!loading && query.trim() && results.length > 0 && (
+            {!loading && !error && query.trim() && results.length === 0 && (
+              <EmptyState
+                title={`No matches for '${query.trim()}'`}
+                hint="Try fewer words, or clear filters."
+              />
+            )}
+            {!loading && !error && query.trim() && results.length > 0 && (
               <FileTable
                 view="search"
                 rows={results}
@@ -359,11 +365,21 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <div className="helper-workspace-list">
-              {loading && <LoadingRow />}
-              {!loading && browsePath && entries.length === 0 && (
-                <div className="helper-history-empty">This folder is empty.</div>
+              {loading && <SkeletonRows />}
+              {!loading && error && (
+                <ErrorRow
+                  message={error}
+                  onRetry={() =>
+                    browsePath
+                      ? browse(browsePath.sourceId, browsePath.parentPath)
+                      : sources[0] && browse(sources[0].id, '')
+                  }
+                />
               )}
-              {!loading && entries.length > 0 && (
+              {!loading && !error && browsePath && entries.length === 0 && (
+                <EmptyState title="This folder is empty" />
+              )}
+              {!loading && !error && entries.length > 0 && (
                 <FileTable
                   view="browse"
                   rows={entries}
@@ -381,11 +397,17 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
         <div className="helper-workspace-body">
           <div className="ws-filing-layout">
             <div className="ws-filing-cards">
-              {loading && <LoadingRow />}
-              {!loading && filings.length === 0 && (
-                <div className="helper-history-empty">No unfiled mail right now.</div>
+              {loading && <SkeletonRows />}
+              {!loading && error && (
+                <ErrorRow message={error} onRetry={loadFilings} />
               )}
-              {!loading && filings.length > 0 && (
+              {!loading && !error && filings.length === 0 && (
+                <EmptyState
+                  title="All mail filed"
+                  hint="New unfiled mail will appear here."
+                />
+              )}
+              {!loading && !error && filings.length > 0 && (
                 <>
                   <div className="helper-workspace-section-title">Unfiled mail</div>
                   {filings.map((filing) => (
@@ -416,14 +438,18 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
       {tab === 'recents' && (
         <div className="helper-workspace-body">
           <div className="helper-workspace-list">
-            {loading && <LoadingRow />}
-            {!loading && (
+            {loading && <SkeletonRows />}
+            {!loading && error && (
+              <ErrorRow message={error} onRetry={() => loadRecents(username)} />
+            )}
+            {!loading && !error && (
               <>
                 <div className="helper-workspace-section-title">Your recent files</div>
                 {recent.length === 0 && (
-                  <div className="helper-history-empty">
-                    Files you open or copy will show up here.
-                  </div>
+                  <EmptyState
+                    title="Nothing recent yet"
+                    hint="Files you open or copy will show up here."
+                  />
                 )}
                 {recent.length > 0 && (
                   <FileTable
