@@ -156,6 +156,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/helper/index.ts:GET /chat/sessions',
   'routes/helper/index.ts:GET /chat/sessions/:id/messages',
   'routes/helper/index.ts:POST /chat/sessions/:id/flag',
+  // helperAuth device-token path; query pinned to the caller's own device via
+  // eq(aiSessions.deviceId, device.id) (#2637 client-declared tool results).
+  'routes/helper/index.ts:POST /chat/sessions/:id/tool-results',
   'routes/tunnels.ts:GET /desktop-access',
   'routes/tunnels.ts:POST /downgrade-to-vnc',
   'routes/tunnels.ts:POST /upgrade-to-webrtc',
