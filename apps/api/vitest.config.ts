@@ -53,6 +53,12 @@ export default defineConfig({
       // the `src/__tests__/integration/**` glob above — so the no-DB unit runner would
       // fail it on connect. Belongs to vitest.integration.config.ts (already in its include).
       'src/jobs/authEmailWorker.integration.test.ts',
+      // Quote scheduled-send queue real-DB + real-Redis test: imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate + real
+      // Redis) and lives in src/jobs/ outside the `src/__tests__/integration/**`
+      // glob, so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/jobs/quoteSendQueue.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

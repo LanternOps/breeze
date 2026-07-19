@@ -818,6 +818,7 @@
       },
       "pricing": "Tarification",
       "proposalImageAlt": "Image de la proposition",
+      "scheduledSendFailed": "L'envoi programmé a échoué — cette proposition n'a PAS été envoyée et reste un brouillon. Vérifiez-la puis réessayez l'envoi.",
       "table": {
         "item": "Article",
         "noLines": "Aucune ligne dans ce tableau.",

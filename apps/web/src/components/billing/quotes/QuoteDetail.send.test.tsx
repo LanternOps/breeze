@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteDetail from './QuoteDetail';
 import * as quotesApi from '../../../lib/api/quotes';
 import { fetchWithAuth } from '../../../stores/auth';
-import type { QuoteDetail as QuoteDetailData, QuoteLine } from './quoteTypes';
+import type { QuoteDetail as QuoteDetailData, QuoteLine, QuoteSendEmailReason } from './quoteTypes';
 
 // Same auth-mock pattern as QuoteDetail.delete.test.tsx, plus controllable
 // tokens so tests can flip the JWT scope the send composer reads (partner
@@ -176,7 +176,7 @@ describe('QuoteDetail — send proposal', () => {
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it.each([
+  it.each<[QuoteSendEmailReason, string]>([
     ['no_email_service', 'not configured'],
     ['send_failed', 'could not be delivered'],
     ['pdf_render_failed', 'PDF could not be generated'],
@@ -332,6 +332,85 @@ describe('QuoteDetail — send proposal', () => {
     expect(screen.getByTestId('quote-send-to')).toHaveFocus();
   });
 
+  it('Undo returning canceled:false shows the too-late WARNING toast (not undo-success)', async () => {
+    const { showToast } = await import('../../shared/Toast');
+    const cancelScheduledSend = vi.mocked(quotesApi.cancelScheduledSend);
+    // The window elapsed server-side between render and the click: nothing was
+    // canceled — the proposal already went out.
+    cancelScheduledSend.mockResolvedValue(resp({ data: { canceled: false } }));
+    const onChanged = vi.fn();
+
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, sendScheduledAt: new Date(Date.now() + 25_000).toISOString() },
+      }}
+      onChanged={onChanged}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send-undo'));
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('Too late to undo'),
+      }));
+      // The refresh still fires so the UI picks up the flipped status.
+      expect(onChanged).toHaveBeenCalled();
+    });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('the post-window poll burst keeps its 2.5s cadence and is bounded (regression: nowMs/refresh in deps)', () => {
+    // Guards the effect keying: the poll effect must depend ONLY on the stable
+    // windowElapsed boolean. If someone re-adds nowMs (or refresh) to its deps,
+    // the 1s countdown ticker tears the interval down every second and only the
+    // initial refresh ever fires — the flip is never picked up.
+    vi.useFakeTimers();
+    // One second per act() call, NOT one big advance: a single bulk advance runs
+    // every queued timer before React flushes a single re-render, so a deps-array
+    // regression (whose damage is the per-render effect teardown) would never
+    // interleave with the ticks and the test would pass vacuously. Stepping makes
+    // each 1s tick re-render (and re-run a mis-keyed effect) before the next fire.
+    const stepSeconds = (n: number) => {
+      for (let i = 0; i < n; i += 1) act(() => { vi.advanceTimersByTime(1_000); });
+    };
+    try {
+      const onChanged = vi.fn();
+      render(<QuoteDetail
+        detail={{
+          ...filledDraft,
+          quote: { ...filledDraft.quote, sendScheduledAt: new Date(Date.now() + 2_000).toISOString() },
+        }}
+        onChanged={onChanged}
+      />);
+      // Window still live: countdown showing, no polling yet.
+      expect(screen.getByTestId('quote-send-countdown')).toBeInTheDocument();
+      expect(onChanged).not.toHaveBeenCalled();
+
+      // Cross the window end (the 1s ticker flips windowElapsed): one
+      // immediate refresh fires.
+      stepSeconds(2);
+      expect(onChanged).toHaveBeenCalledTimes(1);
+
+      // The 2.5s cadence keeps firing WHILE the 1s ticker keeps ticking —
+      // 10s later at least 3 more polls have landed (t+2.5/5/7.5/10s).
+      stepSeconds(10);
+      expect(onChanged.mock.calls.length).toBeGreaterThanOrEqual(4);
+
+      // Bounded: the burst caps at 12 cadence polls (+1 immediate) in case the
+      // job was lost and the draft→sent flip never comes…
+      stepSeconds(33);
+      const settled = onChanged.mock.calls.length;
+      expect(settled).toBeLessThanOrEqual(13);
+      // …and once stopped, it stays stopped.
+      stepSeconds(10);
+      expect(onChanged).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('warns when a deposit is configured but Stripe is not connected', async () => {
     // Partner scope unlocks the Stripe-status fetch (mocked to 'disconnected').
     state.tokens = PARTNER_TOKENS;
@@ -345,5 +424,120 @@ describe('QuoteDetail — send proposal', () => {
 
     await openComposer();
     await waitFor(() => expect(screen.getByTestId('quote-send-payment-warning')).toBeInTheDocument());
+  });
+});
+
+describe('QuoteDetail — persisted send-outcome banners', () => {
+  it('a draft with a failure marker and a PAST schedule shows the scheduled-send-failed banner', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          sendEmailReason: 'send_failed',
+          sendScheduledAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-schedule-send-failed-banner');
+    expect(banner).toHaveTextContent('The scheduled send failed');
+    expect(banner).toHaveTextContent('still a draft');
+    // The sent-but-not-delivered banner belongs to the SENT state only.
+    expect(screen.queryByTestId('quote-email-not-delivered-banner')).not.toBeInTheDocument();
+  });
+
+  it('a draft with a failure marker and NO schedule still shows the failed banner', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, sendEmailReason: 'send_failed', sendScheduledAt: null },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-schedule-send-failed-banner')).toBeInTheDocument();
+  });
+
+  it('a LIVE (future) schedule supersedes a stale failure marker — no banner', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          sendEmailReason: 'send_failed',
+          sendScheduledAt: new Date(Date.now() + 25_000).toISOString(),
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
+    // The user is inside a fresh undo window instead.
+    expect(screen.getByTestId('quote-send-countdown')).toBeInTheDocument();
+  });
+
+  it('a SENT quote with no_billing_contact shows the not-delivered banner with the org-specific copy', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          sendEmailReason: 'no_billing_contact',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).toHaveTextContent('no email was delivered');
+    // The reason-specific copy interpolates the customer name (billToName here).
+    expect(banner).toHaveTextContent('Acme has no billing contact email');
+    expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
+  });
+
+  it('a VIEWED quote retires the banner even with a failure marker still set', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'viewed',
+          sentAt: '2026-06-01T00:01:00Z',
+          viewedAt: '2026-06-02T00:00:00Z',
+          sendEmailReason: 'no_billing_contact',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    // The customer evidently received it — neither banner renders.
+    expect(screen.queryByTestId('quote-email-not-delivered-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
+  });
+
+  it('no banners when sendEmailReason is null (draft or sent)', async () => {
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-email-not-delivered-banner')).not.toBeInTheDocument();
+
+    rerender(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, status: 'sent', sentAt: '2026-06-01T00:01:00Z', sendEmailReason: null },
+      }}
+      onChanged={vi.fn()}
+    />);
+    expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-email-not-delivered-banner')).not.toBeInTheDocument();
   });
 });

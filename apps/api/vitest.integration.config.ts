@@ -71,6 +71,11 @@ export default defineConfig({
       // it FIND a FORCE-RLS `users` row (a contextless read would be 0 rows =
       // "no such user" = silent password-reset breakage for everyone).
       'src/jobs/authEmailWorker.integration.test.ts',
+      // Co-located real-Redis + real-Postgres integration test for the quote
+      // scheduled-send queue (undo-send window): exercises real BullMQ
+      // enqueue/remove of the delayed job and the atomic send_job_id claim
+      // that the mocked unit suite (quoteSendQueue.test.ts) cannot.
+      'src/jobs/quoteSendQueue.integration.test.ts',
       // Real-DB integration test for the stale-backup-job reaper: asserts the
       // status WHERE guard (terminal job NOT reaped, in-flight stalled job IS)
       // that the mocked unit suite's chainable mock swallows. Lives under

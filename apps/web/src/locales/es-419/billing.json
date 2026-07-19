@@ -818,6 +818,7 @@
       },
       "pricing": "Precios",
       "proposalImageAlt": "Imagen de propuesta",
+      "scheduledSendFailed": "El envío programado falló: esta propuesta NO se envió y sigue siendo un borrador. Revísala e intenta enviarla de nuevo.",
       "table": {
         "item": "Artículo",
         "noLines": "No hay líneas en esta tabla.",

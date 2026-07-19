@@ -23,7 +23,7 @@ import {
   lineTitle,
   lineBlurb,
 } from './quoteTypes';
-import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, seamless } from './quoteEditorShared';
+import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quoteEditorShared';
 
 // The ghost row: an always-ready entry row at the foot of every pricing table.
 // Type a name, Tab through qty/price/cadence, press Enter — the line commits
@@ -258,8 +258,8 @@ export function EditableLineRow({
   // never freezes price/name/desc (the scoped-pending backport — InvoiceEditor's
   // LineRow got this first). Remove keeps the whole-row key: the confirm-dialog
   // removal flow runs under `line:<id>` and should hold the row's actions.
-  const fieldBusy = (field: string) => isPending(`line:${line.id}:${field}`);
-  const removeBusy = isPending(`line:${line.id}`);
+  const fieldBusy = (field: string) => isPending(pendingKey.lineField(line.id, field));
+  const removeBusy = isPending(pendingKey.line(line.id));
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   // Rest-state density: an EMPTY description renders no textarea — a compact
@@ -284,7 +284,8 @@ export function EditableLineRow({
   const [sku, setSku] = useState(line.sku ?? '');
   const [partNumber, setPartNumber] = useState(line.partNumber ?? '');
 
-  // "Move to…" menu. Fixed-position so the overflow-x-auto table wrapper can't
+  // Line-actions overflow menu (move up/down/to, image, remove).
+  // Fixed-position so the overflow-x-auto table wrapper can't
   // clip it; closes on outside click or Escape (which refocuses the trigger —
   // focus moved into the menu on open, so it would otherwise drop to <body>).
   const [movePos, setMovePos] = useState<{ top: number; left: number; flip?: boolean } | null>(null);
@@ -378,7 +379,7 @@ export function EditableLineRow({
   // `field` scopes the pending key to the one control being committed; commits
   // without a field (none today) would fall back to freezing the whole row.
   const edit = useCallback(async (body: LineUpdate, field?: string): Promise<boolean> => {
-    const ok = await onEdit(line.id, body, field ? `line:${line.id}:${field}` : undefined);
+    const ok = await onEdit(line.id, body, field ? pendingKey.lineField(line.id, field) : undefined);
     if (ok) flashSaved();
     return ok;
   }, [onEdit, line.id, flashSaved]);
@@ -683,7 +684,8 @@ export function EditableLineRow({
             through a line is data-entry only — one stop instead of four, and
             no destructive button sitting mid-path between the price fields and
             the description. Same menu grammar as the header kebab
-            (useMenuKeyboard: focus-on-open, arrow cycling, Esc → trigger). */}
+            (useMenuKeyboard: focus-on-open + arrow cycling; Esc-to-trigger is
+            the local document-level handler above). */}
         <div ref={moveMenuRef} className="inline-block">
           <button
             ref={moveTriggerRef}

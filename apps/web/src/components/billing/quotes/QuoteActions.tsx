@@ -16,9 +16,74 @@ import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSe
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { useQuotePdfDownload } from './useQuoteImage';
-import { type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
+import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+
+type TFunction = ReturnType<typeof useTranslation>['t'];
+
+/** The honest "marked Sent but no email was delivered" copy for a persisted
+ *  email-failure reason. Shared by the post-flip toast below and the
+ *  persistent banner — unknown codes fall back to the generic send-failed
+ *  copy so a new server-side reason never renders blank. */
+function sendEmailWarningMessage(t: TFunction, reason: QuoteSendEmailReason | string, orgName: string): string {
+  const warnByReason: Record<QuoteSendEmailReason, string> = {
+    no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
+    no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
+    pdf_render_failed: t('quotes.actions.sendEmailWarning.pdfRenderFailed'),
+    send_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
+    // Draft-only code; unreachable on a sent quote, mapped for exhaustiveness.
+    schedule_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
+  };
+  return warnByReason[reason as QuoteSendEmailReason] ?? warnByReason.send_failed;
+}
+
+/** Persistent send-outcome banners. The toast-only surfacing race-depends on
+ *  the user watching the draft→sent flip live; these render from persisted
+ *  state so the outcome survives a reload or a return visit:
+ *  - DRAFT with a failure marker (and no live schedule): the scheduled send
+ *    was rejected at fire time — the proposal was never sent.
+ *  - SENT with a failure marker: the send committed but no email went out.
+ *    Once the customer has viewed/accepted, the banner retires — they
+ *    evidently received it.
+ *  Rendered by QuoteDetail (detail tab) AND QuoteWorkspace (other tabs) —
+ *  drafts open on the Editor tab, so a detail-only banner would be invisible
+ *  on the default path for exactly the state it exists to surface. */
+export function QuoteSendOutcomeBanners({ quote, orgName }: { quote: Quote; orgName: string }) {
+  const { t } = useTranslation('billing');
+  const reason = quote.sendEmailReason;
+  if (!reason) return null;
+  // Draft guard: a live (future) schedule means the user already retried; the
+  // server clears the marker on re-schedule, so this is belt-and-braces
+  // against a stale detail payload.
+  const scheduleLive =
+    quote.sendScheduledAt != null && new Date(quote.sendScheduledAt).getTime() > Date.now();
+  const banner =
+    quote.status === 'draft' && !scheduleLive
+      ? {
+          testId: 'quote-schedule-send-failed-banner',
+          tone: 'border-destructive/40 bg-destructive/10 text-destructive',
+          message: t('quotes.detail.scheduledSendFailed'),
+        }
+      : quote.status === 'sent'
+        ? {
+            testId: 'quote-email-not-delivered-banner',
+            tone: 'border-warning/40 bg-warning/10 text-warning-foreground dark:text-warning',
+            message: sendEmailWarningMessage(t, reason, orgName),
+          }
+        : null;
+  if (!banner) return null;
+  return (
+    <div
+      role="alert"
+      data-testid={banner.testId}
+      className={`flex items-start gap-2 rounded-md border p-3 text-sm ${banner.tone}`}
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+      <span>{banner.message}</span>
+    </div>
+  );
+}
 
 /** Mirrors the send route's `.max(10)` on both `to` and `cc`. */
 const MAX_RECIPIENTS = 10;
@@ -262,7 +327,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       // window stamped, and the header offers Undo until it fires. The real
       // send (and its emailed:false honesty path) runs in the worker.
       await runAction<{ data?: { sendScheduledAt?: string } }>({
-        request: () => scheduleQuoteSend(quote.id, opts as Record<string, unknown>),
+        request: () => scheduleQuoteSend(quote.id, opts),
         errorFallback: t('quotes.actions.sendError'),
         onUnauthorized: UNAUTHORIZED,
       });
@@ -380,13 +445,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     if (prev !== 'draft' || quote.status !== 'sent') return;
     const reason = quote.sendEmailReason;
     if (reason) {
-      const warnByReason: Record<string, string> = {
-        no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
-        no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
-        pdf_render_failed: t('quotes.actions.sendEmailWarning.pdfRenderFailed'),
-        send_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
-      };
-      showToast({ message: warnByReason[reason] ?? warnByReason.send_failed, type: 'warning' });
+      showToast({ message: sendEmailWarningMessage(t, reason, orgName), type: 'warning' });
     } else {
       showToast({ message: t('quotes.actions.sendSuccess', { orgName }), type: 'success' });
     }

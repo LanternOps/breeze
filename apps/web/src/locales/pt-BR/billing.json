@@ -818,6 +818,7 @@
       },
       "pricing": "Preços",
       "proposalImageAlt": "Imagem da proposta",
+      "scheduledSendFailed": "O envio agendado falhou — esta proposta NÃO foi enviada e continua como rascunho. Revise-a e tente enviar novamente.",
       "table": {
         "item": "Item",
         "noLines": "Nenhuma linha nesta tabela.",

@@ -17,6 +17,16 @@ export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_tim
 export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items', 'contract']);
 export const quoteDepositTypeEnum = pgEnum('quote_deposit_type', ['none', 'percent', 'selected_lines']);
 
+/** Reason codes persisted in quotes.send_email_reason (plain text column, not
+ *  a pg enum — adding a code is a type change, not a migration). The first
+ *  four appear on SENT quotes (send committed, email step failed);
+ *  'schedule_failed' appears only on DRAFTS (a scheduled send was rejected at
+ *  fire time — nothing was sent). Keep the web mirror
+ *  (`QuoteSendEmailReason` in apps/web/src/lib/api/quotes.ts) in sync. */
+export type SendQuoteEmailReason =
+  | 'no_email_service' | 'no_billing_contact' | 'pdf_render_failed' | 'send_failed'
+  | 'schedule_failed';
+
 function sqlNumberPresent(t: { quoteNumber: unknown }): SQL { return sql`${t.quoteNumber} IS NOT NULL`; }
 function sqlOpenForExpiry(t: { status: unknown }): SQL { return sql`${t.status} IN ('sent','viewed')`; }
 
@@ -69,9 +79,12 @@ export const quotes = pgTable('quotes', {
   // detect a cancel/reschedule race. Cleared on fire, failure, or cancel.
   sendScheduledAt: timestamp('send_scheduled_at', { withTimezone: true }),
   sendJobId: text('send_job_id'),
-  // Delayed-dispatch email outcome: null = delivered/not-sent-yet; an
-  // emailReason code when the send committed but the email step failed.
-  sendEmailReason: text('send_email_reason'),
+  // Delayed-dispatch outcome marker: null = delivered/not-sent-yet. On a SENT
+  // quote, the reason the email step failed after the send committed; on a
+  // DRAFT, marks a scheduled send that was rejected at fire time (the UI shows
+  // a persistent failure banner). Cleared when a fresh schedule is stamped and
+  // by sendQuote's draft→sent claim.
+  sendEmailReason: text('send_email_reason').$type<SendQuoteEmailReason>(),
   firstViewedAt: timestamp('first_viewed_at'),
   viewedAt: timestamp('viewed_at'),
   createdBy: uuid('created_by').references(() => users.id),

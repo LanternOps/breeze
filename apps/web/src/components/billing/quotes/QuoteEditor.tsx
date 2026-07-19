@@ -34,7 +34,7 @@ import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8St
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import RichTextEditor from '../../common/RichTextEditor';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
-import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, useSavedFlash } from './quoteEditorShared';
+import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import {
@@ -82,8 +82,8 @@ interface Props {
   detail: QuoteDetailData;
   onChanged: () => void;
   /** Fires whenever the editor's save state changes: true while any mutation is
-   *  in flight or a rail field (terms/tax) sits dirty. The workspace uses it to
-   *  hold Send until the quote is quiescent, so the irreversible money-moment
+   *  in flight or the terms field sits dirty. The workspace uses it to hold
+   *  Send until the quote is quiescent, so the irreversible money-moment
    *  can't race a blur-save. */
   onPendingEditsChange?: (hasPendingEdits: boolean) => void;
 }
@@ -122,8 +122,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const blocksColRef = useRef<HTMLDivElement>(null);
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
-  // rest of the editor. Keys: 'terms', 'tax', 'add-block', `block:<id>`,
-  // `add-line:<blockId>`, `line:<id>`. `pending` drives disabled styling;
+  // rest of the editor. Scoped keys come from `pendingKey` (quoteEditorShared)
+  // plus a few editor-local literals ('terms', 'deposit', 'add-block',
+  // 'cover-page', 'cover-image'). `pending` drives disabled styling;
   // `inFlight` is the synchronous double-submit guard (state updates are async).
   const inFlight = useRef<Set<string>>(new Set());
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -824,8 +825,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           errorFallback: source === 'file'
             ? t('quotes.editor.errors.uploadImage')
             : t('quotes.editor.errors.fetchImageFromUrl'),
-          // No success toast: the upload is an internal step of "add image block";
-          // only the final "Image block added" toast below is meaningful (web-2).
+          // No success toast: the upload is an internal step of "add image block",
+          // and the block itself appearing is the success signal (web-2).
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: { imageId: string } }).data,
         });
@@ -933,7 +934,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
 
 
   // Removing a line_items block cascades to every line under it (server-side), so
-  // the card's Remove button opens a confirm step instead of deleting outright.
+  // the section-actions menu's Remove opens a confirm step instead of deleting outright.
   const [pendingRemove, setPendingRemove] = useState<QuoteBlock | null>(null);
   // Line removal is equally irreversible, so it gets the same confirm step the
   // block remove has (rather than deleting on a single click).
@@ -943,7 +944,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // it. Works for every block type — heading, rich_text, and line_items — so the
   // "Remove" button is no longer a silent no-op for heading/rich_text blocks.
   const removeBlock = useCallback((block: QuoteBlock) =>
-    runScoped(`block:${block.id}`, async () => {
+    runScoped(pendingKey.block(block.id), async () => {
       await runAction({
         request: () => deleteBlock(quote.id, block.id),
         errorFallback: t('quotes.editor.errors.removeSection'),
@@ -968,7 +969,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, [quote.id, refresh, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
-    runScoped(`add-line:${blockId}`, () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
+    runScoped(pendingKey.addLine(blockId), () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
   [doAddCatalog, runScoped, t]);
 
   const resolveCatalogBySku = useCallback(async (sku: string): Promise<CatalogItem | null> => {
@@ -985,7 +986,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, [catalog]);
 
   const importAndAddPax8 = useCallback((blockId: string, product: Pax8Product, term: Pax8PriceOption, sellPrice: number) =>
-    runScoped(`add-line:${blockId}`, async () => {
+    runScoped(pendingKey.addLine(blockId), async () => {
       let item = product.vendorSku ? await resolveCatalogBySku(product.vendorSku) : null;
       if (!item) {
         item = await runAction<CatalogItem>({
@@ -1015,7 +1016,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   [doAddCatalog, resolveCatalogBySku, loadCatalog, runScoped, t]);
 
   const importAndAddDistributor = useCallback((blockId: string, product: EcProduct, sellPrice: number) =>
-    runScoped(`add-line:${blockId}`, async () => {
+    runScoped(pendingKey.addLine(blockId), async () => {
       // Check the catalog first: if this SKU is already imported, add the existing
       // item directly. This avoids the duplicate-SKU error toast (runAction toasts
       // the failure before throwing) firing on the common "already in catalog" path,
@@ -1038,7 +1039,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             aiCleanup: true,
           }),
           errorFallback: t('quotes.editor.errors.importDistributorItem'),
-          // no success toast here — the "Item added" toast from doAddCatalog is the meaningful one
+          // no success toast here — doAddCatalog's new row visibly appearing is the success signal
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => (d as { data: CatalogItem }).data,
         });
@@ -1077,7 +1078,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       handleActionError(new Error('invalid cost'), t('quotes.editor.errors.costZeroOrMore'));
       return Promise.resolve(false);
     }
-    return runScoped(`add-line:${blockId}`, async () => {
+    return runScoped(pendingKey.addLine(blockId), async () => {
       await runAction({
         request: () => addManualLine(quote.id, {
           sourceType: 'manual',
@@ -1127,7 +1128,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, [quote.id, refresh, loadCatalog, runScoped, t]);
 
   const deleteLine = useCallback((lineId: string) =>
-    runScoped(`line:${lineId}`, async () => {
+    runScoped(pendingKey.line(lineId), async () => {
       await runAction({
         request: () => removeLine(quote.id, lineId),
         errorFallback: t('quotes.editor.errors.removeLine'),
@@ -1147,7 +1148,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // slow qty save never disables the price input mid-tab (the scoped-pending
   // backport from InvoiceEditor); omitting it falls back to the whole row.
   const editLine = useCallback((lineId: string, body: LineUpdate, scopeKey?: string) =>
-    runScoped(scopeKey ?? `line:${lineId}`, async () => {
+    runScoped(scopeKey ?? pendingKey.line(lineId), async () => {
       await runAction({
         request: () => updateLine(quote.id, lineId, body),
         errorFallback: t('quotes.editor.errors.updateLine'),
@@ -1162,7 +1163,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // immutable and never changes here. Like editLine, success is quiet (the row
   // flashes "Saved"); only failures toast.
   const editBlock = useCallback((block: QuoteBlock, content: Record<string, unknown>) =>
-    runScoped(`block:${block.id}`, async () => {
+    runScoped(pendingKey.block(block.id), async () => {
       await runAction({
         request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
         errorFallback: t('quotes.editor.errors.updateSection'),
@@ -1701,10 +1702,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           most-checked figures. Stacked, the table gets the full content width. */}
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
-        {/* min-w-0: this 1fr grid track holds a pricing table with min-w-[640px]
-            inside an overflow-x-auto wrapper. Without min-w-0 the track refuses to
-            shrink below the table's min-content and the whole editor blows out to
-            ~758px on a phone (page-level horizontal scroll). */}
+        {/* min-w-0: this 1fr grid track holds a pricing table with a min-width
+            (see BlockCard) inside an overflow-x-auto wrapper. Without min-w-0 the
+            track refuses to shrink below the table's min-content and the editor
+            blows out past the viewport on a phone (page-level horizontal scroll). */}
         <div
           className="min-w-0 space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           ref={blocksColRef}
@@ -2098,7 +2099,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             blocksColRef.current?.focus();
           })();
         }}
-        isLoading={pendingRemove ? isPending(`block:${pendingRemove.id}`) : false}
+        isLoading={pendingRemove ? isPending(pendingKey.block(pendingRemove.id)) : false}
         title={t('quotes.editor.confirm.removeSectionTitle')}
         message={
           pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
@@ -2123,7 +2124,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             blocksColRef.current?.focus();
           })();
         }}
-        isLoading={pendingLineRemove ? isPending(`line:${pendingLineRemove.id}`) : false}
+        isLoading={pendingLineRemove ? isPending(pendingKey.line(pendingLineRemove.id)) : false}
         title={t('quotes.editor.confirm.removeLineTitle')}
         message={
           pendingLineRemove

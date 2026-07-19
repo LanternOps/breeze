@@ -7,9 +7,10 @@ import { DocumentWorkspace, type DocumentTab } from '../shared/DocumentWorkspace
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
-import QuoteActions from './QuoteActions';
+import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import { QuoteHeaderMeta } from './QuoteHeaderMeta';
-import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
+import { useOrgStore } from '../../../stores/orgStore';
+import { type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -34,6 +35,7 @@ function readTab(isDraft: boolean): Tab {
 
 export default function QuoteWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
+  const organizations = useOrgStore((s) => s.organizations);
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -140,6 +142,18 @@ export default function QuoteWorkspace({ id }: Props) {
       activeTab={activeTab}
       onTabChange={selectTab}
     >
+      {/* Send-outcome banner on the non-detail tabs: drafts open on the
+          Editor tab, so a failed scheduled send surfaced only inside
+          QuoteDetail would be invisible on the default path. The detail tab
+          renders its own copy (QuoteDetail is also used standalone). */}
+      {activeTab !== 'detail' && (
+        <div className="mb-4">
+          <QuoteSendOutcomeBanners
+            quote={detail.quote}
+            orgName={resolveQuoteOrgName(detail.quote, organizations)}
+          />
+        </div>
+      )}
       {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
           unmounting discarded any half-typed add-line/add-section input the
           moment a tech flipped to Preview "just to check" — brutal mid-flow

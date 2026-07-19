@@ -170,6 +170,80 @@ describe('QuotesPage', () => {
     expect(screen.getByTestId('quotes-status-q-draft')).toHaveTextContent('Draft');
   });
 
+  it('the row Duplicate action clones the quote and lands in the new draft', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input === '/quotes/q-1/clone') return json({ data: { id: 'q-new' } });
+      if (input.startsWith('/quotes')) return json({ data: QUOTES });
+      void init;
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quotes-duplicate-q-1'));
+
+    // The whole point of duplicating is to edit the new draft immediately.
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/quotes/q-new'));
+    const cloneCall = fetchMock.mock.calls.find((c) => String(c[0]) === '/quotes/q-1/clone');
+    expect(cloneCall).toBeTruthy();
+    expect((cloneCall![1] as RequestInit).method).toBe('POST');
+  });
+
+  it('create dialog with a "start from" source makes confirm CLONE the source, not create blank', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/orgs/sites')) return json({ data: [] });
+      if (input === '/quotes/q-1/clone') return json({ data: { id: 'q-cloned' } });
+      if (input === '/quotes' && init?.method === 'POST') return json({ data: { id: 'q-created' } });
+      if (input.startsWith('/quotes')) return json({ data: QUOTES });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quotes-create-open'));
+    fireEvent.change(await screen.findByTestId('quotes-create-org'), { target: { value: 'org-1' } });
+    fireEvent.change(screen.getByTestId('quotes-create-source'), { target: { value: 'q-1' } });
+    fireEvent.click(screen.getByTestId('quotes-create-submit'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/quotes/q-cloned'));
+    const cloneCall = fetchMock.mock.calls.find((c) => String(c[0]) === '/quotes/q-1/clone');
+    expect(cloneCall).toBeTruthy();
+    expect((cloneCall![1] as RequestInit).method).toBe('POST');
+    // Retargeted to the chosen org; blank title omitted (fall back to source).
+    expect(JSON.parse((cloneCall![1] as RequestInit).body as string)).toEqual({ orgId: 'org-1' });
+    // The blank-create endpoint must NOT have been hit.
+    expect(fetchMock.mock.calls.some(
+      (c) => String(c[0]) === '/quotes' && (c[1] as RequestInit | undefined)?.method === 'POST',
+    )).toBe(false);
+  });
+
+  it('create dialog without a source calls createQuote (no clone)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/orgs/sites')) return json({ data: [] });
+      if (input === '/quotes' && init?.method === 'POST') return json({ data: { id: 'q-created' } });
+      if (input.startsWith('/quotes')) return json({ data: QUOTES });
+      return json({}, false, 404);
+    });
+    render(<QuotesPage />);
+    await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quotes-create-open'));
+    fireEvent.change(await screen.findByTestId('quotes-create-org'), { target: { value: 'org-1' } });
+    fireEvent.click(screen.getByTestId('quotes-create-submit'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/quotes/q-created'));
+    const createCall = fetchMock.mock.calls.find(
+      (c) => String(c[0]) === '/quotes' && (c[1] as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(createCall).toBeTruthy();
+    expect(JSON.parse((createCall![1] as RequestInit).body as string)).toEqual({ orgId: 'org-1', currencyCode: 'USD' });
+    // No clone endpoint involved in a blank create.
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/clone'))).toBe(false);
+  });
+
   it('renders the access-denied state (not the retryable error) on a 403', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });

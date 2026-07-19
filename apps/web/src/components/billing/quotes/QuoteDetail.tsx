@@ -6,7 +6,7 @@ import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { useAuthedImage } from './useQuoteImage';
-import QuoteActions from './QuoteActions';
+import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import { RecurringBillingNote, MarginPanel } from '../billingUi';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import {
@@ -18,6 +18,7 @@ import {
   formatDate,
   formatMoney,
   formatQuantity,
+  resolveQuoteOrgName,
   lineTaxAmount,
   lineTitle,
   lineBlurb,
@@ -101,24 +102,17 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   // header Tax row); otherwise it'd be a column of dashes.
   const showTax = Number(quote.taxTotal) > 0;
 
-  // Customer label: prefer the explicit bill-to name; otherwise resolve the real
-  // organization name from the client-side org list (same source the org switcher
-  // renders). Fall back to the UUID prefix only when neither is available (e.g.
-  // the quote's org isn't in the currently-loaded list, such as All-orgs scope).
-  // Use truthiness after trim, not `??`: the bill-to validator allows an empty
-  // string, and a blank/whitespace billToName would otherwise render an empty
-  // Customer cell — the same "unfinished header" symptom (#1712) via a different
-  // input.
-  const orgName = useMemo(() => {
-    const billTo = quote.billToName?.trim();
-    if (billTo) return billTo;
-    const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
-    if (resolved) return resolved;
-    return quote.orgId.slice(0, 8);
-  }, [quote.billToName, quote.orgId, organizations]);
+  const orgName = useMemo(
+    () => resolveQuoteOrgName(quote, organizations),
+    [quote.billToName, quote.orgId, organizations],
+  );
 
   return (
     <div className="space-y-6" data-testid="quote-detail">
+      {/* Persisted send-outcome banners: a fire-time-failed scheduled send
+          (draft) or a committed send whose email never went out (sent). Toasts
+          alone are race-dependent — these survive reload/return visits. */}
+      <QuoteSendOutcomeBanners quote={quote} orgName={orgName} />
       {/* xl (not lg): matches the editor tab — below xl the rail stacks under the
           content so the line tables aren't starved into sideways scrolling. */}
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">

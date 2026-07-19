@@ -818,6 +818,7 @@
       },
       "pricing": "Preise",
       "proposalImageAlt": "Angebotsbild",
+      "scheduledSendFailed": "Der geplante Versand ist fehlgeschlagen — dieses Angebot wurde NICHT gesendet und ist weiterhin ein Entwurf. Prüfen Sie es und senden Sie es erneut.",
       "table": {
         "item": "Artikel",
         "noLines": "Keine Positionen in dieser Tabelle.",

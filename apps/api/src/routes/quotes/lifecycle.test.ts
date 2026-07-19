@@ -29,6 +29,10 @@ vi.mock('../../services/quoteLifecycle', () => ({
   sendQuote: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false, acceptUrl: 'http://x/quote/t' })),
 }));
 vi.mock('../../services/quoteService', () => ({ getQuote: vi.fn() }));
+vi.mock('../../jobs/quoteSendQueue', () => ({
+  scheduleQuoteSend: vi.fn(),
+  cancelQuoteSend: vi.fn(),
+}));
 vi.mock('../../services/quoteImageStorage', () => ({
   writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
   fetchRemoteImage: vi.fn(),
@@ -44,6 +48,7 @@ vi.mock('../../services/contractTemplateRender', () => ({ loadContractBlockRende
 
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
+import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { fetchRemoteImage, writeQuoteImage, RemoteImageError } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 
@@ -109,6 +114,115 @@ describe('POST /:id/send — composer body', () => {
   it('400s an unknown field (strict body)', async () => {
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/send`, jsonReq({ bcc: ['x@y.z'] }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /:id/schedule-send', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+  const FIRE_AT = new Date('2026-07-18T12:00:30.000Z');
+  const draftQuote = {
+    quote: { id: QUOTE_ID, status: 'draft', orgId: 'org-1' },
+    lines: [{ customerVisible: true }],
+    blocks: [],
+  };
+  const jsonReq = (body: unknown) => ({
+    method: 'POST' as const,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue(draftQuote as never);
+    vi.mocked(scheduleQuoteSend).mockResolvedValue({ sendScheduledAt: FIRE_AT });
+  });
+
+  it('403s a quotes:read + quotes:write user without quotes:send (same gate as /send)', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write']).request(`/${QUOTE_ID}/schedule-send`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('409s (INVALID_STATE) when the quote is not a draft', async () => {
+    vi.mocked(getQuote).mockResolvedValue({ ...draftQuote, quote: { ...draftQuote.quote, status: 'sent' } } as never);
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'INVALID_STATE' });
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('422s (QUOTE_EMPTY) when the draft has no customer-visible lines', async () => {
+    vi.mocked(getQuote).mockResolvedValue({ ...draftQuote, lines: [{ customerVisible: false }] } as never);
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, { method: 'POST' });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'QUOTE_EMPTY' });
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('400s a delaySeconds outside 5..300', async () => {
+    for (const delaySeconds of [4, 301, 30.5]) {
+      const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, jsonReq({ delaySeconds }));
+      expect(res.status).toBe(400);
+    }
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('400s malformed JSON without scheduling', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not valid json',
+    });
+    expect(res.status).toBe(400);
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('200s with the ISO fire time and forwards delaySeconds as milliseconds', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, jsonReq({ delaySeconds: 60, message: 'hi' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { sendScheduledAt: '2026-07-18T12:00:30.000Z' } });
+    expect(vi.mocked(scheduleQuoteSend)).toHaveBeenCalledWith(
+      QUOTE_ID,
+      expect.anything(),
+      expect.objectContaining({ message: 'hi' }),
+      60_000,
+    );
+  });
+
+  it('defaults the undo window to 30s when delaySeconds is omitted (empty body)', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(scheduleQuoteSend).mock.calls[0]?.[3]).toBe(30_000);
+  });
+});
+
+describe('DELETE /:id/schedule-send', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({ quote: { id: QUOTE_ID, status: 'draft', orgId: 'org-1' }, lines: [], blocks: [] } as never);
+  });
+
+  it('403s without quotes:send', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write']).request(`/${QUOTE_ID}/schedule-send`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    expect(cancelQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('200s {canceled:true} when the undo wins', async () => {
+    vi.mocked(cancelQuoteSend).mockResolvedValue(true);
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { canceled: true } });
+    expect(cancelQuoteSend).toHaveBeenCalledWith(QUOTE_ID);
+  });
+
+  it('passes through {canceled:false} when the window already elapsed', async () => {
+    vi.mocked(cancelQuoteSend).mockResolvedValue(false);
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/schedule-send`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { canceled: false } });
   });
 });
 

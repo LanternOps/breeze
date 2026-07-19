@@ -59,7 +59,11 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
   // parse/validate is rejected 400 rather than silently swallowing a note the
   // sender intended (mirrors the image-from-URL route below).
   if ((c.req.header('content-type') ?? '').includes('application/json')) {
-    const raw = await c.req.text().catch(() => '');
+    // A body-READ failure (stream aborted mid-request) is not the same as an
+    // intentionally absent body: proceeding would silently drop the composer's
+    // explicit recipients and fall back to the org billing contact. Reject it.
+    const raw = await c.req.text().catch(() => null);
+    if (raw === null) return c.json({ error: 'Could not read request body' }, 400);
     if (raw.trim()) {
       let json: unknown;
       try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
@@ -92,7 +96,11 @@ quoteLifecycleRoutes.post('/:id/schedule-send', scopes, sendPerm, zValidator('pa
   const id = c.req.valid('param').id;
   let body: z.infer<typeof scheduleSendSchema> = {};
   if ((c.req.header('content-type') ?? '').includes('application/json')) {
-    const raw = await c.req.text().catch(() => '');
+    // A body-READ failure (stream aborted mid-request) is not the same as an
+    // intentionally absent body: proceeding would silently drop the composer's
+    // explicit recipients and fall back to the org billing contact. Reject it.
+    const raw = await c.req.text().catch(() => null);
+    if (raw === null) return c.json({ error: 'Could not read request body' }, 400);
     if (raw.trim()) {
       let json: unknown;
       try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }

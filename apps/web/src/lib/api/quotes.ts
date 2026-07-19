@@ -69,12 +69,14 @@ export function createQuote(body: CreateQuoteInput): Promise<Response> {
   });
 }
 
-/** Clone a quote into a new draft. Optional body retargets it to another
- *  organization (same partner) and/or renames it — omitted fields fall back to
- *  the source quote (matches `cloneQuoteSchema` in shared). */
 /** Schedule the delayed (undo-able) send: the server enqueues the real send
- *  ~30s out and stamps sendScheduledAt on the quote. Body matches /send. */
-export function scheduleQuoteSend(id: string, body: Record<string, unknown>): Promise<Response> {
+ *  ~30s out and stamps sendScheduledAt on the quote. Body mirrors the API's
+ *  `.strict()` schedule schema (SendQuoteOptions + delaySeconds), so a
+ *  mis-keyed field is a compile error here instead of a runtime 400. */
+export function scheduleQuoteSend(
+  id: string,
+  body: SendQuoteOptions & { delaySeconds?: number },
+): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/schedule-send`, { method: 'POST', body: JSON.stringify(body) });
 }
 
@@ -84,6 +86,9 @@ export function cancelScheduledSend(id: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/schedule-send`, { method: 'DELETE' });
 }
 
+/** Clone a quote into a new draft. Optional body retargets it to another
+ *  organization (same partner) and/or renames it — omitted fields fall back to
+ *  the source quote (matches `cloneQuoteSchema` in shared). */
 export function cloneQuote(id: string, body?: { orgId?: string; title?: string }): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/clone`, {
     method: 'POST',
@@ -220,17 +225,23 @@ export interface SendQuoteOptions {
   includePdf?: boolean;
 }
 
-/** Why the best-effort email step did NOT deliver after a send committed
- *  (`data.emailed === false`). Kept in sync with the API's send route:
+/** Persisted send-outcome codes (mirrors `SendQuoteEmailReason` in
+ *  apps/api/src/db/schema/quotes.ts). Semantics depend on quote status:
+ *  on a SENT quote, why the best-effort email step did NOT deliver after the
+ *  send committed (`data.emailed === false`):
  *  - `no_billing_contact` — the org has no billing-contact email to fall back to
  *  - `no_email_service`   — email isn't configured on this server
  *  - `pdf_render_failed`  — the PDF attachment couldn't be generated
- *  - `send_failed`        — the transport itself rejected/failed the message */
+ *  - `send_failed`        — the transport itself rejected/failed the message
+ *  On a DRAFT, only:
+ *  - `schedule_failed`    — a scheduled send was rejected at fire time; nothing
+ *    was sent and the quote is still a draft. */
 export type QuoteSendEmailReason =
   | 'no_billing_contact'
   | 'no_email_service'
   | 'pdf_render_failed'
-  | 'send_failed';
+  | 'send_failed'
+  | 'schedule_failed';
 
 /** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
  *  quotes:send. Only non-empty / non-default fields are POSTed, so a bare

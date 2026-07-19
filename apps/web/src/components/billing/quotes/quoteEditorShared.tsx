@@ -1,7 +1,7 @@
 // Shared plumbing for the quote editor's split modules (QuoteEditor hub +
 // QuoteLineRows / QuoteBlockCard / QuoteContractBlockEditor). Extracted when
-// QuoteEditor.tsx crossed 4,000 lines — one save-language implementation, one
-// place for the field-state styling contract.
+// the pre-split QuoteEditor.tsx approached 4,000 lines — one save-language
+// implementation, one place for the field-state styling contract.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
@@ -9,6 +9,22 @@ import { navigateTo } from '@/lib/navigation';
 import type { QuoteLineRecurrence } from './quoteTypes';
 
 export const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+
+/** Builders for the editor's pending-scope keys. The producer (QuoteEditor's
+ *  runScoped) and the consumers (BlockCard/EditableLineRow's isPending) live
+ *  in different modules; a hand-typed key that drifts on either side fails
+ *  SILENTLY as "never pending" — no disabled state, no double-submit guard —
+ *  so both sides must build keys through these. */
+export const pendingKey = {
+  /** Block-level mutations: content save, remove-block. */
+  block: (blockId: string) => `block:${blockId}`,
+  /** The add-line flows of one block (catalog pick, SKU, manual form). */
+  addLine: (blockId: string) => `add-line:${blockId}`,
+  /** Whole-line mutations: remove, move, image attach. */
+  line: (lineId: string) => `line:${lineId}`,
+  /** One field's blur-save on a line (scopes the busy state to that input). */
+  lineField: (lineId: string, field: string) => `line:${lineId}:${field}`,
+};
 
 export type LineUpdate = Partial<{
   name: string | null;
@@ -32,7 +48,8 @@ export type LineUpdate = Partial<{
 // runAction successMessage. Per-field toasts were a storm during editing and
 // double-announced alongside SrSaved, so they were removed.
 
-// A transient "Saved" cue for the right-rail blur-to-save fields (terms, tax).
+// A transient "Saved" cue for blur-to-save fields outside the row grid (the
+// rail's terms field, the header title in QuoteHeaderMeta).
 // BlockCard and EditableLineRow replicate this same pattern inline rather than
 // calling the hook. Returns the on-flag (drives the SR live region) and a
 // trigger; clears its timer on unmount so a late fire can't setState a gone node.

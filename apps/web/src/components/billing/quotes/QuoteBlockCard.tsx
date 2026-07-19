@@ -1,7 +1,8 @@
 // A single quote block on the editor canvas (heading / rich text / image /
-// pricing table / contract), including the pricing table's row rendering and
-// the collapsed add-line picker. Split from QuoteEditor.tsx — see
-// quoteEditorShared.tsx for the shared save-language plumbing.
+// pricing table / contract): the block chrome, the pricing table shell, and
+// the collapsed add-line picker. Row rendering lives in QuoteLineRows.tsx.
+// Split from QuoteEditor.tsx — see quoteEditorShared.tsx for the shared
+// save-language plumbing.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
@@ -23,7 +24,7 @@ import {
   type QuoteLineRecurrence,
   formatMoney,
 } from './quoteTypes';
-import { type LineUpdate, SrSaved, fieldRing, seamless } from './quoteEditorShared';
+import { type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quoteEditorShared';
 import { GhostRow, EditableLineRow, ReadonlyLineRow } from './QuoteLineRows';
 import { ContractBlockEditor } from './QuoteContractBlockEditor';
 
@@ -68,8 +69,8 @@ export function BlockCard({
   const { t } = useTranslation('billing');
   // Pending state scoped to this block: editing/removing this block, or adding a
   // line to it, never disables anything in a sibling block.
-  const blockBusy = isPending(`block:${block.id}`);
-  const addLineBusy = isPending(`add-line:${block.id}`);
+  const blockBusy = isPending(pendingKey.block(block.id));
+  const addLineBusy = isPending(pendingKey.addLine(block.id));
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [mode, setMode] = useState<'catalog' | 'manual' | 'distributor' | 'pax8'>('catalog');
@@ -261,7 +262,7 @@ export function BlockCard({
         )}
         {block.blockType === 'rich_text' && (
           canWrite ? (
-            // The editor commits on blur (same as the old textarea). React's
+            // The editor commits on blur. React's
             // onBlur fires on focusout of the contenteditable; toolbar buttons
             // preventDefault their mousedown so clicking them never blurs the
             // editor and never triggers a spurious commit.
@@ -682,8 +683,9 @@ export function BlockCard({
 }
 
 // Editor image preview. GET /quotes/:id/images/:imageId requires the Bearer auth
-// header, so a bare <img src> would 401 (web-1). Mirror QuoteWorkspace's PDF
-// preview: fetchWithAuth → blob → object URL, revoked on unmount/change.
+// header, so a bare <img src> would 401 (web-1): fetchWithAuth → blob → object
+// URL, revoked on unmount/change (same pattern as useAuthedImage in
+// useQuoteImage.ts, kept inline for its distinct loading/failed states).
 export function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
   const { t } = useTranslation('billing');
   const [url, setUrl] = useState<string>();

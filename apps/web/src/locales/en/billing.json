@@ -818,6 +818,7 @@
       },
       "pricing": "Pricing",
       "proposalImageAlt": "Proposal image",
+      "scheduledSendFailed": "The scheduled send failed — this proposal was NOT sent and is still a draft. Review it and try sending again.",
       "table": {
         "item": "Item",
         "noLines": "No lines in this table.",
