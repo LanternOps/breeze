@@ -142,6 +142,7 @@ export interface ReconcilePorts {
     staged: StagedExtensionContributions,
     manifest: ExtensionManifestV1,
   ): Promise<void>;
+  sweepUnaccountedTables(): Promise<void>;
 }
 
 export interface ReconcileExtensionsArgs {
@@ -518,18 +519,23 @@ async function defaultStageExtension(
 }
 
 /**
- * Compose the two boot-time tenancy tripwires for a single extension: the
- * per-extension RLS assertion, then the repo-wide unaccounted-tables sweep over
- * ALL registered tenancy (this extension's declaration was already published, so
- * the sweep sees it). Migration safety is NOT re-checked here — it is validated
- * inside {@link reconcileExtensionMigrations}.
+ * Per-extension boot-time tenancy tripwire: the RLS assertion over the
+ * extension's OWN declared tables. The repo-wide unaccounted-tables sweep is
+ * deliberately NOT here — it runs once after the whole reconcile loop (see
+ * {@link reconcileExtensions}), because per-extension it races a concurrent
+ * replica: replica B validating its FIRST extension can see the SECOND
+ * extension's tables (already migrated by replica A against the shared
+ * database) before B has published that second declaration, and abort a
+ * perfectly healthy boot. After the loop, every replica has published tenancy
+ * for every selection in the shared extensions.yaml, so the sweep is
+ * order-independent across replicas. Migration safety is NOT re-checked here —
+ * it is validated inside {@link reconcileExtensionMigrations}.
  */
 async function defaultValidateTenancy(
   _staged: StagedExtensionContributions,
   manifest: ExtensionManifestV1,
 ): Promise<void> {
   await assertExtensionTenancyRls(manifest.name, manifest.tenancy);
-  await assertNoUnaccountedPublicTables(getExtensionTenancy());
 }
 
 function buildDefaultPorts(args: ReconcileExtensionsArgs): ReconcilePorts {
@@ -572,6 +578,7 @@ function buildDefaultPorts(args: ReconcileExtensionsArgs): ReconcilePorts {
     stageExtension: (module, manifest) =>
       defaultStageExtension(module, manifest, args.registry),
     validateTenancyAndContributions: defaultValidateTenancy,
+    sweepUnaccountedTables: () => assertNoUnaccountedPublicTables(getExtensionTenancy()),
   };
 }
 
@@ -696,6 +703,17 @@ export async function reconcileExtensions(
         }
       }
     }
+
+    // Repo-wide unaccounted-tables catch-all, ONCE per boot after the loop —
+    // not per extension, which races a concurrent replica (see
+    // defaultValidateTenancy's doc comment). By this point tenancy is
+    // published for every selection whose migrations succeeded, including
+    // optional extensions later withdrawn at stage/validate (publishTenancy
+    // lands the moment migrations succeed, precisely so their tables stay
+    // accounted for). Throws raw and aborts boot — the same fail-closed
+    // contract as the legacy disk loader's boot-time call in loader.ts; the
+    // tripwire's message is secret-free by design.
+    await ports.sweepUnaccountedTables();
   } finally {
     if (sql) await sql.end();
   }

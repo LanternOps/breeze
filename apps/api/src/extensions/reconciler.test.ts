@@ -205,6 +205,7 @@ async function reconcileFixture(
       return fakeStaged();
     },
     validateTenancyAndContributions: async () => {},
+    sweepUnaccountedTables: async () => {},
   };
 
   const summary = await reconcileExtensions({
