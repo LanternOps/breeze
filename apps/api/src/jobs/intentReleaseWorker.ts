@@ -71,6 +71,34 @@ function normalizeToolResult(raw: string): Record<string, unknown> {
 }
 
 /**
+ * A tool handler can return successfully (no thrown error) but hand back a JSON
+ * body that IS an error — validation failures, device/org access-denied, etc.
+ * (`executeTool` returns `JSON.stringify({ error })` for these; see aiTools.ts).
+ * The chat SDK's makeHandler (aiAgentSdkTools.ts) flags exactly these as
+ * `isError`; the durable release worker MUST apply the SAME detection or a
+ * returned error gets recorded as a successful completion (a real audit-integrity
+ * bug — e.g. "device access revoked after approval" would read as success).
+ * Kept as a local duplicate of the SDK predicate for the same dependency-graph
+ * reason `normalizeToolResult` is (avoid dragging the chat-session graph into
+ * this worker); the two must stay in lockstep.
+ */
+function isReturnedToolError(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw);
+    return (
+      !!parsed &&
+      typeof parsed === 'object' &&
+      'error' in parsed &&
+      !('success' in parsed) &&
+      !('data' in parsed) &&
+      !('configured' in parsed)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Writes the `action_intent.executed` audit row + Prometheus counter for a
  * FAILED release (any revalidation stop, or a thrown `executeTool`).
  *
@@ -242,6 +270,26 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   const resultBytes = Buffer.byteLength(rawResult, 'utf8');
   const truncated = resultBytes > MAX_RESULT_BYTES;
   const storedResult: Record<string, unknown> = truncated ? { truncated: true } : normalizeToolResult(rawResult);
+
+  // A tool that returned an error body (not a throw) is a FAILED release, not a
+  // completion — mirrors the chat SDK's isError handling. Store the result for
+  // diagnosis but terminalize as failed:tool_returned_error.
+  if (!truncated && isReturnedToolError(rawResult)) {
+    const failed = await transitionIntent(intent.id, 'executing', 'failed', {
+      executedAt: new Date(),
+      errorCode: 'tool_returned_error',
+      result: storedResult,
+    });
+    if (failed) {
+      auditReleaseFailure(intent, 'tool_returned_error', { returnedError: true });
+    } else {
+      // Lost the CAS after the tool ran — the side effect happened; surface it.
+      console.error(
+        `[IntentReleaseWorker] Lost the executing->failed CAS for intent ${intent.id} after a returned tool error`,
+      );
+    }
+    return;
+  }
 
   const completed = await transitionIntent(intent.id, 'executing', 'completed', {
     executedAt: new Date(),

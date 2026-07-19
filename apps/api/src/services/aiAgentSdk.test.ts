@@ -113,7 +113,9 @@ vi.mock('./actionIntents/intentService', () => ({
 // the real module's ../aiTools import chain (which would otherwise drag in
 // aiToolSchemas' drizzle-enum schemas the ../db/schema mock doesn't provide).
 // Default: still authorized. Fail-path tests override the resolved value.
-const mockRevalidateApprovedIntentForRelease = vi.fn(async () => ({ ok: true, auth: {} }));
+const mockRevalidateApprovedIntentForRelease = vi.fn((..._args: unknown[]) =>
+  Promise.resolve({ ok: true, auth: {} } as { ok: boolean; auth: unknown }),
+);
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: (...args: unknown[]) =>
     mockRevalidateApprovedIntentForRelease(...args),

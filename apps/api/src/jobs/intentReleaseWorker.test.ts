@@ -219,6 +219,51 @@ describe('releaseApprovedIntent', () => {
     expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
   });
 
+  it('returned tool error (JSON {error}) -> failed:tool_returned_error, not completed', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    // executeTool did not throw, but handed back an error body (e.g. device
+    // access revoked after approval). Must be recorded as a FAILED release.
+    aiToolsMock.executeTool.mockResolvedValueOnce(
+      JSON.stringify({ error: 'Device not found or access denied' }),
+    );
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({
+        errorCode: 'tool_returned_error',
+        result: { error: 'Device not found or access denied' },
+        executedAt: expect.any(Date),
+      }),
+    );
+    // Failure audit written, and NOT recorded as an executed success.
+    expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'executed' }),
+    );
+  });
+
+  it('a JSON body with both {error} and {success} is treated as success (not a returned error)', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true, error: null }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.anything(),
+    );
+  });
+
   it('digest_mismatch: no winning approval row found -> failed, executeTool never called', async () => {
     const intent = baseIntent();
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
