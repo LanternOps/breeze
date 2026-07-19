@@ -5,6 +5,7 @@ import {
 import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { Toaster, toast } from '../ui/Toaster';
 import { FileTable } from './FileTable';
 import { FilterChips } from './FilterChips';
 
@@ -243,11 +244,11 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     browse(sources[0].id, '');
   }, [tab, browsePath, sources, browse]);
 
-  // Not yet wired to a row action — Task 7 hangs this off the ⋯ context menu.
   const handleCopyPath = (file: FinderFile) => {
     const path = file.openPath ?? file.relPath;
     navigator.clipboard.writeText(path).catch(() => {});
     recordActivity(file.id, 'copy_path', username);
+    toast('Path copied');
   };
 
   const handleOpen = async (file: FinderFile) => {
@@ -289,6 +290,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="helper-container">
+      <Toaster />
       <div
         className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`}
         data-tauri-drag-region

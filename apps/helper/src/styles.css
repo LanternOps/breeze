@@ -965,8 +965,8 @@ body {
 }
 
 /* ----------------------------------------------------------
-   Filter chips (Search toolbar) — plain positioned listbox for now;
-   Task 7 swaps the menu body for a Radix DropdownMenu.
+   Filter chips (Search toolbar) — each chip is a Radix DropdownMenu;
+   the menu body below styles DropdownMenu.Content/Item.
    ---------------------------------------------------------- */
 .ws-filter-chip-row {
   display: flex;
@@ -974,10 +974,6 @@ body {
   gap: 6px;
   padding: 0 14px 8px;
   flex-shrink: 0;
-}
-
-.ws-filter-chip-wrap {
-  position: relative;
 }
 
 .ws-filter-chip {
@@ -1020,9 +1016,6 @@ body {
 }
 
 .ws-filter-chip-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
   z-index: 5;
   min-width: 180px;
   max-height: 220px;
@@ -1168,7 +1161,6 @@ body {
 }
 
 .ws-file-table-row {
-  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 140px 120px 110px 70px;
   gap: 8px;
@@ -1248,28 +1240,114 @@ body {
   color: var(--ws-text-tertiary);
 }
 
-.ws-file-table-open {
+/* ----------------------------------------------------------
+   RowMenu — right-click context menu + hover ⋯ overflow button,
+   both opening the same items (file/directory rows in FileTable).
+   ---------------------------------------------------------- */
+.ws-row-menu {
+  position: relative;
+}
+
+.ws-row-menu-overflow {
   position: absolute;
   right: 8px;
   top: 50%;
   transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--ws-border);
   border-radius: var(--ws-radius-control);
   background: var(--ws-surface);
-  color: var(--ws-ink);
-  font-size: var(--ws-text-12);
-  padding: 3px 10px;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-text-13);
+  line-height: 1;
   cursor: pointer;
   box-shadow: var(--ws-shadow-1);
   transition: opacity var(--ws-dur-fast) var(--ws-ease);
 }
 
-.ws-file-table-row:hover .ws-file-table-open,
-.ws-file-table-row:focus-within .ws-file-table-open {
+.ws-row-menu:hover .ws-row-menu-overflow,
+.ws-row-menu:focus-within .ws-row-menu-overflow,
+.ws-row-menu-overflow[data-state='open'] {
   opacity: 1;
   pointer-events: auto;
+}
+
+.ws-row-menu-content {
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+  z-index: 5;
+}
+
+.ws-row-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+}
+
+.ws-row-menu-item[data-highlighted] {
+  background: var(--ws-accent-soft);
+}
+
+.ws-row-menu-item[data-disabled] {
+  color: var(--ws-text-tertiary);
+  cursor: default;
+}
+
+/* ----------------------------------------------------------
+   Toaster — bottom-center, auto-dismissing confirmation (e.g. "Path copied").
+   ---------------------------------------------------------- */
+.ws-toast-viewport {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 20;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+
+.ws-toast {
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+  padding: 4px;
+}
+
+.ws-toast-desc {
+  display: block;
+  padding: 6px 10px;
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  color: var(--ws-ink);
 }
 
 .ws-file-table-snippet {

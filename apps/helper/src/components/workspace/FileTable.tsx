@@ -3,6 +3,7 @@ import {
   useWorkspaceStore, sortRows,
   type FinderFile, type SortCol, type View, type WorkspaceSource,
 } from '../../stores/workspaceStore';
+import { RowMenu, type MenuItem } from '../ui/RowMenu';
 
 const COLUMNS: Array<{ key: SortCol; label: string }> = [
   { key: 'name', label: 'Name' },
@@ -37,12 +38,9 @@ export interface FileTableProps {
   rows: FinderFile[];
   /** Opens a file, or — in Browse — drills into a directory. */
   onOpen: (file: FinderFile) => void;
-  /**
-   * Copy-path / reveal-in-Browse. Not yet exposed by this table's own UI —
-   * the row actions this task ships are a temporary hover Open button only.
-   * Tasks 7-8 wire these into the hover ⋯ context menu and keyboard model.
-   */
+  /** Copies the file's path to the clipboard (row menu: "Copy path"). */
   onCopy: (file: FinderFile) => void;
+  /** Reveals the file's folder in Browse (row menu: "Reveal in Browse"). Omitted in Browse itself. */
   onReveal?: (file: FinderFile) => void;
   /** Optional second line under the file name — snippet, mismatch banner, etc. */
   renderMeta?: (file: FinderFile) => ReactNode;
@@ -60,9 +58,30 @@ function sourceLabel(file: FinderFile, sources: WorkspaceSource[]): string {
   return sources.find((s) => s.id === file.sourceId)?.displayName ?? file.sourceId;
 }
 
+/**
+ * Directory rows: Open in Browse only. File rows: Open, Copy path, and
+ * (when the view supports it) Reveal in Browse.
+ */
+function rowMenuItems(
+  file: FinderFile,
+  { onOpen, onCopy, onReveal }: Pick<FileTableProps, 'onOpen' | 'onCopy' | 'onReveal'>,
+): MenuItem[] {
+  if (file.isDir) {
+    return [{ label: 'Open', onSelect: () => onOpen(file) }];
+  }
+  const items: MenuItem[] = [
+    { label: 'Open', onSelect: () => onOpen(file), disabled: !file.openPath },
+    { label: 'Copy path', onSelect: () => onCopy(file) },
+  ];
+  if (onReveal) {
+    items.push({ label: 'Reveal in Browse', onSelect: () => onReveal(file) });
+  }
+  return items;
+}
+
 /** Sortable list-table for the search/browse/recents file views. */
 export function FileTable(props: FileTableProps) {
-  const { view, rows, onOpen, renderMeta, sources } = props;
+  const { view, rows, onOpen, onCopy, onReveal, renderMeta, sources } = props;
   const sort = useWorkspaceStore((s) => s.sort[view]);
   const setSort = useWorkspaceStore((s) => s.setSort);
   const sorted = sortRows(rows, sort, { dirsFirst: view === 'browse' });
@@ -90,46 +109,38 @@ export function FileTable(props: FileTableProps) {
         {sorted.map((file) => {
           const meta = renderMeta?.(file);
           return (
-            <div key={file.id} className="ws-file-table-row" role="row">
-              <div className="ws-file-table-cell ws-file-table-name-cell">
-                <div className="ws-file-table-name-row">
-                  <span className="ws-file-table-name" title={file.relPath}>
-                    {file.isDir ? `${file.name}/` : file.name}
-                  </span>
-                  {showSource && (
-                    <span
-                      className="ws-file-table-source"
-                      title={sourceLabel(file, sources!)}
-                    >
-                      {sourceLabel(file, sources!).slice(0, 1).toUpperCase()}
+            <RowMenu key={file.id} items={rowMenuItems(file, { onOpen, onCopy, onReveal })}>
+              <div className="ws-file-table-row" role="row">
+                <div className="ws-file-table-cell ws-file-table-name-cell">
+                  <div className="ws-file-table-name-row">
+                    <span className="ws-file-table-name" title={file.relPath}>
+                      {file.isDir ? `${file.name}/` : file.name}
                     </span>
-                  )}
+                    {showSource && (
+                      <span
+                        className="ws-file-table-source"
+                        title={sourceLabel(file, sources!)}
+                      >
+                        {sourceLabel(file, sources!).slice(0, 1).toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  {meta != null && <div className="ws-file-table-meta">{meta}</div>}
                 </div>
-                {meta != null && <div className="ws-file-table-meta">{meta}</div>}
+                <div className="ws-file-table-cell ws-file-table-secondary">
+                  {file.inferredProjectLabel ?? ''}
+                </div>
+                <div className="ws-file-table-cell ws-file-table-secondary">
+                  {file.inferredDocType ?? ''}
+                </div>
+                <div className="ws-file-table-cell ws-file-table-tertiary ws-tabular">
+                  {formatModified(file.mtime)}
+                </div>
+                <div className="ws-file-table-cell ws-file-table-tertiary ws-tabular">
+                  {file.isDir ? '' : formatSize(file.size)}
+                </div>
               </div>
-              <div className="ws-file-table-cell ws-file-table-secondary">
-                {file.inferredProjectLabel ?? ''}
-              </div>
-              <div className="ws-file-table-cell ws-file-table-secondary">
-                {file.inferredDocType ?? ''}
-              </div>
-              <div className="ws-file-table-cell ws-file-table-tertiary ws-tabular">
-                {formatModified(file.mtime)}
-              </div>
-              <div className="ws-file-table-cell ws-file-table-tertiary ws-tabular">
-                {file.isDir ? '' : formatSize(file.size)}
-              </div>
-              {(file.isDir || file.openPath) && (
-                <button
-                  type="button"
-                  className="ws-file-table-open"
-                  onClick={() => onOpen(file)}
-                  title={file.isDir ? 'Open this folder' : 'Open this file'}
-                >
-                  Open
-                </button>
-              )}
-            </div>
+            </RowMenu>
           );
         })}
       </div>

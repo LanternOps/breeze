@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import type { FinderFile, WorkspaceFilters, WorkspaceSource } from '../../stores/workspaceStore';
 
 type ChipKey = 'project' | 'docType' | 'date' | 'sourceId' | 'kind';
@@ -48,40 +48,8 @@ export interface FilterChipsProps {
   onClearFilter: (key: keyof WorkspaceFilters) => void;
 }
 
-/**
- * Chip row for the Search toolbar: Project, Doc type, Date, Source, Kind.
- * Each chip opens a plain positioned listbox — a placeholder for the Radix
- * DropdownMenu Task 7 swaps in once that dependency lands.
- */
+/** Chip row for the Search toolbar: Project, Doc type, Date, Source, Kind — each a Radix DropdownMenu. */
 export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter }: FilterChipsProps) {
-  const [open, setOpen] = useState<ChipKey | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(null);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(null);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  const select = (key: keyof WorkspaceFilters, value: string) => {
-    onSetFilter(key, value);
-    setOpen(null);
-  };
-
-  const projectValues = distinctValues(rows, (f) => f.inferredProjectLabel);
-  const docTypeValues = distinctValues(rows, (f) => f.inferredDocType);
-  const kindValues = distinctValues(rows, (f) => f.ext);
-
   function chip(
     key: ChipKey,
     activeLabel: string | null,
@@ -90,40 +58,43 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
   ) {
     const active = activeLabel !== null;
     return (
-      <div className="ws-filter-chip-wrap" key={key}>
-        <button
-          type="button"
-          className={`ws-filter-chip${active ? ' ws-filter-chip-active' : ''}`}
-          onClick={() => setOpen(open === key ? null : key)}
-          aria-expanded={open === key}
-        >
-          <span>{active ? `${CHIP_LABELS[key]}: ${activeLabel}` : CHIP_LABELS[key]}</span>
-          {active && (
-            <span
-              className="ws-filter-chip-close"
-              role="button"
-              tabIndex={0}
-              aria-label={`Clear ${CHIP_LABELS[key]} filter`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onClear();
-                setOpen(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
+      <DropdownMenu.Root key={key}>
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            className={`ws-filter-chip${active ? ' ws-filter-chip-active' : ''}`}
+          >
+            <span>{active ? `${CHIP_LABELS[key]}: ${activeLabel}` : CHIP_LABELS[key]}</span>
+            {active && (
+              <span
+                className="ws-filter-chip-close"
+                role="button"
+                tabIndex={0}
+                aria-label={`Clear ${CHIP_LABELS[key]} filter`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
                   e.stopPropagation();
                   onClear();
-                  setOpen(null);
-                }
-              }}
-            >
-              ✕
-            </span>
-          )}
-        </button>
-        {open === key && <div className="ws-filter-chip-menu">{menu}</div>}
-      </div>
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClear();
+                  }
+                }}
+              >
+                ✕
+              </span>
+            )}
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content className="ws-filter-chip-menu" align="start" sideOffset={4}>
+            {menu}
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
     );
   }
 
@@ -132,25 +103,29 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
       return <div className="ws-filter-chip-menu-empty">No values in the current results</div>;
     }
     return values.map((v) => (
-      <button key={v} type="button" className="ws-filter-chip-menu-item" onClick={() => onPick(v)}>
+      <DropdownMenu.Item key={v} className="ws-filter-chip-menu-item" onSelect={() => onPick(v)}>
         {v}
-      </button>
+      </DropdownMenu.Item>
     ));
   }
 
+  const projectValues = distinctValues(rows, (f) => f.inferredProjectLabel);
+  const docTypeValues = distinctValues(rows, (f) => f.inferredDocType);
+  const kindValues = distinctValues(rows, (f) => f.ext);
+
   return (
-    <div className="ws-filter-chip-row" ref={containerRef}>
+    <div className="ws-filter-chip-row">
       {chip(
         'project',
         filters.project ?? null,
         () => onClearFilter('project'),
-        optionList(projectValues, (v) => select('project', v)),
+        optionList(projectValues, (v) => onSetFilter('project', v)),
       )}
       {chip(
         'docType',
         filters.docType ?? null,
         () => onClearFilter('docType'),
-        optionList(docTypeValues, (v) => select('docType', v)),
+        optionList(docTypeValues, (v) => onSetFilter('docType', v)),
       )}
       {chip(
         'date',
@@ -161,18 +136,16 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
         },
         <div className="ws-filter-chip-menu-date">
           {DATE_PRESETS.map((preset) => (
-            <button
+            <DropdownMenu.Item
               key={preset.label}
-              type="button"
               className="ws-filter-chip-menu-item"
-              onClick={() => {
+              onSelect={() => {
                 onSetFilter('dateFrom', isoDateDaysAgo(preset.days));
                 onClearFilter('dateTo');
-                setOpen(null);
               }}
             >
               {preset.label}
-            </button>
+            </DropdownMenu.Item>
           ))}
           <div className="ws-filter-chip-menu-custom">
             <label>
@@ -199,21 +172,20 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
         sources.find((s) => s.id === filters.sourceId)?.displayName ?? null,
         () => onClearFilter('sourceId'),
         sources.map((s) => (
-          <button
+          <DropdownMenu.Item
             key={s.id}
-            type="button"
             className="ws-filter-chip-menu-item"
-            onClick={() => select('sourceId', s.id)}
+            onSelect={() => onSetFilter('sourceId', s.id)}
           >
             {s.displayName}
-          </button>
+          </DropdownMenu.Item>
         )),
       )}
       {chip(
         'kind',
         filters.kind ?? null,
         () => onClearFilter('kind'),
-        optionList(kindValues, (v) => select('kind', v)),
+        optionList(kindValues, (v) => onSetFilter('kind', v)),
       )}
     </div>
   );
