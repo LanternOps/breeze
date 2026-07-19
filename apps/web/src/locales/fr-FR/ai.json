@@ -13,6 +13,8 @@
     },
     "ariaLabel": "Approbation de l’outil requise : {{toolName}}",
     "title": "Approbation requise",
+    "pendingApproverTitle": "En attente d’un approbateur",
+    "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Breeze.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} secondes restantes",
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
     "progressLabel": "Temps restant avant l’auto-rejet",

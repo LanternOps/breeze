@@ -64,6 +64,7 @@ import * as self from './tenantCascade';
 const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'access_reviews',
   'account_deletion_requests',
+  'action_intents',
   'agent_logs',
   'ai_action_plans',
   'ai_budgets',

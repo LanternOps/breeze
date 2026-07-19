@@ -200,6 +200,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'ai_sessions', action: 'read_all',
     description: "View all users' AI session history (admin audit dashboard)" },
 
+  // Action intents / durable approvals
+  { resource: 'approvals', action: 'decide',
+    description: 'Decide (approve/deny) pending action-intent approvals' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -284,7 +288,8 @@ export const SYSTEM_ROLES = [
       'remote:access',
       'audit:read',
       'vulnerabilities:accept_risk',
-      'ai_sessions:read_all'
+      'ai_sessions:read_all',
+      'approvals:decide'
     ]
   },
   {

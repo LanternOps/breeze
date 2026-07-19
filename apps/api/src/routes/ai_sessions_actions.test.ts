@@ -83,6 +83,7 @@ vi.mock('../services/aiAgent', () => ({
   closeSession: vi.fn(),
   getSessionMessages: vi.fn(),
   handleApproval: vi.fn(),
+  isIntentBackedExecution: vi.fn(),
   searchSessions: vi.fn(),
 }));
 
@@ -125,6 +126,7 @@ import {
   closeSession,
   getSessionMessages,
   handleApproval,
+  isIntentBackedExecution,
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
@@ -293,6 +295,7 @@ describe('AI routes', () => {
     it('returns 404 when execution not found', async () => {
       vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
       vi.mocked(handleApproval).mockResolvedValueOnce(false);
+      vi.mocked(isIntentBackedExecution).mockResolvedValueOnce(false);
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}/approve/${EXEC_ID}`, {
         method: 'POST',
@@ -301,6 +304,30 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // CRITICAL-3 (whole-branch review): the web chat "Approve" button must
+    // never report success for a Tier-3 intent-backed execution — handleApproval
+    // refuses to flip it (four-eyes model), and the route must turn that
+    // refusal into an honest "pending" response, not silently claim success
+    // nor collapse it into the generic "not found" 404.
+    it('never reports success for an intent-backed execution — returns an honest pending response', async () => {
+      vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+      vi.mocked(handleApproval).mockResolvedValueOnce(false);
+      vi.mocked(isIntentBackedExecution).mockResolvedValueOnce(true);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/approve/${EXEC_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ approved: true }),
+      });
+
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.pending).toBe(true);
+      expect(body.via).toBe('intent');
+      // Never the plain "success: true" shape the non-intent branch returns.
+      expect(body.approved).toBeUndefined();
     });
   });
 

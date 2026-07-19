@@ -13,6 +13,8 @@
     },
     "ariaLabel": "Aprovação da ferramenta necessária: {{toolName}}",
     "title": "Aprovação necessária",
+    "pendingApproverTitle": "Aguardando um aprovador",
+    "pendingApproverDescription": "Esta ação precisa de aprovação na área de Aprovações ou no aplicativo móvel do Breeze.",
     "timeRemaining": "{{minutes}} minutos e {{seconds}} segundos restantes",
     "urgentWarning": "Menos de 30 segundos restantes. Esta solicitação será rejeitada automaticamente.",
     "progressLabel": "Tempo restante antes da rejeição automática",

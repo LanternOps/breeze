@@ -179,6 +179,40 @@ describe('vulnerability risk-acceptance RBAC', () => {
   });
 });
 
+describe('approvals:decide permission (action intents approval layer, §4)', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((r) => r.name === name);
+
+  it('defines approvals:decide in DEFAULT_PERMISSIONS', () => {
+    expect(
+      DEFAULT_PERMISSIONS.some(
+        (p) => p.resource === 'approvals' && p.action === 'decide',
+      ),
+    ).toBe(true);
+  });
+
+  it('registers approvals:decide in the shared PERMISSION_GRANTS registry', () => {
+    expect(PERMISSION_GRANTS.APPROVALS_DECIDE).toEqual({ resource: 'approvals', action: 'decide' });
+  });
+
+  it('grants approvals:decide to Org Admin', () => {
+    expect(byName('Org Admin')?.permissions).toContain('approvals:decide');
+  });
+
+  it('does NOT grant approvals:decide to Org Technician', () => {
+    expect(byName('Org Technician')?.permissions).not.toContain('approvals:decide');
+  });
+
+  it('does NOT grant approvals:decide to Org Viewer', () => {
+    expect(byName('Org Viewer')?.permissions).not.toContain('approvals:decide');
+  });
+
+  it('Partner Admin covers approvals:decide via the wildcard grant (does not need a redundant literal entry)', () => {
+    const role = byName('Partner Admin');
+    expect(role?.permissions).toContain('*:*');
+    expect(role?.permissions).not.toContain('approvals:decide');
+  });
+});
+
 describe('topology:write permission (issue #1728)', () => {
   it('topology:write is a seeded permission', () => {
     const keys = DEFAULT_PERMISSIONS.map((p) => `${p.resource}:${p.action}`);

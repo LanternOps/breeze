@@ -68,6 +68,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
+  'intent_outbox', // Action intents transactional outbox (spec 2026-07-18): system-scoped, workers-only queue, no tenant isolation needed. FK-cascades from action_intents (org-scoped, RLS shape 1). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.

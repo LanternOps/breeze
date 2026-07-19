@@ -3,6 +3,7 @@ import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { portalUsers } from './portal';
+import { actionIntents } from './actionIntents';
 
 // ============================================
 // Enums
@@ -104,6 +105,14 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
   durationMs: integer('duration_ms'),
   errorMessage: text('error_message'),
   delegantToolCallId: varchar('delegant_tool_call_id', { length: 64 }),
+  // Links this execution ledger row to the durable action_intents row it was
+  // created for (Tier-3 chat flow only — services/actionIntents/intentService.ts's
+  // createActionIntent). NULL for legacy Tier-2 per_step / helper-PAM
+  // executions, which never go through the intents layer. Set in
+  // 2026-07-18-c-ai-executions-intent-id.sql; used by handleApproval
+  // (services/aiAgent.ts) to detect intent-backed executions and refuse to
+  // report a self-approval success for them (whole-branch review CRITICAL-3).
+  intentId: uuid('intent_id').references(() => actionIntents.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at')
 }, (table) => ({

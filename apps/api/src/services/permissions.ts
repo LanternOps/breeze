@@ -217,6 +217,16 @@ export function hasPermission(
   );
 }
 
+// Gates who may decide (approve/deny) a pending action-intent approval
+// (§4, 2026-07-18-action-intents-approval-layer-design.md). `userPerms` is
+// already resolved per-org/per-partner by getUserPermissions(userId, {orgId})
+// — mirrors every other hasPermission(userPerms, resource, action) call site
+// (e.g. aiToolsTicketing.ts) — so this helper does not take a separate orgId;
+// callers resolve org-scoped perms first, same as the rest of the module.
+export function userCanDecideApprovals(userPerms: UserPermissions): boolean {
+  return hasPermission(userPerms, PERMISSIONS.APPROVALS_DECIDE.resource, PERMISSIONS.APPROVALS_DECIDE.action);
+}
+
 export function canAccessOrg(
   userPerms: UserPermissions,
   orgId: string

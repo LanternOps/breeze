@@ -1,0 +1,538 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---------------------------------------------------------------------------
+// Hoisted shared mock state
+// ---------------------------------------------------------------------------
+
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock } = vi.hoisted(() => {
+  const col = (name: string) => ({ name });
+  const actionIntentsTbl = { id: col('id') };
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
+
+  return {
+    schema: { actionIntentsTbl, approvalRequestsTbl },
+    dbState: {
+      selectActionIntentsResults: [] as unknown[][],
+      selectApprovalRequestsResults: [] as unknown[][],
+    },
+    intentServiceMock: { transitionIntent: vi.fn() },
+    actorContextMock: { buildAuthContextForIntent: vi.fn() },
+    tenantStatusMock: { getActiveOrgTenant: vi.fn() },
+    aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn() },
+    aiGuardrailsMock: { checkToolPermission: vi.fn() },
+    authMock: { dbAccessContextFromAuth: vi.fn((auth: unknown) => ({ mock: 'dbContext', auth })) },
+    auditMock: {
+      writeAuditEvent: vi.fn(),
+      requestLikeFromSnapshot: vi.fn((..._args: unknown[]) => ({ req: { header: () => undefined } })),
+    },
+    metricsMock: {
+      recordActionIntentEvent: vi.fn(),
+      recordActionIntentMetric: vi.fn(),
+    },
+    sentryMock: { captureException: vi.fn() },
+  };
+});
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn((table: unknown) => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => {
+            if (table === schema.actionIntentsTbl) {
+              return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
+            }
+            if (table === schema.approvalRequestsTbl) {
+              return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
+            }
+            throw new Error('unexpected select table in mock');
+          }),
+        })),
+      })),
+    })),
+  },
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../db/schema/actionIntents', () => ({ actionIntents: schema.actionIntentsTbl }));
+vi.mock('../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
+
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/sentry', () => ({ captureException: sentryMock.captureException }));
+vi.mock('../services/auditEvents', () => ({
+  writeAuditEvent: auditMock.writeAuditEvent,
+  requestLikeFromSnapshot: auditMock.requestLikeFromSnapshot,
+}));
+vi.mock('../services/actionIntents/metrics', () => ({
+  recordActionIntentEvent: metricsMock.recordActionIntentEvent,
+  recordActionIntentMetric: metricsMock.recordActionIntentMetric,
+}));
+vi.mock('../services/actionIntents/intentService', () => ({
+  transitionIntent: intentServiceMock.transitionIntent,
+}));
+vi.mock('../services/actionIntents/actorContext', () => ({
+  buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
+}));
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: tenantStatusMock.getActiveOrgTenant,
+}));
+vi.mock('../services/aiTools', () => ({
+  getToolTier: aiToolsMock.getToolTier,
+  executeTool: aiToolsMock.executeTool,
+}));
+vi.mock('../services/aiGuardrails', () => ({
+  checkToolPermission: aiGuardrailsMock.checkToolPermission,
+}));
+vi.mock('../middleware/auth', () => ({
+  dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
+}));
+
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
+  and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
+}));
+
+// bullmq is a real dependency we don't want to spin up — mock Worker/Job to
+// inert stand-ins since these tests only exercise the exported functions,
+// never `createWorker` itself.
+vi.mock('bullmq', () => ({
+  Worker: vi.fn().mockImplementation(() => ({ on: vi.fn(), close: vi.fn() })),
+  Job: class {},
+}));
+
+// ---------------------------------------------------------------------------
+// Import under test (after mocks)
+// ---------------------------------------------------------------------------
+
+import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseWorker';
+import type { ActionIntent } from '../db/schema/actionIntents';
+
+function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+  return {
+    id: 'intent-1',
+    orgId: 'org-1',
+    partnerId: null,
+    requestedByUserId: 'user-1',
+    requestingApiKeyId: null,
+    source: 'chat',
+    requestingClientLabel: null,
+    actionName: 'run_script',
+    actionVersion: 1,
+    arguments: { scriptId: 'abc' },
+    argumentDigest: 'digest-1',
+    targetSummary: 'run_script(scriptId=abc)',
+    impactSummary: 'Runs a script',
+    reason: null,
+    riskTier: 3,
+    connectionId: null,
+    tenantId: null,
+    idempotencyKey: 'idem-1',
+    correlationId: 'corr-1',
+    status: 'executing',
+    createdAt: new Date(),
+    expiresAt: new Date(),
+    decidedAt: new Date(),
+    decidedByUserId: 'approver-1',
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    executedAt: null,
+    result: null,
+    errorCode: null,
+    ...overrides,
+  } as ActionIntent;
+}
+
+const fakeAuth = {
+  user: { id: 'user-1', email: 'a@b.com', name: 'A', isPlatformAdmin: false },
+  token: {},
+  partnerId: null,
+  orgId: 'org-1',
+  scope: 'organization' as const,
+  accessibleOrgIds: ['org-1'],
+  orgCondition: () => undefined,
+  canAccessOrg: () => true,
+};
+
+function resetDbState() {
+  dbState.selectActionIntentsResults.length = 0;
+  dbState.selectApprovalRequestsResults.length = 0;
+}
+
+/** Sets up the common happy-path mocks through the last revalidation step, before executeTool. */
+function primeThroughRevalidation(intent: ActionIntent) {
+  intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+  dbState.selectActionIntentsResults.push([intent]);
+  dbState.selectApprovalRequestsResults.push([
+    { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+  ]);
+  aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+  actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+  tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+  aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+}
+
+describe('releaseApprovedIntent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+  });
+
+  it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+    await releaseApprovedIntent('intent-1');
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(1);
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+  });
+
+  it('happy path: CAS -> revalidate -> executeTool -> CAS completed, with a JSON result', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true, message: 'done' }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(
+      intent.actionName,
+      intent.arguments,
+      fakeAuth,
+    );
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.objectContaining({
+        result: { ok: true, message: 'done' },
+        executedAt: expect.any(Date),
+      }),
+    );
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+    );
+    expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('returned tool error (JSON {error}) -> failed:tool_returned_error, not completed', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    // executeTool did not throw, but handed back an error body (e.g. device
+    // access revoked after approval). Must be recorded as a FAILED release.
+    aiToolsMock.executeTool.mockResolvedValueOnce(
+      JSON.stringify({ error: 'Device not found or access denied' }),
+    );
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({
+        errorCode: 'tool_returned_error',
+        result: { error: 'Device not found or access denied' },
+        executedAt: expect.any(Date),
+      }),
+    );
+    // Failure audit written, and NOT recorded as an executed success.
+    expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'executed' }),
+    );
+  });
+
+  it('a JSON body with both {error} and {success} is treated as success (not a returned error)', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true, error: null }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.anything(),
+    );
+  });
+
+  it('digest_mismatch: no winning approval row found -> failed, executeTool never called', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([]); // no approved row
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'digest_mismatch' }),
+    );
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'failure', details: expect.objectContaining({ errorCode: 'digest_mismatch' }) }),
+    );
+    expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+  });
+
+  it('digest_mismatch: winning approval digest no longer matches the intent', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: 'stale-digest' },
+    ]);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'digest_mismatch' }),
+    );
+  });
+
+  it('tier_escalated: getToolTier increased since intent creation', async () => {
+    const intent = baseIntent({ riskTier: 3 });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(4);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'tier_escalated' }),
+    );
+  });
+
+  it('tier_escalated: tool no longer exists (getToolTier undefined)', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(undefined);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'tier_escalated' }),
+    );
+  });
+
+  it('actor_invalid: buildAuthContextForIntent returns null', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(null);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(tenantStatusMock.getActiveOrgTenant).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'actor_invalid' }),
+    );
+  });
+
+  it('org_inactive: getActiveOrgTenant returns null', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce(null);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'org_inactive' }),
+    );
+  });
+
+  it('rbac_denied: actor is still an active org member but no longer holds the tool permission', async () => {
+    const intent = baseIntent();
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(
+      'Insufficient permissions: requires scripts.run',
+    );
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith(
+      intent.actionName,
+      intent.arguments,
+      fakeAuth,
+    );
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'rbac_denied' }),
+    );
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        result: 'failure',
+        details: expect.objectContaining({
+          errorCode: 'rbac_denied',
+          reason: 'Insufficient permissions: requires scripts.run',
+        }),
+      }),
+    );
+    expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+  });
+
+  it('executeTool throws -> failed:execution_error, with executedAt stamped', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'execution_error', executedAt: expect.any(Date) }),
+    );
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ error: 'boom' }) }),
+    );
+  });
+
+  it('result over 64 KiB is stored as {truncated:true}, and still completes', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    const hugeResult = JSON.stringify({ data: 'x'.repeat(70 * 1024) });
+    aiToolsMock.executeTool.mockResolvedValueOnce(hugeResult);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { truncated: true } }),
+    );
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ details: expect.objectContaining({ truncated: true }) }),
+    );
+  });
+
+  it('non-JSON string result is wrapped as {raw: ...}', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce('plain text result');
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { raw: 'plain text result' } }),
+    );
+  });
+
+  it('lost the executing->completed CAS after real execution: logs, does not throw', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost completed CAS
+
+    await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('intent row missing after the CAS (unreachable in practice): logs and returns', async () => {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    dbState.selectActionIntentsResults.push([]);
+
+    await expect(releaseApprovedIntent('intent-missing')).resolves.toBeUndefined();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('processIntentReleaseJob', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+  });
+
+  it('ignores non intent_approved events without touching the intent', async () => {
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+    expect(result).toEqual({ released: false });
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+  });
+
+  it('dispatches intent_approved to releaseApprovedIntent', async () => {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // exits immediately via double-delivery guard
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
+
+    expect(result).toEqual({ released: true });
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+  });
+});

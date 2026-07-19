@@ -10,9 +10,13 @@ import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
+import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
+import { transitionIntent } from '../services/actionIntents/intentService';
+import { recordActionIntentEvent } from '../services/actionIntents/metrics';
+import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -304,6 +308,64 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
       }
     }
+
+    // Intent-backed rows (durable four-eyes path) carry `intentId`, not
+    // `executionId`. A suspicious report is a strong DENY, so it must reject the
+    // whole intent and expire every SIBLING approval row — otherwise the intent
+    // stays pending_approval and another approver's still-live row could approve
+    // the action the reporter just flagged as malicious. Mirrors the decide
+    // handler's fan-in (first-wins CAS + system-scope sibling expiry). Runs in
+    // system scope: action_intents is org-scoped and sibling approval_requests
+    // rows belong to OTHER approvers, invisible to this user's request context.
+    if (existing.intentId) {
+      const intentId = existing.intentId;
+      try {
+        const wonIntent = await transitionIntent(intentId, 'pending_approval', 'rejected', {
+          decidedAt: new Date(),
+          decidedByUserId: userId,
+        });
+        if (wonIntent) {
+          const [linkedIntent] = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(async () => {
+              await db
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(
+                  and(
+                    eq(approvalRequests.intentId, intentId),
+                    eq(approvalRequests.status, 'pending'),
+                    ne(approvalRequests.id, existing.id),
+                  ),
+                );
+              return db
+                .select({
+                  orgId: actionIntents.orgId,
+                  actionName: actionIntents.actionName,
+                  argumentDigest: actionIntents.argumentDigest,
+                  source: actionIntents.source,
+                })
+                .from(actionIntents)
+                .where(eq(actionIntents.id, intentId))
+                .limit(1);
+            }),
+          );
+          if (linkedIntent) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'rejected',
+              actorId: userId,
+              details: { reportedSuspicious: true, approvalRequestId: existing.id },
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[approvals] report-suspicious: failed to reject linked action intent:', err);
+      }
+    }
   }
 
   // Revoke the requesting OAuth client (grant + refresh tokens) for this user.
@@ -395,6 +457,100 @@ async function decideHandler(
     return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
   }
 
+  // Action intents (spec docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+  // §4, §3.4): load the linked intent early so the digest-binding and
+  // sole-operator checks below can run BEFORE the approval CAS. System
+  // context, mirroring the elevation mirror's cross-row visibility need —
+  // action_intents is org-scoped (Shape 1) and we want this read to succeed
+  // regardless of the ambient request scope.
+  let linkedIntent: ActionIntent | null = null;
+  if (existing.intentId) {
+    linkedIntent = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select()
+          .from(actionIntents)
+          .where(eq(actionIntents.id, existing.intentId as string));
+        return row ?? null;
+      }),
+    );
+
+    if (!linkedIntent) {
+      // Should be unreachable (ON DELETE CASCADE removes this approval row
+      // along with its intent), but fail closed rather than proceed blind.
+      return c.json({ error: 'intent_not_found' }, 404);
+    }
+
+    // Digest binding (defense-in-depth, spec §3.3): refuse the decision if
+    // the intent's content changed since this row was fanned out.
+    if (
+      existing.boundArgumentDigest &&
+      existing.boundArgumentDigest !== linkedIntent.argumentDigest
+    ) {
+      // Tamper-detection tripwire: content changed after fan-out. Audit
+      // this refusal — the release worker audits the same condition
+      // (jobs/intentReleaseWorker.ts's `digest_mismatch` errorCode), and
+      // this decide-time refusal is equally security-relevant. Ids/digests
+      // only, never raw arguments (spec §3.2/§7).
+      recordActionIntentEvent({
+        orgId: linkedIntent.orgId,
+        intentId: linkedIntent.id,
+        actionName: linkedIntent.actionName,
+        argumentDigest: linkedIntent.argumentDigest,
+        source: linkedIntent.source,
+        outcome: 'digest_mismatch',
+        actorId: userId,
+        details: {
+          approvalId: existing.id,
+          boundArgumentDigest: existing.boundArgumentDigest,
+        },
+      });
+      return c.json({ error: 'digest_mismatch' }, 409);
+    }
+
+    // Re-check the DECIDER's live authorization before an intent-backed
+    // APPROVE (spec §4). The fanned-out approval_requests row (Shape-6,
+    // user-id-scoped) is otherwise a durable bearer capability: it was created
+    // for a user who held approvals:decide over the intent's org at fan-out
+    // time (services/actionIntents/intentApprovers.ts), but nothing re-checks
+    // that they STILL hold it. An Org Admin demoted to a role without
+    // approvals:decide (while keeping org membership, so the row stays visible)
+    // could otherwise still approve and drive a release. Resolve current perms
+    // for the intent's org and fail closed. Gated to `approved` only: a deny is
+    // harmless (it cancels the action) and must stay available even to a
+    // demoted approver. Checked BEFORE the assurance proof below so a stale
+    // approver never even consumes a WebAuthn challenge. Uses system context so
+    // the org membership/role reads resolve regardless of ambient request
+    // scope (partner approvers have no organization_users row).
+    if (status === 'approved') {
+      const deciderPerms = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          getUserPermissions(userId, {
+            partnerId: c.get('auth').partnerId ?? undefined,
+            orgId: linkedIntent!.orgId,
+          }),
+        ),
+      );
+      if (
+        !deciderPerms ||
+        !canAccessOrg(deciderPerms, linkedIntent.orgId) ||
+        !userCanDecideApprovals(deciderPerms)
+      ) {
+        recordActionIntentEvent({
+          orgId: linkedIntent.orgId,
+          intentId: linkedIntent.id,
+          actionName: linkedIntent.actionName,
+          argumentDigest: linkedIntent.argumentDigest,
+          source: linkedIntent.source,
+          outcome: 'approver_unauthorized',
+          actorId: userId,
+          details: { approvalId: existing.id },
+        });
+        return c.json({ error: 'forbidden' }, 403);
+      }
+    }
+  }
+
   // Phase 2/3: verify an optional assertion proof. No proof → L1 session tap. A
   // presented-but-invalid proof throws → 401 (never silently L1). The L3 recency
   // clock is derived server-side from the consumed challenge (no param here);
@@ -425,6 +581,22 @@ async function decideHandler(
     }
     console.error('[approvals] assertion verification failed:', err);
     return c.json({ error: 'assertion_failed' }, 401);
+  }
+
+  // Sole-operator step-up (spec §1 / §4): a requester approving their OWN
+  // intent (the sole-operator single-row fan-out case) must present >= L3
+  // assurance (webauthn_platform or mobile_hw_key). Checked BEFORE the CAS
+  // so an under-assured self-approval never flips the row. Deny is
+  // unaffected — only an approve of one's own intent is gated.
+  if (
+    linkedIntent &&
+    status === 'approved' &&
+    linkedIntent.requestedByUserId === userId
+  ) {
+    const level = assurance.decidedAssuranceLevel ?? 0;
+    if (level < 3) {
+      return c.json({ error: 'step_up_required', requiredLevel: 3 }, 403);
+    }
   }
 
   const result = await db
@@ -576,6 +748,87 @@ async function decideHandler(
     }
   }
 
+  // Action intents (spec §4 / §3.4): mirror the decision onto the linked
+  // action_intents row. First-wins CAS via transitionIntent — a lost race
+  // (another approver, the reaper, or a retry already decided the intent)
+  // is a clean no-op; this row's own decision already committed above, so
+  // the user's decide call still succeeds either way.
+  if (updated?.intentId && linkedIntent) {
+    const intentId = updated.intentId;
+    const intentTargetStatus: ActionIntentStatus = status === 'approved' ? 'approved' : 'rejected';
+    const soleOperatorApproval = status === 'approved' && linkedIntent.requestedByUserId === userId;
+
+    let wonIntent = false;
+    try {
+      wonIntent = await transitionIntent(intentId, 'pending_approval', intentTargetStatus, {
+        decidedAt: new Date(),
+        decidedByUserId: userId,
+        decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+        decidedVia: assurance.decidedVia,
+      });
+    } catch (err) {
+      console.error('[approvals] Failed to transition linked action intent:', err);
+    }
+
+    if (wonIntent) {
+      // Best-effort, same posture as the elevation mirror above: the intent
+      // transition itself already committed (that's what "won" means), so a
+      // failure here — expiring sibling approval rows and/or writing the
+      // intent_approved outbox row — must not fail the user's decide call.
+      // MUST run in system scope: approval_requests is Shape-6
+      // (user-id-scoped), so sibling rows belong to OTHER approvers and are
+      // invisible to this approver's request context.
+      try {
+        await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db.transaction(async (tx) => {
+              await tx
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(
+                  and(
+                    eq(approvalRequests.intentId, intentId),
+                    eq(approvalRequests.status, 'pending'),
+                    ne(approvalRequests.id, updated.id),
+                  ),
+                );
+
+              if (status === 'approved') {
+                await tx.insert(intentOutbox).values({
+                  intentId,
+                  eventType: 'intent_approved',
+                  // Ids only, no argument content (spec §3.2).
+                  payload: { intentId, orgId: linkedIntent!.orgId },
+                });
+              }
+            }),
+          ),
+        );
+      } catch (err) {
+        console.error('[approvals] Failed post-decide intent fan-in (sibling expiry / outbox):', err);
+      }
+
+      recordActionIntentEvent({
+        orgId: linkedIntent.orgId,
+        intentId,
+        actionName: linkedIntent.actionName,
+        argumentDigest: linkedIntent.argumentDigest,
+        source: linkedIntent.source,
+        outcome: soleOperatorApproval
+          ? 'self_approved_sole_operator'
+          : status === 'approved'
+            ? 'approved'
+            : 'rejected',
+        actorId: userId,
+        details: {
+          approvalRequestId: updated.id,
+          decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+          decidedVia: assurance.decidedVia,
+        },
+      });
+    }
+  }
+
   return c.json({ approval: serialize(updated!) });
 }
 
@@ -644,6 +897,7 @@ function serialize(
     decidedAt: r.decidedAt?.toISOString() ?? null,
     decisionReason: r.decisionReason ?? null,
     executionId: r.executionId ?? null,
+    intentId: r.intentId ?? null,
     isRecursive: r.isRecursive,
     createdAt: r.createdAt.toISOString(),
   };

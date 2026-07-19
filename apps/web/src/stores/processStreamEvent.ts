@@ -27,6 +27,8 @@ export interface PendingApproval {
   input: Record<string, unknown>;
   description: string;
   deviceContext?: DeviceContext;
+  /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
+  intentBacked?: boolean;
 }
 
 export interface PendingPlan {
@@ -129,6 +131,7 @@ export function processStreamEvent(
           input: event.input,
           description: event.description,
           deviceContext: event.deviceContext,
+          intentBacked: event.intentBacked,
         }
       }));
       return currentAssistantId;

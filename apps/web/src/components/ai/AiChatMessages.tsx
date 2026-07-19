@@ -41,6 +41,8 @@ interface PendingApproval {
       sessionType: string;
     }>;
   };
+  /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
+  intentBacked?: boolean;
 }
 
 interface PendingPlan {
@@ -316,6 +318,7 @@ export default function AiChatMessages({
           deviceContext={pendingApproval.deviceContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
+          intentBacked={pendingApproval.intentBacked}
         />
       )}
 

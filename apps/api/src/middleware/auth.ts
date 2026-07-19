@@ -146,6 +146,50 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
 }
 
 /**
+ * Build the AuthContext org-axis closures (`orgCondition`, `canAccessOrg`)
+ * from a resolved `accessibleOrgIds` list. `null` = unrestricted (system
+ * scope — no filter, always true); `[]` = no accessible orgs (impossible
+ * condition, always false); otherwise an equality or IN-list filter.
+ *
+ * Single source of truth for the org-axis closures, reused by the request
+ * path (authMiddleware, for all three scopes — `accessibleOrgIds` is already
+ * scope-resolved by `computeAccessibleOrgIds` by the time this runs) and by
+ * `services/actionIntents/actorContext.ts`, which reconstructs a one-org
+ * AuthContext (`accessibleOrgIds: [intent.orgId]`) for the durable release
+ * worker's revalidated actor — passing a single-element array here collapses
+ * to exactly the same `eq(orgIdColumn, orgId)` / identity-check shape
+ * authMiddleware produces for an organization-scope token, so the two paths
+ * can never drift.
+ */
+export function buildOrgAccessClosures(
+  accessibleOrgIds: string[] | null
+): {
+  orgCondition: (orgIdColumn: PgColumn) => SQL | undefined;
+  canAccessOrg: (orgId: string) => boolean;
+} {
+  const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
+    if (accessibleOrgIds === null) {
+      return undefined; // System scope - no filter
+    }
+    if (accessibleOrgIds.length === 0) {
+      // No accessible orgs - return impossible condition
+      return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
+    }
+    if (accessibleOrgIds.length === 1) {
+      return eq(orgIdColumn, accessibleOrgIds[0]);
+    }
+    return inArray(orgIdColumn, accessibleOrgIds);
+  };
+
+  const canAccessOrg = (orgId: string): boolean => {
+    if (accessibleOrgIds === null) return true; // System scope
+    return accessibleOrgIds.includes(orgId);
+  };
+
+  return { orgCondition, canAccessOrg };
+}
+
+/**
  * Compute which org IDs a user can access based on their scope.
  * Called once per request in authMiddleware.
  */
@@ -499,25 +543,10 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
-  // Create helper functions
-  const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
-    if (accessibleOrgIds === null) {
-      return undefined; // System scope - no filter
-    }
-    if (accessibleOrgIds.length === 0) {
-      // No accessible orgs - return impossible condition
-      return eq(orgIdColumn, '00000000-0000-0000-0000-000000000000');
-    }
-    if (accessibleOrgIds.length === 1) {
-      return eq(orgIdColumn, accessibleOrgIds[0]);
-    }
-    return inArray(orgIdColumn, accessibleOrgIds);
-  };
-
-  const canAccessOrg = (orgId: string): boolean => {
-    if (accessibleOrgIds === null) return true; // System scope
-    return accessibleOrgIds.includes(orgId);
-  };
+  // Create helper functions — buildOrgAccessClosures is the single source of
+  // truth (also reused by services/actionIntents/actorContext.ts to
+  // reconstruct a one-org AuthContext for the durable release worker).
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
 
   // Resolve the site-axis allowlist (sub-org restriction). Only organization
   // scope carries site restrictions (`organizationUsers.siteIds` via
