@@ -186,7 +186,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     intentId,
     'approved',
     'executing',
-    { executedAt: null },
+    { executedAt: null, executionStartedAt: new Date() },
     { requireNotExpired: true },
   );
   if (!claimed) {

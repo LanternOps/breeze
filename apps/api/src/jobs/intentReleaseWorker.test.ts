@@ -198,9 +198,26 @@ describe('releaseApprovedIntent', () => {
     await releaseApprovedIntent('intent-1');
 
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(1);
-    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+      'intent-1', 'approved', 'executing',
+      expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+      { requireNotExpired: true },
+    );
     expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+  });
+
+  it('stamps execution_started_at when it claims the intent (approved -> executing)', async () => {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // claim CAS
+    dbState.selectActionIntentsResults.push([]); // short-circuit: intent row missing after CAS
+
+    await releaseApprovedIntent('intent-3');
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+      'intent-3', 'approved', 'executing',
+      expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+      { requireNotExpired: true },
+    );
   });
 
   it('happy path: CAS -> revalidate -> executeTool -> CAS completed, with a JSON result', async () => {
@@ -580,6 +597,10 @@ describe('processIntentReleaseJob', () => {
     const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
 
     expect(result).toEqual({ released: true });
-    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+      'intent-1', 'approved', 'executing',
+      expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+      { requireNotExpired: true },
+    );
   });
 });
