@@ -4,25 +4,78 @@ import {
   type WriteActionResult,
 } from '@breeze/shared/m365';
 import type { PinnedCertificateProvider } from './credentials/types';
+import { executeGraphWriteAction } from './microsoft/writeActions';
+import {
+  createMicrosoftTokenClient,
+  type MicrosoftTokenClient,
+} from './microsoft/tokenClient';
 import type { MicrosoftGraphClient } from './microsoft/graphClient';
+
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+type TokenClientFactory = (credential: {
+  certificatePem: string;
+  privateKeyPem: string;
+}) => MicrosoftTokenClient;
 
 export interface ExecutorOperationDependencies {
   clientId: string;
   certificateProvider: PinnedCertificateProvider;
+  createTokenClient: TokenClientFactory;
   graphClient: MicrosoftGraphClient;
 }
 
-// Stub — real implementation lands in Task 4. Fails closed so the route is
-// wired and health-checkable without performing any mutation yet.
 export async function executeActionOperation(
-  _request: WriteActionRequest,
-  _dependencies: ExecutorOperationDependencies,
+  request: WriteActionRequest,
+  dependencies: ExecutorOperationDependencies,
 ): Promise<WriteActionResult> {
-  return writeActionResultSchema.parse({ success: false, errorCode: 'invalid_action' });
+  if (!CANONICAL_UUID.test(request.tenantId)) {
+    return { success: false, errorCode: 'tenant_mismatch' };
+  }
+
+  let credential: { certificatePem: string; privateKeyPem: string };
+  try {
+    credential = await dependencies.certificateProvider.getConfiguredCertificate();
+  } catch {
+    return { success: false, errorCode: 'credential_unavailable' };
+  }
+
+  let tokenClient: MicrosoftTokenClient | undefined;
+  try {
+    try {
+      tokenClient = dependencies.createTokenClient(credential);
+    } catch {
+      return { success: false, errorCode: 'credential_unavailable' };
+    }
+    let accessToken;
+    try {
+      accessToken = await tokenClient.acquireGraphAppToken({ tenantId: request.tenantId });
+    } catch {
+      return { success: false, errorCode: 'application_token_invalid' };
+    }
+    return writeActionResultSchema.parse(
+      await executeGraphWriteAction(request.action, { accessToken, graphClient: dependencies.graphClient }),
+    );
+  } finally {
+    tokenClient = undefined;
+    credential.certificatePem = '';
+    credential.privateKeyPem = '';
+  }
 }
 
-export function createExecutorOperations(config: ExecutorOperationDependencies) {
+export function createExecutorOperations(config: {
+  clientId: string;
+  certificateProvider: PinnedCertificateProvider;
+  graphClient: MicrosoftGraphClient;
+}) {
+  const dependencies: ExecutorOperationDependencies = {
+    ...config,
+    createTokenClient: (credential) => createMicrosoftTokenClient({
+      clientId: config.clientId,
+      ...credential,
+    }),
+  };
   return {
-    executeAction: (request: WriteActionRequest) => executeActionOperation(request, config),
+    executeAction: (request: WriteActionRequest) => executeActionOperation(request, dependencies),
   };
 }

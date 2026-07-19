@@ -37,7 +37,11 @@ export interface MicrosoftTokenClient {
 
 interface TokenClientConfig {
   clientId: string;
-  callbackUrl: string;
+  // Optional: this executor only ever calls acquireGraphAppToken (client
+  // credentials), never exchangeAuthorizationCode, so there is no browser
+  // redirect to configure. Defaulted rather than forcing callers to pass a
+  // bogus value.
+  callbackUrl?: string;
   certificatePem: string;
   privateKeyPem: string;
   timeoutMs?: number;
@@ -179,7 +183,7 @@ export function createMicrosoftTokenClient(
         grant_type: 'authorization_code',
         code: required(input.code),
         code_verifier: required(input.codeVerifier),
-        redirect_uri: config.callbackUrl,
+        redirect_uri: config.callbackUrl ?? '',
         client_assertion_type: CLIENT_ASSERTION_TYPE,
         client_assertion: await assertion(input.tenantId),
       });
