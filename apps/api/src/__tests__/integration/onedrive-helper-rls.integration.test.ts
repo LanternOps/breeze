@@ -1447,19 +1447,19 @@ describe('OneDrive normalized-reference serialization', () => {
     const helpers = await admin.execute<{
       name: string;
       securityDefiner: boolean;
-      fixedContext: boolean;
+      inBodyElevationContext: boolean;
       namespaceCount: number;
       publicExecute: boolean;
       appExecute: boolean;
     }>(sql`
       SELECT proc.proname AS name,
         proc.prosecdef AS "securityDefiner",
-        proc.proconfig @> ARRAY[
-          'search_path=pg_catalog, public',
-          'breeze.scope=system',
-          'breeze.accessible_org_ids=',
-          'breeze.accessible_partner_ids='
-        ]::text[] AS "fixedContext",
+        -- Elevation is in-body (set_config save/restore); the attribute
+        -- form needs superuser in prod, so proconfig stays breeze.*-free.
+        (proc.proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest(proc.proconfig) cfg WHERE cfg LIKE 'breeze.%'
+          )) AS "inBodyElevationContext",
         (length(pg_catalog.pg_get_functiondef(proc.oid))
           - length(replace(pg_catalog.pg_get_functiondef(proc.oid),
             'pg_advisory_xact_lock(1000302', '')))::integer
@@ -1483,7 +1483,7 @@ describe('OneDrive normalized-reference serialization', () => {
     expect(helpers).toEqual(helpers.map((helper) => ({
       ...helper,
       securityDefiner: true,
-      fixedContext: true,
+      inBodyElevationContext: true,
       namespaceCount: 1,
       publicExecute: false,
       appExecute: false,

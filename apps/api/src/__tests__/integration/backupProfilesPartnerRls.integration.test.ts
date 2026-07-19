@@ -1436,7 +1436,7 @@ describe('backup feature-link / normalized-settings parity', () => {
       }))).resolves.toBeDefined();
   });
 
-  it('resolves FORCE-RLS backup rows under fixed system GUCs for non-bypass B definers', async () => {
+  it('resolves FORCE-RLS backup rows via in-body system elevation for non-bypass B definers', async () => {
     const admin = getTestDb();
     const partnerA = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });
@@ -1520,11 +1520,12 @@ describe('backup feature-link / normalized-settings parity', () => {
         ORDER BY p.proname
       `);
       expect(configured).toHaveLength(2);
+      // Elevation moved into the function bodies (set_config save/restore):
+      // prod's non-superuser migration role cannot SET custom GUCs as
+      // function attributes (42501), so proconfig must stay breeze.*-free.
       expect(configured.every((fn) => fn.owner === ownerRole
-        && fn.config.includes('breeze.scope=system')
-        && fn.config.includes('breeze.accessible_org_ids=')
-        && fn.config.includes('breeze.accessible_partner_ids=')
-        && fn.config.includes('search_path=pg_catalog, public'))).toBe(true);
+        && fn.config.includes('search_path=pg_catalog, public')
+        && !fn.config.some((entry) => entry.startsWith('breeze.')))).toBe(true);
 
       const setUnrelatedCallerContext = async (tx: Parameters<Parameters<typeof admin.transaction>[0]>[0]) => {
         await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'organization', true)`);
@@ -1601,7 +1602,7 @@ describe('backup feature-link / normalized-settings parity', () => {
       serializeReverse: boolean;
       publicSerializeSettings: boolean;
       publicSerializeReverse: boolean;
-      fixedSecurityDefinerConfig: boolean;
+      inBodyElevationConfig: boolean;
       fixedPathBodies: boolean;
       appSuper: boolean;
       appBypassRls: boolean;
@@ -1642,14 +1643,16 @@ describe('backup feature-link / normalized-settings parity', () => {
           'public', 'public.breeze_revalidate_backup_refs_stmt()', 'EXECUTE'
         ) AS "publicSerializeReverse",
         (
+          -- Elevation is in-body (set_config save/restore); the attribute form
+          -- needs superuser in prod, so proconfig must stay breeze.*-free.
           SELECT count(*) = 2 AND bool_and(
             prosecdef
-            AND proconfig @> ARRAY[
-              'search_path=pg_catalog, public', 'breeze.scope=system',
-              'breeze.accessible_org_ids=', 'breeze.accessible_partner_ids='
-            ]::text[]
+            AND proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
+            AND NOT EXISTS (
+              SELECT 1 FROM unnest(proconfig) cfg WHERE cfg LIKE 'breeze.%'
+            )
           ) FROM serialization_functions
-        ) AS "fixedSecurityDefinerConfig",
+        ) AS "inBodyElevationConfig",
         (
           SELECT count(*) = 2
             AND bool_and(pg_catalog.strpos(pg_catalog.pg_get_functiondef(oid), 'EXECUTE format') = 0)
@@ -1696,7 +1699,7 @@ describe('backup feature-link / normalized-settings parity', () => {
       serializeReverse: false,
       publicSerializeSettings: false,
       publicSerializeReverse: false,
-      fixedSecurityDefinerConfig: true,
+      inBodyElevationConfig: true,
       fixedPathBodies: true,
       appSuper: false,
       appBypassRls: false,

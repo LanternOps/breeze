@@ -624,19 +624,20 @@ runDb('reapplies idempotently and installs the exact private BEFORE STATEMENT ga
   const [helper] = await admin.execute<{
     schemaName: string;
     securityDefiner: boolean;
-    fixedConfiguration: boolean;
+    inBodyElevationConfiguration: boolean;
     exactGate: boolean;
     publicExecute: boolean;
     appExecute: boolean;
   }>(sql`
     SELECT namespace.nspname AS "schemaName",
       proc.prosecdef AS "securityDefiner",
-      proc.proconfig @> ARRAY[
-        'search_path=pg_catalog, public',
-        'breeze.scope=system',
-        'breeze.accessible_org_ids=',
-        'breeze.accessible_partner_ids='
-      ]::text[] AS "fixedConfiguration",
+      -- The gate takes only an advisory lock and reads no RLS-governed
+      -- rows, so it carries no breeze.* elevation at all (the attribute form
+      -- needs superuser in prod).
+      (proc.proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
+        AND NOT EXISTS (
+          SELECT 1 FROM unnest(proc.proconfig) cfg WHERE cfg LIKE 'breeze.%'
+        )) AS "inBodyElevationConfiguration",
       proc.prosrc LIKE '%pg_catalog.pg_advisory_xact_lock(1000302, -2147483648)%' AS "exactGate",
       EXISTS (
         SELECT 1 FROM pg_catalog.aclexplode(
@@ -654,7 +655,7 @@ runDb('reapplies idempotently and installs the exact private BEFORE STATEMENT ga
   expect(helper).toEqual({
     schemaName: 'public',
     securityDefiner: true,
-    fixedConfiguration: true,
+    inBodyElevationConfiguration: true,
     exactGate: true,
     publicExecute: false,
     appExecute: false,

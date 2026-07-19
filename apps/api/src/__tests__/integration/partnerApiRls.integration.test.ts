@@ -662,7 +662,7 @@ describe('partner reconstruction export RLS traversal', () => {
     }))).toBe('23503');
   }, 20_000);
 
-  runDb('resolves FORCE-RLS owners under fixed system GUCs for a non-bypass definer', async () => {
+  runDb('resolves FORCE-RLS owners via in-body system elevation for a non-bypass definer', async () => {
     const admin = getTestDb();
     const [current] = await admin.execute<{ roleName: string }>(sql`
       SELECT current_user AS "roleName"
@@ -705,9 +705,12 @@ describe('partner reconstruction export RLS traversal', () => {
         )
       `);
       expect(configured).toHaveLength(5);
+      // Elevation moved into the function bodies (set_config save/restore):
+      // prod's non-superuser migration role cannot SET custom GUCs as
+      // function attributes (42501), so proconfig must stay breeze.*-free.
       expect(configured.every((fn) =>
-        fn.config.includes('breeze.scope=system')
-        && fn.config.includes('search_path=pg_catalog, public'),
+        fn.config.includes('search_path=pg_catalog, public')
+        && !fn.config.some((entry) => entry.startsWith('breeze.')),
       )).toBe(true);
 
       const partnerA = await seedPartner('A');

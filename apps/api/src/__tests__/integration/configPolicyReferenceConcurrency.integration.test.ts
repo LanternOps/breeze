@@ -481,18 +481,18 @@ runDb('serialization migration is idempotent and installs private statement trig
   const helpers = await admin.execute<{
     name: string;
     securityDefiner: boolean;
-    fixedSystemScope: boolean;
+    inBodyElevationScope: boolean;
     publicExecute: boolean;
     appExecute: boolean;
   }>(sql`
     SELECT proc.proname AS name,
       proc.prosecdef AS "securityDefiner",
-      proc.proconfig @> ARRAY[
-        'search_path=pg_catalog, public',
-        'breeze.scope=system',
-        'breeze.accessible_org_ids=',
-        'breeze.accessible_partner_ids='
-      ]::text[] AS "fixedSystemScope",
+      -- Elevation is in-body (set_config save/restore); the attribute
+      -- form needs superuser in prod, so proconfig stays breeze.*-free.
+      (proc.proconfig @> ARRAY['search_path=pg_catalog, public']::text[]
+        AND NOT EXISTS (
+          SELECT 1 FROM unnest(proc.proconfig) cfg WHERE cfg LIKE 'breeze.%'
+        )) AS "inBodyElevationScope",
       EXISTS (
         SELECT 1 FROM pg_catalog.aclexplode(
           COALESCE(proc.proacl, pg_catalog.acldefault('f', proc.proowner))
@@ -513,7 +513,7 @@ runDb('serialization migration is idempotent and installs private statement trig
   expect(helpers).toEqual(helpers.map((helper) => ({
     ...helper,
     securityDefiner: true,
-    fixedSystemScope: true,
+    inBodyElevationScope: true,
     publicExecute: false,
     appExecute: false,
   })));
