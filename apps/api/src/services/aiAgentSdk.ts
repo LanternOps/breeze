@@ -9,7 +9,8 @@
  * - safeParseJson(): utility for parsing tool output
  */
 
-import { db, withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -27,6 +28,7 @@ import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
+import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -632,7 +634,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // CURRENT status atomically, so it's correct to attempt it here
         // regardless of which terminal-ish status waitForIntentDecision
         // happened to observe (that read can be stale by the time we get here).
-        const wonRelease = await transitionIntent(intent.id, 'approved', 'executing', { executedAt: null });
+        const wonRelease = await transitionIntent(
+          intent.id,
+          'approved',
+          'executing',
+          { executedAt: null },
+          { requireNotExpired: true },
+        );
         if (!wonRelease) {
           // Lost the race: the release worker (or a duplicate outbox delivery)
           // already claimed this intent for execution. Do NOT run the tool
@@ -641,6 +649,49 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return {
             allowed: false,
             error: 'This action is already being completed by the approval worker; it will not run twice.',
+          };
+        }
+
+        // Won the release: re-prove the requester's CURRENT authorization
+        // before executing. The inline path runs the tool under the live
+        // `session.auth` captured when the tool call began — which can be up to
+        // 5 minutes stale by now — so it MUST run the same fail-closed
+        // revalidation the durable worker does (actor still active + still has
+        // access to intent.orgId, org still active, tier not escalated, RBAC
+        // still held). Without this, winning the CAS was a silent bypass of
+        // every durability check the worker enforces. We hold the intent in
+        // `executing` (we won the CAS), so on any failure we CAS it straight to
+        // `failed` with the same error_code the worker uses and refuse to run.
+        const { intentRow, winningApproval } = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(async () => {
+            const [row] = await db
+              .select()
+              .from(actionIntents)
+              .where(eq(actionIntents.id, intent.id))
+              .limit(1);
+            const [approvalRow] = await db
+              .select({ boundArgumentDigest: approvalRequests.boundArgumentDigest })
+              .from(approvalRequests)
+              .where(and(eq(approvalRequests.intentId, intent.id), eq(approvalRequests.status, 'approved')))
+              .limit(1);
+            return { intentRow: row ?? null, winningApproval: approvalRow ?? null };
+          }),
+        );
+
+        if (!intentRow) {
+          console.error(`[AI-SDK] intent ${intent.id} vanished after winning release CAS`);
+          return { allowed: false, error: 'Approved action could not be revalidated for execution.' };
+        }
+
+        const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
+        if (!revalidation.ok) {
+          await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
+          console.error(
+            `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
+          );
+          return {
+            allowed: false,
+            error: 'Authorization for this action could no longer be verified; it was not executed.',
           };
         }
 

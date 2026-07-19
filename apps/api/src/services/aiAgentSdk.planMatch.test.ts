@@ -102,6 +102,13 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// Collaborator mock (also cuts the real module's ../aiTools import chain, which
+// would drag in aiToolSchemas' drizzle-enum schemas the ../db/schema mock does
+// not provide). Default: still authorized.
+vi.mock('./actionIntents/revalidateRelease', () => ({
+  revalidateApprovedIntentForRelease: vi.fn(async () => ({ ok: true, auth: {} })),
+}));
+
 function makeIntentSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     id: 'intent-1',
@@ -190,6 +197,15 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot());
     mockWaitForIntentDecision.mockResolvedValue('approved');
     mockTransitionIntent.mockResolvedValue(true);
+    // Default chainable for the inline release-win system read (intent row +
+    // winning approval). revalidateApprovedIntentForRelease is mocked to ok, so
+    // the row only needs to be non-null.
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
   });
 
   it('runs WITHOUT fresh approval when executing args exactly match the approved step', async () => {

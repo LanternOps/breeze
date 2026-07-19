@@ -50,11 +50,19 @@ BEGIN
   ORDER BY id
   LIMIT 1;
 
+  -- is_system = TRUE is LOAD-BEARING, not cosmetic: custom org roles accept an
+  -- arbitrary caller-supplied name (routes/roles.ts POST creates them with
+  -- is_system = false), so matching on name alone would silently grant this
+  -- security-sensitive permission to any attacker-created role named
+  -- 'Org Admin'. Only the built-in per-partner Org Admin roles carry
+  -- is_system = TRUE. Mirrors the established pattern in
+  -- 2026-06-29-vuln-risk-accept-permission.sql.
   INSERT INTO role_permissions (role_id, permission_id)
   SELECT r.id, v_permission_id
   FROM roles r
   WHERE r.name = 'Org Admin'
     AND r.scope = 'organization'
+    AND r.is_system = TRUE
     AND v_permission_id IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp

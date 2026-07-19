@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentSource, type ActionIntentStatus } from '../../db/schema/actionIntents';
@@ -556,13 +556,25 @@ export async function transitionIntent(
   from: ActionIntentStatus | ActionIntentStatus[],
   to: ActionIntentStatus,
   patch?: ActionIntentTransitionPatch,
+  opts?: { requireNotExpired?: boolean },
 ): Promise<boolean> {
   const fromList = Array.isArray(from) ? from : [from];
   return withSystemDbAccessContext(async () => {
+    // requireNotExpired folds the deadline into the CAS predicate so a release
+    // claim is atomic with the intent still being live. Without it, an intent
+    // approved just before expires_at could be claimed approved -> executing in
+    // the window before the 30s expiry reaper terminalizes it, executing an
+    // action whose authorization window has already closed. Uses the DB clock
+    // (now()) rather than a JS timestamp so the comparison is against the same
+    // clock that stamped expires_at.
+    const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
+    if (opts?.requireNotExpired) {
+      conditions.push(sql`${actionIntents.expiresAt} > now()`);
+    }
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })
-      .where(and(eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)))
+      .where(and(...conditions))
       .returning({ id: actionIntents.id });
     return rows.length > 0;
   });

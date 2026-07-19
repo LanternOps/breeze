@@ -19,11 +19,16 @@ import type { ActionIntentSource } from '../../db/schema/actionIntents';
  * outcome value — keeps the metrics cardinality and the audit vocabulary
  * both bounded and matching the spec exactly.
  *
- * `digest_mismatch` is the one deliberate addition beyond the spec's seven:
- * the decide handler's tamper-detection tripwire (routes/approvals.ts —
- * `existing.boundArgumentDigest !== linkedIntent.argumentDigest`) refuses a
- * decision without ever calling `transitionIntent`, so none of the seven
- * lifecycle outcomes fit. It is a failure outcome (see `FAILURE_OUTCOMES`).
+ * `digest_mismatch` and `approver_unauthorized` are the two deliberate
+ * additions beyond the spec's seven: both are decide-time security refusals in
+ * the decide handler (routes/approvals.ts) that reject a decision WITHOUT ever
+ * calling `transitionIntent`, so none of the seven lifecycle outcomes fit.
+ * `digest_mismatch` fires on the tamper-detection tripwire
+ * (`existing.boundArgumentDigest !== linkedIntent.argumentDigest`);
+ * `approver_unauthorized` fires when the deciding user no longer holds
+ * approvals:decide / org access at decide time (a demoted approver reusing a
+ * still-visible fanned-out row). Both are failure outcomes (see
+ * `FAILURE_OUTCOMES`).
  */
 export type ActionIntentOutcome =
   | 'created'
@@ -33,7 +38,8 @@ export type ActionIntentOutcome =
   | 'cancelled'
   | 'executed'
   | 'self_approved_sole_operator'
-  | 'digest_mismatch';
+  | 'digest_mismatch'
+  | 'approver_unauthorized';
 
 interface ActionIntentMetricsRecorder {
   onEvent: (source: ActionIntentSource, action: string, outcome: ActionIntentOutcome) => void;
@@ -87,6 +93,7 @@ const FAILURE_OUTCOMES = new Set<ActionIntentOutcome>([
   'expired',
   'cancelled',
   'digest_mismatch',
+  'approver_unauthorized',
 ]);
 
 export interface ActionIntentAuditInput {

@@ -108,6 +108,24 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// Mocked as a collaborator (like intentService): the inline release path calls
+// this to re-prove the requester's authorization before executing. Also cuts
+// the real module's ../aiTools import chain (which would otherwise drag in
+// aiToolSchemas' drizzle-enum schemas the ../db/schema mock doesn't provide).
+// Default: still authorized. Fail-path tests override the resolved value.
+const mockRevalidateApprovedIntentForRelease = vi.fn(async () => ({ ok: true, auth: {} }));
+vi.mock('./actionIntents/revalidateRelease', () => ({
+  revalidateApprovedIntentForRelease: (...args: unknown[]) =>
+    mockRevalidateApprovedIntentForRelease(...args),
+}));
+
+// Real actionIntents schema is imported by aiAgentSdk for the inline system
+// read; the ../db/schema mock above only stubs approvalRequests, so stub the
+// actionIntents table object the query builder references here too.
+vi.mock('../db/schema/actionIntents', () => ({
+  actionIntents: { id: 'id', status: 'status' },
+}));
+
 // ============================================
 // Test helpers
 // ============================================
@@ -521,6 +539,17 @@ describe('createSessionPreToolUse', () => {
       mockCreateActionIntent.mockReset();
       mockWaitForIntentDecision.mockReset();
       mockTransitionIntent.mockReset();
+      mockRevalidateApprovedIntentForRelease.mockReset();
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} });
+      // Default chainable for the inline release-win system read (loads the
+      // intent row + winning approval before revalidation). Revalidation itself
+      // is mocked above, so the row contents only need to be non-null.
+      const selectChain: Record<string, unknown> = {
+        from: vi.fn(() => selectChain),
+        where: vi.fn(() => selectChain),
+        limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+      };
+      vi.mocked(db.select).mockReturnValue(selectChain as any);
     });
 
     it('creates a chat-sourced action intent and blocks on waitForIntentDecision, even under auto-approve', async () => {
@@ -581,7 +610,7 @@ describe('createSessionPreToolUse', () => {
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
       expect(result).toEqual({ allowed: true });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', { executedAt: null });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
@@ -607,7 +636,7 @@ describe('createSessionPreToolUse', () => {
         allowed: false,
         error: 'This action is already being completed by the approval worker; it will not run twice.',
       });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
       // still happens, but no inline execution: the "mark as executing"
       // update never fires.

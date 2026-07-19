@@ -57,6 +57,24 @@ vi.mock('../../db/schema/apiKeys', () => ({ apiKeys: schema.apiKeysTbl }));
 
 vi.mock('../permissions', () => ({
   getUserPermissions: permState.getUserPermissions,
+  // Faithful reimplementation of the real canAccessOrg (permissions.ts) — the
+  // release-time org-access gate. org-scope perms match their own org; partner-
+  // scope perms honor all/none/selected; system scope is unrestricted.
+  canAccessOrg: (perms: {
+    scope: string;
+    orgId?: string | null;
+    orgAccess?: 'all' | 'selected' | 'none';
+    allowedOrgIds?: string[];
+  }, orgId: string) => {
+    if (perms.scope === 'organization') return perms.orgId === orgId;
+    if (perms.scope === 'partner') {
+      if (perms.orgAccess === 'all') return true;
+      if (perms.orgAccess === 'none') return false;
+      if (perms.orgAccess === 'selected') return perms.allowedOrgIds?.includes(orgId) ?? false;
+      return false;
+    }
+    return true;
+  },
 }));
 
 // Mock middleware/auth wholesale rather than importing it for real: auth.ts
@@ -177,6 +195,46 @@ describe('buildAuthContextForIntent — user-owned intents', () => {
     // baseIntent() defaults partnerId to null → threaded through as
     // undefined (CRITICAL-2b).
     expect(permState.getUserPermissions).toHaveBeenCalledWith('user-1', { partnerId: undefined, orgId: 'org-1' });
+  });
+
+  it('returns null when a partner requester lost selected access to intent.orgId', async () => {
+    // The bug this guards: getUserPermissions resolves the PARTNER axis for a
+    // partner-scope requester (they have no organization_users row), returning
+    // a non-null perms object carrying orgAccess='selected' + allowedOrgIds
+    // that NO LONGER includes intent.orgId. A non-null perms alone must NOT
+    // authorize release — canAccessOrg re-applies the selected-org gate.
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'selected',
+      allowedOrgIds: ['org-99'], // org-1 was removed
+    });
+
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1' }));
+
+    expect(result).toBeNull();
+  });
+
+  it('builds a partner-scoped AuthContext when selected access still covers intent.orgId', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [],
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'selected',
+      allowedOrgIds: ['org-1', 'org-99'],
+    });
+
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1' }));
+
+    expect(result).not.toBeNull();
+    expect(result!.accessibleOrgIds).toEqual(['org-1']);
   });
 
   it('builds an org-scoped AuthContext on the happy path', async () => {

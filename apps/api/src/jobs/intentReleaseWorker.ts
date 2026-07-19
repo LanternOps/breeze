@@ -8,10 +8,8 @@ import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
-import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
-import { getActiveOrgTenant } from '../services/tenantStatus';
-import { getToolTier, executeTool } from '../services/aiTools';
-import { checkToolPermission } from '../services/aiGuardrails';
+import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { executeTool } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 
 /**
@@ -151,7 +149,17 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // (expiry, cancel, a prior delivery of this exact job, or the stale-
   // executing reaper already claimed it) — exit silently. This is what
   // makes repeated/duplicate `intent_approved` enqueues safe.
-  const claimed = await transitionIntent(intentId, 'approved', 'executing', { executedAt: null });
+  // requireNotExpired folds the deadline into the claim: an intent approved
+  // just before expires_at cannot be claimed for execution once past it (the
+  // 30s expiry reaper terminalizes the leftover approved row). Without this an
+  // action could execute after its authorization window closed.
+  const claimed = await transitionIntent(
+    intentId,
+    'approved',
+    'executing',
+    { executedAt: null },
+    { requireNotExpired: true },
+  );
   if (!claimed) {
     return;
   }
@@ -191,64 +199,18 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
 
-  // Revalidation chain (spec §5 step 2), IN ORDER. Each stop CASes
+  // Revalidation chain (spec §5 step 2) — the SHARED fail-closed checks (digest
+  // still bound, tier not escalated, actor still active + org-accessible, org
+  // still active, actor still holds the tool's RBAC), identical to the inline
+  // chat release path (services/aiAgentSdk.ts). Each stop CASes
   // executing -> failed with the exact error_code and returns WITHOUT ever
-  // calling executeTool.
-
-  // (a) The winning approval row must still be approved and must have
-  // approved the SAME content the intent currently carries. Should be
-  // impossible in practice (action_intents content is immutable, enforced
-  // by a DB trigger) — this is defense-in-depth, exactly as the spec's
-  // failure-mode table (§8) frames it.
-  if (!winningApproval || winningApproval.boundArgumentDigest !== intent.argumentDigest) {
-    await failIntent(intent, 'digest_mismatch');
+  // calling executeTool. The rebuilt `auth` is what this worker executes under.
+  const revalidation = await revalidateApprovedIntentForRelease(intent, winningApproval);
+  if (!revalidation.ok) {
+    await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }
-
-  // (b) The tool must still exist and must not have been reclassified to a
-  // HIGHER tier since the intent was created (a lower/equal tier is fine —
-  // it only ever tightens, never loosens, what the approval covered).
-  const currentTier = getToolTier(intent.actionName);
-  if (currentTier === undefined || currentTier > intent.riskTier) {
-    await failIntent(intent, 'tier_escalated', {
-      details: { currentTier: currentTier ?? null, intentRiskTier: intent.riskTier },
-    });
-    return;
-  }
-
-  // (c) The actor must still be valid: rebuilds the AuthContext from
-  // scratch, re-checking the user is active and still has org access.
-  const auth = await buildAuthContextForIntent(intent);
-  if (!auth) {
-    await failIntent(intent, 'actor_invalid');
-    return;
-  }
-
-  // (d) The org must still be active (not suspended/churned/deleted, and
-  // its owning partner must still be active too — getActiveOrgTenant
-  // cascades through getActivePartner).
-  const activeOrg = await getActiveOrgTenant(intent.orgId);
-  if (!activeOrg) {
-    await failIntent(intent, 'org_inactive');
-    return;
-  }
-
-  // (e) The actor must STILL hold the specific RBAC permission the tool
-  // requires, checked against the rebuilt `auth` from step (c) — not the
-  // caller's original, now possibly stale, permission check. This is the
-  // core durability guarantee (spec §5 "user active with required RBAC";
-  // §10.3 "approval is not a timeless bearer capability"): an intent can sit
-  // `approved` for minutes to (mcp_api, 24h expiry) hours, and the actor may
-  // have been demoted to a lesser role in that window while remaining an
-  // active org member (which alone only trips (c) `actor_invalid`).
-  // `buildAuthContextForIntent` populates `auth.token.roleId` from freshly
-  // resolved permissions (never null for a real user), so this call cannot
-  // fail open via checkToolPermission's helper-session bypass.
-  const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, auth);
-  if (permissionDenial) {
-    await failIntent(intent, 'rbac_denied', { details: { reason: permissionDenial } });
-    return;
-  }
+  const { auth } = revalidation;
 
   // Step 3: execute through the existing dispatch (guardrails, device
   // gates, and whatever per-tool audit/ledger writes the handler itself

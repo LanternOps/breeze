@@ -63,6 +63,20 @@ vi.mock('../services/actionIntents/metrics', () => ({
   recordActionIntentEvent: vi.fn(),
 }));
 
+// The decide handler re-resolves the DECIDER's live authorization before an
+// intent-backed approve (approvals:decide + org access). Mocked as a
+// collaborator with permissive defaults (a still-authorized approver); the
+// unauthorized-approver test overrides these to drive the 403.
+vi.mock('../services/permissions', () => ({
+  getUserPermissions: vi.fn(async () => ({
+    scope: 'organization',
+    orgId: 'org-1',
+    permissions: [{ resource: 'approvals', action: 'decide' }],
+  })),
+  userCanDecideApprovals: vi.fn(() => true),
+  canAccessOrg: vi.fn(() => true),
+}));
+
 vi.mock('../db/schema/elevations', () => ({
   elevationRequests: { id: 'id', orgId: 'org_id', status: 'status' },
   elevationAudit: { id: 'id', orgId: 'org_id', elevationRequestId: 'elevation_request_id' },
@@ -187,6 +201,7 @@ import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
+import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 
 function buildApp() {
   const app = new Hono();
@@ -1291,6 +1306,52 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
   });
 
+  it('refuses an intent-linked APPROVE (403) when the decider no longer holds approvals:decide', async () => {
+    // A demoted approver: their fanned-out row is still visible (they keep org
+    // membership) but they lost approvals:decide. The decide-time re-check must
+    // fail closed before the CAS, so the intent is never transitioned.
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: 'intent-1', outcome: 'approver_unauthorized' }),
+    );
+  });
+
+  it('refuses an intent-linked APPROVE (403) when the decider lost access to the intent org', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    vi.mocked(canAccessOrg).mockReturnValueOnce(false);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(transitionIntent).not.toHaveBeenCalled();
+  });
+
+  it('still allows an intent-linked DENY from a decider who lost approvals:decide (deny is harmless)', async () => {
+    // Deny cancels the action — it never drives a release — so a demoted
+    // approver denying must stay available (the re-check is approve-only).
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    mockIntentFanInTx();
+    vi.mocked(userCanDecideApprovals).mockReturnValue(false);
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'no' }),
+    });
+    expect(res.status).toBe(200);
+    expect(transitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'pending_approval',
+      'rejected',
+      expect.anything(),
+    );
+    vi.mocked(userCanDecideApprovals).mockReturnValue(true);
+  });
+
   it('denying an intent-linked row transitions the intent to rejected, expires siblings, and writes NO outbox row', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
     const { siblingSet, tx } = mockIntentFanInTx();
@@ -1502,6 +1563,49 @@ describe('POST /approvals/:id/report-suspicious', () => {
 
     const res = await buildApp().request('/approvals/missing/report-suspicious', { method: 'POST' });
     expect(res.status).toBe(404);
+  });
+
+  it('rejects the linked action intent and expires sibling approvals for an intent-backed row', async () => {
+    // Intent-backed rows carry intentId (not executionId). A suspicious report
+    // must reject the whole intent and expire siblings so another approver's
+    // still-pending row cannot approve the flagged action.
+    const intentRow = { ...baseRow, executionId: null, intentId: 'intent-77', requestingClientId: null };
+
+    // 1) find existing approval
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([intentRow]),
+      }),
+    } as any);
+    // 2) update approval_requests -> reported
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // 3) sibling-expiry update (inside system context)
+    const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValueOnce({ set: siblingSet } as any);
+    // 4) intent load (for orgId, inside system context)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ orgId: 'org-9', actionName: 'y', argumentDigest: 'd', source: 'mcp_api' }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(204);
+    expect(transitionIntent).toHaveBeenCalledWith(
+      'intent-77',
+      'pending_approval',
+      'rejected',
+      expect.objectContaining({ decidedByUserId: TEST_USER.id }),
+    );
+    expect(siblingSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: 'intent-77', outcome: 'rejected' }),
+    );
   });
 
   it('returns 401 when auth middleware rejects (permission denied)', async () => {

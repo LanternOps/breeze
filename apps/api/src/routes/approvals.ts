@@ -16,6 +16,7 @@ import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
+import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -307,6 +308,64 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
       }
     }
+
+    // Intent-backed rows (durable four-eyes path) carry `intentId`, not
+    // `executionId`. A suspicious report is a strong DENY, so it must reject the
+    // whole intent and expire every SIBLING approval row — otherwise the intent
+    // stays pending_approval and another approver's still-live row could approve
+    // the action the reporter just flagged as malicious. Mirrors the decide
+    // handler's fan-in (first-wins CAS + system-scope sibling expiry). Runs in
+    // system scope: action_intents is org-scoped and sibling approval_requests
+    // rows belong to OTHER approvers, invisible to this user's request context.
+    if (existing.intentId) {
+      const intentId = existing.intentId;
+      try {
+        const wonIntent = await transitionIntent(intentId, 'pending_approval', 'rejected', {
+          decidedAt: new Date(),
+          decidedByUserId: userId,
+        });
+        if (wonIntent) {
+          const [linkedIntent] = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(async () => {
+              await db
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(
+                  and(
+                    eq(approvalRequests.intentId, intentId),
+                    eq(approvalRequests.status, 'pending'),
+                    ne(approvalRequests.id, existing.id),
+                  ),
+                );
+              return db
+                .select({
+                  orgId: actionIntents.orgId,
+                  actionName: actionIntents.actionName,
+                  argumentDigest: actionIntents.argumentDigest,
+                  source: actionIntents.source,
+                })
+                .from(actionIntents)
+                .where(eq(actionIntents.id, intentId))
+                .limit(1);
+            }),
+          );
+          if (linkedIntent) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'rejected',
+              actorId: userId,
+              details: { reportedSuspicious: true, approvalRequestId: existing.id },
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[approvals] report-suspicious: failed to reject linked action intent:', err);
+      }
+    }
   }
 
   // Revoke the requesting OAuth client (grant + refresh tokens) for this user.
@@ -447,6 +506,48 @@ async function decideHandler(
         },
       });
       return c.json({ error: 'digest_mismatch' }, 409);
+    }
+
+    // Re-check the DECIDER's live authorization before an intent-backed
+    // APPROVE (spec §4). The fanned-out approval_requests row (Shape-6,
+    // user-id-scoped) is otherwise a durable bearer capability: it was created
+    // for a user who held approvals:decide over the intent's org at fan-out
+    // time (services/actionIntents/intentApprovers.ts), but nothing re-checks
+    // that they STILL hold it. An Org Admin demoted to a role without
+    // approvals:decide (while keeping org membership, so the row stays visible)
+    // could otherwise still approve and drive a release. Resolve current perms
+    // for the intent's org and fail closed. Gated to `approved` only: a deny is
+    // harmless (it cancels the action) and must stay available even to a
+    // demoted approver. Checked BEFORE the assurance proof below so a stale
+    // approver never even consumes a WebAuthn challenge. Uses system context so
+    // the org membership/role reads resolve regardless of ambient request
+    // scope (partner approvers have no organization_users row).
+    if (status === 'approved') {
+      const deciderPerms = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          getUserPermissions(userId, {
+            partnerId: c.get('auth').partnerId ?? undefined,
+            orgId: linkedIntent!.orgId,
+          }),
+        ),
+      );
+      if (
+        !deciderPerms ||
+        !canAccessOrg(deciderPerms, linkedIntent.orgId) ||
+        !userCanDecideApprovals(deciderPerms)
+      ) {
+        recordActionIntentEvent({
+          orgId: linkedIntent.orgId,
+          intentId: linkedIntent.id,
+          actionName: linkedIntent.actionName,
+          argumentDigest: linkedIntent.argumentDigest,
+          source: linkedIntent.source,
+          outcome: 'approver_unauthorized',
+          actorId: userId,
+          details: { approvalId: existing.id },
+        });
+        return c.json({ error: 'forbidden' }, 403);
+      }
     }
   }
 

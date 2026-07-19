@@ -185,7 +185,7 @@ describe('releaseApprovedIntent', () => {
     await releaseApprovedIntent('intent-1');
 
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(1);
-    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null });
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
     expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
   });
@@ -488,6 +488,6 @@ describe('processIntentReleaseJob', () => {
     const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
 
     expect(result).toEqual({ released: true });
-    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null });
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
   });
 });

@@ -3,7 +3,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema/users';
 import { apiKeys } from '../../db/schema/apiKeys';
 import type { ActionIntent } from '../../db/schema/actionIntents';
-import { getUserPermissions } from '../permissions';
+import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
 
@@ -64,25 +64,38 @@ async function buildUserOwnedAuthContext(
       return null;
     }
 
-    // The core revalidation: getUserPermissions returns null when the user
-    // has NO current membership row on this org (org axis) — i.e. they lost
-    // access to intent.orgId since the intent was created/approved. A
-    // shrunk permission set must fail release, never silently execute with
-    // the stale rights the intent was created under.
+    // The core revalidation: resolve the actor's CURRENT permission set for
+    // this org and fail closed if they can no longer reach intent.orgId.
     //
-    // partnerId is threaded through too (CRITICAL-2b): a partner-scope
-    // requester (the primary MSP persona) has no organization_users row at
-    // all — their role lives in partner_users — so passing only { orgId }
-    // resolves NO role and getUserPermissions returns null for every
-    // partner-scope requester, failing release closed even though the
-    // requester still legitimately has access. intent.partnerId is the
-    // denormalized value createActionIntent now persists from the
-    // requester's auth at creation time (see intentService.ts).
+    // partnerId is threaded through (CRITICAL-2b): a partner-scope requester
+    // (the primary MSP persona) has no organization_users row at all — their
+    // role lives in partner_users — so passing only { orgId } resolves NO role
+    // and getUserPermissions returns null for every partner-scope requester,
+    // failing release closed even though the requester still legitimately has
+    // access. intent.partnerId is the denormalized value createActionIntent
+    // persists from the requester's auth at creation time (see
+    // intentService.ts).
     const perms = await getUserPermissions(userId, {
       partnerId: intent.partnerId ?? undefined,
       orgId: intent.orgId,
     });
     if (!perms) {
+      return null;
+    }
+
+    // getUserPermissions returning non-null is NOT sufficient: for a
+    // partner-scope requester it resolves the PARTNER axis (partner_users),
+    // which carries org_access='selected' + an allowedOrgIds list but does
+    // NOT itself verify intent.orgId is still in that list. A partner tech
+    // whose selected-org list was narrowed to drop intent.orgId (while their
+    // partner membership + tool RBAC stay intact) would otherwise be handed a
+    // synthesized accessibleOrgIds:[intent.orgId] below and execute against an
+    // org they can no longer reach. canAccessOrg re-applies the exact
+    // all/none/selected org-access gate, so a narrowed actor fails release
+    // closed. (Org-axis actors trivially pass — canAccessOrg checks
+    // perms.orgId === intent.orgId, which resolveOrgAxis only returns on a
+    // live membership row.)
+    if (!permsCanAccessOrg(perms, intent.orgId)) {
       return null;
     }
 
