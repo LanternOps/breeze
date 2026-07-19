@@ -86,4 +86,31 @@ describe('createEnabledGate', () => {
     expect((await app.request('/api/v1/ext/demo/ping')).status).toBe(503);
     expect(state.isEnabled).toHaveBeenCalledTimes(2);
   });
+
+  // FAIL-CLOSED. This is the single most safety-critical property of the gate:
+  // if the DB check errors, the extension must be treated as OFF, never ON. The
+  // gate is a trivial pass-through today, so a rejection propagates — but a
+  // future `.catch(() => true)` "resilience" wrapper would silently convert the
+  // fleet-wide emergency shutoff to fail-OPEN. These two tests would fail if
+  // that regression were introduced.
+  it('propagates a store error rather than defaulting to enabled', async () => {
+    const store = { isEnabled: vi.fn<(name: string) => Promise<boolean>>() };
+    store.isEnabled.mockRejectedValue(new Error('db down'));
+    const gate = createEnabledGate(store);
+
+    await expect(gate('demo')).rejects.toThrow(/db down/);
+  });
+
+  it('does not serve the extension route when the enabled check throws', async () => {
+    const state = { isEnabled: vi.fn<(name: string) => Promise<boolean>>() };
+    state.isEnabled.mockRejectedValue(new Error('db down'));
+    const app = makeFixture(createEnabledGate(state));
+
+    const res = await app.request('/api/v1/ext/demo/ping');
+    // The handler returns { ok: true } at 200. A gate-check failure must NOT
+    // reach it: fail-closed means the request errors out, not that it serves.
+    expect(res.status).not.toBe(200);
+    expect(await res.text()).not.toContain('"ok":true');
+    expect(state.isEnabled).toHaveBeenCalledWith('demo');
+  });
 });

@@ -122,7 +122,10 @@ export function parseExtensionDeploymentConfig(
 
     if (!selection.publisher) {
       errors.push(`${label}: a publisher is required`);
-    } else if (!(selection.publisher in parsed.publishers)) {
+    } else if (!Object.prototype.hasOwnProperty.call(parsed.publishers, selection.publisher)) {
+      // hasOwnProperty, not `in`: `in` walks the prototype chain, so a publisher
+      // named "constructor"/"toString"/"__proto__" would spuriously validate as
+      // "declared" against an inherited Object.prototype member.
       errors.push(`${label}: publisher "${selection.publisher}" is not declared in the publishers map`);
     }
 

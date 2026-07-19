@@ -28,7 +28,13 @@ export function resolveTrustedPublisher(
   config: ExtensionDeploymentConfig,
   publisher: string,
 ): TrustedPublisher {
-  const declared = config.publishers[publisher];
+  // hasOwnProperty guard, not a bare index: indexing config.publishers by a
+  // name like "constructor" or "toString" would return an inherited
+  // Object.prototype member instead of undefined, turning a clean "unknown
+  // publisher" rejection into a confusing downstream TypeError.
+  const declared = Object.prototype.hasOwnProperty.call(config.publishers, publisher)
+    ? config.publishers[publisher]
+    : undefined;
   if (!declared) {
     throw new Error(`unknown publisher "${publisher}"`);
   }

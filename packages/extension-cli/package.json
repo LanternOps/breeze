@@ -15,12 +15,12 @@
     "@breeze/extension-sdk": "workspace:*",
     "archiver": "^7.0.1",
     "commander": "^15.0.0",
+    "node-stream-zip": "^1.15.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/archiver": "^7.0.0",
     "@types/node": "^25.9.3",
-    "node-stream-zip": "^1.15.0",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
   }

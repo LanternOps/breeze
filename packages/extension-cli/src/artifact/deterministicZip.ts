@@ -108,12 +108,20 @@ function compareBytewise(a: string, b: string): number {
 }
 
 /**
- * Write a `.breeze-ext` payload as a deterministic ZIP archive: identical
- * `members` always produce byte-identical output, regardless of input order
- * or the host environment (locale, timezone, platform). Every field archiver
- * could otherwise vary is pinned: bytewise-sorted entry order, a fixed
+ * Write a `.breeze-ext` payload as a deterministic ZIP archive. Every field
+ * archiver could otherwise vary is pinned: bytewise-sorted entry order, a fixed
  * per-entry date derived from `sourceDateEpoch`, fixed unix file mode, no
- * directory entries, and fixed zlib level 9 compression.
+ * directory entries, and fixed zlib level 9 compression — so identical
+ * `members` produce the same archive regardless of input order, locale,
+ * timezone, or platform.
+ *
+ * CAVEAT: the exact COMPRESSED bytes still depend on the host's zlib build, so
+ * the whole-artifact digest is not guaranteed bit-for-bit reproducible across
+ * machines with different zlib versions. This does not affect the trust chain:
+ * the signature and per-member integrity hashes are computed over DECOMPRESSED
+ * member bytes (which DEFLATE reproduces losslessly), and the pinned digest is
+ * recorded from the actual distributed artifact. Only cross-machine bit-for-bit
+ * reproducibility of the archive FILE is best-effort, not a security property.
  *
  * Rejects (before writing anything to disk) unsafe member paths, `.node`
  * members, duplicate or case-folded-colliding names, and archives that

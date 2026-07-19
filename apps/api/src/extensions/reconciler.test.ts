@@ -161,10 +161,15 @@ function fakeStaged(): StagedExtensionContributions {
 type Phase = 'compatibility' | 'migration' | 'register';
 
 async function reconcileFixture(
-  { required, failAt, storeRoot }: { required: boolean; failAt?: Phase; storeRoot?: string },
+  { required, failAt, storeRoot, stateStore: providedStore }: {
+    required: boolean;
+    failAt?: Phase;
+    storeRoot?: string;
+    stateStore?: ExtensionStateStore;
+  },
 ) {
   const registry = new ExtensionContributionRegistry();
-  const stateStore = new ExtensionStateStore(new InMemoryExtensionStateBackend());
+  const stateStore = providedStore ?? new ExtensionStateStore(new InMemoryExtensionStateBackend());
   const selection: ExtensionSelection = {
     name: 'demo',
     uri: 'file:///demo.breeze-ext',
@@ -225,6 +230,36 @@ describe('reconcileExtensions', () => {
   it('does not expose staged contributions after activation failure', async () => {
     const { registry } = await reconcileFixture({ required: false, failAt: 'register' });
     expect(registry.get('demo')?.enabled).not.toBe(true);
+  });
+
+  // ISOLATION. Recording an extension's failure is best-effort recovery
+  // bookkeeping; a DB error while writing it (plausibly the very condition that
+  // failed the phase) must NOT escalate an OPTIONAL extension's failure into a
+  // whole-API boot abort. Before the fix, the un-wrapped recordFailure write
+  // propagated straight out of reconcile and into process.exit(1).
+  it('does not abort startup when recording an OPTIONAL failure itself throws', async () => {
+    class ThrowingRecordFailureBackend extends InMemoryExtensionStateBackend {
+      override async recordFailure(): Promise<void> {
+        throw new Error('db down during failure recording');
+      }
+    }
+    const stateStore = new ExtensionStateStore(new ThrowingRecordFailureBackend());
+    const { summary } = await reconcileFixture({ required: false, failAt: 'migration', stateStore });
+    expect(summary.failed).toEqual(['demo']);
+  });
+
+  // The mirror case: a REQUIRED extension still aborts boot even when recording
+  // its failure throws — but via the sanitized RequiredExtensionError, NEVER the
+  // raw DB error (which the boot logger could leak).
+  it('still aborts startup for a required extension when recording the failure throws', async () => {
+    class ThrowingRecordFailureBackend extends InMemoryExtensionStateBackend {
+      override async recordFailure(): Promise<void> {
+        throw new Error('db down during failure recording');
+      }
+    }
+    const stateStore = new ExtensionStateStore(new ThrowingRecordFailureBackend());
+    await expect(reconcileFixture({ required: true, failAt: 'migration', stateStore }))
+      .rejects.toThrow(/required extension demo/);
   });
 
   it('records a sanitized failure that never leaks the raw error text', async () => {

@@ -112,6 +112,47 @@ function isSymlinkEntry(entry: StreamZip.ZipEntry): boolean {
 }
 
 /**
+ * Inflate a single archive member while hard-bounding the number of
+ * DECOMPRESSED bytes, aborting the moment output crosses `limitBytes`.
+ *
+ * ZIP-BOMB GUARD. The uncompressed `size` in the central directory is
+ * attacker-controlled metadata, and it is NOT independently verified during
+ * decompression: the archiver that produces `.breeze-ext` bundles sets the
+ * streaming data-descriptor flag (general-purpose bit 0x08) on every entry,
+ * which disables node-stream-zip's own CRC/size check (`canVerifyCrc` returns
+ * false whenever that bit is set). So `entryData()` would inflate a member
+ * whose declared `size` is a few bytes but whose payload expands to gigabytes,
+ * buffering all of it via `Buffer.concat` — memory exhaustion BEFORE any
+ * signature is checked, reachable at API boot and from `breezectl` verifying an
+ * untrusted third-party bundle. We stream the inflate ourselves and tear it
+ * down as soon as the cap is exceeded, so decompression can never outrun the
+ * declared archive limits regardless of what the central directory claims.
+ */
+async function inflateMemberWithinLimit(
+  zip: InstanceType<typeof StreamZip.async>,
+  entry: StreamZip.ZipEntry,
+  limitBytes: number,
+): Promise<Buffer> {
+  const stream = await zip.stream(entry);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      total += chunk.length;
+      if (total > limitBytes) {
+        throw new Error('archive rejected: member inflates beyond the allowed size limit');
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    // Destroy the underlying inflate even on early abort so a bomb cannot keep
+    // decompressing after we stop reading. Idempotent if already ended.
+    (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+  }
+  return Buffer.concat(chunks, total);
+}
+
+/**
  * Open a `.breeze-ext` archive through a bounded, hostile-input-safe reader.
  * All limits and structural safety checks are enforced up front, before any
  * member content is decompressed or trusted. Non-reserved members are hashed
@@ -138,7 +179,13 @@ export async function readBoundedZipDirectory(
       throw new Error('archive rejected: duplicate member paths');
     }
 
-    let totalBytes = 0;
+    // Structural pre-filter over the central directory. The declared `size`
+    // here is advisory, attacker-controlled metadata — a cheap early reject for
+    // honestly-oversized members and the place path/symlink safety is decided
+    // before anything is decompressed. The AUTHORITATIVE byte bound is enforced
+    // below during inflation (see inflateMemberWithinLimit), since a malicious
+    // central directory can under-declare `size`.
+    let declaredTotal = 0;
     for (const entry of Object.values(entries)) {
       assertSafeMemberName(entry.name);
       if (isSymlinkEntry(entry)) {
@@ -148,16 +195,22 @@ export async function readBoundedZipDirectory(
       if (entry.size > limits.maxMemberBytes) {
         throw new Error('archive rejected: member exceeds the per-member size limit');
       }
-      totalBytes += entry.size;
-      if (totalBytes > limits.maxTotalBytes) {
+      declaredTotal += entry.size;
+      if (declaredTotal > limits.maxTotalBytes) {
         throw new Error('archive rejected: total payload exceeds the size limit');
       }
     }
 
+    // Inflate and hash every non-reserved member, hard-bounding actual
+    // decompressed bytes both per-member and cumulatively so a zip bomb whose
+    // central directory lies about `size` still cannot exhaust memory.
     const files = new Map<string, { sha256: string; uncompressedSize: number }>();
+    let inflatedTotal = 0;
     for (const entry of Object.values(entries)) {
       if (entry.isDirectory || RESERVED_MEMBERS.has(entry.name)) continue;
-      const data = await zip.entryData(entry.name);
+      const perMemberLimit = Math.min(limits.maxMemberBytes, limits.maxTotalBytes - inflatedTotal);
+      const data = await inflateMemberWithinLimit(zip, entry, perMemberLimit);
+      inflatedTotal += data.length;
       files.set(entry.name, { sha256: sha256Hex(data), uncompressedSize: data.length });
     }
 
@@ -168,7 +221,7 @@ export async function readBoundedZipDirectory(
         if (!entry || entry.isDirectory) {
           throw new Error(`archive is missing required member "${name}"`);
         }
-        return zip.entryData(entry);
+        return inflateMemberWithinLimit(zip, entry, limits.maxMemberBytes);
       },
       close: () => zip.close(),
     };

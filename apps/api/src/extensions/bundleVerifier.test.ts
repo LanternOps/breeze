@@ -130,6 +130,54 @@ function duplicateCentralDirectoryEntry(archive: Buffer, memberName: string): Bu
   return Buffer.concat([archive.subarray(0, directoryOffset + directorySize), record, eocdCopy]);
 }
 
+/**
+ * Forge a zip-bomb-shaped defect on `memberName`'s central-directory record:
+ * declare a small uncompressed `size` (a lie) AND set the streaming
+ * data-descriptor flag (general-purpose bit 0x08). That is exactly the shape the
+ * real `archiver`-based packer emits — bit 0x08 disables node-stream-zip's own
+ * CRC/size guard (`canVerifyCrc` returns false), so the declared size is never
+ * checked during inflation. The compressed payload is left untouched, so the
+ * member still inflates to its true (larger) size. A verifier that trusts the
+ * declared size, or the library's optional guard, would buffer the whole
+ * inflation into memory; the bounded reader must abort on actual bytes instead.
+ */
+function understateMemberSize(archive: Buffer, memberName: string, fakeSize: number): Buffer {
+  const out = Buffer.from(archive);
+  let eocd = -1;
+  for (let i = out.length - 22; i >= 0; i -= 1) {
+    if (out.readUInt32LE(i) === EOCD_SIGNATURE) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('fixture: end-of-central-directory record not found');
+
+  const diskEntries = out.readUInt16LE(eocd + 8);
+  const directoryOffset = out.readUInt32LE(eocd + 16);
+  let cursor = directoryOffset;
+  for (let i = 0; i < diskEntries; i += 1) {
+    if (out.readUInt32LE(cursor) !== CENTRAL_FILE_HEADER_SIGNATURE) {
+      throw new Error('fixture: malformed central directory record');
+    }
+    const nameLength = out.readUInt16LE(cursor + 28);
+    const extraLength = out.readUInt16LE(cursor + 30);
+    const commentLength = out.readUInt16LE(cursor + 32);
+    const name = out
+      .subarray(cursor + CENTRAL_FILE_HEADER_FIXED_SIZE, cursor + CENTRAL_FILE_HEADER_FIXED_SIZE + nameLength)
+      .toString('utf8');
+    if (name === memberName) {
+      // Flags at offset 8: set the data-descriptor bit so the reader's own CRC
+      // guard is disabled, matching a real packer's output.
+      out.writeUInt16LE(out.readUInt16LE(cursor + 8) | 0x08, cursor + 8);
+      // Uncompressed size at offset 24: the under-declared lie.
+      out.writeUInt32LE(fakeSize, cursor + 24);
+      return out;
+    }
+    cursor += CENTRAL_FILE_HEADER_FIXED_SIZE + nameLength + extraLength + commentLength;
+  }
+  throw new Error(`fixture: member "${memberName}" not found in the central directory`);
+}
+
 const scratchDirs: string[] = [];
 
 async function makeSignedFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -327,5 +375,48 @@ describe('readBoundedZipDirectory', () => {
     await expect(
       readBoundedZipDirectory(archivePath, { maxMembers: 10, maxMemberBytes: 128, maxTotalBytes: 100 }),
     ).rejects.toThrow(/total|exceed/i);
+  });
+
+  // ZIP BOMB. The uncompressed size in the central directory is
+  // attacker-controlled, and a real packer sets bit 0x08 which turns OFF the
+  // reader's own size guard — so the only defense against a member that declares
+  // a tiny size but inflates to gigabytes is the reader bounding ACTUAL
+  // decompressed bytes. This fixture inflates to 4096 bytes while declaring 8,
+  // with bit 0x08 set; a reader that trusts the declared size would sail past
+  // the 1024-byte per-member limit and buffer the whole thing. A regression that
+  // reverts to trusting the declared size (or to entryData) would fail here.
+  it('bounds actual inflated bytes even when the central directory under-declares size', async () => {
+    const fixture = await makeSignedFixture({
+      members: {
+        'manifest.json': Buffer.from(JSON.stringify(manifestObject()), 'utf8'),
+        'server/index.cjs': Buffer.alloc(4096, 0x61),
+      },
+      postProcessArchive: (archive) => understateMemberSize(archive, 'server/index.cjs', 8),
+    });
+
+    await expect(
+      readBoundedZipDirectory(fixture.path, {
+        maxMembers: 10,
+        maxMemberBytes: 1024,
+        maxTotalBytes: 100_000,
+      }),
+    ).rejects.toThrow(/inflates beyond|size limit/i);
+  });
+
+  // Symlink members are an archive-escape vector (a materialized link reads or
+  // writes outside the extraction root, or import() follows it). The control
+  // lives in isSymlinkEntry; no ordinary writer emits a symlink member through
+  // its API, so the S_IFLNK external-attribute bits must be forged directly.
+  it('rejects an archive member flagged as a symlink', async () => {
+    const zip = new JSZip();
+    zip.file('server/link', 'target/path', {
+      unixPermissions: 0o120777, // S_IFLNK | 0777
+    });
+    const buf = await zip.generateAsync({ type: 'nodebuffer', platform: 'UNIX' });
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'breeze-ext-symlink-'));
+    const archivePath = path.join(dir, 'symlink.breeze-ext');
+    writeFileSync(archivePath, buf);
+
+    await expect(readBoundedZipDirectory(archivePath)).rejects.toThrow(/symlink/i);
   });
 });

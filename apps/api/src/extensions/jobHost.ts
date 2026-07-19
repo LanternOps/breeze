@@ -139,10 +139,24 @@ export class ExtensionJobHost {
     const definition = snapshot?.jobs.get(jobName);
     if (!definition) return; // extension withdrawn or job removed — nothing to run.
 
-    // Cross-replica enable check. A disabled extension SKIPS: no handler call.
-    if (!(await this.store.isEnabled(extension))) return;
-
     const startedAt = Date.now();
+
+    // Cross-replica enable check. A disabled extension SKIPS: no handler call.
+    let enabled: boolean;
+    try {
+      enabled = await this.store.isEnabled(extension);
+    } catch (error) {
+      // Gate-check failure (e.g. a DB outage) stays fail-closed — the handler
+      // does NOT run — but it must also be VISIBLE. Without a metric here the
+      // job silently retry-loops against a down DB and the `breeze_extension_*`
+      // failure counter shows nothing, hiding the very breakage it exists to
+      // surface. Record a failure outcome, then let the error reach BullMQ's
+      // retry machinery untouched.
+      this.recordJob(extension, jobName, 'failure', (Date.now() - startedAt) / 1000);
+      throw error;
+    }
+    if (!enabled) return; // disabled: a deliberate skip, not a failure — no metric.
+
     try {
       await definition.handler();
       this.recordJob(extension, jobName, 'success', (Date.now() - startedAt) / 1000);

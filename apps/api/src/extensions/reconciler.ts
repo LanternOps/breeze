@@ -543,10 +543,17 @@ function buildDefaultPorts(args: ReconcileExtensionsArgs): ReconcilePorts {
         throw error;
       }
     },
-    createMigrationSql: () => postgres(
-      process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze',
-      { max: 2 },
-    ),
+    createMigrationSql: () => {
+      // The migration connection is privileged (it issues extension DDL). Never
+      // substitute a guessed DSN for a missing DATABASE_URL: silently pointing
+      // that connection at a default localhost database masks the actual
+      // misconfiguration. Fail fast instead.
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) {
+        throw new Error('DATABASE_URL is required to run extension migrations');
+      }
+      return postgres(databaseUrl, { max: 2 });
+    },
     hostDescriptor: HOST_DESCRIPTOR,
     acquire: (source) => artifactStore.acquire(source),
     trustFor: resolveTrustedPublisher,
@@ -655,7 +662,21 @@ export async function reconcileExtensions(
         summary.activated.push(selection.name);
         console.log(`[extensions] reconciled "${selection.name}" ${bundle.manifest.version}`);
       } catch (error) {
-        await recordSanitizedFailure(stateStore, selection.name, phase, error);
+        // Recording the failure is best-effort recovery bookkeeping and MUST
+        // NOT itself abort boot. A transient DB error here (plausibly the very
+        // condition that failed an earlier phase) would otherwise propagate out
+        // of this catch and take the whole API down — even for an OPTIONAL
+        // extension, defeating the isolation the required/optional split exists
+        // to provide. For a REQUIRED extension we still abort, but via the
+        // sanitized RequiredExtensionError below (never the raw DB error, which
+        // the boot logger could leak).
+        try {
+          await recordSanitizedFailure(stateStore, selection.name, phase, error);
+        } catch {
+          console.error(
+            `[extensions] failed to record reconcile failure for "${selection.name}" at phase "${phase}"`,
+          );
+        }
         registry.withdraw(selection.name);
         clearExtensionRoot(selection.name);
         summary.failed.push(selection.name);

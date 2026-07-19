@@ -89,6 +89,11 @@ export class ArtifactStore {
     if (url.protocol !== 'file:' && url.protocol !== 'https:') {
       throw new Error(`unsupported artifact URI scheme "${url.protocol}" (only file: and https: are allowed)`);
     }
+    if (url.username !== '' || url.password !== '') {
+      // Reject credentials embedded in the URI: they would be an unlogged secret
+      // on the artifact source and have no legitimate use for a signed bundle.
+      throw new Error('artifact URI must not embed credentials');
+    }
 
     const pinnedHex = this.pinnedHex(source.digest);
 
@@ -194,9 +199,19 @@ function randomToken(): string {
 }
 
 /**
+ * Idle/connect timeout for an artifact download. A hung or slow-loris origin
+ * must fail the fetch rather than stall boot indefinitely (the reconciler awaits
+ * this at startup). Applies to connection setup and to any subsequent stall in
+ * the response body (the socket timer stays armed after the stream resolves).
+ */
+const ARTIFACT_HTTP_TIMEOUT_MS = 30_000;
+
+/**
  * Open an https response as a Readable, following the security posture of the
  * rest of this module: reject non-2xx up front. Redirects are NOT followed — an
- * artifact URI must point directly at the bytes.
+ * artifact URI must point directly at the bytes. A stalled connection is torn
+ * down after {@link ARTIFACT_HTTP_TIMEOUT_MS} so boot cannot hang on a slow
+ * origin.
  */
 async function openHttpsStream(url: URL): Promise<Readable> {
   return new Promise<Readable>((resolve, reject) => {
@@ -204,10 +219,17 @@ async function openHttpsStream(url: URL): Promise<Readable> {
       const status = response.statusCode ?? 0;
       if (status < 200 || status >= 300) {
         response.resume();
+        request.destroy();
         reject(new Error(`artifact download failed with HTTP ${status}`));
         return;
       }
       resolve(response);
+    });
+    request.setTimeout(ARTIFACT_HTTP_TIMEOUT_MS, () => {
+      // Destroying the request errors the in-flight response stream, so a stall
+      // after resolve() surfaces as a download failure in the consuming
+      // pipeline rather than an unbounded hang.
+      request.destroy(new Error(`artifact download timed out after ${ARTIFACT_HTTP_TIMEOUT_MS}ms`));
     });
     request.on('error', reject);
   });
