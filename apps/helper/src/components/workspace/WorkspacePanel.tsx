@@ -162,14 +162,26 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
 
   // Debounced search (300 ms). Filter chips re-issue this fetch too — they
   // only ever change the store's `filters`, which this effect already watches.
+  //
+  // `tab` is a dependency (not just read once) so that navigating away from
+  // Search runs this effect's cleanup — cancelling any pending timer —
+  // before the effect body re-evaluates and bails out via the guard below.
+  // Without this, a timer armed while on Search could still fire after the
+  // user switched to another (already-loaded) tab: `search()` would resolve
+  // later and set the store's global `error`, masking that other tab's
+  // correct content with a stale, wrong-context ErrorRow — the exact async-
+  // completion race the tab-switch and mount-time error clears don't cover,
+  // since both only clear `error` at the moment of switching/mounting, not
+  // when a since-abandoned view's in-flight fetch settles afterward.
   useEffect(() => {
+    if (tab !== 'search') return;
     const q = query.trim();
     if (!q) return;
     const timer = setTimeout(() => {
       search(q, filters);
     }, 300);
     return () => clearTimeout(timer);
-  }, [query, filters, search]);
+  }, [tab, query, filters, search]);
 
   // Load recents when the tab is shown.
   useEffect(() => {

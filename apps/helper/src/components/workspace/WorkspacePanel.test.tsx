@@ -104,3 +104,37 @@ it('mounting a fresh panel clears a leftover error instead of masking the defaul
   expect(screen.queryByText('Could not reach the index.')).not.toBeInTheDocument();
   expect(screen.getByText("Search your firm's files")).toBeInTheDocument();
 });
+
+// Regression test for the debounced-search-not-cancelled bug: typing a query
+// on Search arms a 300ms debounce timer. Switching to another tab before it
+// fires must cancel that timer outright — otherwise it fires later, calls
+// the (now wrong-context) `search()`, and a subsequent failure would mask
+// the tab the user actually navigated to behind a stale ErrorRow. Neither
+// the tab-switch nor the mount-time error clear (above) touch this, since
+// both only clear `error` at the moment of switching/mounting, not a timer
+// that fires afterward.
+it('switching tabs before the search debounce fires cancels the pending search', () => {
+  vi.useFakeTimers();
+  try {
+    const searchSpy = vi.fn().mockResolvedValue(undefined);
+    useWorkspaceStore.setState({ search: searchSpy });
+
+    render(<WorkspacePanel onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search shared files...'), {
+      target: { value: 'alder' },
+    });
+
+    // Switch away before the 300ms debounce elapses.
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    // The cancelled timer must never call search() at all.
+    expect(searchSpy).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
