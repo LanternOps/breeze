@@ -70,6 +70,12 @@ export default defineConfig({
       // so the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/jobs/intentExpiryReaper.integration.test.ts',
+      // Decide-path intent fan-in atomicity real-DB test (Task 6): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/routes/ outside the `src/__tests__/integration/**` glob,
+      // so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/routes/approvalsDecideAtomicity.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

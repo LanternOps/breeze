@@ -93,6 +93,12 @@ export default defineConfig({
       // - interval predicate the mocked unit suite can't verify against a
       // real Postgres now().
       'src/jobs/intentExpiryReaper.integration.test.ts',
+      // Co-located real-DB integration test for the decide-path intent fan-in
+      // atomicity (Task 6): drives the real approve route + injects a DB-level
+      // fault into the intent_approved outbox insert to prove {CAS + sibling
+      // expiry + outbox} roll back together — a rollback the mocked unit suite
+      // (which mocks db.transaction) cannot exercise.
+      'src/routes/approvalsDecideAtomicity.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
