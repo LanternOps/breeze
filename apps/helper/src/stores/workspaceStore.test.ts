@@ -384,6 +384,29 @@ describe('filing', () => {
     expect(useWorkspaceStore.getState().error).toBe('not found');
     expect(useWorkspaceStore.getState().filingBusy).toBeNull();
   });
+
+  it('fileByDrop delegates to assignFiling: identical API call and state transition', async () => {
+    // Run assignFiling directly first and capture the resulting call + state.
+    useWorkspaceStore.setState({ filings: [FILING] });
+    const decided = { ...FILING, status: 'reassigned', decidedProjectKey: '2025-012' };
+    helperRequestMock.mockResolvedValueOnce(ok({ filing: decided }));
+    await useWorkspaceStore.getState().assignFiling('e1', '2025-012', 'Front desk');
+    const assignCall = helperRequestMock.mock.calls[0];
+    const assignState = useWorkspaceStore.getState().filings;
+
+    // Reset to the pre-decision state and run fileByDrop with the same args.
+    vi.clearAllMocks();
+    useWorkspaceStore.setState({ filings: [FILING], filingBusy: null, error: null });
+    helperRequestMock.mockResolvedValueOnce(ok({ filing: decided }));
+    await useWorkspaceStore.getState().fileByDrop('e1', '2025-012', 'Front desk');
+    const dropCall = helperRequestMock.mock.calls[0];
+
+    expect(helperRequestMock).toHaveBeenCalledTimes(1);
+    expect(dropCall[1]).toBe(assignCall[1]); // same URL
+    expect(dropCall[2]).toEqual(assignCall[2]); // same method/headers/body
+    expect(useWorkspaceStore.getState().filings).toEqual(assignState);
+    expect(useWorkspaceStore.getState().filingBusy).toBeNull();
+  });
 });
 
 describe('sort', () => {

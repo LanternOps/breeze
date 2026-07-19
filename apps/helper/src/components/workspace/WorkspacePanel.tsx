@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import {
-  useWorkspaceStore, type FinderFile, type FilingRecord,
-} from '../../stores/workspaceStore';
+import { useWorkspaceStore, type FinderFile } from '../../stores/workspaceStore';
 import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { Toaster, toast } from '../ui/Toaster';
 import { FileTable } from './FileTable';
 import { FilterChips } from './FilterChips';
+import { FilingCard } from './FilingCard';
+import { ProjectRail } from './ProjectRail';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -28,7 +28,7 @@ function safeSnippetHtml(snippet: string): string {
     .replaceAll('&lt;/b&gt;', '</b>');
 }
 
-function formatWhen(dateStr: string | null | undefined): string | null {
+export function formatWhen(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return null;
@@ -89,101 +89,6 @@ function LoadingRow() {
   );
 }
 
-function FilingRow({
-  filing,
-  projects,
-  busy,
-  onClassify,
-  onAssign,
-}: {
-  filing: FilingRecord;
-  projects: Array<{ key: string; label: string }>;
-  busy: boolean;
-  onClassify: (fileIndexId: string) => void;
-  onAssign: (fileIndexId: string, projectKey: string) => void;
-}) {
-  const [choice, setChoice] = useState('');
-  const subject = filing.emailMeta?.subject ?? filing.name;
-  const decided = filing.status === 'confirmed' || filing.status === 'reassigned';
-  const decidedLabel = filing.decidedProjectKey
-    ? projects.find((p) => p.key === filing.decidedProjectKey)?.label ?? filing.decidedProjectKey
-    : null;
-
-  return (
-    <div className="helper-file-row helper-filing-row">
-      <div className="helper-file-main">
-        <span className="helper-file-name">{subject}</span>
-        <span className="helper-file-meta">
-          {[filing.emailMeta?.from, formatWhen(filing.emailMeta?.date)].filter(Boolean).join(' · ')}
-        </span>
-        {decided && (
-          <span className="helper-filing-banner helper-filing-decided">
-            Filed to: {decidedLabel}
-          </span>
-        )}
-        {!decided && filing.status === 'suggested' && filing.suggestedProjectLabel && (
-          <span
-            className={`helper-filing-banner${
-              filing.confidence === 'high' ? ' helper-filing-confident' : ' helper-filing-tentative'
-            }`}
-          >
-            {filing.confidence === 'high'
-              ? `Filed to: ${filing.suggestedProjectLabel} — ${filing.rationale}`
-              : `Possibly ${filing.suggestedProjectLabel} — ${filing.rationale}`}
-          </span>
-        )}
-        {!decided && filing.status === 'suggested' && !filing.suggestedProjectLabel && (
-          <span className="helper-filing-banner helper-filing-tentative">
-            No clear match — pick a project below.
-          </span>
-        )}
-      </div>
-      <div className="helper-file-actions helper-filing-actions">
-        {busy && <span className="helper-spinner" />}
-        {!busy && filing.status === null && (
-          <button
-            className="helper-btn helper-btn-sm"
-            onClick={() => onClassify(filing.fileIndexId)}
-            title="Suggest where this email belongs"
-          >
-            Sort
-          </button>
-        )}
-        {!busy && filing.status === 'suggested' && (
-          <>
-            {filing.suggestedProjectKey && (
-              <button
-                className="helper-btn helper-btn-sm"
-                onClick={() => onAssign(filing.fileIndexId, filing.suggestedProjectKey!)}
-                title="File to the suggested project"
-              >
-                File it
-              </button>
-            )}
-            <select
-              className="helper-workspace-select"
-              value={choice}
-              onChange={(e) => {
-                const key = e.target.value;
-                setChoice(key);
-                if (key) onAssign(filing.fileIndexId, key);
-              }}
-              title="File to a different project"
-            >
-              <option value="">Move to…</option>
-              {projects.map((p) => (
-                <option key={p.key} value={p.key}>
-                  {p.key} {p.label}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const {
     sources,
@@ -207,6 +112,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     loadFilings,
     classifyEmail,
     assignFiling,
+    fileByDrop,
     setFilter,
     clearFilter,
   } = useWorkspaceStore();
@@ -469,26 +375,32 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
 
       {tab === 'filing' && (
         <div className="helper-workspace-body">
-          <div className="helper-workspace-list">
-            {loading && <LoadingRow />}
-            {!loading && filings.length === 0 && (
-              <div className="helper-history-empty">No unfiled mail right now.</div>
-            )}
-            {!loading && filings.length > 0 && (
-              <>
-                <div className="helper-workspace-section-title">Unfiled mail</div>
-                {filings.map((filing) => (
-                  <FilingRow
-                    key={filing.fileIndexId}
-                    filing={filing}
-                    projects={projects}
-                    busy={filingBusy === filing.fileIndexId}
-                    onClassify={classifyEmail}
-                    onAssign={(id, key) => assignFiling(id, key, username)}
-                  />
-                ))}
-              </>
-            )}
+          <div className="ws-filing-layout">
+            <div className="ws-filing-cards">
+              {loading && <LoadingRow />}
+              {!loading && filings.length === 0 && (
+                <div className="helper-history-empty">No unfiled mail right now.</div>
+              )}
+              {!loading && filings.length > 0 && (
+                <>
+                  <div className="helper-workspace-section-title">Unfiled mail</div>
+                  {filings.map((filing) => (
+                    <FilingCard
+                      key={filing.fileIndexId}
+                      filing={filing}
+                      projects={projects}
+                      busy={filingBusy === filing.fileIndexId}
+                      onClassify={classifyEmail}
+                      onAssign={(id, key) => assignFiling(id, key, username)}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+            <ProjectRail
+              projects={projects}
+              onDropEmail={(id, key) => fileByDrop(id, key, username)}
+            />
           </div>
         </div>
       )}

@@ -156,6 +156,8 @@ interface WorkspaceState {
   loadFilings: () => Promise<void>;
   classifyEmail: (fileIndexId: string) => Promise<void>;
   assignFiling: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
+  /** Drag-to-project filing (ProjectRail drop). Same code path as assignFiling. */
+  fileByDrop: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
   setSort: (view: View, col: SortCol) => void;
   setFilter: <K extends keyof WorkspaceFilters>(key: K, value: WorkspaceFilters[K]) => void;
   clearFilter: (key: keyof WorkspaceFilters) => void;
@@ -460,6 +462,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       });
     }
   },
+
+  fileByDrop: (fileIndexId, projectKey, helperUser) =>
+    get().assignFiling(fileIndexId, projectKey, helperUser),
 
   setSort: (view, col) => {
     const current = get().sort[view];
