@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import { isCommandQueueable } from "./bulkActionGating";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
@@ -177,6 +178,17 @@ export default function DeviceCard({
   const ramHistory =
     historyState === "ready" ? metricHistory.map((point) => point.ram) : [];
 
+  // Action gating for the card menu (#2488). The grid view previously had no
+  // gates at all, so Run Script/Reboot fired on decommissioned devices and
+  // Remote Terminal fired doomed requests on offline ones.
+  //   - queued commands (Run Script, Reboot) run on reconnect and are refused
+  //     by the API only for decommissioned devices -> isCommandQueueable, the
+  //     same predicate the list row menu and bulk bar use.
+  //   - Remote Terminal is a live session and genuinely needs a connected
+  //     agent -> status === 'online', matching DeviceActions.
+  const commandQueueable = isCommandQueueable(device.status);
+  const online = device.status === "online";
+
   return (
     <div
       onClick={() => onClick?.(device)}
@@ -222,7 +234,9 @@ export default function DeviceCard({
                   onAction?.("terminal", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!online}
+                title={!online ? t("deviceActions.unavailable.notOnline") : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <Terminal className="h-4 w-4" />
                 {t("deviceCard.remoteTerminal")}{" "}
@@ -234,7 +248,9 @@ export default function DeviceCard({
                   onAction?.("run-script", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!commandQueueable}
+                title={!commandQueueable ? t("deviceActions.unavailable.decommissioned") : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <FileCode className="h-4 w-4" />
                 {t("deviceCard.runScript")}{" "}
@@ -246,7 +262,9 @@ export default function DeviceCard({
                   onAction?.("reboot", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!commandQueueable}
+                title={!commandQueueable ? t("deviceActions.unavailable.decommissioned") : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceCard.reboot")}{" "}
