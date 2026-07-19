@@ -593,6 +593,112 @@ body {
 }
 
 /* ----------------------------------------------------------
+   Chat file result cards (search_workspace_files tool results) — typography
+   matches FileTable's row styles (.ws-file-table-name / .ws-file-table-
+   secondary) so a card reads as the same "file row" language wherever it
+   renders (full-swap chat or the 340px side panel). Width stays relative
+   (max-width: 85%, matching .helper-message) — no fixed widths, so the card
+   is fluid at panel width too.
+   ---------------------------------------------------------- */
+.helper-file-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 85%;
+  animation: messageIn 200ms ease-out;
+}
+
+.helper-file-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--ws-radius-control);
+}
+
+.helper-file-card-row:hover {
+  background: var(--ws-accent-soft);
+}
+
+.helper-file-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.helper-file-card-name {
+  font-size: var(--ws-text-13);
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-card-meta {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-card-error {
+  font-size: var(--ws-text-12);
+  color: var(--error-text);
+}
+
+.helper-file-card-open {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-size: var(--ws-text-12);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.helper-file-card-open:hover {
+  border-color: var(--ws-accent);
+  color: var(--ws-accent);
+}
+
+.helper-file-card-open:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ----------------------------------------------------------
+   Citation chips — inline in assistant markdown, replacing
+   [file:<id>|<relPath>] tokens the model cites passages with.
+   ---------------------------------------------------------- */
+.helper-citation-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin: 0 1px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+  font-size: var(--ws-text-12);
+  font-weight: 500;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.helper-citation-chip:hover {
+  text-decoration: underline;
+}
+
+/* ----------------------------------------------------------
    Thinking Indicator
    ---------------------------------------------------------- */
 .helper-thinking {
