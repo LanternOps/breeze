@@ -20,34 +20,32 @@
    CSS Variables
    ---------------------------------------------------------- */
 :root {
-  --bg-primary: #1a1b1e;
-  --bg-secondary: #25262b;
-  --bg-tertiary: #2c2e33;
-  --bg-hover: #343a40;
-  --bg-input: #2c2e33;
+  /* Legacy dark-era aliases remapped onto --ws-* tokens so every screen that
+     still references them re-coheres in BOTH light and dark themes. The raw
+     hex values above were dark-only and rendered light-on-light once html/body
+     moved to --ws-canvas. Keep these as thin aliases; do not reintroduce hex. */
+  --bg-primary: var(--ws-canvas);
+  --bg-secondary: var(--ws-surface);
+  --bg-tertiary: var(--ws-raised);
+  --bg-hover: var(--ws-accent-soft);
+  --bg-input: var(--ws-surface);
 
-  --text-primary: #e4e5e7;
-  --text-secondary: #909296;
-  --text-muted: #6b6e73;
-  --text-placeholder: #555860;
+  --text-primary: var(--ws-ink);
+  --text-secondary: var(--ws-text-secondary);
+  --text-muted: var(--ws-text-tertiary);
+  --text-placeholder: var(--ws-text-tertiary);
 
-  --accent: #4c9aff;
-  --accent-hover: #3d8af0;
-  --accent-subtle: rgba(76, 154, 255, 0.12);
+  --accent: var(--ws-accent);
+  --accent-subtle: var(--ws-accent-soft);
 
-  --user-bubble: #2b5a9e;
-  --user-bubble-text: #e4e5e7;
-  --assistant-bubble: #2c2e33;
-  --assistant-bubble-text: #e4e5e7;
+  --error-bg: var(--ws-danger-soft);
+  --error-text: var(--ws-danger);
+  --error-border: var(--ws-danger-soft);
 
-  --error-bg: rgba(255, 69, 58, 0.12);
-  --error-text: #ff6b6b;
-  --error-border: rgba(255, 69, 58, 0.25);
+  --success: var(--ws-success);
 
-  --success: #51cf66;
-
-  --border: #373a40;
-  --border-light: #2c2e33;
+  --border: var(--ws-border);
+  --border-light: var(--ws-border-subtle);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -1177,6 +1175,25 @@ body {
 .ws-file-table-row.ws-row-selected {
   background: var(--ws-accent-soft);
   box-shadow: inset 0 0 0 2px var(--ws-accent);
+}
+
+/* Narrow-window layout: the native Tauri popup opens at inner_size 380x600,
+   below the ~488px minimum of the 5-column grid. At <=480px collapse to three
+   tracks and hide the Modified (4th) + Size (5th) columns — header buttons AND
+   row cells — via display:none so the DOM order and grid column counts stay in
+   lockstep (the grid simply lays out the 3 remaining tracks). */
+@media (max-width: 480px) {
+  .ws-file-table-header,
+  .ws-file-table-row {
+    grid-template-columns: minmax(0, 1fr) 90px 80px;
+  }
+
+  .ws-file-table-header > .ws-file-table-colbtn:nth-child(4),
+  .ws-file-table-header > .ws-file-table-colbtn:nth-child(5),
+  .ws-file-table-row > .ws-file-table-cell:nth-child(4),
+  .ws-file-table-row > .ws-file-table-cell:nth-child(5) {
+    display: none;
+  }
 }
 
 .ws-file-table-cell {

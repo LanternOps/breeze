@@ -145,6 +145,7 @@ export function FileTable(props: FileTableProps) {
                 className={`ws-file-table-row${isSelected ? ' ws-row-selected' : ''}`}
                 role="row"
                 aria-selected={isSelected}
+                onDoubleClick={() => onOpen(file)}
               >
                 <div className="ws-file-table-cell ws-file-table-name-cell">
                   <div className="ws-file-table-name-row">

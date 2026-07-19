@@ -39,6 +39,23 @@ it('Enter opens the selected row', () => {
   expect(onOpen).toHaveBeenCalledWith(rows[0]);
 });
 
+it('double-click on a file row opens it (mouse path — same handler as Enter/menu Open)', () => {
+  const onOpen = vi.fn();
+  render(<FileTable view="search" rows={rows} onOpen={onOpen} onCopy={vi.fn()} />);
+  const secondRow = screen.getByText('b.pdf').closest('[role="row"]')!;
+  fireEvent.doubleClick(secondRow);
+  expect(onOpen).toHaveBeenCalledWith(rows[1]);
+});
+
+it('double-click on a directory row drills in (Browse) via onOpen', () => {
+  const onOpen = vi.fn();
+  const dirRows = [file({ id: 'd1', name: 'clients', isDir: true, openPath: undefined })];
+  render(<FileTable view="browse" rows={dirRows} onOpen={onOpen} onCopy={vi.fn()} />);
+  const dirRow = screen.getByText('clients/').closest('[role="row"]')!;
+  fireEvent.doubleClick(dirRow);
+  expect(onOpen).toHaveBeenCalledWith(dirRows[0]);
+});
+
 it('Cmd+C copies the selected row', () => {
   const onCopy = vi.fn();
   render(<FileTable view="search" rows={rows} onOpen={vi.fn()} onCopy={onCopy} />);

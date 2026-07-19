@@ -83,6 +83,40 @@ it('switching tabs clears a stale error from a different view instead of masking
   expect(screen.queryByText('Search is unavailable right now.')).not.toBeInTheDocument();
 });
 
+// Finding 4b: an empty Browse folder must distinguish "genuinely empty" from
+// "filtered to nothing". With an active project/docType chip the copy has to
+// point at the filter, not imply the folder itself is empty.
+it('Browse empty state reflects an active filter: "No matches in this folder" + clear-filters hint', async () => {
+  useWorkspaceStore.setState({
+    browse: vi.fn().mockResolvedValue(undefined),
+    browsePath: { sourceId: 's1', parentPath: 'clients' },
+    entries: [],
+    filters: { docType: 'Contract' },
+  });
+
+  render(<WorkspacePanel onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
+  expect(await screen.findByText('No matches in this folder')).toBeInTheDocument();
+  expect(screen.getByText('Clear filters to see everything.')).toBeInTheDocument();
+  expect(screen.queryByText('This folder is empty')).not.toBeInTheDocument();
+});
+
+it('Browse empty state with no active filter still reads "This folder is empty"', async () => {
+  useWorkspaceStore.setState({
+    browse: vi.fn().mockResolvedValue(undefined),
+    browsePath: { sourceId: 's1', parentPath: 'clients' },
+    entries: [],
+    filters: {},
+  });
+
+  render(<WorkspacePanel onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
+  expect(await screen.findByText('This folder is empty')).toBeInTheDocument();
+  expect(screen.queryByText('No matches in this folder')).not.toBeInTheDocument();
+});
+
 // Regression test for the mount-time stale-error bug: `error` lives in the
 // module-level store, which survives WorkspacePanel unmounting (App.tsx
 // conditionally renders the panel — closing and reopening Files is a normal

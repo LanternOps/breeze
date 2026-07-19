@@ -539,7 +539,14 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                 />
               )}
               {!loading && !error && browsePath && entries.length === 0 && (
-                <EmptyState title="This folder is empty" />
+                filters.project || filters.docType ? (
+                  <EmptyState
+                    title="No matches in this folder"
+                    hint="Clear filters to see everything."
+                  />
+                ) : (
+                  <EmptyState title="This folder is empty" />
+                )
               )}
               {!loading && !error && entries.length > 0 && (
                 <FileTable
