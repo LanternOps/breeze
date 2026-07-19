@@ -128,6 +128,47 @@ describe('processSSELines — client_tool_request round-trip', () => {
     expect(helperRequestMock.mock.calls.every(([, url]) => url.endsWith('/tool-results'))).toBe(true);
   });
 
+  it('appends a tool_result transcript message carrying the executor output for a known tool', async () => {
+    // The server never echoes a tool_result SSE event for client-declared tools,
+    // so the client must record its own executed result in the transcript —
+    // otherwise ChatView's resolution map and result cards see nothing.
+    useChatStore.setState({ sessionId: 'sess-1' });
+    helperRequestMock.mockImplementation(async (_config, url) => {
+      if (url.includes('/workspace/helper/search')) {
+        return ok({ results: [{ id: 'f1', relPath: 'a.pdf', openPath: null }] });
+      }
+      return ok({ ok: true });
+    });
+
+    await run([
+      sse({
+        type: 'client_tool_request',
+        toolUseId: 't1',
+        toolName: 'search_workspace_files',
+        input: { q: 'henderson' },
+      }),
+    ]);
+
+    const result = useChatStore.getState().messages.find((m) => m.role === 'tool_result');
+    expect(result).toBeDefined();
+    expect(result!.toolName).toBe('search_workspace_files');
+    const output = result!.toolOutput as { files: Array<{ fileIndexId: string }> };
+    expect(output.files[0].fileIndexId).toBe('f1');
+  });
+
+  it('appends NO transcript message for an unknown tool (only the error POST)', async () => {
+    useChatStore.setState({ sessionId: 'sess-1' });
+    helperRequestMock.mockResolvedValue(ok({ ok: true }));
+
+    await run([
+      sse({ type: 'client_tool_request', toolUseId: 't2', toolName: 'no_such_tool', input: {} }),
+    ]);
+
+    expect(useChatStore.getState().messages).toHaveLength(0);
+    const post = helperRequestMock.mock.calls.find(([, url]) => url.endsWith('/tool-results'));
+    expect(post).toBeDefined();
+  });
+
   it('does nothing when there is no active session', async () => {
     useChatStore.setState({ sessionId: null });
     await run([

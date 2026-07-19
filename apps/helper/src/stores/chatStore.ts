@@ -274,6 +274,11 @@ async function helperStreamRequest(
  * output is posted under `output` (including a degradable `{ error }` payload
  * from a failed executor, which the model reads as tool output); an unknown
  * tool name is posted under `error` so the model sees a hard tool failure.
+ *
+ * For a known tool, the executed result is ALSO appended to the store's
+ * messages as a `tool_result` entry — the server does not echo one for
+ * client-declared tools, and ChatView needs that transcript entry to render
+ * citation chips and result cards.
  */
 async function handleClientToolRequest(event: {
   toolUseId: string;
@@ -284,9 +289,32 @@ async function handleClientToolRequest(event: {
   if (!agentConfig || !sessionId) return;
 
   const known = WORKSPACE_CHAT_TOOLS.some((t) => t.name === event.toolName);
-  const body = known
-    ? { toolUseId: event.toolUseId, output: await executeWorkspaceChatTool(event.toolName, event.input ?? {}) }
-    : { toolUseId: event.toolUseId, error: `Unknown tool: ${event.toolName}` };
+
+  let body: { toolUseId: string; output?: unknown; error?: string };
+  if (known) {
+    const output = await executeWorkspaceChatTool(event.toolName, event.input ?? {});
+    // The server never emits a `tool_result` SSE event for client-declared
+    // tools (its post-tool-use hook isn't wired into the bridged-MCP path), so
+    // the client — which executed the tool — records its own transcript entry.
+    // ChatView's buildFileResolutionMap (citation chips) and its result-card
+    // render both scan `role === 'tool_result'` messages and duck-type on
+    // `toolOutput.files`/`toolOutput.passages`; the raw executor return is that
+    // exact shape. Appended for KNOWN tools only, regardless of whether the POST
+    // below succeeds — resolution/cards reflect what was actually executed.
+    const resultMsg: ChatMessage = {
+      id: `result-${event.toolUseId}`,
+      role: 'tool_result',
+      content: typeof output === 'string' ? output : JSON.stringify(output, null, 2),
+      toolName: event.toolName,
+      toolOutput: output,
+      toolUseId: event.toolUseId,
+      createdAt: new Date(),
+    };
+    useChatStore.setState((s) => ({ messages: [...s.messages, resultMsg] }));
+    body = { toolUseId: event.toolUseId, output };
+  } else {
+    body = { toolUseId: event.toolUseId, error: `Unknown tool: ${event.toolName}` };
+  }
 
   try {
     await helperRequest(
