@@ -27,6 +27,28 @@ describe('googleToolsHeadless parity', () => {
     expect(isHeadlessGoogleTool('m365_disable_user')).toBe(false);
     expect(isHeadlessGoogleTool('not_a_tool')).toBe(false);
   });
+
+  it('each key maps to its OWN correctly-named action fn (catches value mis-pairing)', () => {
+    const EXCEPTIONS: Record<string, string> = {
+      google_signout: 'googleSignOutAction',
+      google_reset_2sv: 'googleResetTwoSvAction',
+    };
+    const toExpectedActionName = (key: string): string => {
+      if (EXCEPTIONS[key]) return EXCEPTIONS[key];
+      const rest = key.slice('google_'.length);
+      const pascal = rest
+        .split('_')
+        .map((seg) => seg.charAt(0).toUpperCase() + seg.slice(1))
+        .join('');
+      return `google${pascal}Action`;
+    };
+    for (const key of Object.keys(GOOGLE_HEADLESS_ACTIONS)) {
+      const expectedName = toExpectedActionName(key);
+      const action = GOOGLE_HEADLESS_ACTIONS[key];
+      expect(action).toBeDefined();
+      expect(action?.name).toBe(expectedName);
+    }
+  });
 });
 
 describe('executeGoogleToolHeadless', () => {
