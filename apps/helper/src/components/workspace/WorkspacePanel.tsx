@@ -200,18 +200,27 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // correct FileTable back to SkeletonRows (and, on a flaky refetch, behind
   // a stale ErrorRow) for no reason. Guard against that by skipping the
   // (re)arm when this exact query/filters combo already succeeded.
+  //
+  // That key-only guard has its own gap, though: it doesn't check whether
+  // `error` is currently set. Search "alder" (succeeds, key recorded),
+  // search "boblegal" (fails — failures don't update the key), then retype
+  // "alder" exactly — the key matches, so the guard would bail with no
+  // fetch and nothing else clears `error` mid-tab, leaving the stale
+  // ErrorRow masking alder's valid results indefinitely. So also require
+  // `!error` to skip; `error` is a real dependency (not read via
+  // getState()) so the effect re-evaluates the instant it's set.
   useEffect(() => {
     if (tab !== 'search') return;
     const q = query.trim();
     if (!q) return;
     const key = JSON.stringify([q, filters]);
-    if (key === lastSearchKeyRef.current) return;
+    if (key === lastSearchKeyRef.current && !error) return;
     const timer = setTimeout(() => {
       runSearch(q, filters);
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, query, filters, search]);
+  }, [tab, query, filters, search, error]);
 
   // Load recents when the tab is shown.
   useEffect(() => {

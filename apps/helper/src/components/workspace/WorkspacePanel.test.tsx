@@ -229,3 +229,59 @@ it('returning to Search with an unchanged query does not re-issue the search', a
     vi.useRealTimers();
   }
 });
+
+// Regression test for the finding: the skip guard above checked only the
+// (query, filters) key, not whether `error` was currently set, and nothing
+// else clears `error` when the query changes within the same tab. So: search
+// "alder" (succeeds, key recorded), search "boblegal" (fails — ErrorRow
+// shows; failures don't update the key), then retype "alder" exactly — the
+// guard saw a key match and bailed with no fetch and no error clear, leaving
+// the stale ErrorRow masking alder's valid results indefinitely. Gate the
+// skip on `!error` too so a revisit while an error is showing still re-fetches.
+it('retyping a previously-successful query clears a stale error left by an intervening failed search', async () => {
+  vi.useFakeTimers();
+  try {
+    const searchSpy = vi.fn(async (q: string) => {
+      if (q === 'alder') {
+        useWorkspaceStore.setState({
+          results: [file({ id: 'f1', name: 'alder-easement.pdf' })],
+          error: null,
+          loading: false,
+        });
+      } else {
+        useWorkspaceStore.setState({
+          error: 'Search is unavailable right now.',
+          loading: false,
+        });
+      }
+    });
+    useWorkspaceStore.setState({ search: searchSpy });
+
+    render(<WorkspacePanel onClose={() => {}} />);
+    const input = screen.getByPlaceholderText('Search shared files...');
+
+    fireEvent.change(input, { target: { value: 'alder' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.getByText('alder-easement.pdf')).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'boblegal' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(screen.getByText('Search is unavailable right now.')).toBeInTheDocument();
+
+    // Retype "alder" exactly — same query/filters key as the earlier success.
+    fireEvent.change(input, { target: { value: 'alder' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    // The stale ErrorRow must be gone and alder's results must render again.
+    expect(screen.queryByText('Search is unavailable right now.')).not.toBeInTheDocument();
+    expect(screen.getByText('alder-easement.pdf')).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
