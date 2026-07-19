@@ -125,6 +125,60 @@ export const CHECKSUM_RECONCILIATIONS: Record<
     to: 'dc7be5f3209a46f4120f653eb4575ec5b64a6a23126e937a412afad7f26efc6a',
     reason: '0.95.1: GRANT/REVOKE CREATE ON SCHEMA public around ALTER FUNCTION ... OWNER TO breeze_search so a NOSUPERUSER migrator (DO managed doadmin) can complete the owner change. v0.95.0 succeeded only on superuser DBs; heal those (already applied) instead of crashing their upgrade.',
   },
+  // #2622 (v0.97.1) rewrote 8 shipped v0.97.0 migrations to move custom-GUC
+  // elevation (`SET "breeze.scope" = 'system'`) out of SECURITY DEFINER function
+  // ATTRIBUTES and into in-body `set_config()` save/restore, because a NOSUPERUSER
+  // migrator (DO managed doadmin) cannot set a dotted GUC via a function attribute
+  // (42501). #2622 edited them in place on the premise that they were unrecorded on
+  // every prod DB — true only for the hosted droplets, where v0.97.0 crash-looped
+  // before recording them. A SELF-HOSTER on a SUPERUSER Postgres (stock compose
+  // `postgres` role) applied all 8 successfully under v0.97.0 and recorded the
+  // ORIGINAL checksums, so their v0.97.1 upgrade crashes on the first mismatch
+  // (2026-07-27-a). The heal only updates the recorded checksum — it never re-runs
+  // the file — and the functions already installed from the original v0.97.0 files
+  // are correct on a superuser DB (the attribute form works there); the rewrite only
+  // matters for NOSUPERUSER fresh installs. So healing from->to is safe for any DB
+  // that recorded the original. Same class as #994 (2026-05-25-b/c). See v0.97.2.
+  '2026-07-27-a-feature-policy-reference-ownership.sql': {
+    from: '9952e3f19bef5dd3b7c220da12b78eeb2913b8ff104ccff36d2b296e30ded5d1',
+    to: '457a7b60e3ed3cfd07129555884586571b48dabc8b0faed8d8d00c7a9aadbe4d',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config wrapper/_impl split; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-07-27-c-backup-feature-settings-parity.sql': {
+    from: '580c79814c1b052b1e0c754734f5443d8301754d4166f711a8e90a4537d18d1f',
+    to: 'ac2bfad2139259d07413a06d868404c9fbf4a48c95fc6d7293fe924422fc9f9a',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-07-29-serialize-config-policy-assignment-integrity.sql': {
+    from: '1f86a8d5cfb959b8a05d5cb024a8ea9469ed4f1415c9fd1cc8ab4531b4da9dad',
+    to: '764823aaad4d70f79aba2a825ad03312e5f67298fa3b8b90c254c60f39231dbc',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-07-30-serialize-bulk-config-assignment-target-moves.sql': {
+    from: 'b2cdbe2abbcae223383d8b08441827d577f029324a49c71b8772b60dbb4aecce',
+    to: 'f29f46d509fc61fe189e705b71cbe1990f4782268c59213c0fbe0e531edda52b',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-08-01-a-serialize-feature-policy-references.sql': {
+    from: '59155c400eb121d928410921c2ba9398292c6ef5d9281d448583181b94604517',
+    to: '33ce95085962995061b610a2b136922f00cba952520c8f2c8c2c6a0e88459da0',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-08-01-b-serialize-backup-policy-references.sql': {
+    from: '1521cebd097f33636076c681f8f2ffaca717eac67f3ed109e8156038de5846fc',
+    to: '38db1a87a05ff1b48e66cc1e5882e12abdcbd5312aaf7abfc4a6a484c410f77f',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-08-01-c-serialize-onedrive-policy-references.sql': {
+    from: '39f7be62ec5711780aea7fcd9d55b5b5078fd2b1c34e0f60258b559fadb50405',
+    to: '7b719a186561f6fb2ece633fd974547dcc5bde995d4867e0ce905e964aae7658',
+    reason: '#2622 (v0.97.1): move breeze.scope elevation from function attribute to in-body set_config; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
+  '2026-08-01-d-harden-feature-reference-serialization.sql': {
+    from: '9183e3acd9c145b76f1bcdcb25f7982826aafe5465fb5ee126fe35df03dfd0e8',
+    to: '6be4c7fa5b808e4ca51f63824f6d5b286f0b8dfc081ed8a43cc33f731fdb6148',
+    reason: '#2622 (v0.97.1): advisory-lock gate function had breeze.scope attributes dropped outright; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
+  },
 };
 
 /**
