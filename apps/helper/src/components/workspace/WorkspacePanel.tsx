@@ -94,7 +94,17 @@ function ErrorRow({ message, onRetry }: { message: string; onRetry: () => void }
   );
 }
 
-export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
+export default function WorkspacePanel({
+  onClose,
+  embedded = false,
+}: {
+  onClose: () => void;
+  // Rendered inside AppShell's main region: the shell owns the one header, so
+  // suppress this panel's own header/Back and let the shell nav own switching
+  // (onClose goes unused in this mode). Default false keeps the standalone
+  // full-window rendering — and every existing screenshot/test — valid.
+  embedded?: boolean;
+}) {
   const {
     sources,
     results,
@@ -386,27 +396,30 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // here (it clears the selection instead) — only once neither has anything
   // left to clear does Escape reach the panel and go Back.
   const handlePanelKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose();
+    // Embedded in the shell, Escape has no "close" to do — nav owns switching.
+    if (e.key === 'Escape' && !embedded) onClose();
   };
 
   return (
     <div className="helper-container" onKeyDown={handlePanelKeyDown} data-testid="workspace-panel">
       <Toaster />
-      <div
-        className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`}
-        data-tauri-drag-region
-      >
-        <div className="helper-header-left" data-tauri-drag-region>
-          {isMacOS && <div className="helper-traffic-light-spacer" />}
-          <span className="helper-title">Files</span>
+      {!embedded && (
+        <div
+          className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`}
+          data-tauri-drag-region
+        >
+          <div className="helper-header-left" data-tauri-drag-region>
+            {isMacOS && <div className="helper-traffic-light-spacer" />}
+            <span className="helper-title">Files</span>
+          </div>
+          <div className="helper-header-drag-spacer" data-tauri-drag-region />
+          <div className="helper-header-actions">
+            <button onClick={onClose} className="helper-btn helper-btn-sm">
+              Back
+            </button>
+          </div>
         </div>
-        <div className="helper-header-drag-spacer" data-tauri-drag-region />
-        <div className="helper-header-actions">
-          <button onClick={onClose} className="helper-btn helper-btn-sm">
-            Back
-          </button>
-        </div>
-      </div>
+      )}
 
       <div className="helper-workspace-tabs">
         <SegmentedControl

@@ -116,6 +116,43 @@ body {
   color: var(--text-secondary);
 }
 
+/* ----------------------------------------------------------
+   Shell (one header over a single swapping main region)
+   ---------------------------------------------------------- */
+.helper-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+  background: var(--ws-canvas);
+}
+
+/* Nav sits between the title and the drag spacer; must stay clickable. */
+.helper-shell-nav {
+  display: flex;
+  align-items: center;
+  padding-left: 10px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.helper-shell-main {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The active view fills the 1fr row. These roots set height:100% for the
+   standalone/full-window case; in the shell they flex to the region so an
+   error banner above them can coexist without overflow. */
+.helper-shell-main > .helper-container,
+.helper-shell-main > .helper-history {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .helper-center p {
   margin: 0;
   font-size: 13px;
