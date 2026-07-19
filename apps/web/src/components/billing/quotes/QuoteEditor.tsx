@@ -348,7 +348,6 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     stagedSelectedLines.current = false;
     void saveDeposit({ depositType: 'selected_lines' }).then((ok) => { if (!ok) revertDepositMirrors(); });
     // saveDeposit/revertDepositMirrors are stable useCallbacks from above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasEligibleLines]);
 
   const onDepositTypeChange = useCallback((next: QuoteDepositType) => {
