@@ -638,7 +638,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           intent.id,
           'approved',
           'executing',
-          { executedAt: null },
+          // Stamp execution_started_at at the claim, symmetric with the durable
+          // worker (jobs/intentReleaseWorker.ts) — so the stale-execution reaper
+          // keys off a real execution-start time here too, not just the
+          // decided_at COALESCE fallback.
+          { executedAt: null, executionStartedAt: new Date() },
           { requireNotExpired: true },
         );
         if (!wonRelease) {
