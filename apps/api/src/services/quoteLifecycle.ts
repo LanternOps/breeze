@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { quotes, quoteImages } from '../db/schema/quotes';
+import { quotes, quoteImages, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote, toCustomerLines } from './quoteService';
@@ -40,8 +40,9 @@ function formatMoneyish(n: string | null | undefined, currency: string): string 
  *  - 'send_failed': the PDF built fine but the transport (emailService.sendEmail)
  *    threw.
  * Both are swallowed here rather than thrown, so this union exists to tell the
- * caller which stage failed. */
-export type SendQuoteEmailReason = 'no_email_service' | 'no_billing_contact' | 'pdf_render_failed' | 'send_failed';
+ * caller which stage failed. Defined next to the column it's persisted into
+ * (db/schema/quotes.ts); re-exported here for the service-layer callers. */
+export type { SendQuoteEmailReason } from '../db/schema/quotes';
 
 /** Composer fields for the send email. All optional — defaults reproduce the
  * classic send (billing-contact recipient, standard subject, PDF attached). */
@@ -162,6 +163,11 @@ export async function sendQuote(
     .update(quotes)
     .set({
       status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      // Retire any schedule state atomically with the flip: a scheduled-send
+      // claim, a stale failure marker from an earlier attempt, or a pending
+      // window must not survive onto a sent quote (a leftover send_email_reason
+      // would render a false "no email was delivered" banner).
+      sendScheduledAt: null, sendJobId: null, sendEmailReason: null,
       billToName,
       billToAddress,
       billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,

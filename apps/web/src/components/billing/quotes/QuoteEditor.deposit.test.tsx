@@ -104,17 +104,33 @@ describe('QuoteEditor deposit controls', () => {
     expect(figure).toHaveTextContent('$300.00');
   });
 
-  it('Selected lines mode saves the type and reveals a per-line deposit checkbox that PATCHes the line', async () => {
+  it('Selected lines with no eligible line STAGES the mode: checkbox + hint appear, no PATCH until a line is flagged', async () => {
     render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-deposit-controls')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('quote-deposit-type'), { target: { value: 'selected_lines' } });
+    // Staged, not saved: the checkboxes render immediately, the hint explains
+    // the missing step, and no deposit PATCH fires yet (the old immediate PATCH
+    // was rejected by the server, snapped the select back, and unmounted the
+    // very checkboxes the error told the user to use).
+    const checkbox = await screen.findByTestId('line-deposit-eligible-l-1');
+    expect(depositPatchCalls()).toHaveLength(0);
+    expect(screen.getByTestId('quote-deposit-selected-hint')).toBeInTheDocument();
+
+    // Flagging the first line persists it AND then auto-saves the staged mode.
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'l-1', { depositEligible: true }));
+  });
+
+  it('Selected lines saves immediately when an eligible line already exists', async () => {
+    const withEligible = detail();
+    withEligible.lines = withEligible.lines.map((l) => ({ ...l, depositEligible: true }));
+    render(<QuoteEditor detail={withEligible} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-deposit-controls')).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId('quote-deposit-type'), { target: { value: 'selected_lines' } });
     await waitFor(() => expect(depositPatchCalls()).toHaveLength(1));
     expect(JSON.parse(String((depositPatchCalls()[0][1] as RequestInit).body))).toEqual({ depositType: 'selected_lines' });
-
-    const checkbox = await screen.findByTestId('line-deposit-eligible-l-1');
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'l-1', { depositEligible: true }));
   });
 
   it('reverts the type select to the persisted value when the deposit PATCH is rejected', async () => {
@@ -134,7 +150,11 @@ describe('QuoteEditor deposit controls', () => {
       return json({ data: {} });
     });
 
-    render(<QuoteEditor detail={detail()} onChanged={vi.fn()} />);
+    // An eligible line makes the mode save immediately (the staged path never
+    // PATCHes), so the rejection/revert behavior can be exercised.
+    const withEligible = detail();
+    withEligible.lines = withEligible.lines.map((l) => ({ ...l, depositEligible: true }));
+    render(<QuoteEditor detail={withEligible} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-deposit-controls')).toBeInTheDocument());
 
     const select = screen.getByTestId('quote-deposit-type') as HTMLSelectElement;

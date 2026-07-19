@@ -113,6 +113,11 @@ interface QuoteHeader {
   // place of the plain "Due on acceptance" row.
   depositType?: string | null;
   depositAmount?: string | null;
+  // Derived at-read deposit figure (getQuote / the portal totals recompute) —
+  // authoritative over the persisted depositAmount column (selected_lines
+  // deposits derive from flagged lines). Optional: callers passing a raw row
+  // fall back to depositAmount, preserving the legacy rendering.
+  depositDueTotal?: string | number | null;
   // Per-category subtotals (one-time / monthly / annual), derived in getQuote.
   // Rendered as muted rows only when >1 category is present.
   categoryBreakdown?: { category: string; oneTimeTotal: string; monthlyTotal: string; annualTotal: string }[];
@@ -397,13 +402,15 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
   // Hoisted above ensureSpace so the page-break reservation can size itself to
   // the actual content drawn below.
   const breakdown = quote.categoryBreakdown ?? [];
-  const hasDeposit = quote.depositType && quote.depositType !== 'none' && quote.depositAmount != null;
+  const depositDue = quote.depositDueTotal ?? quote.depositAmount;
+  const hasDeposit = quote.depositType && quote.depositType !== 'none' && depositDue != null;
   // 90px covered the legacy footer. Category rows add 12px each (+4px gap) and a
-  // deposit adds the extra bold remainder row (18px) — reserve for them, or
-  // ensureSpace won't break the page and the new rows draw past the bottom
-  // margin (pdfkit doesn't auto-paginate explicit-coordinate text). Stays 90 for
-  // a no-deposit, ≤1-category quote so those render exactly as before.
-  const needed = 90 + (breakdown.length > 1 ? breakdown.length * 12 + 4 : 0) + (hasDeposit ? 18 : 0);
+  // deposit adds the due-on-acceptance anchor row (18px) plus the bold remainder
+  // row (18px) — reserve for them, or ensureSpace won't break the page and the
+  // new rows draw past the bottom margin (pdfkit doesn't auto-paginate
+  // explicit-coordinate text). Stays 90 for a no-deposit, ≤1-category quote so
+  // those render exactly as before.
+  const needed = 90 + (breakdown.length > 1 ? breakdown.length * 12 + 4 : 0) + (hasDeposit ? 36 : 0);
   let y = ensureSpace(doc, startY + 6, needed);
 
   // Wider label column than the line table's so the emphasised "Due on
@@ -453,13 +460,16 @@ function renderRecurringSummary(doc: PDFKit.PDFDocument, quote: QuoteHeader, cur
   }
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
-  // Accent primary figure = what accept invoices now. When a deposit is
-  // configured the emphasised figure becomes the deposit due, with the remaining
-  // balance beneath (remainder = due-on-acceptance − deposit, in cents). Fall
-  // back to the one-time total if the derived field is somehow absent.
+  // Accent primary figure = what the customer pays NOW. With a deposit, the
+  // emphasised figure is the deposit due — anchored by an explicit "Due on
+  // acceptance" row above it so the three figures visibly sum (due = deposit +
+  // remaining) instead of asking the reader to infer the relationship. Same
+  // presentation contract as the web preview and both portal views. Falls back
+  // to the one-time total if the derived field is somehow absent.
   if (hasDeposit) {
-    drawRow('Deposit due on acceptance', quote.depositAmount, '', { emphasis: true });
-    const remainderCents = toCents(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal) - toCents(quote.depositAmount);
+    drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { bold: true });
+    drawRow('Deposit due now', depositDue, '', { emphasis: true });
+    const remainderCents = toCents(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal) - toCents(depositDue);
     drawRow('Remaining balance (due per terms)', fromCents(remainderCents), '', { bold: true });
   } else {
     drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { emphasis: true });

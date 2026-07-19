@@ -89,9 +89,13 @@ describe('QuoteEditor — inline line editing', () => {
   it('renders existing lines with editable fields', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     expect((screen.getByTestId('quote-line-desc-line-1') as HTMLTextAreaElement).value).toBe('Managed support');
-    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('1.00');
+    // Quantity shows its bare form ('1', not the stored '1.00') — matching the
+    // input's step="1" and the customer-facing rendering.
+    expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('1');
     expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('50.00');
     expect(screen.getByTestId('quote-line-recurrence-line-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-line-taxable-line-1')).toBeInTheDocument();
@@ -99,14 +103,16 @@ describe('QuoteEditor — inline line editing', () => {
     expect(screen.getByTestId('quote-line-desc-line-1').tagName).toBe('TEXTAREA');
   });
 
-  it('renders a per-line Tax cell: "—" when not taxable, the computed amount when taxable', async () => {
-    // Non-taxable line + no rate → dash.
+  it('renders per-line tax under the Total: empty when not taxable, the computed amount when taxable', async () => {
+    // Non-taxable line + no rate → no tax sub-line.
     const { unmount } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('—');
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+    expect(screen.getByTestId('quote-line-tax-line-1')).toBeEmptyDOMElement();
     unmount();
 
-    // Taxable line ($50 line total) at 10% → $5.00 in the Tax cell.
+    // Taxable line ($50 line total) at 10% → "+ $5.00 tax" under the Total.
     const taxed: QuoteDetailData = {
       ...detail,
       quote: { ...detail.quote, taxRate: '0.1' },
@@ -114,13 +120,17 @@ describe('QuoteEditor — inline line editing', () => {
     };
     render(<QuoteEditor detail={taxed} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('$5.00');
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+    expect(screen.getByTestId('quote-line-tax-line-1')).toHaveTextContent('+ $5.00 tax');
   });
 
   it('editing the description and blurring PATCHes the line, then refreshes', async () => {
     const onChanged = vi.fn();
     render(<QuoteEditor detail={detail} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const descEl = screen.getByTestId('quote-line-desc-line-1');
     fireEvent.change(descEl, { target: { value: 'Premium managed support' } });
@@ -142,6 +152,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('applying an inline AI polish persists the change via updateLine', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     fireEvent.click(screen.getByTestId('polish-btn-quote-line-line-1'));
     await waitFor(() => expect(screen.getByTestId('polish-apply-quote-line-line-1')).toBeInTheDocument());
@@ -155,6 +167,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('changing quantity sends a numeric quantity', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const qtyEl = screen.getByTestId('quote-line-qty-line-1');
     fireEvent.change(qtyEl, { target: { value: '3' } });
@@ -166,6 +180,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('toggling taxable PATCHes immediately', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     fireEvent.click(screen.getByTestId('quote-line-taxable-line-1'));
     await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { taxable: true }));
@@ -174,6 +190,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('changing recurrence PATCHes immediately', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     fireEvent.change(screen.getByTestId('quote-line-recurrence-line-1'), { target: { value: 'one_time' } });
     await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { recurrence: 'one_time' }));
@@ -182,6 +200,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('blurring an unchanged field does not PATCH', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     fireEvent.blur(screen.getByTestId('quote-line-desc-line-1'));
     fireEvent.blur(screen.getByTestId('quote-line-qty-line-1'));
@@ -192,6 +212,8 @@ describe('QuoteEditor — inline line editing', () => {
   it('the manual-line Description is a multi-line textarea', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     // switch the add-line builder to the Manual tab
     fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
@@ -205,6 +227,8 @@ describe('QuoteEditor — inline line editing', () => {
     // rather than leaving the field/total pinned to the raw entry.
     const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
     fireEvent.change(priceEl, { target: { value: '9.999' } });
@@ -231,6 +255,8 @@ describe('QuoteEditor — inline line editing', () => {
     // before any blur/save/refresh — so the rail no longer lags the row.
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
     expect(screen.getByTestId('quote-total-monthly')).toHaveTextContent('$50.00');
 
     fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
@@ -245,6 +271,8 @@ describe('QuoteEditor — inline line editing', () => {
     // (both via the shared computeLineTotal) must land on the same $1.01.
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     fireEvent.change(screen.getByTestId('quote-line-qty-line-1'), { target: { value: '3' } });
     fireEvent.change(screen.getByTestId('quote-line-price-line-1'), { target: { value: '0.335' } });
@@ -261,41 +289,54 @@ describe('QuoteEditor — inline line editing', () => {
     };
     render(<QuoteEditor detail={withRate} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const rate = screen.getByTestId('quote-tax-rate');
     expect(rate.tagName).not.toBe('INPUT');
     expect(rate).toHaveTextContent('8.95%');
   });
 
-  it('rejects a fractional quantity with a cue and no PATCH', async () => {
+  it('rejects a fractional quantity with an inline error, keeps the input, and PATCHes nothing', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
     fireEvent.change(qtyEl, { target: { value: '2.5' } });
     fireEvent.blur(qtyEl);
 
+    // The error renders inline under the row (not a bottom-corner toast), the
+    // input keeps the user's entry to correct, and nothing is PATCHed.
     await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+      expect(screen.getByTestId('quote-line-qty-error-line-1')).toHaveTextContent('whole-number quantity'),
     );
+    expect(qtyEl).toHaveAttribute('aria-invalid', 'true');
+    expect(showToast).not.toHaveBeenCalled();
     expect(updateLineMock).not.toHaveBeenCalled();
-    expect(qtyEl.value).toBe('1.00'); // snapped back to the persisted qty
+    expect(qtyEl.value).toBe('2.5');
   });
 
-  it('surfaces a cue (and reverts) when an invalid quantity is committed', async () => {
+  it('an invalid quantity error clears once a valid value is committed', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
     fireEvent.change(qtyEl, { target: { value: '0' } });
     fireEvent.blur(qtyEl);
 
-    await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
-    );
-    // No PATCH for the rejected value, and the field snaps back to the persisted qty.
+    await waitFor(() => expect(screen.getByTestId('quote-line-qty-error-line-1')).toBeInTheDocument());
     expect(updateLineMock).not.toHaveBeenCalled();
-    expect(qtyEl.value).toBe('1.00');
+
+    // Correcting the value clears the error on keystroke and commits on blur.
+    fireEvent.change(qtyEl, { target: { value: '3' } });
+    expect(screen.queryByTestId('quote-line-qty-error-line-1')).not.toBeInTheDocument();
+    fireEvent.blur(qtyEl);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { quantity: 3 }));
+    expect(qtyEl).not.toHaveAttribute('aria-invalid');
   });
 
   it('keeps in-progress keystrokes when a stale refresh lands (no clobber)', async () => {
@@ -303,6 +344,8 @@ describe('QuoteEditor — inline line editing', () => {
     // user has already typed into the still-focused field.
     const { rerender } = render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
     fireEvent.change(qtyEl, { target: { value: '5' } });
@@ -330,6 +373,8 @@ describe('QuoteEditor — inline line editing', () => {
 
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const qtyEl = screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement;
     fireEvent.change(qtyEl, { target: { value: '3' } });
@@ -350,6 +395,8 @@ describe('QuoteEditor — inline line editing', () => {
     );
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const file = new File(['png-bytes'], 'u7-pro.png', { type: 'image/png' });
     fireEvent.change(screen.getByTestId('quote-line-image-input-line-1'), { target: { files: [file] } });
@@ -367,7 +414,11 @@ describe('QuoteEditor — inline line editing', () => {
     };
     render(<QuoteEditor detail={withImage} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
+    // Image actions live in the line's ⋯ menu now.
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-remove-line-1'));
     await waitFor(() =>
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { imageId: null }),

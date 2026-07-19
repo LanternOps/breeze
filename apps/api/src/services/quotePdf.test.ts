@@ -207,7 +207,10 @@ describe('renderQuotePdf', () => {
         id: 'q1', quoteNumber: 'Q-DEP',
         oneTimeTotal: '1100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
         dueOnAcceptanceTotal: '1100.00', total: '1100.00', currencyCode: 'USD',
-        depositType: 'percent', depositAmount: '330.00',
+        // depositAmount is deliberately WRONG here: the derived depositDueTotal
+        // must win (selected_lines deposits derive from flagged lines, so the
+        // persisted column can be stale), with depositAmount as the fallback.
+        depositType: 'percent', depositAmount: '999.00', depositDueTotal: '330.00',
         categoryBreakdown: [
           { category: 'hardware', oneTimeTotal: '1000.00', monthlyTotal: '0.00', annualTotal: '0.00' },
           { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
@@ -223,7 +226,10 @@ describe('renderQuotePdf', () => {
     );
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     const text = extractPdfText(buf);
-    expect(text).toContain('Deposit due on acceptance');
+    // The anchor row states the sum the deposit splits: due = deposit + remaining.
+    expect(text).toContain('Due on acceptance');
+    expect(text).toContain('Deposit due now');
+    expect(text).toContain('330.00');
     expect(text).toContain('Remaining balance');
     // Remainder = dueOnAcceptance 1100.00 − deposit 330.00 = 770.00 (cents math).
     expect(text).toContain('770.00');
@@ -243,14 +249,14 @@ describe('renderQuotePdf', () => {
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     const text = extractPdfText(buf);
     expect(text).toContain('Due on acceptance');
-    expect(text).not.toContain('Deposit due on acceptance');
+    expect(text).not.toContain('Deposit due now');
     expect(text).not.toContain('Remaining balance');
   });
 
   it('page-breaks the summary when deposit + breakdown rows would overflow the bottom margin', async () => {
     // 25 one-time lines leave the cursor in the 90–160px band above the bottom
     // margin: the legacy 90px reservation would NOT break the page, so the
-    // deposit (extra 18px row) + 4-category breakdown (4×12+4px, ~160px total)
+    // deposit (extra anchor + remainder rows, 36px) + 4-category breakdown (4×12+4px, ~160px total)
     // rows would crowd into the bottom margin / footer band (and pdfkit's
     // auto-page-add on the overflowing last row spawns a stray page). The sized
     // reservation must instead move the WHOLE summary to page 2 — asserted by
@@ -288,7 +294,7 @@ describe('renderQuotePdf', () => {
     );
     expect(pageCount(withDeposit)).toBe(2);
     const streams = extractPdfTextByStream(withDeposit);
-    const summaryStream = streams.find((t) => t.includes('Deposit due on acceptance'));
+    const summaryStream = streams.find((t) => t.includes('Deposit due now'));
     expect(summaryStream).toBeDefined();
     expect(summaryStream).toContain('Remaining balance');
     // The summary page must be its own page — none of the 25 line rows on it.

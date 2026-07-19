@@ -647,7 +647,7 @@
     "catalog": {
       "CatalogEnrichButton": {
         "aiEstimate": "AI estimate: {{guidance}}{{suffix}}",
-        "autoFill": "✨ Auto-fill from web",
+        "autoFill": "Look up product",
         "busyMessage": "Looking up product details — usually 5–15 seconds.",
         "defaultGuidanceSuffix": "— enter your price below.",
         "errors": {
@@ -670,7 +670,7 @@
         "actions": {
           "applyChanges": "Apply changes"
         },
-        "defaultLabel": "✨ Polish with AI",
+        "defaultLabel": "Tidy description",
         "empty": "empty",
         "errors": {
           "enterText": "Enter a name or description to polish first.",

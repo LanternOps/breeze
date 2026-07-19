@@ -8,6 +8,10 @@ export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
 import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
 export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
+// Type-only (erased at compile time), so this pulls no runtime dep on the API
+// client into the types module.
+import type { QuoteSendEmailReason } from '../../../lib/api/quotes';
+export type { QuoteSendEmailReason } from '../../../lib/api/quotes';
 
 export type QuoteStatus =
   | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
@@ -16,6 +20,24 @@ export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
 export type QuoteLineSourceType = 'catalog' | 'bundle' | 'manual';
 export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract';
+
+/** Customer display label: prefer the explicit bill-to name; otherwise resolve
+ *  the real organization name from the client-side org list (same source the
+ *  org switcher renders). Fall back to the UUID prefix only when neither is
+ *  available (e.g. the quote's org isn't in the currently-loaded list, such as
+ *  All-orgs scope). Truthiness after trim, not `??`: the bill-to validator
+ *  allows an empty string, and a blank billToName would otherwise render an
+ *  empty label — the "unfinished header" symptom (#1712) via a different input. */
+export function resolveQuoteOrgName(
+  quote: Pick<Quote, 'billToName' | 'orgId'>,
+  organizations: ReadonlyArray<{ id: string; name?: string | null }>,
+): string {
+  const billTo = quote.billToName?.trim();
+  if (billTo) return billTo;
+  const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
+  if (resolved) return resolved;
+  return quote.orgId.slice(0, 8);
+}
 
 /** Client-facing shape of a `contract` block's `content` — server-rendered and
  *  variable-substituted (contractTemplateRender.ts's renderContractBlocksForClient),
@@ -106,6 +128,14 @@ export interface Quote {
   convertedAt: string | null;
   convertedInvoiceId: string | null;
   sentAt: string | null;
+  /** Undo-send window: set while a delayed send is pending (quote stays a
+   *  draft until the job fires). Optional — older payloads/fixtures omit it. */
+  sendScheduledAt?: string | null;
+  /** Delayed-dispatch outcome: null = delivered/not-sent-yet. On a SENT quote,
+   *  why the email step failed after the send committed; on a DRAFT, marks a
+   *  scheduled send rejected at fire time. Surfaced as persistent banners on
+   *  the detail view. Optional — older payloads/fixtures omit it. */
+  sendEmailReason?: QuoteSendEmailReason | null;
   viewedAt: string | null;
   createdBy: string | null;
   createdAt: string;
@@ -306,6 +336,16 @@ export function stripHtml(html: string): string {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/** Display form of a stored quantity. The API normalizes quantities to
+ *  numeric(12,2) strings ('3.00'), which reads as a pricing artifact on a money
+ *  document ("3.00 laptops"). Whole quantities render bare ('3'); genuinely
+ *  fractional ones keep their significant decimals ('2.5'). Non-numeric input
+ *  (defensive: fixtures/legacy payloads) passes through untouched. */
+export function formatQuantity(quantity: string | number): string {
+  const n = Number(quantity);
+  return Number.isFinite(n) ? String(n) : String(quantity);
 }
 
 /** Compact recurrence suffix for a line: 'one-time' | '/mo' | '/yr'. */

@@ -447,10 +447,13 @@
         "addSection": "Ajouter une section",
         "adding": "Ajout…",
         "cancel": "Annuler",
+        "dragSection": "Glisser pour réordonner la section",
         "fetch": "Récupérer",
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
         "hideCostMargin": "Masquer coût et marge",
+        "imageFromUrl": "Ajouter une image depuis une URL…",
+        "lineActions": "Actions de la ligne",
         "moveLineDown": "Descendre la ligne",
         "moveLineTo": "Déplacer la ligne vers",
         "moveLineToAnotherTable": "Déplacer la ligne vers un autre tableau de prix",
@@ -463,6 +466,7 @@
         "removeLine": "Supprimer la ligne",
         "removeSection": "Supprimer la section",
         "replaceImage": "Remplacer l'image",
+        "sectionActions": "Actions de la section",
         "showCostMargin": "Afficher coût et marge",
         "uploadAddImage": "Téléverser et ajouter l'image",
         "uploading": "Téléversement…"
@@ -470,6 +474,7 @@
       "addLine": {
         "catalogItem": "Article du catalogue",
         "manualLine": "Ligne manuelle",
+        "moreWays": "Plus de façons d'ajouter (catalogue, recherche IA, détails)",
         "searchDistributor": "Rechercher un distributeur",
         "searchPax8": "Rechercher Pax8"
       },
@@ -478,6 +483,7 @@
         "headingPlaceholder": "Texte du titre",
         "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Ajouter une section",
         "richTextPlaceholder": "Texte de proposition…",
         "title": "Ajouter une section",
         "uploadFile": "Téléverser un fichier"
@@ -494,7 +500,7 @@
         "label": "Renseigné automatiquement :",
         "review": "Vérifiez et ajustez avant d'ajouter."
       },
-      "autosaveHint": "Les modifications sont enregistrées automatiquement pendant l'édition. Un contour orange indique une modification pas encore enregistrée.",
+      "autosaveHint": "Les modifications sont enregistrées automatiquement. Un contour ambre signale une modification non enregistrée.",
       "block": {
         "imageSectionPdf": "Section image (rendue dans le PDF).",
         "richTextContentAria": "Contenu en texte enrichi"
@@ -529,30 +535,37 @@
         "removeSectionWithLines": "Cette action supprime le tableau de prix et ses lignes. Elle est irréversible."
       },
       "customer": {
+        "confirmLabel": "Déplacer le devis",
+        "confirmMessage": "Déplacer ce devis vers {{name}} ? Cela retire l'affectation de site et l'adresse de facturation personnalisée, et applique le taux de taxe de la nouvelle entreprise.",
+        "confirmTitle": "Changer de client ?",
         "help": "Déplacer un brouillon vers une autre entreprise retire l’affectation de site et applique le taux de taxe de cette entreprise.",
         "label": "Client",
         "success": "Devis déplacé vers {{name}}."
       },
       "deposit": {
         "due": "Acompte dû",
+        "dueUpFront": "Acompte dû à la signature",
         "eligibleAria": "Éligible à l'acompte",
         "label": "Acompte",
         "none": "Aucun acompte",
         "percent": "Pourcentage",
-        "percentOfDue": "Pourcentage dû à l'acceptation",
+        "percentOfDue": "Pourcentage du montant dû",
         "selectedLines": "Lignes sélectionnées",
         "selectedLinesHelp": "Cochez les lignes ponctuelles éligibles à l'acompte dans chaque tableau de prix.",
+        "selectedLinesStagedHint": "Marquez au moins une ligne ponctuelle ci-dessous comme éligible à l'acompte — le mode est enregistré dès qu'une ligne l'est.",
         "short": "Acompte"
       },
       "emptyBlocks": "Aucun contenu pour le moment. Ajoutez un titre, du texte enrichi ou un tableau de prix ci-dessous.",
       "errors": {
         "addCatalogItem": "Impossible d'ajouter l'article du catalogue.",
+        "addContractSection": "Impossible d'ajouter la section de contrat",
         "addDistributorItem": "Impossible d'ajouter l'article du distributeur.",
         "addImageSection": "Impossible d'ajouter la section image.",
         "addLine": "Impossible d'ajouter la ligne.",
         "addPax8Product": "Impossible d'ajouter le produit Pax8.",
         "addSection": "Impossible d'ajouter la section.",
         "costZeroOrMore": "Saisissez un coût supérieur ou égal à 0.",
+        "depositPercentRange": "Saisissez un pourcentage entre 0.01 et 99.99.",
         "fetchImageFromUrl": "Impossible de récupérer l'image depuis cette URL.",
         "imageAddedSectionFailed": "Image ajoutée, mais l'ajout de la section a échoué.",
         "imageTooLarge": "L'image doit faire 5 MB ou moins.",
@@ -560,6 +573,7 @@
         "importPax8Product": "Impossible d'importer le produit Pax8.",
         "lineAddedCatalogSaveFailed": "Ligne ajoutée, mais l'enregistrement dans le catalogue a échoué.",
         "lineNeedsNameOrDescription": "Une ligne doit avoir un nom ou une description.",
+        "loadContractTemplates": "Impossible de charger les modèles de contrat",
         "moveLine": "Impossible de déplacer la ligne.",
         "quantityWholeGreaterThanZero": "Saisissez une quantité entière supérieure à 0.",
         "removeLine": "Impossible de supprimer la ligne.",
@@ -567,6 +581,7 @@
         "reorderBlocks": "Impossible de réordonner les blocs.",
         "reorderLines": "Impossible de réordonner les lignes.",
         "reorderSections": "Impossible de réordonner les sections.",
+        "saveCoverPage": "Impossible d'enregistrer la page de couverture",
         "saveCustomer": "Impossible de changer le client.",
         "saveTerms": "Impossible d'enregistrer les conditions.",
         "saveTitle": "Impossible d'enregistrer le titre.",
@@ -575,10 +590,7 @@
         "updateDeposit": "Impossible de mettre à jour l'acompte.",
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
-        "uploadImage": "Impossible de téléverser l'image.",
-        "loadContractTemplates": "Impossible de charger les modèles de contrat",
-        "addContractSection": "Impossible d'ajouter la section de contrat",
-        "saveCoverPage": "Impossible d'enregistrer la page de couverture"
+        "uploadImage": "Impossible de téléverser l'image."
       },
       "image": {
         "alt": "Image du devis",
@@ -589,6 +601,7 @@
         "short": "Interne"
       },
       "line": {
+        "addDescription": "description",
         "billing": "Facturation",
         "billingFrequencyAria": "Fréquence de facturation",
         "cost": "Coût",
@@ -657,9 +670,10 @@
         "notTaxable": "Non taxable",
         "qty": "Qté",
         "recurrence": "Récurrence",
-        "scrollAria": "Tableau de prix — faites défiler horizontalement pour la taxe, le total et les actions de ligne",
+        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne",
         "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
+        "taxSuffix": "+ {{amount}} de taxe",
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
         "total": "Total",
@@ -709,6 +723,11 @@
         "imageLabel": "Image de couverture",
         "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
         "removeImage": "Supprimer l'image"
+      },
+      "ghost": {
+        "add": "Ajouter",
+        "nameAria": "Nom de la nouvelle ligne",
+        "placeholder": "Saisissez le nom de l'article…"
       }
     },
     "actions": {
@@ -747,16 +766,18 @@
         "messageLabel": "Ajouter un message personnel (facultatif)",
         "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans l'e-mail, au-dessus du lien d'acceptation.",
         "paymentEnabled": "Le paiement en ligne est activé — le client peut payer par carte après acceptation.",
-        "paymentNoteNoStripe": "Aucun paiement en ligne ne sera proposé après l'acceptation. Connectez Stripe dans Paramètres → Intégrations pour l'activer.",
+        "paymentNoteNoStripe": "À l'acceptation, le client n'aura pas d'option de paiement en ligne. Connectez Stripe dans Paramètres → Intégrations pour en proposer une.",
         "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans Paramètres → Intégrations pour encaisser l'acompte à l'acceptation.",
+        "recipientRequired": "Saisissez au moins un destinataire pour envoyer.",
         "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
         "subjectLabel": "Objet",
         "subjectPlaceholder": "Proposition {{number}} de votre entreprise",
         "subjectPlaceholderNoNumber": "Proposition de votre entreprise",
         "title": "Envoyer cette proposition ?",
         "toLabel": "À",
-        "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Utilisez au maximum {{max}} adresses."
+        "toPlaceholder": "Ajouter un destinataire…",
+        "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
+        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
@@ -766,8 +787,14 @@
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",
+      "sendScheduled": "Envoi à {{orgName}} dans 30 secondes — vous pouvez encore annuler.",
       "sendSuccess": "Proposition envoyée — nous la marquerons Vue et Acceptée lorsque {{orgName}} l'ouvrira et la signera.",
-      "sending": "Envoi…"
+      "sending": "Envoi…",
+      "sendingIn": "Envoi dans {{seconds}}s…",
+      "undoError": "Impossible d'annuler l'envoi.",
+      "undoSend": "Annuler l'envoi",
+      "undoSuccess": "Envoi annulé — le devis reste un brouillon.",
+      "undoTooLate": "Trop tard pour annuler — la proposition a déjà été envoyée."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -791,6 +818,7 @@
       },
       "pricing": "Tarification",
       "proposalImageAlt": "Image de la proposition",
+      "scheduledSendFailed": "L'envoi programmé a échoué — cette proposition n'a PAS été envoyée et reste un brouillon. Vérifiez-la puis réessayez l'envoi.",
       "table": {
         "item": "Article",
         "noLines": "Aucune ligne dans ce tableau.",
@@ -880,10 +908,13 @@
       "totals": {
         "annualRecurring": "Récurrent annuel",
         "depositDue": "Acompte dû",
+        "depositDueNow": "Acompte dû maintenant",
         "dueOnAcceptance": "Dû à l'acceptation",
+        "firstPeriodSubtotal": "Sous-total de la première période",
+        "firstPeriodTotal": "Total de la première période",
         "monthlyRecurring": "Récurrent mensuel",
         "recurringNote": "L'acceptation de cette proposition facture maintenant les frais ponctuels. Les lignes récurrentes sont facturées selon leur propre calendrier.",
-        "remainingBalance": "Solde restant",
+        "remainingBalance": "Solde restant (selon les conditions)",
         "subtotal": "Sous-total",
         "tax": "Taxe"
       },
@@ -902,12 +933,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "Supprimer {{count}} devis sélectionné(s) ? Seuls les devis DRAFT seront supprimés ; cette action est irréversible.",
+        "message_one": "Supprimer le devis sélectionné ? Seuls les BROUILLONS sont supprimés ; cette action est irréversible.",
+        "message_other": "Supprimer {{count}} devis sélectionnés ? Seuls les BROUILLONS sont supprimés ; cette action est irréversible.",
+        "skippedNotDraft": "Pas un brouillon (ignoré)",
         "title": "Supprimer les devis brouillon"
       },
       "bulkSend": {
-        "message": "Envoyer {{count}} proposition(s) sélectionnée(s) par e-mail à leurs clients ? Cette action est irréversible.",
-        "title": "Envoyer les devis"
+        "message_one": "Envoyer la proposition sélectionnée à son client par e-mail ? Cette action est irréversible.",
+        "message_other": "Envoyer {{count}} propositions sélectionnées à leurs clients par e-mail ? Cette action est irréversible.",
+        "recipients": "Chaque proposition est envoyée par e-mail au contact de facturation de son organisation et marquée comme Envoyée.",
+        "title": "Envoyer les devis",
+        "unnumbered": "Brouillon"
       },
       "create": {
         "description": "Choisissez le client concerné par cette proposition. Vous pourrez ensuite ajouter des blocs et la tarification.",
@@ -915,7 +951,10 @@
         "genericError": "Impossible de créer le devis.",
         "noSpecificSite": "Aucun site spécifique",
         "selectOrganization": "Sélectionner une organisation…",
+        "siteClearedOnClone": "Le site est réinitialisé lorsqu'on part d'un devis existant.",
         "siteOptional": "Site (facultatif)",
+        "startBlank": "Devis vierge",
+        "startFrom": "Partir de (facultatif)",
         "submit": "Créer le brouillon",
         "success": "Devis brouillon créé",
         "title": "Nouveau devis",
@@ -928,6 +967,9 @@
         "paid": "Acompte payé",
         "unpaid": "Acompte impayé"
       },
+      "duplicate": "Dupliquer le devis",
+      "duplicateAria": "Dupliquer le devis {{quote}}",
+      "duplicateError": "Impossible de dupliquer le devis.",
       "empty": {
         "clearFilters": "Effacer les filtres",
         "description": "Rédigez une proposition avec des titres, du texte enrichi et un tableau de prix, puis envoyez-la pour acceptation.",
@@ -956,6 +998,7 @@
       "table": {
         "created": "Créé",
         "draftQuote": "Devis brouillon",
+        "firstPeriodSuffix": "première période",
         "number": "Numéro",
         "selectAll": "Sélectionner tous les devis",
         "selectQuote": "Sélectionner le devis {{quote}}",

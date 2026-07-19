@@ -65,6 +65,7 @@
 
   --color-warning: hsl(var(--warning));
   --color-warning-foreground: hsl(var(--warning-foreground));
+  --color-warning-strong: hsl(var(--warning-strong));
 
   /* web-only vs portal: the info color pair (portal has no --color-info).
      The sans family is intentionally NOT mapped here — see the NB below. */
@@ -34263,6 +34264,10 @@
     --success-foreground: 0 0% 100%;
     --warning: 36 88% 50%;
     --warning-foreground: 28 60% 16%;
+    /* Non-text warning INDICATOR (rings, outlines): the bright --warning is only
+       ~2.3:1 against a light card — below the 3:1 non-text minimum — so thin
+       affordances like the unsaved-edit ring use this darker amber (~4.6:1). */
+    --warning-strong: 30 85% 38%;
     /* Info — a clear sky-blue, distinct from the slate-blue primary so an
        "info"/"updating" state never reads as a primary action. */
     --info: 205 85% 38%;
@@ -34307,6 +34312,8 @@
     --success-foreground: 152 50% 8%;
     --warning: 40 90% 52%;
     --warning-foreground: 28 60% 10%;
+    /* Bright amber already clears 3:1 on dark cards — indicator == warning here. */
+    --warning-strong: 40 90% 52%;
     --info: 205 80% 62%;
     --info-foreground: 210 60% 10%;
 

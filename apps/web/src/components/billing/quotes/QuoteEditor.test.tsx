@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
+import { QuoteHeaderMeta } from './QuoteHeaderMeta';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
@@ -98,8 +99,8 @@ describe('QuoteEditor', () => {
   });
 
   it('editing the title and blurring issues PATCH /quotes/:id with { title }', async () => {
-    render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // The editable title moved to the workspace header (QuoteHeaderMeta).
+    render(<QuoteHeaderMeta detail={draftDetail()} onChanged={vi.fn()} />);
 
     const input = screen.getByTestId('quote-title');
     fireEvent.change(input, { target: { value: 'Office network refresh' } });
@@ -144,22 +145,21 @@ describe('QuoteEditor', () => {
       // reader isn't handed the sentence before the totals settle.
       expect(sr.textContent).toBe('');
 
-      // After the settle window the initial sentence lands (server totals are $0).
+      // The mount-time sentence is deliberately never announced — an SR user
+      // who hasn't edited anything shouldn't be handed the initial totals.
       act(() => { vi.advanceTimersByTime(800); });
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
-      expect(sr).not.toHaveTextContent('tax');
+      expect(sr.textContent).toBe('');
 
       // Editing a line qty recomputes the VISIBLE figures immediately (2 × $100
       // taxable at the committed 10% rate → $220 due)…
       fireEvent.change(screen.getByTestId('quote-line-qty-l-1'), { target: { value: '2' } });
       expect(screen.getByTestId('quote-total-due-on-acceptance')).toHaveTextContent('$220.00');
-      // …but the SR announcement still shows the previous settled sentence.
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
-      expect(sr).not.toHaveTextContent('tax');
+      // …but the SR announcement stays silent until the edit settles.
+      expect(sr.textContent).toBe('');
 
-      // Before the settle window closes, still the old sentence.
+      // Before the settle window closes, still silent.
       act(() => { vi.advanceTimersByTime(700); });
-      expect(sr).toHaveTextContent('due on acceptance $0.00');
+      expect(sr.textContent).toBe('');
 
       // Once the window closes, the announcement catches up to the settled totals.
       act(() => { vi.advanceTimersByTime(100); });

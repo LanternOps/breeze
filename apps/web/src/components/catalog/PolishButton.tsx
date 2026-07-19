@@ -25,7 +25,7 @@ interface PolishButtonProps {
   /** Disambiguates data-testids when multiple instances mount on one page. */
   idSuffix: string;
   disabled?: boolean;
-  /** Override the button label. Default: "✨ Polish with AI". */
+  /** Override the button label. Default: "Tidy description". */
   label?: string;
   /** Render a smaller, condensed button (for inline use in line editors). */
   compact?: boolean;

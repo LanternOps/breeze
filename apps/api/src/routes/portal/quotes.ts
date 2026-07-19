@@ -120,6 +120,9 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
     ...quote,
     sellerSnapshot: quote.sellerSnapshot ?? (partner ? buildSellerSnapshot(partner) : null),
     dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal,
+    // Derived deposit figure — authoritative over the persisted depositAmount
+    // column (selected_lines deposits derive from flagged lines).
+    depositDueTotal: totals.depositDueTotal,
     categoryBreakdown: totals.categoryBreakdown,
   };
   const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, {

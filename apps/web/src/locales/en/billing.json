@@ -447,10 +447,13 @@
         "addSection": "Add section",
         "adding": "Adding…",
         "cancel": "Cancel",
+        "dragSection": "Drag to reorder section",
         "fetch": "Fetch",
         "fetchAddImage": "Fetch & add image",
         "fromUrl": "From URL",
         "hideCostMargin": "Hide cost & margin",
+        "imageFromUrl": "Add image from URL…",
+        "lineActions": "Line actions",
         "moveLineDown": "Move line down",
         "moveLineTo": "Move line to",
         "moveLineToAnotherTable": "Move line to another pricing table",
@@ -463,6 +466,7 @@
         "removeLine": "Remove line",
         "removeSection": "Remove section",
         "replaceImage": "Replace image",
+        "sectionActions": "Section actions",
         "showCostMargin": "Show cost & margin",
         "uploadAddImage": "Upload & add image",
         "uploading": "Uploading…"
@@ -470,6 +474,7 @@
       "addLine": {
         "catalogItem": "Catalog item",
         "manualLine": "Manual line",
+        "moreWays": "More ways to add (catalog, AI lookup, details)",
         "searchDistributor": "Search distributor",
         "searchPax8": "Search Pax8"
       },
@@ -478,6 +483,7 @@
         "headingPlaceholder": "Heading text",
         "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
         "title": "Add section",
         "uploadFile": "Upload file"
@@ -494,7 +500,7 @@
         "label": "Auto-filled:",
         "review": "Review and adjust before adding."
       },
-      "autosaveHint": "Changes save automatically as you edit. An amber outline marks an edit that hasn’t saved yet.",
+      "autosaveHint": "Changes save automatically. An amber outline marks an unsaved edit.",
       "block": {
         "imageSectionPdf": "Image section (rendered in the PDF).",
         "richTextContentAria": "Rich text content"
@@ -529,30 +535,37 @@
         "removeSectionWithLines": "This removes the pricing table and its lines. This can't be undone."
       },
       "customer": {
+        "confirmLabel": "Move quote",
+        "confirmMessage": "Move this quote to {{name}}? This clears the site assignment and bill-to override, and applies the new company's tax rate.",
+        "confirmTitle": "Change customer?",
         "help": "Moving a draft to another company clears the site assignment and applies that company’s tax rate.",
         "label": "Customer",
         "success": "Quote moved to {{name}}."
       },
       "deposit": {
         "due": "Deposit due",
+        "dueUpFront": "Deposit due up front",
         "eligibleAria": "Deposit eligible",
         "label": "Deposit",
         "none": "No deposit",
         "percent": "Percent",
-        "percentOfDue": "Percent of due-on-acceptance",
+        "percentOfDue": "Percent of amount due",
         "selectedLines": "Selected lines",
         "selectedLinesHelp": "Check the deposit-eligible one-time lines in each pricing table.",
+        "selectedLinesStagedHint": "Flag at least one one-time line below as deposit-eligible — the mode saves once one is flagged.",
         "short": "Deposit"
       },
       "emptyBlocks": "No content yet. Add a heading, rich text, or a pricing table below.",
       "errors": {
         "addCatalogItem": "Could not add the catalog item.",
+        "addContractSection": "Couldn't add the contract section",
         "addDistributorItem": "Could not add the distributor item.",
         "addImageSection": "Could not add the image section.",
         "addLine": "Could not add the line.",
         "addPax8Product": "Could not add the Pax8 product.",
         "addSection": "Could not add the section.",
         "costZeroOrMore": "Enter a cost of 0 or more.",
+        "depositPercentRange": "Enter a percent between 0.01 and 99.99.",
         "fetchImageFromUrl": "Could not fetch the image from that URL.",
         "imageAddedSectionFailed": "Image added, but adding the section failed.",
         "imageTooLarge": "Image must be 5 MB or smaller.",
@@ -560,6 +573,7 @@
         "importPax8Product": "Could not import the Pax8 product.",
         "lineAddedCatalogSaveFailed": "Line added, but saving it to the catalog failed.",
         "lineNeedsNameOrDescription": "A line needs a name or a description.",
+        "loadContractTemplates": "Couldn't load contract templates",
         "moveLine": "Could not move the line.",
         "quantityWholeGreaterThanZero": "Enter a whole-number quantity greater than 0.",
         "removeLine": "Could not remove the line.",
@@ -567,6 +581,7 @@
         "reorderBlocks": "Could not reorder blocks.",
         "reorderLines": "Could not reorder lines.",
         "reorderSections": "Could not reorder sections.",
+        "saveCoverPage": "Couldn't save the cover page",
         "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
         "saveTitle": "Could not save the title.",
@@ -575,10 +590,7 @@
         "updateDeposit": "Could not update the deposit.",
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
-        "uploadImage": "Could not upload the image.",
-        "loadContractTemplates": "Couldn't load contract templates",
-        "addContractSection": "Couldn't add the contract section",
-        "saveCoverPage": "Couldn't save the cover page"
+        "uploadImage": "Could not upload the image."
       },
       "image": {
         "alt": "Quote image",
@@ -589,6 +601,7 @@
         "short": "Internal"
       },
       "line": {
+        "addDescription": "description",
         "billing": "Billing",
         "billingFrequencyAria": "Billing frequency",
         "cost": "Cost",
@@ -657,9 +670,10 @@
         "notTaxable": "Not taxable",
         "qty": "Qty",
         "recurrence": "Recurrence",
-        "scrollAria": "Pricing table — scroll sideways for tax, total and row actions",
+        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions",
         "showSubtotal": "Show subtotal row",
         "tax": "Tax",
+        "taxSuffix": "+ {{amount}} tax",
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
         "total": "Total",
@@ -709,6 +723,11 @@
         "imageLabel": "Cover image",
         "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
         "removeImage": "Remove image"
+      },
+      "ghost": {
+        "add": "Add",
+        "nameAria": "New line name",
+        "placeholder": "Type an item name…"
       }
     },
     "actions": {
@@ -747,16 +766,18 @@
         "messageLabel": "Add a personal message (optional)",
         "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
         "paymentEnabled": "Online payment is enabled — the customer can pay by card after accepting.",
-        "paymentNoteNoStripe": "Online payment won't be offered after acceptance. Connect Stripe in Settings → Integrations to enable it.",
+        "paymentNoteNoStripe": "When the customer accepts, they won't have an online payment option. Connect Stripe in Settings → Integrations to offer one.",
         "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in Settings → Integrations so the deposit can be collected on acceptance.",
+        "recipientRequired": "Enter at least one recipient to send.",
         "signaturePreviewLabel": "Signature (set in Settings → Branding):",
         "subjectLabel": "Subject",
         "subjectPlaceholder": "Proposal {{number}} from your company",
         "subjectPlaceholderNoNumber": "Proposal from your company",
         "title": "Send this proposal?",
         "toLabel": "To",
-        "toPlaceholder": "billing@customer.example.com",
-        "tooManyRecipients": "Use at most {{max}} addresses."
+        "toPlaceholder": "Add recipient…",
+        "tooManyRecipients": "Use at most {{max}} addresses.",
+        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
@@ -766,8 +787,14 @@
       },
       "sendError": "Could not send the proposal.",
       "sendProposal": "Send proposal",
+      "sendScheduled": "Sending to {{orgName}} in 30 seconds — you can still undo.",
       "sendSuccess": "Proposal sent — we'll mark it Viewed and Accepted as {{orgName}} opens and signs.",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "sendingIn": "Sending in {{seconds}}s…",
+      "undoError": "Could not cancel the send.",
+      "undoSend": "Undo send",
+      "undoSuccess": "Send canceled — the quote is still a draft.",
+      "undoTooLate": "Too late to undo — the proposal was already sent."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -791,6 +818,7 @@
       },
       "pricing": "Pricing",
       "proposalImageAlt": "Proposal image",
+      "scheduledSendFailed": "The scheduled send failed — this proposal was NOT sent and is still a draft. Review it and try sending again.",
       "table": {
         "item": "Item",
         "noLines": "No lines in this table.",
@@ -880,10 +908,13 @@
       "totals": {
         "annualRecurring": "Annual recurring",
         "depositDue": "Deposit due",
+        "depositDueNow": "Deposit due now",
         "dueOnAcceptance": "Due on acceptance",
+        "firstPeriodSubtotal": "First period subtotal",
+        "firstPeriodTotal": "First-period total",
         "monthlyRecurring": "Monthly recurring",
         "recurringNote": "Accepting this proposal bills the one-time charges now. Recurring lines bill on their own schedule.",
-        "remainingBalance": "Remaining balance",
+        "remainingBalance": "Remaining balance (due per terms)",
         "subtotal": "Subtotal",
         "tax": "Tax"
       },
@@ -902,12 +933,17 @@
         "success": "{{succeeded}} {{verb}}"
       },
       "bulkDelete": {
-        "message": "Delete {{count}} selected quote(s)? Only DRAFT quotes will be deleted; this cannot be undone.",
+        "message_one": "Delete the selected quote? Only DRAFT quotes are deleted; this cannot be undone.",
+        "message_other": "Delete {{count}} selected quotes? Only DRAFT quotes are deleted; this cannot be undone.",
+        "skippedNotDraft": "Not a draft (skipped)",
         "title": "Delete draft quotes"
       },
       "bulkSend": {
-        "message": "Email {{count}} selected proposal(s) to their customers? This can't be undone.",
-        "title": "Send quotes"
+        "message_one": "Email the selected proposal to its customer? This can't be undone.",
+        "message_other": "Email {{count}} selected proposals to their customers? This can't be undone.",
+        "recipients": "Each proposal is emailed to its organization's billing contact and marked Sent.",
+        "title": "Send quotes",
+        "unnumbered": "Draft"
       },
       "create": {
         "description": "Pick the customer this proposal is for. You can add blocks and pricing next.",
@@ -915,7 +951,10 @@
         "genericError": "Could not create the quote.",
         "noSpecificSite": "No specific site",
         "selectOrganization": "Select an organization…",
+        "siteClearedOnClone": "Site is cleared when starting from an existing quote.",
         "siteOptional": "Site (optional)",
+        "startBlank": "Blank quote",
+        "startFrom": "Start from (optional)",
         "submit": "Create draft",
         "success": "Draft quote created",
         "title": "New quote",
@@ -928,6 +967,9 @@
         "paid": "Deposit paid",
         "unpaid": "Deposit unpaid"
       },
+      "duplicate": "Duplicate quote",
+      "duplicateAria": "Duplicate quote {{quote}}",
+      "duplicateError": "Could not duplicate the quote.",
       "empty": {
         "clearFilters": "Clear filters",
         "description": "Draft a proposal with headings, rich text, and a pricing table, then send it for acceptance.",
@@ -956,6 +998,7 @@
       "table": {
         "created": "Created",
         "draftQuote": "Draft quote",
+        "firstPeriodSuffix": "first period",
         "number": "Number",
         "selectAll": "Select all quotes",
         "selectQuote": "Select quote {{quote}}",

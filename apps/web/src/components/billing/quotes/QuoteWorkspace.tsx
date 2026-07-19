@@ -7,8 +7,10 @@ import { DocumentWorkspace, type DocumentTab } from '../shared/DocumentWorkspace
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
-import QuoteActions from './QuoteActions';
-import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
+import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
+import { QuoteHeaderMeta } from './QuoteHeaderMeta';
+import { useOrgStore } from '../../../stores/orgStore';
+import { type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -33,6 +35,7 @@ function readTab(isDraft: boolean): Tab {
 
 export default function QuoteWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
+  const organizations = useOrgStore((s) => s.organizations);
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -40,6 +43,9 @@ export default function QuoteWorkspace({ id }: Props) {
   // True while the editor has an in-flight save or a dirty rail field — the
   // header Send button waits for quiescence so it can't race a blur-save.
   const [editorSavePending, setEditorSavePending] = useState(false);
+  // The header's editable title/customer (drafts) report their own pending
+  // state; Send waits for BOTH surfaces to be quiescent.
+  const [headerSavePending, setHeaderSavePending] = useState(false);
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page spinner would remount the form and
@@ -126,15 +132,37 @@ export default function QuoteWorkspace({ id }: Props) {
       backHref="/billing/quotes"
       backLabel={t('quotes.workspace.backLabel')}
       title={detail.quote.title?.trim() || detail.quote.quoteNumber || t('quotes.workspace.draftTitle')}
+      // Drafts get the editable identity row (title input + customer select) in
+      // place of the static h1 — the editor no longer carries a title strip.
+      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setHeaderSavePending} /> : undefined}
       // Primary actions live in the header so Send (the money-moment) and Download
       // are reachable from any tab, not buried inside the Detail tab.
-      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending} />}
+      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || headerSavePending} />}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}
     >
-      {activeTab === 'editor' && isDraft && (
-        <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
+      {/* Send-outcome banner on the non-detail tabs: drafts open on the
+          Editor tab, so a failed scheduled send surfaced only inside
+          QuoteDetail would be invisible on the default path. The detail tab
+          renders its own copy (QuoteDetail is also used standalone). */}
+      {activeTab !== 'detail' && (
+        <div className="mb-4">
+          <QuoteSendOutcomeBanners
+            quote={detail.quote}
+            orgName={resolveQuoteOrgName(detail.quote, organizations)}
+          />
+        </div>
+      )}
+      {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
+          unmounting discarded any half-typed add-line/add-section input the
+          moment a tech flipped to Preview "just to check" — brutal mid-flow
+          data loss. Hidden-but-mounted also keeps the savePending gate live
+          while previewing. */}
+      {isDraft && (
+        <div className={activeTab === 'editor' ? '' : 'hidden'}>
+          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
+        </div>
       )}
       {activeTab === 'preview' && (
         <QuoteDocumentPreview detail={detail} />

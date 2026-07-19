@@ -647,7 +647,7 @@
     "catalog": {
       "CatalogEnrichButton": {
         "aiEstimate": "AI estimación: {{guidance}}{{suffix}}",
-        "autoFill": "✨ Autocompletar desde la web",
+        "autoFill": "Buscar producto",
         "busyMessage": "Buscar detalles del producto: normalmente entre 5 y 15 segundos.",
         "defaultGuidanceSuffix": "— ingrese su precio a continuación.",
         "errors": {
@@ -670,7 +670,7 @@
         "actions": {
           "applyChanges": "Aplicar cambios"
         },
-        "defaultLabel": "✨ Polaco con AI",
+        "defaultLabel": "Mejorar descripción",
         "empty": "vacío",
         "errors": {
           "enterText": "Ingrese un nombre o descripción para pulir primero.",

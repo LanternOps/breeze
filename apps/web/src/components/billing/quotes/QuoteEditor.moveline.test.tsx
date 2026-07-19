@@ -96,15 +96,18 @@ describe('QuoteEditor — move line between pricing panels', () => {
   it('hides the Move-to control when the quote has a single pricing panel', async () => {
     render(<QuoteEditor detail={onePanel} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    expect(screen.queryByTestId('quote-line-move-to-l-1')).not.toBeInTheDocument();
+    // The actions kebab still exists, but with one panel it offers no Move-to section.
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
+    const menu = screen.getByTestId('quote-line-actions-menu-l-1');
+    expect(within(menu).queryByText('Move to')).not.toBeInTheDocument();
   });
 
   it('lists only the OTHER panels, labeled, in the Move-to menu', async () => {
     render(<QuoteEditor detail={twoPanels} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('quote-line-move-to-l-1'));
-    const menu = screen.getByTestId('quote-line-move-to-menu-l-1');
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
+    const menu = screen.getByTestId('quote-line-actions-menu-l-1');
     expect(within(menu).getByTestId('quote-line-move-to-l-1-blk-2')).toHaveTextContent('Hardware');
     expect(within(menu).queryByTestId('quote-line-move-to-l-1-blk-1')).not.toBeInTheDocument();
   });
@@ -116,7 +119,7 @@ describe('QuoteEditor — move line between pricing panels', () => {
     };
     render(<QuoteEditor detail={unlabeled} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('quote-line-move-to-l-1'));
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     expect(screen.getByTestId('quote-line-move-to-l-1-blk-2')).toHaveTextContent('Pricing table 2');
   });
 
@@ -125,7 +128,7 @@ describe('QuoteEditor — move line between pricing panels', () => {
     render(<QuoteEditor detail={twoPanels} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('quote-line-move-to-l-1'));
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-to-l-1-blk-2'));
 
     // Optimistic: l-1's qty input now renders inside blk-2's table, after l-3.
@@ -145,7 +148,7 @@ describe('QuoteEditor — move line between pricing panels', () => {
     render(<QuoteEditor detail={twoPanels} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('quote-line-move-to-l-1'));
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-to-l-1-blk-2'));
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
@@ -162,10 +165,11 @@ describe('QuoteEditor — move line between pricing panels', () => {
 
     // Start a chevron reorder within blk-1 — this arms a 250ms debounced
     // reorderLines PATCH for blk-1.
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-down-l-1'));
 
-    // Immediately (same tick, no waiting) move l-1 into blk-2 via the Move-to menu.
-    fireEvent.click(screen.getByTestId('quote-line-move-to-l-1'));
+    // Immediately (same tick, no waiting) move l-1 into blk-2 via the actions menu.
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-to-l-1-blk-2'));
 
     await waitFor(() => expect(moveLineMock).toHaveBeenCalled());

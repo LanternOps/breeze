@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Copy, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -9,7 +10,7 @@ import { useHashState } from '@/lib/useHashState';
 import { usePermissions } from '../../../lib/permissions';
 import { Dialog } from '../../shared/Dialog';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import { listQuotes, createQuote } from '../../../lib/api/quotes';
+import { listQuotes, createQuote, cloneQuote } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { useLegacyOrgIdHashNotice } from '@/hooks/useLegacyOrgIdHashNotice';
 import { useBulkSelection } from '../bulk/useBulkSelection';
@@ -122,6 +123,10 @@ export function QuotesPage() {
   const [newOrgId, setNewOrgId] = useState('');
   const [newSiteId, setNewSiteId] = useState('');
   const [newTitle, setNewTitle] = useState('');
+  // Create-from-existing: cloning is the de-facto template system for MSPs who
+  // send the same few proposals repeatedly — surface it at creation instead of
+  // making techs discover the header kebab's Clone after the fact.
+  const [newSourceId, setNewSourceId] = useState('');
   const [newSites, setNewSites] = useState<Site[]>([]);
   const [creating, setCreating] = useState(false);
 
@@ -209,6 +214,7 @@ export function QuotesPage() {
     setNewOrgId(contextOrgId);
     setNewSiteId('');
     setNewSites([]);
+    setNewSourceId('');
     setCreateOpen(true);
     if (contextOrgId) void loadNewSites(contextOrgId);
   }, [loadNewSites]);
@@ -218,7 +224,13 @@ export function QuotesPage() {
     setCreating(true);
     try {
       const result = await runAction<{ data: { id?: string; quote?: { id?: string } } }>({
-        request: () => createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined, currencyCode: 'USD' }),
+        // A chosen source turns "create" into a clone: full content (blocks,
+        // lines, images, deposit config, cover page) copied, retargeted to the
+        // selected org. Site is intentionally not passed — the clone service
+        // nulls the site on retarget, matching updateQuote's reassignment.
+        request: () => newSourceId
+          ? cloneQuote(newSourceId, { orgId: newOrgId, title: newTitle.trim() || undefined })
+          : createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined, currencyCode: 'USD' }),
         errorFallback: t('quotes.page.create.error'),
         successMessage: t('quotes.page.create.success'),
         onUnauthorized: UNAUTHORIZED,
@@ -233,7 +245,29 @@ export function QuotesPage() {
     } finally {
       setCreating(false);
     }
-  }, [creating, newOrgId, newSiteId, newTitle, filters, loadQuotes, t]);
+  }, [creating, newOrgId, newSiteId, newTitle, newSourceId, filters, loadQuotes, t]);
+
+  // One-click same-org duplicate from the list row — the cheap template flow.
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const duplicateQuote = useCallback(async (qt: Quote) => {
+    if (duplicatingId) return;
+    setDuplicatingId(qt.id);
+    try {
+      const result = await runAction<{ data: { id?: string; quote?: { id?: string } } }>({
+        request: () => cloneQuote(qt.id, {}),
+        errorFallback: t('quotes.page.duplicateError'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      const newId = result?.data?.quote?.id ?? result?.data?.id;
+      // Land in the new draft — the point of duplicating is to edit it now.
+      if (newId) void navigateTo(`/billing/quotes/${newId}`);
+      else void loadQuotes(filters);
+    } catch (err) {
+      handleActionError(err, t('quotes.page.duplicateError'));
+    } finally {
+      setDuplicatingId(null);
+    }
+  }, [duplicatingId, filters, loadQuotes, t]);
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s?.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' }));
@@ -283,6 +317,15 @@ export function QuotesPage() {
     }
     return out;
   }, [quotes, search, sort, orgName]);
+
+  // The quotes staged for a bulk send, resolved from the loaded list so the
+  // confirm can show WHAT is about to go out (number, customer, amount) rather
+  // than a blind count — bulk send is the page's highest-stakes action and the
+  // single-send flow makes its recipient explicit; this is the bulk equivalent.
+  const selectedQuotes = useMemo(
+    () => quotes.filter((q) => bulk.selectedIds.has(q.id)),
+    [quotes, bulk.selectedIds],
+  );
 
   const runBulkQuotes = useCallback(
     async (path: string, verb: string) => {
@@ -468,6 +511,7 @@ export function QuotesPage() {
                     <th className="px-3 py-3 font-medium">{t('common:labels.status')}</th>
                     <SortableTh label={t('quotes.page.table.total')} sortKey="total" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} align="right" testId="quotes-sort-total" />
                     <SortableTh label={t('quotes.page.table.created')} sortKey="created" activeSort={sort?.key} direction={sort?.dir ?? 'desc'} onSort={toggleSort} testId="quotes-sort-created" />
+                    <th className="px-1.5 py-2" />
                   </tr>
                 </thead>
                 <tbody>
@@ -476,7 +520,7 @@ export function QuotesPage() {
                       key={qt.id}
                       onClick={() => void navigateTo(`/billing/quotes/${qt.id}`)}
                       data-testid={`quotes-row-${qt.id}`}
-                      className="cursor-pointer border-t transition hover:bg-muted/40"
+                      className="group/row cursor-pointer border-t transition hover:bg-muted/40"
                     >
                       <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -530,8 +574,33 @@ export function QuotesPage() {
                           })()}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums">{formatMoney(qt.total, qt.currencyCode)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {formatMoney(qt.total, qt.currencyCode)}
+                        {/* The list payload carries only the first-period total; on
+                            recurring quotes that differs from the due-on-acceptance
+                            figure every other surface anchors, so qualify it. */}
+                        {(Number(qt.monthlyRecurringTotal) > 0 || Number(qt.annualRecurringTotal) > 0) && (
+                          <span className="text-xs text-muted-foreground"> /{t('quotes.page.table.firstPeriodSuffix')}</span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-muted-foreground">{formatDate(qt.createdAt)}</td>
+                      <td className="px-1.5 py-3 text-right">
+                        {canWrite && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void duplicateQuote(qt); }}
+                            disabled={duplicatingId === qt.id}
+                            aria-label={t('quotes.page.duplicateAria', { quote: qt.quoteNumber ?? '' })}
+                            title={t('quotes.page.duplicate')}
+                            data-testid={`quotes-duplicate-${qt.id}`}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/row:opacity-100 disabled:opacity-40"
+                          >
+                            {duplicatingId === qt.id
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                              : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -559,7 +628,33 @@ export function QuotesPage() {
         variant="warning"
         confirmLabel={t('quotes.page.bulk.send')}
         confirmTestId="quotes-bulk-send-confirm"
-      />
+      >
+        {/* Reviewable manifest of what's about to go out — number, customer,
+            amount per quote — so bulk send is never a blind count. */}
+        <ul
+          className="max-h-48 space-y-1 overflow-y-auto rounded-md border bg-muted/30 p-2 text-sm"
+          data-testid="quotes-bulk-send-review"
+        >
+          {selectedQuotes.map((q) => (
+            <li key={q.id} className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')}</span>
+                <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
+              </span>
+              <span
+                className={`shrink-0 tabular-nums ${Number(q.total) === 0 ? 'font-medium text-warning-foreground dark:text-warning' : 'text-muted-foreground'}`}
+                title={Number(q.total) === 0 ? t('quotes.actions.sendConfirm.zeroTotalWarning') : undefined}
+              >
+                {formatMoney(q.total, q.currencyCode)}
+                {(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && (
+                  <span className="text-xs"> /{t('quotes.page.table.firstPeriodSuffix')}</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-xs text-muted-foreground">{t('quotes.page.bulkSend.recipients')}</p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deleteOpen}
@@ -569,7 +664,29 @@ export function QuotesPage() {
         message={t('quotes.page.bulkDelete.message', { count: bulk.size })}
         confirmLabel={t('quotes.page.bulk.deleteDrafts')}
         confirmTestId="quotes-bulk-delete-confirm"
-      />
+      >
+        {/* Same reviewable manifest as bulk send — both dialogs are destructive
+            and deserve the same rigor. Non-draft rows in the selection are
+            skipped server-side; the pill marks which rows will actually delete. */}
+        <ul
+          className="max-h-48 space-y-1 overflow-y-auto rounded-md border bg-muted/30 p-2 text-sm"
+          data-testid="quotes-bulk-delete-review"
+        >
+          {selectedQuotes.map((q) => (
+            <li key={q.id} className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')}</span>
+                <span className="text-muted-foreground"> · {orgName(q.orgId)}</span>
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {q.status === 'draft'
+                  ? <>{formatMoney(q.total, q.currencyCode)}{(Number(q.monthlyRecurringTotal) > 0 || Number(q.annualRecurringTotal) > 0) && <> /{t('quotes.page.table.firstPeriodSuffix')}</>}</>
+                  : t('quotes.page.bulkDelete.skippedNotDraft')}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
 
       {/* New-quote dialog */}
       <Dialog
@@ -602,6 +719,22 @@ export function QuotesPage() {
             </select>
           </label>
           <label className="flex flex-col gap-1 text-sm">
+            {t('quotes.page.create.startFrom')}
+            <select
+              value={newSourceId}
+              onChange={(e) => setNewSourceId(e.target.value)}
+              data-testid="quotes-create-source"
+              className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            >
+              <option value="">{t('quotes.page.create.startBlank')}</option>
+              {quotes.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {(q.quoteNumber ?? t('quotes.page.bulkSend.unnumbered')) + (q.title ? ` — ${q.title}` : '')} · {orgName(q.orgId)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
             {t('quotes.page.create.titleOptional')}
             <input
               type="text"
@@ -619,7 +752,8 @@ export function QuotesPage() {
               value={newSiteId}
               onChange={(e) => setNewSiteId(e.target.value)}
               data-testid="quotes-create-site"
-              disabled={!newOrgId || newSites.length === 0}
+              disabled={!newOrgId || newSites.length === 0 || newSourceId !== ''}
+              title={newSourceId ? t('quotes.page.create.siteClearedOnClone') : undefined}
               className="h-10 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
             >
               <option value="">{t('quotes.page.create.noSpecificSite')}</option>

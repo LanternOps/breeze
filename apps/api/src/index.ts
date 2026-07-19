@@ -182,6 +182,7 @@ import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
 import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
+import { initializeQuoteSendWorker, shutdownQuoteSendWorker } from './jobs/quoteSendQueue';
 import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
@@ -1186,6 +1187,8 @@ async function initializeWorkers(): Promise<void> {
     // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
     // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
     ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
+    // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
+    ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1380,6 +1383,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownAuthEmailWorker,
+    shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,

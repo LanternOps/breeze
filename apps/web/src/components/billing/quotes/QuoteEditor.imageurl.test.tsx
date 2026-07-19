@@ -149,6 +149,7 @@ describe('QuoteEditor — add line image from URL', () => {
   it('the URL field is hidden until "From URL" is clicked', async () => {
     await renderWithLine();
     expect(screen.queryByTestId('quote-line-image-url-input-line-1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     expect(screen.getByTestId('quote-line-image-url-input-line-1')).toBeInTheDocument();
   });
@@ -158,6 +159,7 @@ describe('QuoteEditor — add line image from URL', () => {
     updateLineMock.mockResolvedValue(okRes({}));
     await renderWithLine();
 
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://cdn.example.com/w.png' } });
     fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
@@ -170,6 +172,7 @@ describe('QuoteEditor — add line image from URL', () => {
 
   it('Fetch is disabled until a URL is entered', async () => {
     await renderWithLine();
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     expect(screen.getByTestId('quote-line-image-url-fetch-line-1')).toBeDisabled();
     fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://x/y.png' } });
@@ -180,6 +183,7 @@ describe('QuoteEditor — add line image from URL', () => {
     fromUrlMock.mockResolvedValue(errRes());
     await renderWithLine();
 
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://internal/w.png' } });
     fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
@@ -197,6 +201,7 @@ describe('QuoteEditor — add line image from URL', () => {
     updateLineMock.mockResolvedValue(errRes());
     await renderWithLine();
 
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://cdn.example.com/w.png' } });
     fireEvent.click(screen.getByTestId('quote-line-image-url-fetch-line-1'));
@@ -209,11 +214,13 @@ describe('QuoteEditor — add line image from URL', () => {
 
   it('Cancel closes the disclosure and clears the draft', async () => {
     await renderWithLine();
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     fireEvent.change(screen.getByTestId('quote-line-image-url-input-line-1'), { target: { value: 'https://x/y.png' } });
     fireEvent.click(screen.getByTestId('quote-line-image-url-cancel-line-1'));
     expect(screen.queryByTestId('quote-line-image-url-input-line-1')).not.toBeInTheDocument();
     // Reopening shows an empty field, not the abandoned draft.
+    fireEvent.click(screen.getByTestId('quote-line-actions-line-1'));
     fireEvent.click(screen.getByTestId('quote-line-image-url-toggle-line-1'));
     expect(screen.getByTestId('quote-line-image-url-input-line-1')).toHaveValue('');
   });

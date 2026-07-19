@@ -93,7 +93,11 @@ describe('QuoteEditor — reorder', () => {
   it('disables move-up on the first block and move-down on the last block', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // Block arrangement lives in each block's gutter menu (one open at a time).
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     expect(screen.getByTestId('quote-block-move-up-blk-1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1')); // close
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-2'));
     expect(screen.getByTestId('quote-block-move-down-blk-2')).toBeDisabled();
   });
 
@@ -102,6 +106,7 @@ describe('QuoteEditor — reorder', () => {
     render(<QuoteEditor detail={detail} onChanged={onChanged} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1'));
     await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledWith('q-1', { blockIds: ['blk-2', 'blk-1'] }));
     // refresh() is coalesced (trailing), so onChanged fires shortly after the PATCH.
@@ -112,6 +117,7 @@ describe('QuoteEditor — reorder', () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-2'));
     fireEvent.click(screen.getByTestId('quote-block-move-up-blk-2'));
     await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledWith('q-1', { blockIds: ['blk-2', 'blk-1'] }));
   });
@@ -119,7 +125,11 @@ describe('QuoteEditor — reorder', () => {
   it('disables move-up on the first line and move-down on the last line', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    // Move items live in each line's overflow menu (one at a time).
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     expect(screen.getByTestId('quote-line-move-up-l-1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1')); // close l-1's menu
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-2'));
     expect(screen.getByTestId('quote-line-move-down-l-2')).toBeDisabled();
   });
 
@@ -127,6 +137,7 @@ describe('QuoteEditor — reorder', () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-line-actions-l-1'));
     fireEvent.click(screen.getByTestId('quote-line-move-down-l-1'));
     await waitFor(() => expect(reorderLinesMock).toHaveBeenCalledWith('q-1', 'blk-1', { lineIds: ['l-2', 'l-1'] }));
   });
@@ -143,7 +154,9 @@ describe('QuoteEditor — reorder', () => {
     render(<QuoteEditor detail={threeBlocks} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1')); // [blk-2, blk-1, blk-3]
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1')); // [blk-2, blk-3, blk-1]
 
     await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledTimes(1));
@@ -159,11 +172,14 @@ describe('QuoteEditor — reorder', () => {
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
     // blk-1 starts first (move-up disabled). Move it down (optimistically enables move-up).
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-move-down-blk-1'));
     await waitFor(() => expect(reorderBlocksMock).toHaveBeenCalledTimes(1));
 
     // Failure is surfaced and the optimistic order reverts (blk-1 back to first).
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // The menu closed on the move click — reopen it to read the reverted state.
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     await waitFor(() => expect(screen.getByTestId('quote-block-move-up-blk-1')).toBeDisabled());
   });
 });

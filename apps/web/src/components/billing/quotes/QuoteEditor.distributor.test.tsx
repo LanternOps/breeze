@@ -60,6 +60,9 @@ const lookupOne = () => ecExpressLookup.mockResolvedValue(ok([{
 describe('QuoteEditor distributor mode', () => {
   it('shows the distributor mode when EC Express is active', async () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-line-mode-blk1-distributor'));
   });
 
@@ -70,6 +73,9 @@ describe('QuoteEditor distributor mode', () => {
       totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
     }]));
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.change(screen.getByTestId('quote-distributor-search-blk1'), { target: { value: 'ABC123' } });
@@ -83,6 +89,9 @@ describe('QuoteEditor distributor mode', () => {
   it('hides the distributor mode when EC Express is inactive', async () => {
     ecExpressStatus.mockResolvedValue(ok({ configured: true, enabled: false }));
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-block-add-line-blk1'));
     expect(screen.queryByTestId('quote-line-mode-blk1-distributor')).toBeNull();
   });
@@ -91,6 +100,9 @@ describe('QuoteEditor distributor mode', () => {
     // EC configured+enabled, but the user lacks catalog write permission.
     canMock.mockImplementation((r: string, a: string) => !(r === 'catalog' && a === 'write'));
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-block-add-line-blk1'));
     expect(screen.queryByTestId('quote-line-mode-blk1-distributor')).toBeNull();
   });
@@ -98,6 +110,9 @@ describe('QuoteEditor distributor mode', () => {
   it('sends the mapped import payload (sell price, cost basis, sku)', async () => {
     lookupOne();
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.change(screen.getByTestId('quote-distributor-search-blk1'), { target: { value: 'ABC123' } });
@@ -116,6 +131,9 @@ describe('QuoteEditor distributor mode', () => {
     // The catalog search resolves the SKU to an existing item, so import must be skipped.
     listCatalog.mockResolvedValue(ok([{ id: 'cat-existing', sku: 'ABC123', name: 'Widget', unitPrice: '99.00', isBundle: false }]));
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    // The full add-line picker collapses behind a disclosure (ghost row is the fast lane).
+    await waitFor(() => screen.getByTestId('quote-block-add-line-toggle-blk1'));
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk1'));
     await waitFor(() => screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.click(screen.getByTestId('quote-line-mode-blk1-distributor'));
     fireEvent.change(screen.getByTestId('quote-distributor-search-blk1'), { target: { value: 'ABC123' } });

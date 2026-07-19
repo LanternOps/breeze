@@ -80,6 +80,7 @@ describe('QuoteEditor — block removal', () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-remove-blk-1'));
 
     const confirm = await screen.findByTestId('quote-block-remove-confirm');
@@ -97,6 +98,7 @@ describe('QuoteEditor — block removal', () => {
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
 
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-remove-blk-1'));
     fireEvent.click(await screen.findByTestId('quote-block-remove-confirm'));
 
