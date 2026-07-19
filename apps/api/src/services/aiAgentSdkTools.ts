@@ -18,6 +18,7 @@ import { compactToolResultForChat } from './aiToolOutput';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
+import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -216,48 +217,7 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s default safety timeout
 const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
-
-/**
- * Per-tool timeout overrides for tools that legitimately need more (or less) time.
- * Tools not listed here use TOOL_EXECUTION_TIMEOUT_MS (60s).
- */
-const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
-  // Command execution — waits for agent round-trip
-  execute_command: 120_000,
-  run_script: 120_000,
-  // Disk operations — can scan large filesystems
-  analyze_disk_usage: 90_000,
-  disk_cleanup: 90_000,
-  // Security scans — multi-step agent operations
-  security_scan: 120_000,
-  apply_cis_remediation: 120_000,
-  // Patching — downloads + installs
-  manage_patches: 180_000,
-  // Network discovery — port scanning is slow
-  network_discovery: 120_000,
-  // Desktop / vision — WebRTC setup + capture
-  take_screenshot: 30_000,
-  analyze_screen: 30_000,
-  computer_control: 30_000,
-  // Report generation — aggregates across many devices
-  generate_report: 90_000,
-};
-
-function getToolTimeout(toolName: string): number {
-  return TOOL_TIMEOUT_OVERRIDES[toolName] ?? TOOL_EXECUTION_TIMEOUT_MS;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Tool execution timed out after ${ms}ms: ${label}`)), ms);
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
-  });
-}
 
 /**
  * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
@@ -274,7 +234,7 @@ async function safePostToolUse(
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
-    await withTimeout(
+    await withToolTimeout(
       onPostToolUse(toolName, args, output, isError, durationMs),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
@@ -342,7 +302,7 @@ function makeHandler(
         orgId: auth.orgId ?? null,
         accessibleOrgIds: auth.accessibleOrgIds ?? null,
       };
-      const result = await withTimeout(
+      const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
         toolTimeout,
         toolName,
@@ -499,7 +459,7 @@ function makeSessionAwareHandler(
         orgId: auth.orgId ?? null,
         accessibleOrgIds: auth.accessibleOrgIds ?? null,
       };
-      const result = await withTimeout(
+      const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
         toolTimeout,
         toolName,
