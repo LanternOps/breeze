@@ -155,6 +155,7 @@ import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
+import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
@@ -971,6 +972,10 @@ api.route('/dr', drRoutes);
 api.route('/admin/extensions', extensionsAdminRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
+// Authenticated (any user) runtime-extension web registry + digest-addressed
+// asset serving. Distinct from `/admin/extensions` above (platform-admin
+// operations) — this is the tenant-facing surface a browser reads.
+api.route('/extensions', extensionsWebRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate, the
 // startup reconciler, and the BullMQ job host. The gate checks

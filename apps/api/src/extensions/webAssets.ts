@@ -25,11 +25,11 @@
 
 export interface ExtensionWebAsset {
   /** Extraction root on disk (same value registerExtensionRoot receives). */
-  root: string;
+  readonly root: string;
   /** VerifiedExtensionBundle.artifactDigest for this extension's active bundle. */
-  digest: string;
+  readonly digest: string;
   /** VerifiedExtensionBundle.files — the verified member allowlist/hashes. */
-  files: ReadonlyMap<string, { sha256: string; uncompressedSize: number }>;
+  readonly files: ReadonlyMap<string, { sha256: string; uncompressedSize: number }>;
 }
 
 const webAssets = new Map<string, ExtensionWebAsset>();
