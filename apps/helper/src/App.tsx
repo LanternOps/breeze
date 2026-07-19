@@ -13,7 +13,7 @@ function ToolCallIndicator({ toolName }: { toolName?: string }) {
     ? `Using ${toolName.replace(/_/g, ' ')}...`
     : 'Checking your system...';
   return (
-    <div className="helper-tool-indicator">
+    <div className="helper-tool-indicator text-ws-secondary">
       <span className="helper-spinner" />
       <span>{label}</span>
     </div>
@@ -22,12 +22,12 @@ function ToolCallIndicator({ toolName }: { toolName?: string }) {
 
 function ThinkingIndicator() {
   return (
-    <div className="helper-message helper-message-assistant">
+    <div className="helper-message helper-message-assistant bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]">
       <div className="helper-thinking">
         <span className="helper-thinking-dot" />
         <span className="helper-thinking-dot" />
         <span className="helper-thinking-dot" />
-        <span className="helper-thinking-label">Thinking</span>
+        <span className="helper-thinking-label text-ws-secondary">Thinking</span>
       </div>
     </div>
   );
@@ -518,7 +518,7 @@ export default function App() {
   }
 
   return (
-    <div className="helper-container">
+    <div className="helper-container bg-ws-canvas">
       {/* Header — draggable title bar */}
       <div className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`} data-tauri-drag-region>
         <div className="helper-header-left" data-tauri-drag-region>
@@ -607,7 +607,7 @@ export default function App() {
       {/* Messages */}
       <div className="helper-messages">
         {messages.length === 0 && (
-          <div className="helper-empty">
+          <div className="helper-empty text-ws-secondary">
             <p>Hi{username ? `, ${username}` : ''}! I'm Breeze Helper.</p>
             <p>Ask me anything about your computer.</p>
           </div>
@@ -625,7 +625,7 @@ export default function App() {
           return (
             <div
               key={msg.id}
-              className={`helper-message helper-message-${msg.role}`}
+              className={`helper-message helper-message-${msg.role} bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]`}
             >
               <div className="helper-message-content">
                 {msg.role === 'assistant' ? (
@@ -651,7 +651,7 @@ export default function App() {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="helper-input-form">
+      <form onSubmit={handleSubmit} className="helper-input-form bg-ws-surface border-ws-border-subtle shadow-[var(--ws-shadow-1)]">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -659,12 +659,12 @@ export default function App() {
           placeholder="Ask me anything..."
           disabled={isStreaming}
           rows={1}
-          className="helper-input"
+          className="helper-input bg-ws-canvas text-ws-ink"
         />
         <button
           type="submit"
           disabled={isStreaming || !input.trim()}
-          className="helper-btn helper-btn-send"
+          className="helper-btn helper-btn-send bg-ws-accent text-[var(--ws-accent-contrast)]"
         >
           Send
         </button>

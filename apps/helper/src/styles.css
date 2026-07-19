@@ -106,7 +106,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
 }
 
 .helper-center {
@@ -323,7 +323,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  color: var(--text-muted);
+  color: var(--ws-text-secondary);
   text-align: center;
 }
 
@@ -335,7 +335,7 @@ body {
 .helper-empty p:first-child {
   font-size: 15px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--ws-ink);
 }
 
 /* ----------------------------------------------------------
@@ -344,7 +344,6 @@ body {
 .helper-message {
   max-width: 85%;
   padding: 8px 12px;
-  border-radius: var(--radius-lg);
   font-size: 13px;
   line-height: 1.45;
   word-wrap: break-word;
@@ -365,15 +364,13 @@ body {
 
 .helper-message-user {
   align-self: flex-end;
-  background: var(--user-bubble);
-  color: var(--user-bubble-text);
+  color: var(--ws-ink);
   border-bottom-right-radius: var(--radius-sm);
 }
 
 .helper-message-assistant {
   align-self: flex-start;
-  background: var(--assistant-bubble);
-  color: var(--assistant-bubble-text);
+  color: var(--ws-ink);
   border-bottom-left-radius: var(--radius-sm);
 }
 
@@ -404,7 +401,7 @@ body {
 
 .helper-message-assistant .helper-message-content strong {
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content em {
@@ -414,17 +411,17 @@ body {
 .helper-message-assistant .helper-message-content code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--accent);
+  color: var(--ws-accent);
 }
 
 .helper-message-assistant .helper-message-content pre {
   margin: 6px 0;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   overflow-x: auto;
   white-space: pre;
 }
@@ -432,7 +429,7 @@ body {
 .helper-message-assistant .helper-message-content pre code {
   padding: 0;
   background: none;
-  color: var(--text-secondary);
+  color: var(--ws-text-secondary);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -448,7 +445,7 @@ body {
 }
 
 .helper-message-assistant .helper-message-content a {
-  color: var(--accent);
+  color: var(--ws-accent);
   text-decoration: none;
 }
 
@@ -462,7 +459,7 @@ body {
   font-size: 13px;
   font-weight: 600;
   margin: 8px 0 4px;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content table {
@@ -475,26 +472,26 @@ body {
 .helper-message-assistant .helper-message-content th,
 .helper-message-assistant .helper-message-content td {
   padding: 3px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   text-align: left;
 }
 
 .helper-message-assistant .helper-message-content th {
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content blockquote {
   margin: 6px 0;
   padding: 4px 10px;
-  border-left: 3px solid var(--border);
-  color: var(--text-secondary);
+  border-left: 3px solid var(--ws-border);
+  color: var(--ws-text-secondary);
 }
 
 .helper-message-assistant .helper-message-content hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border);
   margin: 8px 0;
 }
 
@@ -512,7 +509,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--ws-text-tertiary);
   animation: thinkingBounce 1.4s ease-in-out infinite;
 }
 
@@ -523,7 +520,7 @@ body {
 .helper-thinking-label {
   margin-left: 4px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--ws-text-secondary);
 }
 
 @keyframes thinkingBounce {
@@ -545,7 +542,7 @@ body {
   width: 2px;
   height: 14px;
   margin-left: 2px;
-  background: var(--accent);
+  background: var(--ws-accent);
   vertical-align: text-bottom;
   animation: blink 800ms step-end infinite;
 }
@@ -569,8 +566,7 @@ body {
   gap: 8px;
   padding: 6px 12px;
   border-radius: var(--radius-md);
-  background: var(--accent-subtle);
-  color: var(--accent);
+  background: var(--ws-accent-soft);
   font-size: 12px;
   font-weight: 500;
   align-self: flex-start;
@@ -585,8 +581,8 @@ body {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
+  border: 2px solid var(--ws-border);
+  border-top-color: var(--ws-accent);
   border-radius: 50%;
   animation: spin 700ms linear infinite;
   flex-shrink: 0;
@@ -606,8 +602,7 @@ body {
   align-items: flex-end;
   gap: 8px;
   padding: 10px 14px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border-subtle);
   flex-shrink: 0;
 }
 
@@ -616,24 +611,22 @@ body {
   min-height: 34px;
   max-height: 100px;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
+  font-family: var(--ws-font);
   font-size: 13px;
   line-height: 1.4;
   resize: none;
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--ws-dur-fast) var(--ws-ease);
 }
 
 .helper-input::placeholder {
-  color: var(--text-placeholder);
+  color: var(--ws-text-tertiary);
 }
 
 .helper-input:focus {
-  border-color: var(--accent);
+  border-color: var(--ws-accent);
 }
 
 .helper-input:disabled {
@@ -648,19 +641,17 @@ body {
   padding: 7px 14px;
   border: none;
   border-radius: var(--radius-md);
-  background: var(--accent);
-  color: #ffffff;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition-fast), transform var(--transition-fast);
+  transition: filter var(--ws-dur-fast) var(--ws-ease), transform var(--ws-dur-fast) var(--ws-ease);
   -webkit-app-region: no-drag;
   flex-shrink: 0;
   height: 34px;
 }
 
 .helper-btn-send:hover:not(:disabled) {
-  background: var(--accent-hover);
+  filter: brightness(0.92);
 }
 
 .helper-btn-send:active:not(:disabled) {
