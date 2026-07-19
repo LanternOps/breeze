@@ -35,6 +35,11 @@
  * existing test stays green — because a gate's only failure mode is doing nothing.
  */
 
+// Type-only — erased at compile time, so this module still has zero runtime
+// imports and cannot participate in an import cycle. See isCommandQueueable.
+import type { useTranslation } from 'react-i18next';
+import type { DeviceStatus } from './DeviceList';
+
 /**
  * Can this device still accept a QUEUED agent command?
  *
@@ -43,8 +48,10 @@
  * online" premise spread precisely because the check was re-derived by hand in
  * each new surface (DeviceActions → row menu → bulk bar).
  *
- * Takes a plain `string` rather than `DeviceStatus` so this module imports
- * nothing — DeviceList imports it, not the other way round, so there is no cycle.
+ * Takes a plain `string` rather than `DeviceStatus` so this module needs no
+ * runtime import — DeviceList imports it, not the other way round, so there is
+ * no cycle. (The `import type` lines below are erased at compile time and do not
+ * reintroduce one; keep any new import in this module type-only.)
  */
 export function isCommandQueueable(status: string): boolean {
   return status !== 'decommissioned';
@@ -103,3 +110,54 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'link-multiboot',
   'link-vm-host',
 ]);
+
+type DeviceTranslation = ReturnType<typeof useTranslation<'devices'>>['t'];
+
+/**
+ * Why a device is not online, one distinct string per status. Exhaustive over
+ * `DeviceStatus` minus `online`: adding a status to the union fails the build
+ * here rather than silently falling back to a generic tooltip.
+ */
+export const notOnlineTitleKeys: Record<Exclude<DeviceStatus, 'online'>, string> = {
+  offline: 'deviceActions.unavailable.offline',
+  maintenance: 'deviceActions.unavailable.maintenance',
+  decommissioned: 'deviceActions.unavailable.decommissioned',
+  quarantined: 'deviceActions.unavailable.quarantined',
+  updating: 'deviceActions.unavailable.updating',
+  pending: 'deviceActions.unavailable.pending',
+};
+
+/**
+ * Status-accurate tooltip for anything gated on `!== 'online'` — i.e. LIVE
+ * sessions (Remote Terminal, desktop, tunnels), which genuinely need a
+ * connected agent. Says only why the device isn't online; it does NOT assert
+ * which category the action is.
+ *
+ * Lives here beside `isCommandQueueable` so every surface (row menu, grid card)
+ * renders the same reason. Previously local to DeviceList, which is why the
+ * grid card shipped a hardcoded "Device is not online" for quarantined and
+ * maintenance devices.
+ */
+export function notOnlineTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return status === 'online'
+    ? undefined
+    : t(/* i18n-dynamic */ notOnlineTitleKeys[status]);
+}
+
+/**
+ * Tooltip for anything gated on `isCommandQueueable` — i.e. QUEUED commands
+ * (Run Script, Reboot), which the API refuses only for decommissioned devices.
+ * Always the decommissioned reason, because that is the only status that
+ * disables them.
+ */
+export function notQueueableTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return isCommandQueueable(status)
+    ? undefined
+    : t(/* i18n-dynamic */ notOnlineTitleKeys.decommissioned);
+}

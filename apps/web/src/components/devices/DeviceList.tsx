@@ -37,7 +37,11 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // rule, and re-deriving it per surface is exactly how the false "must be online"
 // premise got copied three times (DeviceActions -> row menu -> bulk bar). The
 // verified API contract lives next to it — read that before changing this.
-import { isCommandQueueable } from "./bulkActionGating";
+import {
+  isCommandQueueable,
+  notOnlineTitle,
+  notQueueableTitle,
+} from "./bulkActionGating";
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
@@ -329,39 +333,14 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
 //   → gate on `status === 'decommissioned'` (an agent-less machine that can
 //     never claim the command).
 //
-// Reboot is a queued command but still carries the `!== 'online'` gate below —
-// pre-existing behaviour, deliberately not loosened here. See the note in
-// DeviceActions.tsx and PR #2457.
-const notOnlineTitleKeys: Record<Exclude<DeviceStatus, "online">, string> = {
-  offline: "deviceActions.unavailable.offline",
-  maintenance: "deviceActions.unavailable.maintenance",
-  decommissioned: "deviceActions.unavailable.decommissioned",
-  quarantined: "deviceActions.unavailable.quarantined",
-  updating: "deviceActions.unavailable.updating",
-  pending: "deviceActions.unavailable.pending",
-};
-
-type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
-
-// Status-accurate tooltip for anything gated on `!== 'online'`. Says only why
-// the device isn't online — it does NOT assert which category the action is.
-function notOnlineTitle(
-  status: DeviceStatus,
-  t: DeviceTranslation,
-): string | undefined {
-  return status === "online"
-    ? undefined
-    : t(/* i18n-dynamic */ notOnlineTitleKeys[status]);
-}
-
-function notQueueableTitle(
-  status: DeviceStatus,
-  t: DeviceTranslation,
-): string | undefined {
-  return isCommandQueueable(status)
-    ? undefined
-    : t(/* i18n-dynamic */ notOnlineTitleKeys.decommissioned);
-}
+// Reboot carried the stricter `!== 'online'` gate until #2630. It is a queued
+// command like Run Script, so it now uses `isCommandQueueable` too: rebooting an
+// offline box on reconnect is a working feature, and the grid card (DeviceCard)
+// had already been gated that way — leaving the two disagreeing meant the same
+// device flipped enabled/disabled just by switching grid/list view. See #2486.
+//
+// The tooltip helpers live in bulkActionGating.ts beside `isCommandQueueable`,
+// so the row menu and the grid card render the same reason for the same status.
 
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
 // full comma-joined list on the cell's title attribute (same overflow trick
@@ -2331,15 +2310,15 @@ export default function DeviceList({
                                     <FileCode className="h-4 w-4" />
                                     {t("deviceList.runScript")}{" "}
                                   </button>
-                                  {/* Reboot is ALSO a queued command, so this
-                                      `!== "online"` gate is stricter than the
-                                      API requires. Left as-is deliberately —
-                                      pre-existing behaviour, and loosening it
-                                      is a maintainer call (PR #2457). */}
+                                  {/* Reboot is ALSO a queued command, so it is
+                                      gated like Run Script: the API refuses only
+                                      decommissioned, and an offline box reboots
+                                      on reconnect. Loosened in #2630 to match
+                                      the grid card (see #2486). */}
                                   <button
                                     type="button"
-                                    disabled={device.status !== "online"}
-                                    title={notOnlineTitle(
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(
                                       device.status,
                                       t,
                                     )}

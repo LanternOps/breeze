@@ -76,6 +76,31 @@ describe('DeviceCard action gating (#2488)', () => {
     expect(onAction).not.toHaveBeenCalledWith('terminal', expect.anything());
   });
 
+  // #2630: the card used to hardcode "Device is not online" for every disabled
+  // live-session action, so a quarantined or maintenance device got a tooltip
+  // that named the wrong reason. It now shares DeviceList's per-status map.
+  it.each([
+    ['offline', 'Device is offline'],
+    ['maintenance', 'Device is in maintenance mode'],
+    ['decommissioned', 'Device is decommissioned'],
+    ['quarantined', 'Device is quarantined'],
+    ['updating', 'Device is updating'],
+    ['pending', 'Device is pending enrollment'],
+  ] as const)(
+    'Remote Terminal on a %s device names the actual status in its tooltip',
+    (status, expectedTitle) => {
+      openCardMenu(status);
+      expect(terminalBtn()).toHaveAttribute('title', expectedTitle);
+    },
+  );
+
+  it('an enabled action carries no tooltip', () => {
+    openCardMenu('online');
+    for (const btn of [terminalBtn(), runScriptBtn(), rebootBtn()]) {
+      expect(btn).not.toHaveAttribute('title');
+    }
+  });
+
   it('decommissioned device: queued commands + live session all disabled and do not dispatch', () => {
     const { onAction } = openCardMenu('decommissioned');
 

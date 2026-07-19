@@ -9,7 +9,11 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
-import { isCommandQueueable } from "./bulkActionGating";
+import {
+  isCommandQueueable,
+  notOnlineTitle,
+  notQueueableTitle,
+} from "./bulkActionGating";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
@@ -186,8 +190,12 @@ export default function DeviceCard({
   //     same predicate the list row menu and bulk bar use.
   //   - Remote Terminal is a live session and genuinely needs a connected
   //     agent -> status === 'online', matching DeviceActions.
+  // Tooltips come from the shared helpers so this card names the ACTUAL status
+  // ("Device is quarantined") rather than a blanket "Device is not online".
   const commandQueueable = isCommandQueueable(device.status);
   const online = device.status === "online";
+  const liveSessionTitle = notOnlineTitle(device.status, t);
+  const queuedCommandTitle = notQueueableTitle(device.status, t);
 
   return (
     <div
@@ -235,7 +243,7 @@ export default function DeviceCard({
                   setMenuOpen(false);
                 }}
                 disabled={!online}
-                title={!online ? t("deviceActions.unavailable.notOnline") : undefined}
+                title={liveSessionTitle}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <Terminal className="h-4 w-4" />
@@ -249,7 +257,7 @@ export default function DeviceCard({
                   setMenuOpen(false);
                 }}
                 disabled={!commandQueueable}
-                title={!commandQueueable ? t("deviceActions.unavailable.decommissioned") : undefined}
+                title={queuedCommandTitle}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <FileCode className="h-4 w-4" />
@@ -263,7 +271,7 @@ export default function DeviceCard({
                   setMenuOpen(false);
                 }}
                 disabled={!commandQueueable}
-                title={!commandQueueable ? t("deviceActions.unavailable.decommissioned") : undefined}
+                title={queuedCommandTitle}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <RotateCcw className="h-4 w-4" />
