@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   useWorkspaceStore, type FinderFile, type FilingRecord,
 } from '../../stores/workspaceStore';
 import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { FileTable } from './FileTable';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -40,95 +41,40 @@ function formatWhen(dateStr: string | null | undefined): string | null {
   return d.toLocaleDateString();
 }
 
-function FileRow({
-  file,
-  sourceName,
-  timestamp,
-  copied,
-  openError,
-  onCopyPath,
-  onReveal,
-  onOpen,
-}: {
-  file: FinderFile;
-  sourceName?: string;
-  timestamp?: string | null;
-  copied: boolean;
-  /** Set when opening this row's file failed; shows the copy-path fallback note. */
-  openError?: boolean;
-  onCopyPath: (file: FinderFile) => void;
-  onReveal?: (file: FinderFile) => void;
-  /** Open-in-place via the open_workspace_path Tauri command. */
-  onOpen?: (file: FinderFile) => void;
-}) {
-  const metaParts = [
-    sourceName,
-    file.parentPath || null,
-    formatWhen(timestamp ?? file.mtime),
-  ].filter(Boolean);
-
-  // Content-preview extras: a snippet under the name, and — when the content
-  // reads as a different project than the folder says — both, side by side.
+/**
+ * Second line under a file's name in the list-table: content-preview extras
+ * only (the Project/Doc-type columns already cover the plain inferred
+ * fields) — a search snippet, a filed-vs-reads-as mismatch banner, and the
+ * open-failure fallback note. Returns null when a row has none of these.
+ */
+function renderFileMeta(file: FinderFile, openError: boolean): ReactNode {
   const showDisagreement = file.metadataDisagreement
     && (file.inferredDocType || file.inferredProjectLabel);
   const readsAs = [file.inferredDocType, file.inferredProjectLabel]
     .filter(Boolean).join(' — ');
 
+  if (!file.snippet && !showDisagreement && !openError) return null;
+
   return (
-    <div className="helper-file-row">
-      <div className="helper-file-main">
-        <span className="helper-file-name">{file.isDir ? `${file.name}/` : file.name}</span>
-        <span className="helper-file-meta">{metaParts.join(' · ')}</span>
-        {file.snippet && (
-          <span
-            className="helper-file-snippet"
-            dangerouslySetInnerHTML={{ __html: safeSnippetHtml(file.snippet) }}
-          />
-        )}
-        {!showDisagreement && file.inferredDocType && (
-          <span className="helper-file-inferred">{file.inferredDocType}</span>
-        )}
-        {showDisagreement && (
-          <span className="helper-file-inferred helper-file-mismatch">
-            Filed in: {file.declaredProjectLabel ?? file.parentPath} · Reads as: {readsAs}
-          </span>
-        )}
-        {openError && (
-          <span className="helper-file-open-error">
-            Couldn't open — the share may be unreachable from this machine. Path copied
-            instead.
-          </span>
-        )}
-      </div>
-      <div className="helper-file-actions">
-        {copied && <span className="helper-file-copied">Copied</span>}
-        {onOpen && file.openPath && (
-          <button
-            className="helper-btn helper-btn-sm"
-            onClick={() => onOpen(file)}
-            title="Open this file"
-          >
-            Open
-          </button>
-        )}
-        <button
-          className="helper-btn helper-btn-sm"
-          onClick={() => onCopyPath(file)}
-          title="Copy the file path"
-        >
-          Copy
-        </button>
-        {onReveal && (
-          <button
-            className="helper-btn helper-btn-sm"
-            onClick={() => onReveal(file)}
-            title="Show this file's folder in Browse"
-          >
-            Reveal
-          </button>
-        )}
-      </div>
-    </div>
+    <>
+      {file.snippet && (
+        <span
+          className="ws-file-table-snippet"
+          dangerouslySetInnerHTML={{ __html: safeSnippetHtml(file.snippet) }}
+        />
+      )}
+      {showDisagreement && (
+        <span className="ws-file-table-mismatch">
+          Filed in: {file.declaredProjectLabel ?? file.parentPath} · Reads as: {readsAs}
+        </span>
+      )}
+      {openError && (
+        <span className="ws-file-table-open-error">
+          Couldn't open — the share may be unreachable from this machine. Path copied
+          instead.
+        </span>
+      )}
+    </>
   );
 }
 
@@ -264,10 +210,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<WorkspaceTab>('search');
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
-
-  const sourceName = (id: string) => sources.find((s) => s.id === id)?.displayName;
 
   // Debounced search (300 ms).
   useEffect(() => {
@@ -296,15 +239,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     browse(sources[0].id, '');
   }, [tab, browsePath, sources, browse]);
 
+  // Not yet wired to a row action — Task 7 hangs this off the ⋯ context menu.
   const handleCopyPath = (file: FinderFile) => {
     const path = file.openPath ?? file.relPath;
-    navigator.clipboard
-      .writeText(path)
-      .then(() => {
-        setCopiedId(file.id);
-        setTimeout(() => setCopiedId((cur) => (cur === file.id ? null : cur)), 1500);
-      })
-      .catch(() => {});
+    navigator.clipboard.writeText(path).catch(() => {});
     recordActivity(file.id, 'copy_path', username);
   };
 
@@ -329,6 +267,15 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     recordActivity(file.id, 'reveal', username);
     setTab('browse');
     browse(file.sourceId, file.parentPath);
+  };
+
+  // Browse's Open drills into directories instead of opening them in place.
+  const handleBrowseOpen = (file: FinderFile) => {
+    if (file.isDir) {
+      if (browsePath) browse(browsePath.sourceId, file.relPath);
+      return;
+    }
+    handleOpen(file);
   };
 
   const activeSource = browsePath ? sources.find((s) => s.id === browsePath.sourceId) : null;
@@ -410,20 +357,16 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
             {!loading && query.trim() && results.length === 0 && (
               <div className="helper-history-empty">No files matched.</div>
             )}
-            {!loading &&
-              query.trim() &&
-              results.map((file) => (
-                <FileRow
-                  key={file.id}
-                  file={file}
-                  sourceName={sourceName(file.sourceId)}
-                  copied={copiedId === file.id}
-                  openError={openErrorId === file.id}
-                  onCopyPath={handleCopyPath}
-                  onReveal={handleReveal}
-                  onOpen={handleOpen}
-                />
-              ))}
+            {!loading && query.trim() && results.length > 0 && (
+              <FileTable
+                view="search"
+                rows={results}
+                onOpen={handleOpen}
+                onCopy={handleCopyPath}
+                onReveal={handleReveal}
+                renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
+              />
+            )}
           </div>
         </div>
       )}
@@ -476,30 +419,15 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
               {!loading && browsePath && entries.length === 0 && (
                 <div className="helper-history-empty">This folder is empty.</div>
               )}
-              {!loading &&
-                entries.map((entry) =>
-                  entry.isDir ? (
-                    <button
-                      key={entry.id}
-                      className="helper-file-row helper-file-row-dir"
-                      onClick={() => browsePath && browse(browsePath.sourceId, entry.relPath)}
-                    >
-                      <div className="helper-file-main">
-                        <span className="helper-file-name">{entry.name}/</span>
-                        <span className="helper-file-meta">Folder</span>
-                      </div>
-                    </button>
-                  ) : (
-                    <FileRow
-                      key={entry.id}
-                      file={entry}
-                      copied={copiedId === entry.id}
-                      openError={openErrorId === entry.id}
-                      onCopyPath={handleCopyPath}
-                      onOpen={handleOpen}
-                    />
-                  ),
-                )}
+              {!loading && entries.length > 0 && (
+                <FileTable
+                  view="browse"
+                  rows={entries}
+                  onOpen={handleBrowseOpen}
+                  onCopy={handleCopyPath}
+                  renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -543,37 +471,34 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                     Files you open or copy will show up here.
                   </div>
                 )}
-                {recent.map((file) => (
-                  <FileRow
-                    key={file.id}
-                    file={file}
-                    sourceName={sourceName(file.sourceId)}
-                    copied={copiedId === file.id}
-                    openError={openErrorId === file.id}
-                    onCopyPath={handleCopyPath}
-                    onReveal={handleReveal}
+                {recent.length > 0 && (
+                  <FileTable
+                    view="recents"
+                    rows={recent}
                     onOpen={handleOpen}
+                    onCopy={handleCopyPath}
+                    onReveal={handleReveal}
+                    renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
                   />
-                ))}
+                )}
                 <div className="helper-workspace-section-title">
                   Recently active in your company
                 </div>
                 {department.length === 0 && (
                   <div className="helper-history-empty">Nothing here yet.</div>
                 )}
-                {department.map((file) => (
-                  <FileRow
-                    key={file.id}
-                    file={file}
-                    sourceName={sourceName(file.sourceId)}
-                    timestamp={file.lastActivityAt}
-                    copied={copiedId === file.id}
-                    openError={openErrorId === file.id}
-                    onCopyPath={handleCopyPath}
-                    onReveal={handleReveal}
+                {department.length > 0 && (
+                  <FileTable
+                    view="recents"
+                    // "Modified" reflects the activity feed's timestamp here,
+                    // not the file's own mtime — same field sortRows reads.
+                    rows={department.map((d) => ({ ...d, mtime: d.lastActivityAt }))}
                     onOpen={handleOpen}
+                    onCopy={handleCopyPath}
+                    onReveal={handleReveal}
+                    renderMeta={(file) => renderFileMeta(file, openErrorId === file.id)}
                   />
-                ))}
+                )}
               </>
             )}
           </div>

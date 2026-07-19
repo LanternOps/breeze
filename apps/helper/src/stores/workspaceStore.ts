@@ -53,6 +53,37 @@ export interface WorkspaceProject {
 
 export type DepartmentFile = FinderFile & { lastActivityAt: string };
 
+// ---------------------------------------------------------------------------
+// Sorting (list-table column sort; File views only — Filing has its own UI)
+// ---------------------------------------------------------------------------
+
+export type View = 'search' | 'browse' | 'recents';
+export type SortCol = 'name' | 'project' | 'docType' | 'mtime' | 'size';
+export interface SortSpec { col: SortCol; dir: 'asc' | 'desc' }
+
+export function sortRows(
+  rows: FinderFile[],
+  sort: SortSpec | null,
+  opts: { dirsFirst?: boolean } = {},
+): FinderFile[] {
+  if (!sort) return rows;
+  const val = (r: FinderFile): string | number => {
+    switch (sort.col) {
+      case 'name': return r.name.toLowerCase();
+      case 'project': return (r.inferredProjectLabel ?? '').toLowerCase();
+      case 'docType': return (r.inferredDocType ?? '').toLowerCase();
+      case 'mtime': return Date.parse(r.mtime ?? '') || 0;
+      case 'size': return r.size ?? 0;
+    }
+  };
+  const sign = sort.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    if (opts.dirsFirst && a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    const av = val(a), bv = val(b);
+    return av < bv ? -sign : av > bv ? sign : 0;
+  });
+}
+
 export interface WorkspaceSource {
   id: string;
   displayName: string;
@@ -79,6 +110,7 @@ interface WorkspaceState {
   error: string | null;
   filingBusy: string | null; // fileIndexId being classified/assigned
   browsePath: { sourceId: string; parentPath: string } | null;
+  sort: Record<View, SortSpec | null>;
 
   probe: () => Promise<void>;
   search: (q: string, filters?: { sourceId?: string; ext?: string }) => Promise<void>;
@@ -92,6 +124,7 @@ interface WorkspaceState {
   loadFilings: () => Promise<void>;
   classifyEmail: (fileIndexId: string) => Promise<void>;
   assignFiling: (fileIndexId: string, projectKey: string, helperUser: string | null) => Promise<void>;
+  setSort: (view: View, col: SortCol) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +169,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   error: null,
   filingBusy: null,
   browsePath: null,
+  sort: { search: null, browse: { col: 'name', dir: 'asc' }, recents: { col: 'mtime', dir: 'desc' } },
 
   probe: async () => {
     const config = agentConfig();
@@ -392,5 +426,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         error: err instanceof Error ? err.message : "Couldn't move this email.",
       });
     }
+  },
+
+  setSort: (view, col) => {
+    const current = get().sort[view];
+    const dir: 'asc' | 'desc' = current && current.col === col
+      ? (current.dir === 'asc' ? 'desc' : 'asc')
+      : 'asc';
+    set({ sort: { ...get().sort, [view]: { col, dir } } });
   },
 }));

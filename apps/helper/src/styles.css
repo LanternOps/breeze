@@ -985,6 +985,164 @@ body {
   border-radius: 3px;
 }
 
+/* ----------------------------------------------------------
+   File table (sortable list-table — search/browse/recents)
+   ---------------------------------------------------------- */
+.ws-file-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-file-table-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px 120px 110px 70px;
+  gap: 8px;
+  padding: 4px 8px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--ws-canvas);
+  z-index: 1;
+}
+
+.ws-file-table-colbtn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-size: var(--ws-text-11);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--ws-text-tertiary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-file-table-colbtn:hover {
+  color: var(--ws-text-secondary);
+}
+
+.ws-file-table-chevron {
+  font-size: var(--ws-text-11);
+  color: var(--ws-text-tertiary);
+}
+
+.ws-file-table-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-file-table-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px 120px 110px 70px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border-radius: var(--ws-radius-control);
+  transition: background var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-file-table-row:hover {
+  background: var(--ws-accent-soft);
+}
+
+.ws-file-table-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-file-table-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+
+.ws-file-table-name {
+  font-size: var(--ws-text-13);
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-file-table-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-file-table-secondary {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+}
+
+.ws-file-table-tertiary {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-tertiary);
+}
+
+.ws-file-table-open {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-size: var(--ws-text-12);
+  padding: 3px 10px;
+  cursor: pointer;
+  box-shadow: var(--ws-shadow-1);
+  transition: opacity var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-file-table-row:hover .ws-file-table-open,
+.ws-file-table-row:focus-within .ws-file-table-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ws-file-table-snippet {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ws-file-table-snippet b {
+  color: var(--ws-ink);
+  font-weight: 600;
+}
+
+.ws-file-table-mismatch {
+  border-left: 2px solid var(--ws-border);
+  padding-left: 6px;
+  color: var(--ws-ink);
+}
+
+.ws-file-table-open-error {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-tertiary);
+  white-space: normal;
+}
+
 .helper-file-row {
   display: flex;
   align-items: center;
@@ -1000,10 +1158,6 @@ body {
 
 .helper-file-row:hover {
   background: var(--bg-tertiary);
-}
-
-.helper-file-row-dir {
-  cursor: pointer;
 }
 
 .helper-file-main {

@@ -8,7 +8,7 @@ vi.mock('../lib/helperFetch', () => ({
 
 import { helperRequest } from '../lib/helperFetch';
 import { useChatStore } from './chatStore';
-import { useWorkspaceStore, type FinderFile } from './workspaceStore';
+import { useWorkspaceStore, sortRows, type FinderFile } from './workspaceStore';
 
 const helperRequestMock = vi.mocked(helperRequest);
 
@@ -54,6 +54,9 @@ beforeEach(() => {
     error: null,
     filingBusy: null,
     browsePath: null,
+    // Neutral baseline for sort tests — the store's real production defaults
+    // (browse: name/asc, recents: mtime/desc) are asserted separately.
+    sort: { search: null, browse: null, recents: null },
   });
 });
 
@@ -335,5 +338,52 @@ describe('filing', () => {
     await useWorkspaceStore.getState().assignFiling('e1', '9999-999', null);
     expect(useWorkspaceStore.getState().error).toBe('not found');
     expect(useWorkspaceStore.getState().filingBusy).toBeNull();
+  });
+});
+
+describe('sort', () => {
+  it('setSort toggles direction on repeated column', () => {
+    const s = useWorkspaceStore.getState();
+    s.setSort('browse', 'name');
+    expect(useWorkspaceStore.getState().sort.browse).toEqual({ col: 'name', dir: 'asc' });
+    s.setSort('browse', 'name');
+    expect(useWorkspaceStore.getState().sort.browse).toEqual({ col: 'name', dir: 'desc' });
+  });
+
+  it('setSort resets to asc when the column changes', () => {
+    const s = useWorkspaceStore.getState();
+    s.setSort('recents', 'mtime');
+    s.setSort('recents', 'mtime');
+    expect(useWorkspaceStore.getState().sort.recents).toEqual({ col: 'mtime', dir: 'desc' });
+    s.setSort('recents', 'name');
+    expect(useWorkspaceStore.getState().sort.recents).toEqual({ col: 'name', dir: 'asc' });
+  });
+
+  it('sortRows: null sort preserves input order (relevance)', () => {
+    const rows = [file({ name: 'b' }), file({ name: 'a' })];
+    expect(sortRows(rows, null).map((r) => r.name)).toEqual(['b', 'a']);
+  });
+
+  it('sortRows orders by mtime desc and size asc; dirs before files on name in browse mode', () => {
+    const byMtime = [
+      file({ id: 'm1', name: 'old', mtime: '2026-01-01T00:00:00.000Z' }),
+      file({ id: 'm2', name: 'new', mtime: '2026-07-01T00:00:00.000Z' }),
+    ];
+    expect(sortRows(byMtime, { col: 'mtime', dir: 'desc' }).map((r) => r.name)).toEqual([
+      'new', 'old',
+    ]);
+
+    const bySize = [
+      file({ id: 's1', name: 'big', size: 2048 }),
+      file({ id: 's2', name: 'small', size: 512 }),
+    ];
+    expect(sortRows(bySize, { col: 'size', dir: 'asc' }).map((r) => r.name)).toEqual([
+      'small', 'big',
+    ]);
+
+    const rows = [file({ name: 'z', isDir: true }), file({ name: 'a', isDir: false })];
+    expect(sortRows(rows, { col: 'name', dir: 'asc' }, { dirsFirst: true }).map((r) => r.name)).toEqual([
+      'z', 'a',
+    ]);
   });
 });
