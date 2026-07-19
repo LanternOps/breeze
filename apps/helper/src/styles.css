@@ -1406,3 +1406,47 @@ body {
   .helper-sessionbanner { animation: none; }
   .helper-sessionbanner-dot { animation: none; }
 }
+
+/* ---- Workspace content preview (dev estates): snippets, inferred metadata,
+   filing panel. Calm/editorial; no amber except genuine system state. ---- */
+.helper-file-snippet {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.helper-file-snippet b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.helper-file-inferred {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+.helper-file-mismatch {
+  border-left: 2px solid var(--helper-border);
+  padding-left: 6px;
+  color: var(--text-primary);
+}
+.helper-filing-row .helper-file-actions {
+  align-items: center;
+}
+.helper-filing-banner {
+  font-size: 11px;
+  white-space: normal;
+}
+.helper-filing-confident {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.helper-filing-tentative {
+  color: var(--text-muted);
+}
+.helper-filing-decided {
+  color: var(--text-muted);
+  font-style: italic;
+}

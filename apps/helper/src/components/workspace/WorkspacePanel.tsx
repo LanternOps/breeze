@@ -1,12 +1,28 @@
 import { useEffect, useState } from 'react';
-import { useWorkspaceStore, type FinderFile } from '../../stores/workspaceStore';
+import {
+  useWorkspaceStore, type FinderFile, type FilingRecord,
+} from '../../stores/workspaceStore';
 import { useChatStore } from '../../stores/chatStore';
 import { getTauriInvoke } from '../../lib/helperFetch';
 
 const isMacOS =
   navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
 
-type WorkspaceTab = 'search' | 'browse' | 'recents';
+type WorkspaceTab = 'search' | 'browse' | 'recents' | 'filing';
+
+/**
+ * The search snippet arrives as ts_headline output: plain text plus <b> marks.
+ * Escape EVERYTHING, then restore only the exact <b>/</b> tokens — no other
+ * markup (or attributes) can survive, whatever the indexed file contained.
+ */
+function safeSnippetHtml(snippet: string): string {
+  return snippet
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replaceAll('&lt;b&gt;', '<b>')
+    .replaceAll('&lt;/b&gt;', '</b>');
+}
 
 function formatWhen(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
@@ -50,11 +66,32 @@ function FileRow({
     formatWhen(timestamp ?? file.mtime),
   ].filter(Boolean);
 
+  // Content-preview extras: a snippet under the name, and — when the content
+  // reads as a different project than the folder says — both, side by side.
+  const showDisagreement = file.metadataDisagreement
+    && (file.inferredDocType || file.inferredProjectLabel);
+  const readsAs = [file.inferredDocType, file.inferredProjectLabel]
+    .filter(Boolean).join(' — ');
+
   return (
     <div className="helper-file-row">
       <div className="helper-file-main">
         <span className="helper-file-name">{file.isDir ? `${file.name}/` : file.name}</span>
         <span className="helper-file-meta">{metaParts.join(' · ')}</span>
+        {file.snippet && (
+          <span
+            className="helper-file-snippet"
+            dangerouslySetInnerHTML={{ __html: safeSnippetHtml(file.snippet) }}
+          />
+        )}
+        {!showDisagreement && file.inferredDocType && (
+          <span className="helper-file-inferred">{file.inferredDocType}</span>
+        )}
+        {showDisagreement && (
+          <span className="helper-file-inferred helper-file-mismatch">
+            Filed in: {file.declaredProjectLabel ?? file.parentPath} · Reads as: {readsAs}
+          </span>
+        )}
         {openError && (
           <span className="helper-file-open-error">
             Couldn't open — the share may be unreachable from this machine. Path copied
@@ -103,6 +140,101 @@ function LoadingRow() {
   );
 }
 
+function FilingRow({
+  filing,
+  projects,
+  busy,
+  onClassify,
+  onAssign,
+}: {
+  filing: FilingRecord;
+  projects: Array<{ key: string; label: string }>;
+  busy: boolean;
+  onClassify: (fileIndexId: string) => void;
+  onAssign: (fileIndexId: string, projectKey: string) => void;
+}) {
+  const [choice, setChoice] = useState('');
+  const subject = filing.emailMeta?.subject ?? filing.name;
+  const decided = filing.status === 'confirmed' || filing.status === 'reassigned';
+  const decidedLabel = filing.decidedProjectKey
+    ? projects.find((p) => p.key === filing.decidedProjectKey)?.label ?? filing.decidedProjectKey
+    : null;
+
+  return (
+    <div className="helper-file-row helper-filing-row">
+      <div className="helper-file-main">
+        <span className="helper-file-name">{subject}</span>
+        <span className="helper-file-meta">
+          {[filing.emailMeta?.from, formatWhen(filing.emailMeta?.date)].filter(Boolean).join(' · ')}
+        </span>
+        {decided && (
+          <span className="helper-filing-banner helper-filing-decided">
+            Filed to: {decidedLabel}
+          </span>
+        )}
+        {!decided && filing.status === 'suggested' && filing.suggestedProjectLabel && (
+          <span
+            className={`helper-filing-banner${
+              filing.confidence === 'high' ? ' helper-filing-confident' : ' helper-filing-tentative'
+            }`}
+          >
+            {filing.confidence === 'high'
+              ? `Filed to: ${filing.suggestedProjectLabel} — ${filing.rationale}`
+              : `Possibly ${filing.suggestedProjectLabel} — ${filing.rationale}`}
+          </span>
+        )}
+        {!decided && filing.status === 'suggested' && !filing.suggestedProjectLabel && (
+          <span className="helper-filing-banner helper-filing-tentative">
+            No clear match — pick a project below.
+          </span>
+        )}
+      </div>
+      <div className="helper-file-actions helper-filing-actions">
+        {busy && <span className="helper-spinner" />}
+        {!busy && filing.status === null && (
+          <button
+            className="helper-btn helper-btn-sm"
+            onClick={() => onClassify(filing.fileIndexId)}
+            title="Suggest where this email belongs"
+          >
+            Sort
+          </button>
+        )}
+        {!busy && filing.status === 'suggested' && (
+          <>
+            {filing.suggestedProjectKey && (
+              <button
+                className="helper-btn helper-btn-sm"
+                onClick={() => onAssign(filing.fileIndexId, filing.suggestedProjectKey!)}
+                title="File to the suggested project"
+              >
+                File it
+              </button>
+            )}
+            <select
+              className="helper-workspace-select"
+              value={choice}
+              onChange={(e) => {
+                const key = e.target.value;
+                setChoice(key);
+                if (key) onAssign(filing.fileIndexId, key);
+              }}
+              title="File to a different project"
+            >
+              <option value="">Move to…</option>
+              {projects.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.key} {p.label}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const {
     sources,
@@ -110,13 +242,21 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     entries,
     recent,
     department,
+    filings,
+    projects,
+    contentEnabled,
+    contentFeatures,
     loading,
     error,
+    filingBusy,
     browsePath,
     search,
     browse,
     loadRecents,
     recordActivity,
+    loadFilings,
+    classifyEmail,
+    assignFiling,
   } = useWorkspaceStore();
   const username = useChatStore((s) => s.username);
 
@@ -142,6 +282,12 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (tab === 'recents') loadRecents(username);
   }, [tab, username, loadRecents]);
+
+  // Load unfiled mail when the Filing tab is shown.
+  const filingEnabled = contentEnabled === true && contentFeatures.includes('filing');
+  useEffect(() => {
+    if (tab === 'filing' && filingEnabled) loadFilings();
+  }, [tab, filingEnabled, loadFilings]);
 
   // Open the first source when Browse is shown for the first time.
   useEffect(() => {
@@ -208,13 +354,18 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="helper-workspace-tabs">
-        {(['search', 'browse', 'recents'] as const).map((t) => (
+        {([
+          ['search', 'Search'],
+          ['browse', 'Browse'],
+          ['recents', 'Recents'],
+          ...(filingEnabled ? ([['filing', 'Filing']] as const) : []),
+        ] as ReadonlyArray<readonly [WorkspaceTab, string]>).map(([t, label]) => (
           <button
             key={t}
             className={`helper-workspace-tab${tab === t ? ' helper-workspace-tab-active' : ''}`}
             onClick={() => setTab(t)}
           >
-            {t === 'search' ? 'Search' : t === 'browse' ? 'Browse' : 'Recents'}
+            {label}
           </button>
         ))}
       </div>
@@ -353,6 +504,32 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                   ),
                 )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'filing' && (
+        <div className="helper-workspace-body">
+          <div className="helper-workspace-list">
+            {loading && <LoadingRow />}
+            {!loading && filings.length === 0 && (
+              <div className="helper-history-empty">No unfiled mail right now.</div>
+            )}
+            {!loading && filings.length > 0 && (
+              <>
+                <div className="helper-workspace-section-title">Unfiled mail</div>
+                {filings.map((filing) => (
+                  <FilingRow
+                    key={filing.fileIndexId}
+                    filing={filing}
+                    projects={projects}
+                    busy={filingBusy === filing.fileIndexId}
+                    onClassify={classifyEmail}
+                    onAssign={(id, key) => assignFiling(id, key, username)}
+                  />
+                ))}
+              </>
+            )}
           </div>
         </div>
       )}

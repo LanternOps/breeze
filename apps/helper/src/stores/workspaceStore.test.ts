@@ -41,13 +41,18 @@ beforeEach(() => {
   useWorkspaceStore.setState({
     available: null,
     features: [],
+    contentEnabled: null,
+    contentFeatures: [],
     sources: [],
     results: [],
     entries: [],
     recent: [],
     department: [],
+    filings: [],
+    projects: [],
     loading: false,
     error: null,
+    filingBusy: null,
     browsePath: null,
   });
 });
@@ -257,5 +262,78 @@ describe('recordActivity', () => {
     await useWorkspaceStore.getState().recordActivity('f1', 'open', null);
 
     expect(useWorkspaceStore.getState().error).toBeNull();
+  });
+});
+
+describe('content preview probe', () => {
+  it('sets contentEnabled + features when the capabilities endpoint answers 200', async () => {
+    helperRequestMock
+      .mockResolvedValueOnce(ok({ ok: true, features: ['search'] }))
+      .mockResolvedValueOnce(ok({ sources: [] }))
+      .mockResolvedValueOnce(ok({ enabled: true, features: ['contentSearch', 'filing', 'projects'] }));
+    await useWorkspaceStore.getState().probe();
+    expect(useWorkspaceStore.getState().contentEnabled).toBe(true);
+    expect(useWorkspaceStore.getState().contentFeatures).toEqual(['contentSearch', 'filing', 'projects']);
+  });
+
+  it('quietly disables content on 404 (flag off) without touching availability', async () => {
+    helperRequestMock
+      .mockResolvedValueOnce(ok({ ok: true, features: ['search'] }))
+      .mockResolvedValueOnce(ok({ sources: [] }))
+      .mockResolvedValueOnce({ ok: false, status: 404, body: '{"error":"not found"}' });
+    await useWorkspaceStore.getState().probe();
+    expect(useWorkspaceStore.getState().available).toBe(true);
+    expect(useWorkspaceStore.getState().contentEnabled).toBe(false);
+    expect(useWorkspaceStore.getState().error).toBeNull();
+  });
+});
+
+describe('filing', () => {
+  const FILING = {
+    fileIndexId: 'e1', relPath: 'Emails/Unfiled/x.eml', name: 'x.eml',
+    emailMeta: { subject: 'RE: PO 4021' }, status: null,
+    suggestedProjectKey: null, suggestedProjectLabel: null,
+    matchedEntityType: null, matchedEntityValue: null,
+    confidence: null, rationale: null, decidedProjectKey: null,
+  };
+
+  it('loadFilings fills filings and projects', async () => {
+    helperRequestMock
+      .mockResolvedValueOnce(ok({ filings: [FILING] }))
+      .mockResolvedValueOnce(ok({ projects: [{ key: '2023-041', label: 'Henderson Water Main Replacement' }] }));
+    await useWorkspaceStore.getState().loadFilings();
+    expect(useWorkspaceStore.getState().filings).toHaveLength(1);
+    expect(useWorkspaceStore.getState().projects[0].key).toBe('2023-041');
+  });
+
+  it('classifyEmail POSTs the id and swaps the row in place', async () => {
+    useWorkspaceStore.setState({ filings: [FILING] });
+    const suggested = {
+      ...FILING, status: 'suggested', suggestedProjectKey: '2023-041',
+      suggestedProjectLabel: 'Henderson Water Main Replacement', confidence: 'high',
+      rationale: 'matched City of Fairoaks PO #4021',
+    };
+    helperRequestMock.mockResolvedValueOnce(ok({ filing: suggested }));
+    await useWorkspaceStore.getState().classifyEmail('e1');
+    const [, url, init] = helperRequestMock.mock.calls[0];
+    expect(url).toContain('/filing/classify');
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ fileIndexId: 'e1' });
+    expect(useWorkspaceStore.getState().filings[0].confidence).toBe('high');
+    expect(useWorkspaceStore.getState().filingBusy).toBeNull();
+  });
+
+  it('assignFiling posts projectKey + helperUser and surfaces failures', async () => {
+    useWorkspaceStore.setState({ filings: [FILING] });
+    helperRequestMock.mockResolvedValueOnce(ok({ filing: { ...FILING, status: 'reassigned', decidedProjectKey: '2025-012' } }));
+    await useWorkspaceStore.getState().assignFiling('e1', '2025-012', 'Front desk');
+    const [, url, init] = helperRequestMock.mock.calls[0];
+    expect(url).toContain('/filing/e1/assign');
+    expect(JSON.parse((init as { body: string }).body)).toEqual({ projectKey: '2025-012', helperUser: 'Front desk' });
+    expect(useWorkspaceStore.getState().filings[0].status).toBe('reassigned');
+
+    helperRequestMock.mockResolvedValueOnce({ ok: false, status: 404, body: '{"error":"not found"}' });
+    await useWorkspaceStore.getState().assignFiling('e1', '9999-999', null);
+    expect(useWorkspaceStore.getState().error).toBe('not found');
+    expect(useWorkspaceStore.getState().filingBusy).toBeNull();
   });
 });
