@@ -96,4 +96,4 @@
 - [ ] Playwright runtime-extensions flow passes against dev servers; browser network log shows the module fetched only from `/api/v1/extensions/assets/...`.
 - [ ] Disabling removes new requests + registry entries while an in-flight request finishes.
 - [ ] Slot-contract tripwire proven (empty host-descriptor slots ⇒ activation fails).
-- [ ] Stock-image conformance explicitly deferred to Plan 05 (recorded).
+- [x] Stock-image conformance explicitly deferred to Plan 05 (recorded).
