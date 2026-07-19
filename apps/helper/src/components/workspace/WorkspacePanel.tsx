@@ -133,6 +133,19 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const focusSearchPending = useRef(false);
 
+  // `error` is a single store field shared by all four views (Search,
+  // Browse, Recents, Filing), cleared only when the view whose fetch set it
+  // re-runs. A tab's own mount/debounce effect can no-op on revisit (Browse
+  // when `browsePath` is already set; Search when `query`/`filters` haven't
+  // changed), so without this, an error from one tab can persist and
+  // incorrectly gate a different (already-loaded) tab's content after
+  // switching. Route every tab change through here so the stale error never
+  // outlives the tab that produced it.
+  const switchTab = (next: WorkspaceTab) => {
+    if (next !== tab) useWorkspaceStore.setState({ error: null });
+    setTab(next);
+  };
+
   // Debounced search (300 ms). Filter chips re-issue this fetch too — they
   // only ever change the store's `filters`, which this effect already watches.
   useEffect(() => {
@@ -169,7 +182,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
       e.preventDefault();
       if (tab !== 'search') {
         focusSearchPending.current = true;
-        setTab('search');
+        switchTab('search');
       } else {
         searchInputRef.current?.focus();
       }
@@ -211,7 +224,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
 
   const handleReveal = (file: FinderFile) => {
     recordActivity(file.id, 'reveal', username);
-    setTab('browse');
+    switchTab('browse');
     browse(file.sourceId, file.parentPath);
   };
 
@@ -265,7 +278,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
             ...(filingEnabled ? [{ key: 'filing', label: 'Filing' }] : []),
           ]}
           value={tab}
-          onChange={(key) => setTab(key as WorkspaceTab)}
+          onChange={(key) => switchTab(key as WorkspaceTab)}
         />
       </div>
 
