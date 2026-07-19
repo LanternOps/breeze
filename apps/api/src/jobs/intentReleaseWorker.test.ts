@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -30,6 +30,9 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
       recordActionIntentMetric: vi.fn(),
     },
     sentryMock: { captureException: vi.fn() },
+    // getToolTimeout is mocked (per-test override); withToolTimeout is kept
+    // REAL (see vi.mock below) so the timeout test's timer actually fires.
+    toolTimeoutsMock: { getToolTimeout: vi.fn() },
   };
 });
 
@@ -88,6 +91,12 @@ vi.mock('../services/aiGuardrails', () => ({
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
+// Partial mock: getToolTimeout is stubbed per-test, withToolTimeout stays the
+// REAL implementation so its setTimeout-based rejection genuinely fires.
+vi.mock('../services/toolTimeouts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/toolTimeouts')>();
+  return { ...actual, getToolTimeout: toolTimeoutsMock.getToolTimeout };
+});
 
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
@@ -171,6 +180,9 @@ function primeThroughRevalidation(intent: ActionIntent) {
   actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
   tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
   aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+  // Safe default so withToolTimeout's real timer never fires during tests
+  // that aren't specifically exercising the timeout path.
+  toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
 }
 
 describe('releaseApprovedIntent', () => {
@@ -454,6 +466,23 @@ describe('releaseApprovedIntent', () => {
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ details: expect.objectContaining({ error: 'boom' }) }),
+    );
+  });
+
+  it('fails the intent with execution_error when the tool exceeds its timeout', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(5); // tiny — real withToolTimeout fires fast
+    aiToolsMock.executeTool.mockReturnValue(new Promise<string>(() => {})); // never settles
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'execution_error', executedAt: expect.any(Date) }),
     );
   });
 

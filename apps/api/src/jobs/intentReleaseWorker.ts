@@ -11,6 +11,7 @@ import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { executeTool } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
+import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 
 /**
  * Durable release worker (spec
@@ -249,12 +250,23 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // reads see exactly the rebuilt actor's tenant scope — never a system-wide
   // view, and never the short-lived system context the revalidation reads
   // above used.
+  // Bounded by the same per-tool timeout the inline chat path uses
+  // (services/aiAgentSdkTools.ts) — withToolTimeout only bounds when THIS
+  // worker gives up waiting; it cannot cancel the underlying handler (JS
+  // promises aren't cancelable), same limitation the inline path has. A
+  // timeout rejection is caught below like any other thrown error and
+  // terminalizes the intent as execution_error with executed:true — an
+  // attempt was made, its outcome is just unknown to us now.
   let rawResult: string;
   try {
-    rawResult = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), () =>
-        executeTool(intent.actionName, intent.arguments, auth),
+    rawResult = await withToolTimeout(
+      runOutsideDbContext(() =>
+        withDbAccessContext(dbAccessContextFromAuth(auth), () =>
+          executeTool(intent.actionName, intent.arguments, auth),
+        ),
       ),
+      getToolTimeout(intent.actionName),
+      intent.actionName,
     );
   } catch (err) {
     console.error(`[IntentReleaseWorker] executeTool threw for intent ${intent.id}:`, err);
