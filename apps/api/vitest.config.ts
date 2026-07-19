@@ -82,6 +82,12 @@ export default defineConfig({
       // `src/__tests__/integration/**` glob, so the no-DB unit runner would fail
       // it on connect. Belongs to vitest.integration.config.ts (in its include).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // Headless Google Tier-3 dispatch real-DB test (Phase 2): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/jobs/ outside the `src/__tests__/integration/**` glob, so
+      // the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/jobs/intentReleaseWorkerGoogleHeadless.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

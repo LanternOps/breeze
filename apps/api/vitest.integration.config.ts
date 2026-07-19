@@ -105,6 +105,13 @@ export default defineConfig({
       // roll back as ONE system-scoped transaction, and probes that an org-B
       // context still cannot read org A's system-scoped intent (RLS unchanged).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for headless Google Tier-3 dispatch
+      // (Phase 2): drives an approved google_suspend_user intent through the real
+      // release worker with only the Google SDK client mocked, proving it
+      // resolves + decrypts the org's connection and runs to `completed` instead
+      // of false-failing `session_required` — the correctness linchpin the mocked
+      // unit suite (which mocks `../db` + the Google stack) can't exercise.
+      'src/jobs/intentReleaseWorkerGoogleHeadless.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
