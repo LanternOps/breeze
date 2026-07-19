@@ -677,6 +677,7 @@ export async function reconcileExtensions(
           root: extractedRoot,
           digest: bundle.artifactDigest,
           files: bundle.files,
+          migrationsDir: bundle.manifest.migrationsDir,
         });
 
         summary.activated.push(selection.name);

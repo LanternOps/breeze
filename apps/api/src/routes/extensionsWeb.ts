@@ -29,7 +29,7 @@ import {
   type StagedExtensionContributions,
 } from '../extensions/contributionRegistry';
 import { createExtensionStateStore, type ExtensionStateStore } from '../extensions/stateStore';
-import { getExtensionWebAsset, type ExtensionWebAsset } from '../extensions/webAssets';
+import { getExtensionWebAsset, isServableWebMember, type ExtensionWebAsset } from '../extensions/webAssets';
 import { assertVerifiedMemberBytes } from '../extensions/bundleVerifier';
 import { buildRuntimeWebRegistry, type RuntimeWebRegistrySource } from '../extensions/webRegistry';
 
@@ -151,7 +151,16 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
     const inventoryEntry = asset.files.get(member);
     if (!inventoryEntry) return notFound(c);
 
-    // 5. Resolve under `root` and assert containment. `path.join` collapses
+    // 5. Defense-in-depth: never serve the manifest itself or the
+    //    server/migrations subtrees, even if they somehow appear in
+    //    `asset.files` (e.g. a future `getWebAsset` source that doesn't
+    //    route through `registerExtensionWebAsset`'s retention-time filter).
+    //    `registerExtensionWebAsset` (webAssets.ts) already filters these out
+    //    at the source using the SAME `isServableWebMember` — this is the
+    //    boundary re-check, not the primary defense.
+    if (!isServableWebMember(member)) return notFound(c);
+
+    // 6. Resolve under `root` and assert containment. `path.join` collapses
     //    any `..` in `member`, but we still verify the resolved path is
     //    genuinely inside `root` (not just string-prefixed by it — a sibling
     //    directory like "<root>-evil" would pass a naive `startsWith(root)`)
@@ -176,13 +185,13 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
     const realRootWithSep = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
     if (!realMemberPath.startsWith(realRootWithSep)) return notFound(c);
 
-    // 6. Extension/content-type allowlist. Reject anything not explicitly
+    // 7. Extension/content-type allowlist. Reject anything not explicitly
     //    listed (`.node`, `.map`, `.html`, unknown extensions included).
     const ext = extname(member).toLowerCase();
     const contentType = CONTENT_TYPES.get(ext);
     if (!contentType) return notFound(c);
 
-    // 7. TOCTOU: re-hash the bytes actually read, against the verified
+    // 8. TOCTOU: re-hash the bytes actually read, against the verified
     //    inventory hash, before responding with them.
     let bytes: Buffer;
     try {
@@ -192,7 +201,7 @@ export function createExtensionsWebRoutes(deps: ExtensionsWebDeps): Hono {
       return notFound(c);
     }
 
-    // 8. Response headers.
+    // 9. Response headers.
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Content-Type', contentType);
     c.header('Cache-Control', 'private, max-age=31536000, immutable');

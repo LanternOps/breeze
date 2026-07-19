@@ -295,6 +295,52 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     expect(res.status).toBe(404);
   });
 
+  // SECURITY (Plan-03 final review): the retained inventory used to be the
+  // bundle's FULL verified `files` map — including `manifest.json` (leaks
+  // `publicRoutes`/`tenancy`/`server.entry` filesystem-adjacent paths) and
+  // any `server/*`/`migrations/*` member with an allowed extension. These
+  // cases inject such members directly into the inventory (bypassing
+  // `registerExtensionWebAsset`'s retention-time filter, exactly as a stale
+  // caller or a future `getWebAsset` source might) to prove the ROUTE itself
+  // — not just retention — refuses to serve them.
+  it('404s the manifest.json member even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({ 'manifest.json': { path: 'manifest.json', content: '{"tenancy":{}}' } });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/manifest.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a server-side member even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'server/config.json': { path: 'server/config.json', content: '{"secret":"x"}' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/server/config.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a migrations-tree member even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'migrations/0001_init.sql': { path: 'migrations/0001_init.sql', content: 'select 1;' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/migrations/0001_init.sql`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s the reserved integrity.json/signature members even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'integrity.json': { path: 'integrity.json', content: '{}' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/integrity.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('still serves a valid web/index.js asset (matches the fixture manifest\'s web.entry convention)', async () => {
+    const content = 'export default 1;';
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content } });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/index.js`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(content);
+  });
+
   it('sets the correct content type per allowed extension', async () => {
     const cases: Record<string, string> = {
       'a.mjs': 'javascript',
