@@ -3,6 +3,19 @@
    Dark theme, compact, frameless, 380x600 popup
    ============================================================ */
 
+/* Workspace design tokens + Tailwind layers. This is the only stylesheet
+   index.html actually loads (<link rel="stylesheet" href="/src/styles.css">),
+   so the --ws-* custom properties and Tailwind's generated utility CSS must
+   be pulled in here. (src/styles/globals.css duplicates this @import +
+   @tailwind block but is not linked/imported from anywhere and stays
+   orphaned — see task-2-report.md for why its scrollbar rules were not
+   used either.) */
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* ----------------------------------------------------------
    CSS Variables
    ---------------------------------------------------------- */
