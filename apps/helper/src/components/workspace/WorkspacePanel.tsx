@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   useWorkspaceStore, type FinderFile, type FilingRecord,
 } from '../../stores/workspaceStore';
@@ -215,6 +215,8 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<WorkspaceTab>('search');
   const [query, setQuery] = useState('');
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const focusSearchPending = useRef(false);
 
   // Debounced search (300 ms). Filter chips re-issue this fetch too — they
   // only ever change the store's `filters`, which this effect already watches.
@@ -243,6 +245,30 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     if (tab !== 'browse' || browsePath || sources.length === 0) return;
     browse(sources[0].id, '');
   }, [tab, browsePath, sources, browse]);
+
+  // Cmd/Ctrl+F focuses the search input from anywhere in Files, switching to
+  // the Search tab first if another tab is active.
+  useEffect(() => {
+    const handleShortcut = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f') return;
+      e.preventDefault();
+      if (tab !== 'search') {
+        focusSearchPending.current = true;
+        setTab('search');
+      } else {
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [tab]);
+
+  useEffect(() => {
+    if (tab === 'search' && focusSearchPending.current) {
+      focusSearchPending.current = false;
+      searchInputRef.current?.focus();
+    }
+  }, [tab]);
 
   const handleCopyPath = (file: FinderFile) => {
     const path = file.openPath ?? file.relPath;
@@ -288,8 +314,16 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     ? browsePath.parentPath.split('/').filter(Boolean)
     : [];
 
+  // Escape walk-back: an open Radix menu handles its own Escape first; a
+  // FileTable with an active row selection stops this event from bubbling
+  // here (it clears the selection instead) — only once neither has anything
+  // left to clear does Escape reach the panel and go Back.
+  const handlePanelKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') onClose();
+  };
+
   return (
-    <div className="helper-container">
+    <div className="helper-container" onKeyDown={handlePanelKeyDown}>
       <Toaster />
       <div
         className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`}
@@ -330,6 +364,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
         <div className="helper-workspace-body">
           <div className="helper-workspace-toolbar">
             <input
+              ref={searchInputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

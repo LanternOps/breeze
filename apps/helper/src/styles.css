@@ -1174,6 +1174,11 @@ body {
   background: var(--ws-accent-soft);
 }
 
+.ws-file-table-row.ws-row-selected {
+  background: var(--ws-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--ws-accent);
+}
+
 .ws-file-table-cell {
   min-width: 0;
   overflow: hidden;

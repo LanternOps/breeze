@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   useWorkspaceStore, sortRows,
   type FinderFile, type SortCol, type View, type WorkspaceSource,
 } from '../../stores/workspaceStore';
 import { RowMenu, type MenuItem } from '../ui/RowMenu';
+import { useListSelection } from '../../lib/useListSelection';
 
 const COLUMNS: Array<{ key: SortCol; label: string }> = [
   { key: 'name', label: 'Name' },
@@ -87,8 +88,34 @@ export function FileTable(props: FileTableProps) {
   const sorted = sortRows(rows, sort, { dirsFirst: view === 'browse' });
   const showSource = (sources?.length ?? 0) > 1;
 
+  const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const { selected, onKeyDown } = useListSelection(sorted.length, {
+    onActivate: (i) => {
+      const file = sorted[i];
+      if (file) onOpen(file);
+    },
+    onCopy: (i) => {
+      const file = sorted[i];
+      if (file) onCopy(file);
+    },
+  });
+
+  // Keep the selected row in view as Arrow Up/Down move it.
+  useEffect(() => {
+    if (selected === null) return;
+    rowRefs.current[selected]?.scrollIntoView?.({ block: 'nearest' });
+  }, [selected]);
+
+  // Escape clears an active row selection without walking the panel back —
+  // only let it bubble to WorkspacePanel's Back handler once there's nothing
+  // left in this table to clear.
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape' && selected !== null) e.stopPropagation();
+    onKeyDown(e);
+  };
+
   return (
-    <div className="ws-file-table" role="table">
+    <div className="ws-file-table" role="table" tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="ws-file-table-header" role="row">
         {COLUMNS.map((col) => (
           <button
@@ -106,11 +133,19 @@ export function FileTable(props: FileTableProps) {
         ))}
       </div>
       <div className="ws-file-table-body" role="rowgroup">
-        {sorted.map((file) => {
+        {sorted.map((file, i) => {
           const meta = renderMeta?.(file);
+          const isSelected = selected === i;
           return (
             <RowMenu key={file.id} items={rowMenuItems(file, { onOpen, onCopy, onReveal })}>
-              <div className="ws-file-table-row" role="row">
+              <div
+                ref={(el) => {
+                  rowRefs.current[i] = el;
+                }}
+                className={`ws-file-table-row${isSelected ? ' ws-row-selected' : ''}`}
+                role="row"
+                aria-selected={isSelected}
+              >
                 <div className="ws-file-table-cell ws-file-table-name-cell">
                   <div className="ws-file-table-name-row">
                     <span className="ws-file-table-name" title={file.relPath}>
