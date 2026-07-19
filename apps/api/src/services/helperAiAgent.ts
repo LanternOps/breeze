@@ -73,10 +73,15 @@ export function buildHelperSystemPrompt(ctx: HelperContext): string {
 
   const parts: string[] = [];
 
-  parts.push(`You are Breeze Helper, an AI assistant running on the user's computer. You help end-users understand their system status, troubleshoot issues, and get IT support.
+  // When the session runs against client-declared tools, the built-in device
+  // toolset is not available to the model — so advertising the device
+  // capabilities would invite requests the session cannot fulfil. Suppress that
+  // section entirely; the generic Client Tools paragraph below is what applies.
+  const capabilitiesSection = ctx.hasClientTools
+    ? ''
+    : `\n\n## Your Capabilities\n${capabilities.join('\n')}`;
 
-## Your Capabilities
-${capabilities.join('\n')}
+  parts.push(`You are Breeze Helper, an AI assistant running on the user's computer. You help end-users understand their system status, troubleshoot issues, and get IT support.${capabilitiesSection}
 
 ## Important Rules
 1. You can ONLY see and act on this specific computer — "${ctx.hostname}".

@@ -61,11 +61,17 @@ function CitationChip({
   resolution: FileResolution;
   username: string | null;
 }) {
+  // A resolution with a null openPath cannot be opened (openWorkspaceFile
+  // no-ops immediately), so render the chip disabled/non-interactive — matching
+  // ChatFileCard's Open button — rather than a clickable chip that silently
+  // does nothing. Still labeled and title-tooltipped.
+  const openable = resolution.openPath !== null;
   return (
     <button
       type="button"
       className="helper-citation-chip"
       title={resolution.relPath}
+      disabled={!openable}
       onClick={() => {
         openWorkspaceFile(fileIndexId, resolution.openPath, username);
       }}

@@ -6,7 +6,11 @@ import {
   type AgentConfig,
   type HelperFetchResponse,
 } from '../lib/helperFetch';
-import { WORKSPACE_CHAT_TOOLS, executeWorkspaceChatTool } from '../lib/workspaceChatTools';
+import {
+  WORKSPACE_CHAT_TOOLS,
+  executeWorkspaceChatTool,
+  type ClientToolDeclaration,
+} from '../lib/workspaceChatTools';
 import { useWorkspaceStore } from './workspaceStore';
 
 interface ChatMessage {
@@ -317,7 +321,9 @@ async function handleClientToolRequest(event: {
   }
 
   try {
-    await helperRequest(
+    // helperRequest resolves (does not throw) on a non-2xx response, so a
+    // rejected/failed tool-result POST would otherwise be silently swallowed.
+    const res = await helperRequest(
       agentConfig,
       `${agentConfig.api_url}/api/v1/helper/chat/sessions/${sessionId}/tool-results`,
       {
@@ -326,6 +332,13 @@ async function handleClientToolRequest(event: {
         body: JSON.stringify(body),
       },
     );
+    if (!res.ok) {
+      console.error(
+        '[Helper] tool-results POST failed:',
+        res.status,
+        res.body?.slice(0, 200),
+      );
+    }
   } catch (err) {
     console.error('[Helper] Failed to post client tool result:', err);
   }
@@ -473,6 +486,46 @@ export async function processSSELines(
 // ---------------------------------------------------------------------------
 
 const USERNAME_KEY = 'breeze-helper-username';
+
+/** Max time to wait on a cold-start capabilities probe before creating a session. */
+const WORKSPACE_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Await the workspace capabilities probe, bounded. On timeout or failure the
+ * session simply proceeds without client tools (today's degraded behavior).
+ * Used to close the cold-start race: client-tool declarations are fixed at
+ * session create, so a first message that beats the startup probe would
+ * otherwise permanently degrade the session.
+ */
+async function awaitWorkspaceProbe(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      useWorkspaceStore.getState().probe(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WORKSPACE_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    // Probe is silent by design; proceed without tools.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Client-tool declarations to send at session create, gated on the estate's
+ * REAL capabilities: file-search needs the estate reachable (`available`);
+ * passage retrieval additionally needs content preview (`contentEnabled`),
+ * else get_file_passages would 404 forever while the prompt still prefers it.
+ */
+function selectWorkspaceChatTools(): ClientToolDeclaration[] {
+  const { available, contentEnabled } = useWorkspaceStore.getState();
+  if (available !== true) return [];
+  return WORKSPACE_CHAT_TOOLS.filter(
+    (t) => t.name !== 'get_file_passages' || contentEnabled === true,
+  );
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   connectionState: 'disconnected',
@@ -627,14 +680,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
         content: string | null;
         toolName: string | null;
+        toolOutput?: unknown;
         createdAt: string;
       }>;
 
+      // Persisted tool_result rows carry toolOutput (the executed tool's return),
+      // so ChatView's citation-resolution map and result cards work on reload —
+      // otherwise citations render as raw [file:<id>|<path>] tokens and cards vanish.
       const messages: ChatMessage[] = rawMessages.map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content ?? '',
         toolName: m.toolName ?? undefined,
+        ...(m.role === 'tool_result' ? { toolOutput: m.toolOutput } : {}),
         createdAt: new Date(m.createdAt),
       }));
 
@@ -673,10 +731,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Create session if needed
       let currentSessionId = sessionId;
       if (!currentSessionId) {
-        // Declare the workspace chat tools only when the estate is reachable;
+        // Cold-start race: `available` is null until the startup probe finishes.
+        // Declarations are fixed at create, so if a first message beats the
+        // probe we briefly await it — otherwise the session is permanently
+        // degraded (no tools). On timeout/failure we proceed without tools.
+        if (useWorkspaceStore.getState().available === null) {
+          await awaitWorkspaceProbe();
+        }
+        // Declare the workspace chat tools that the estate can actually serve;
         // core builds the bridged MCP server from them and drives file-search /
         // cited-RAG through the client executors.
-        const workspaceAvailable = useWorkspaceStore.getState().available === true;
+        const clientTools = selectWorkspaceChatTools();
         const createRes = await helperRequest(
           agentConfig,
           `${agentConfig.api_url}/api/v1/helper/chat/sessions`,
@@ -685,7 +750,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...(username ? { helperUser: username } : {}),
-              ...(workspaceAvailable ? { clientTools: WORKSPACE_CHAT_TOOLS } : {}),
+              ...(clientTools.length > 0 ? { clientTools } : {}),
             }),
           },
         );

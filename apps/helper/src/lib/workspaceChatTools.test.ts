@@ -108,6 +108,15 @@ describe('search_workspace_files executor', () => {
     expect(url).not.toContain('project=');
     expect(url).not.toContain('docType=');
   });
+
+  it('truncates a q longer than 200 chars in the request URL', async () => {
+    helperRequestMock.mockResolvedValue(ok({ results: [] }));
+    const longQ = 'a'.repeat(300);
+    await executeWorkspaceChatTool('search_workspace_files', { q: longQ });
+    const [, url] = helperRequestMock.mock.calls[0];
+    const sent = new URL(url).searchParams.get('q');
+    expect(sent).toBe('a'.repeat(200));
+  });
 });
 
 describe('get_file_passages executor', () => {
@@ -143,6 +152,15 @@ describe('get_file_passages executor', () => {
     await executeWorkspaceChatTool('get_file_passages', { q: 'q' });
     const [, url] = helperRequestMock.mock.calls[0];
     expect(url).not.toContain('fileIndexId=');
+  });
+
+  it('truncates a q longer than 200 chars in the request URL', async () => {
+    helperRequestMock.mockResolvedValue(ok({ passages: [] }));
+    const longQ = 'b'.repeat(500);
+    await executeWorkspaceChatTool('get_file_passages', { q: longQ });
+    const [, url] = helperRequestMock.mock.calls[0];
+    const sent = new URL(url).searchParams.get('q');
+    expect(sent).toBe('b'.repeat(200));
   });
 });
 

@@ -21,6 +21,7 @@ import {
   clientDeclaredToolMcpNames,
   requestClientDeclaredTool,
   resolveClientDeclaredTool,
+  peekClientDeclaredToolName,
   failPendingClientDeclaredForSession,
   CLIENT_DECLARED_MCP_SERVER_NAME,
   type ClientToolDeclaration,
@@ -381,12 +382,34 @@ helperRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    // Recover the parked call's tool name BEFORE resolving (which drains the
+    // entry), so the persisted transcript row carries it. Generic: this route
+    // has no knowledge of any specific tool.
+    const toolName = peekClientDeclaredToolName(sessionId, toolUseId);
+
     const outcome = resolveClientDeclaredTool(sessionId, toolUseId, { output, error });
     if (outcome === 'duplicate') {
       return c.json({ error: 'Tool result already submitted' }, 409);
     }
     if (outcome === 'not_found') {
       return c.json({ error: 'unknown_tool_request' }, 404);
+    }
+
+    // Persist a tool_result row so reopening the session from History renders
+    // the same cards/citations the live stream did. The SDK's post-tool-use
+    // hook never runs for the bridged client-declared path, so this is the only
+    // place a client tool's output is recorded. Generic: output = whatever the
+    // client posted (its output, or an { error } payload).
+    try {
+      await db.insert(aiMessages).values({
+        sessionId,
+        role: 'tool_result',
+        toolName: toolName ?? null,
+        toolOutput: error !== undefined ? { error } : (output ?? null),
+        toolUseId,
+      });
+    } catch (err) {
+      console.error('[Helper] Failed to persist tool_result message:', err);
     }
 
     return c.json({ ok: true });
@@ -552,6 +575,7 @@ helperRoutes.get('/chat/sessions/:id/messages', async (c) => {
       role: aiMessages.role,
       content: aiMessages.content,
       toolName: aiMessages.toolName,
+      toolOutput: aiMessages.toolOutput,
       createdAt: aiMessages.createdAt,
     })
     .from(aiMessages)

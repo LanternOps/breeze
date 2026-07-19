@@ -28,6 +28,14 @@ export interface ClientToolDeclaration {
 const FILE_LIMIT = 8;
 const PASSAGE_LIMIT = 6;
 const SNIPPET_MAX = 700;
+// The extension's search/passages routes cap `q` at 200 chars and 400 beyond
+// it; a long model question would otherwise be rejected, so truncate here.
+const Q_MAX = 200;
+
+/** Coerce an unknown input value to a query string, capped at Q_MAX chars. */
+function queryString(value: unknown): string {
+  return (typeof value === 'string' ? value : '').slice(0, Q_MAX);
+}
 
 export const WORKSPACE_CHAT_TOOLS: ClientToolDeclaration[] = [
   {
@@ -112,7 +120,7 @@ export async function executeWorkspaceChatTool(
     if (!config) return { error: 'Workspace is not connected.' };
 
     if (name === 'search_workspace_files') {
-      const params = new URLSearchParams({ q: typeof input.q === 'string' ? input.q : '' });
+      const params = new URLSearchParams({ q: queryString(input.q) });
       if (typeof input.project === 'string' && input.project) params.set('project', input.project);
       if (typeof input.docType === 'string' && input.docType) params.set('docType', input.docType);
 
@@ -133,7 +141,7 @@ export async function executeWorkspaceChatTool(
     }
 
     if (name === 'get_file_passages') {
-      const params = new URLSearchParams({ q: typeof input.q === 'string' ? input.q : '' });
+      const params = new URLSearchParams({ q: queryString(input.q) });
       if (typeof input.fileIndexId === 'string' && input.fileIndexId) {
         params.set('fileIndexId', input.fileIndexId);
       }

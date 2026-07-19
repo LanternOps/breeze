@@ -367,7 +367,7 @@ describe('helper client-declared session tools', () => {
     expect(typeof call?.[7]).toBe('function');
   });
 
-  it('resolves a client tool result (200)', async () => {
+  it('resolves a client tool result (200) and persists a tool_result row with the posted output', async () => {
     mockHelperAuthDevice();
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
@@ -378,6 +378,14 @@ describe('helper client-declared session tools', () => {
     } as never);
     vi.mocked(resolveClientDeclaredTool).mockReturnValue('resolved');
 
+    let insertedResult: Record<string, unknown> | undefined;
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedResult = values;
+        return undefined;
+      }),
+    } as never);
+
     const res = await app.request('/helper/chat/sessions/session-1/tool-results', {
       method: 'POST',
       headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
@@ -386,6 +394,10 @@ describe('helper client-declared session tools', () => {
 
     expect(res.status).toBe(200);
     expect(resolveClientDeclaredTool).toHaveBeenCalledWith('session-1', 'tu-1', { output: { files: [] }, error: undefined });
+    // A generic tool_result transcript row is written so History reopens render.
+    expect(insertedResult?.role).toBe('tool_result');
+    expect(insertedResult?.toolUseId).toBe('tu-1');
+    expect(insertedResult?.toolOutput).toEqual({ files: [] });
   });
 
   it('409s a duplicate tool result post', async () => {

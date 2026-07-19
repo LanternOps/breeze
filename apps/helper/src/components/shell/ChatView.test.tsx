@@ -183,6 +183,50 @@ describe('citation chips', () => {
     });
   });
 
+  it('a resolved-but-null openPath citation renders a disabled chip that does not open', async () => {
+    useChatStore.setState(
+      baseChatState({
+        messages: [
+          {
+            id: 'result-t1',
+            role: 'tool_result' as const,
+            content: '{}',
+            toolName: 'get_file_passages',
+            toolUseId: 't1',
+            toolOutput: {
+              passages: [
+                {
+                  fileIndexId: 'abc',
+                  relPath: 'Projects/Henderson/easement.pdf',
+                  sourceId: 's1',
+                  openPath: null,
+                  snippet: 'text',
+                  score: 0.9,
+                },
+              ],
+            },
+            createdAt: new Date(),
+          },
+          {
+            id: 'a1',
+            role: 'assistant' as const,
+            content: 'See [file:abc|Projects/Henderson/easement.pdf].',
+            createdAt: new Date(),
+          },
+        ],
+      }),
+    );
+
+    renderChatView();
+
+    const chip = screen.getByRole('button', { name: 'easement.pdf' });
+    expect(chip).toBeDisabled();
+    fireEvent.click(chip);
+    await Promise.resolve();
+    // A disabled chip must not trigger the open path (no Tauri invoke).
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
   it('an unresolvable citation id renders as plain text, not a chip', () => {
     useChatStore.setState(
       baseChatState({

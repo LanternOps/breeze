@@ -172,6 +172,9 @@ export type ResolveClientDeclaredOutcome = 'resolved' | 'duplicate' | 'not_found
 
 interface PendingClientDeclaredTool {
   sessionId: string;
+  /** The declared tool name for this call, kept so a resolved result can be
+   *  persisted with its tool name (recovered via peekClientDeclaredToolName). */
+  toolName: string;
   timer: ReturnType<typeof setTimeout>;
   resolve: (result: ClientToolDispatchResult) => void;
 }
@@ -201,7 +204,7 @@ export function requestClientDeclaredTool(
       });
     }, CLIENT_DECLARED_TOOL_TIMEOUT_MS);
 
-    pending.set(toolUseId, { sessionId: session.breezeSessionId, timer, resolve });
+    pending.set(toolUseId, { sessionId: session.breezeSessionId, toolName, timer, resolve });
     session.eventBus.publish({ type: 'client_tool_request', toolUseId, toolName, input });
   });
 }
@@ -228,6 +231,17 @@ export function resolveClientDeclaredTool(
   resolvedIds.set(toolUseId, sessionId);
   entry.resolve(result.error !== undefined ? { error: result.error } : { output: result.output ?? null });
   return 'resolved';
+}
+
+/**
+ * Return the declared tool name of a still-pending call owned by `sessionId`,
+ * or undefined if no such call is parked. Read BEFORE resolveClientDeclaredTool
+ * (which deletes the entry) so a resolved result can be persisted with its name.
+ * Generic: carries no knowledge of any specific tool's semantics.
+ */
+export function peekClientDeclaredToolName(sessionId: string, toolUseId: string): string | undefined {
+  const entry = pending.get(toolUseId);
+  return entry && entry.sessionId === sessionId ? entry.toolName : undefined;
 }
 
 /** Fail + drain every parked call of a session on teardown. Returns the count. */

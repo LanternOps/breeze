@@ -169,6 +169,34 @@ describe('processSSELines — client_tool_request round-trip', () => {
     expect(post).toBeDefined();
   });
 
+  it('logs console.error when the tool-results POST responds not-ok', async () => {
+    useChatStore.setState({ sessionId: 'sess-1' });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    helperRequestMock.mockImplementation(async (_config, url) => {
+      if (url.includes('/workspace/helper/search')) {
+        return { ok: true, status: 200, body: JSON.stringify({ results: [] }) };
+      }
+      // The /tool-results POST fails — helperRequest resolves (never throws).
+      return { ok: false, status: 500, body: JSON.stringify({ error: 'boom' }) };
+    });
+
+    await run([
+      sse({
+        type: 'client_tool_request',
+        toolUseId: 't9',
+        toolName: 'search_workspace_files',
+        input: { q: 'x' },
+      }),
+    ]);
+
+    expect(errSpy).toHaveBeenCalledWith(
+      '[Helper] tool-results POST failed:',
+      500,
+      expect.stringContaining('boom'),
+    );
+    errSpy.mockRestore();
+  });
+
   it('does nothing when there is no active session', async () => {
     useChatStore.setState({ sessionId: null });
     await run([
@@ -199,28 +227,90 @@ describe('sendMessage — clientTools declaration', () => {
     })) as unknown as typeof fetch;
   }
 
-  it('includes clientTools: WORKSPACE_CHAT_TOOLS when the workspace is available', async () => {
-    useWorkspaceStore.setState({ available: true });
-    helperRequestMock.mockResolvedValue(ok({ id: 'sess-1' }));
-    stubStream();
-
-    await useChatStore.getState().sendMessage('hi');
-
+  function createBody() {
     const create = helperRequestMock.mock.calls.find(([, url]) => url.endsWith('/chat/sessions'));
     expect(create).toBeDefined();
-    const body = JSON.parse(create![2]!.body as string);
-    expect(body.clientTools).toEqual(WORKSPACE_CHAT_TOOLS);
-  });
+    return JSON.parse(create![2]!.body as string) as { clientTools?: Array<{ name: string }> };
+  }
 
   it('omits clientTools when the workspace is not available', async () => {
-    useWorkspaceStore.setState({ available: false });
+    useWorkspaceStore.setState({ available: false, contentEnabled: false });
     helperRequestMock.mockResolvedValue(ok({ id: 'sess-1' }));
     stubStream();
 
     await useChatStore.getState().sendMessage('hi');
 
-    const create = helperRequestMock.mock.calls.find(([, url]) => url.endsWith('/chat/sessions'));
-    const body = JSON.parse(create![2]!.body as string);
-    expect(body.clientTools).toBeUndefined();
+    expect(createBody().clientTools).toBeUndefined();
+  });
+
+  it('declares only search_workspace_files when available but content preview is off', async () => {
+    useWorkspaceStore.setState({ available: true, contentEnabled: false });
+    helperRequestMock.mockResolvedValue(ok({ id: 'sess-1' }));
+    stubStream();
+
+    await useChatStore.getState().sendMessage('hi');
+
+    const names = createBody().clientTools?.map((t) => t.name);
+    expect(names).toEqual(['search_workspace_files']);
+  });
+
+  it('declares both tools when available and content preview is on', async () => {
+    useWorkspaceStore.setState({ available: true, contentEnabled: true });
+    helperRequestMock.mockResolvedValue(ok({ id: 'sess-1' }));
+    stubStream();
+
+    await useChatStore.getState().sendMessage('hi');
+
+    expect(createBody().clientTools).toEqual(WORKSPACE_CHAT_TOOLS);
+  });
+
+  it('cold-start: awaits the capabilities probe when available is null and includes the tools it reports', async () => {
+    useWorkspaceStore.setState({ available: null, contentEnabled: null });
+    // The first message beats the startup probe: resolving it flips the estate
+    // to available + content on, so the created session declares both tools.
+    const probeSpy = vi
+      .spyOn(useWorkspaceStore.getState(), 'probe')
+      .mockImplementation(async () => {
+        useWorkspaceStore.setState({ available: true, contentEnabled: true });
+      });
+    helperRequestMock.mockResolvedValue(ok({ id: 'sess-1' }));
+    stubStream();
+
+    await useChatStore.getState().sendMessage('hi');
+
+    expect(probeSpy).toHaveBeenCalled();
+    expect(createBody().clientTools).toEqual(WORKSPACE_CHAT_TOOLS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadSession maps a persisted tool_result (with toolOutput) back into the store
+// ---------------------------------------------------------------------------
+
+describe('loadSession — persisted tool_result rehydration', () => {
+  it('maps a persisted tool_result row into a tool_result message carrying toolOutput', async () => {
+    useChatStore.setState({ agentConfig: AGENT_CONFIG });
+    helperRequestMock.mockResolvedValue(
+      ok([
+        { id: 'u1', role: 'user', content: 'find henderson', toolName: null, createdAt: '2026-07-19T00:00:00Z' },
+        {
+          id: 'r1',
+          role: 'tool_result',
+          content: '{}',
+          toolName: 'search_workspace_files',
+          toolOutput: { files: [{ fileIndexId: 'f1', relPath: 'a.pdf', openPath: null }] },
+          createdAt: '2026-07-19T00:00:01Z',
+        },
+        { id: 'a1', role: 'assistant', content: 'See [file:f1|a.pdf].', toolName: null, createdAt: '2026-07-19T00:00:02Z' },
+      ]),
+    );
+
+    await useChatStore.getState().loadSession('sess-1');
+
+    const result = useChatStore.getState().messages.find((m) => m.role === 'tool_result');
+    expect(result).toBeDefined();
+    expect(result!.toolName).toBe('search_workspace_files');
+    const output = result!.toolOutput as { files: Array<{ fileIndexId: string }> };
+    expect(output.files[0].fileIndexId).toBe('f1');
   });
 });
