@@ -99,6 +99,12 @@ export default defineConfig({
       // expiry + outbox} roll back together — a rollback the mocked unit suite
       // (which mocks db.transaction) cannot exercise.
       'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for the create-path atomicity +
+      // tenant isolation (Task 7): injects a DB-level fault into the
+      // intent_created outbox insert to prove {intent insert + fan-out + outbox}
+      // roll back as ONE system-scoped transaction, and probes that an org-B
+      // context still cannot read org A's system-scoped intent (RLS unchanged).
+      'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
