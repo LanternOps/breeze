@@ -9,16 +9,23 @@ export interface FilingCardProps {
   busy: boolean;
   onClassify: (fileIndexId: string) => void;
   onAssign: (fileIndexId: string, projectKey: string) => void;
+  /**
+   * True only for the card most recently dropped onto a ProjectRail entry.
+   * Gates the settle animation + toast to the onDrop path per the brief —
+   * the pre-existing click-to-file ("File it") and select-to-reassign paths
+   * are unaffected, as they were before this card restyle.
+   */
+  viaDrop?: boolean;
 }
 
 /**
  * One unfiled email as a card in the Filing tab. Draggable onto a
  * ProjectRail entry (sets the `text/x-ws-email-id` payload DnD reads);
  * also files via the inline "Sort"/"File it"/reassign-select controls,
- * same as before the card restyle. Whichever path lands the decision,
- * the card settles (fade/collapse) and a toast confirms it.
+ * same as before the card restyle. Only the drag-drop path (`viaDrop`)
+ * triggers the settle (fade/collapse) + confirmation toast.
  */
-export function FilingCard({ filing, projects, busy, onClassify, onAssign }: FilingCardProps) {
+export function FilingCard({ filing, projects, busy, onClassify, onAssign, viaDrop }: FilingCardProps) {
   const subject = filing.emailMeta?.subject ?? filing.name;
   const decided = filing.status === 'confirmed' || filing.status === 'reassigned';
   const decidedLabel = filing.decidedProjectKey
@@ -29,12 +36,12 @@ export function FilingCard({ filing, projects, busy, onClassify, onAssign }: Fil
   const [settling, setSettling] = useState(false);
 
   useEffect(() => {
-    if (decided && !wasDecided.current) {
+    if (decided && !wasDecided.current && viaDrop) {
       setSettling(true);
       toast(`Filed to ${decidedLabel ?? 'project'}`);
     }
     wasDecided.current = decided;
-  }, [decided, decidedLabel]);
+  }, [decided, decidedLabel, viaDrop]);
 
   return (
     <div

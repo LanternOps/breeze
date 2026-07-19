@@ -121,6 +121,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<WorkspaceTab>('search');
   const [query, setQuery] = useState('');
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
+  // Tracks which FilingCard (by id) was most recently dropped onto the
+  // ProjectRail, so only the onDrop path — not click-to-file or the inline
+  // reassign select — triggers the card's settle animation + toast.
+  const [pendingDropId, setPendingDropId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const focusSearchPending = useRef(false);
 
@@ -392,6 +396,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
                       busy={filingBusy === filing.fileIndexId}
                       onClassify={classifyEmail}
                       onAssign={(id, key) => assignFiling(id, key, username)}
+                      viaDrop={pendingDropId === filing.fileIndexId}
                     />
                   ))}
                 </>
@@ -399,7 +404,10 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
             </div>
             <ProjectRail
               projects={projects}
-              onDropEmail={(id, key) => fileByDrop(id, key, username)}
+              onDropEmail={(id, key) => {
+                setPendingDropId(id);
+                fileByDrop(id, key, username);
+              }}
             />
           </div>
         </div>
