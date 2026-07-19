@@ -220,7 +220,12 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION public.breeze_config_policy_feature_reference_is_valid(
+-- Internal worker: assumes the caller has already established system scope.
+-- The public entry point below elevates + restores around it. (A non-superuser
+-- migration owner such as prod `doadmin` cannot use a `SET "breeze.scope"`
+-- function attribute — that requires privilege to set a custom GUC — so scope is
+-- managed explicitly in the wrapper instead.)
+CREATE OR REPLACE FUNCTION public.breeze_config_policy_feature_reference_is_valid_impl(
   checked_config_policy_id uuid,
   checked_feature_type public.config_feature_type,
   checked_feature_policy_id uuid
@@ -229,7 +234,6 @@ RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
   parent_org_id uuid;
@@ -342,6 +346,36 @@ BEGIN
 END;
 $$;
 
+-- Public entry point. Elevates to system scope for the cross-tenant read and
+-- ALWAYS restores the caller's prior scope before returning. This matters
+-- because withDbAccessContext sets breeze.scope once per transaction and holds
+-- it for the whole transaction, so a bare SET LOCAL here would leak 'system'
+-- into the rest of the request. On any exception the subtransaction/transaction
+-- rollback restores breeze.scope automatically, so an explicit restore is only
+-- required on the normal return path.
+CREATE OR REPLACE FUNCTION public.breeze_config_policy_feature_reference_is_valid(
+  checked_config_policy_id uuid,
+  checked_feature_type public.config_feature_type,
+  checked_feature_policy_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _result boolean;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  _result := public.breeze_config_policy_feature_reference_is_valid_impl(
+    checked_config_policy_id, checked_feature_type, checked_feature_policy_id
+  );
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  RETURN _result;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.breeze_validate_config_policy_feature_reference(
   checked_config_policy_id uuid,
   checked_feature_type public.config_feature_type,
@@ -351,7 +385,6 @@ RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 BEGIN
   IF NOT public.breeze_config_policy_feature_reference_is_valid(
@@ -397,13 +430,17 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
   link record;
   reference_id uuid;
   prior_reference_id uuid;
 BEGIN
+  -- Elevate for the cross-tenant candidate reads below; restore before the
+  -- (single, end-of-body) return so 'system' does not leak into the rest of the
+  -- request transaction. On exception the (sub)transaction rollback restores it.
+  PERFORM set_config('breeze.scope', 'system', true);
   reference_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END;
   prior_reference_id := CASE WHEN TG_OP = 'UPDATE' THEN OLD.id ELSE reference_id END;
 
@@ -440,6 +477,7 @@ BEGIN
       );
     END LOOP;
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   IF TG_OP = 'DELETE' THEN
     RETURN OLD;
   END IF;

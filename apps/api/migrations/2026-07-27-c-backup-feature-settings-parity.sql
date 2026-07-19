@@ -46,14 +46,16 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION public.breeze_backup_feature_settings_parity_is_valid(
+-- Internal worker: assumes system scope is already established by the public
+-- wrapper below. (Prod `doadmin` is a non-superuser and cannot set the custom
+-- breeze.scope GUC via a function attribute, so scope is managed in the wrapper.)
+CREATE OR REPLACE FUNCTION public.breeze_backup_feature_settings_parity_is_valid_impl(
   checked_feature_link_id uuid
 )
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
   checked_feature_type public.config_feature_type;
@@ -116,12 +118,35 @@ BEGIN
 END;
 $$;
 
+-- Public entry point. Elevates to system scope for the cross-tenant reads and
+-- restores the caller's prior scope before returning (breeze.scope is held for
+-- the whole request transaction, so a bare SET LOCAL would leak 'system').
+CREATE OR REPLACE FUNCTION public.breeze_backup_feature_settings_parity_is_valid(
+  checked_feature_link_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _result boolean;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  _result := public.breeze_backup_feature_settings_parity_is_valid_impl(checked_feature_link_id);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  RETURN _result;
+END;
+$$;
+
+-- Trigger reads only OLD/NEW and delegates the cross-tenant check to the
+-- self-elevating parity validator above, so it needs no scope attribute itself.
 CREATE OR REPLACE FUNCTION public.breeze_enforce_backup_feature_settings_parity()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
   old_link_id uuid;
