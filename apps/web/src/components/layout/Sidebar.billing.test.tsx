@@ -20,6 +20,11 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../stores/uiStore', () => ({
   useUiStore: () => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() }),
 }));
+// Unrelated to this suite's billing-gating assertions — stub out so the
+// module doesn't need a real (subscribable) auth store or registry fetch.
+vi.mock('../extensions/useExtensionNavigation', () => ({
+  useExtensionNavigation: () => [],
+}));
 // Partner scope so the billing items pass partnerScopeOnly and only the
 // permission gate decides visibility.
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));

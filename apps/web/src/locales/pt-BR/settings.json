@@ -2461,6 +2461,8 @@
       "billingDescription": "Endereço fiscal e de cobrança",
       "pax8": "Marketplace Pax8",
       "pax8Description": "Assinaturas e pedidos",
+      "extensions": "Extensões",
+      "extensionsDescription": "Seções de extensões de terceiros",
       "portalBranding": "Portal e identidade visual",
       "branding": "Identidade visual",
       "brandingDescription": "Tema e recursos visuais do portal",
