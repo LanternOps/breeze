@@ -5,7 +5,7 @@ import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock } = vi.hoisted(() => {
+const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock, intentApproversState } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = {
     id: col('id'),
@@ -14,17 +14,15 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     status: col('status'),
   };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id') };
-  const organizationUsersTbl = { userId: col('user_id'), orgId: col('org_id') };
   const intentOutboxTbl = { id: col('id'), intentId: col('intent_id') };
 
   return {
-    schema: { actionIntentsTbl, approvalRequestsTbl, organizationUsersTbl, intentOutboxTbl },
+    schema: { actionIntentsTbl, approvalRequestsTbl, intentOutboxTbl },
     dbState: {
       insertActionIntentsResults: [] as unknown[][],
       insertApprovalRequestsResults: [] as unknown[][],
       selectActionIntentsResults: [] as unknown[][],
       selectApprovalRequestsResults: [] as unknown[][],
-      selectOrgUsersResults: [] as unknown[][],
       updateActionIntentsResults: [] as unknown[][],
       insertedActionIntentValues: [] as Record<string, unknown>[],
       insertedApprovalRequestsValues: [] as unknown[],
@@ -52,6 +50,11 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       dispatchApprovalPushToTokens: vi.fn(async () => ({ tokensFound: 0, dispatched: 0, errors: 0 })),
     },
     metricsMock: { recordActionIntentEvent: vi.fn() },
+    // CRITICAL-2: approver resolution is now a single opaque resolver call
+    // (org + partner axis) instead of an organization_users select + N
+    // getUserPermissions round-trips, so it's mocked wholesale here rather
+    // than reconstructed from db-table mocks.
+    intentApproversState: { resolveIntentApprovers: vi.fn(async () => [] as string[]) },
   };
 });
 
@@ -97,9 +100,6 @@ vi.mock('../../db', () => ({
           if (table === schema.approvalRequestsTbl) {
             return resultBox(() => dbState.selectApprovalRequestsResults.shift() ?? []);
           }
-          if (table === schema.organizationUsersTbl) {
-            return resultBox(() => dbState.selectOrgUsersResults.shift() ?? []);
-          }
           throw new Error('unexpected select table in mock');
         }),
       })),
@@ -132,8 +132,8 @@ vi.mock('../../db/schema/approvals', () => ({
   approvalRequests: schema.approvalRequestsTbl,
 }));
 
-vi.mock('../../db/schema/users', () => ({
-  organizationUsers: schema.organizationUsersTbl,
+vi.mock('./intentApprovers', () => ({
+  resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -194,11 +194,13 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const REQUESTER_ID = '22222222-2222-4222-8222-222222222222';
 const APPROVER_1 = '33333333-3333-4333-8333-333333333333';
 const APPROVER_2 = '44444444-4444-4444-8444-444444444444';
+const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 
-function makeAuth() {
+function makeAuth(overrides?: { partnerId?: string | null }) {
   return {
     user: { id: REQUESTER_ID, email: 'req@example.com', name: 'Requester' },
     orgId: ORG_ID,
+    partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
   } as unknown as Parameters<typeof createActionIntent>[0];
@@ -218,7 +220,6 @@ function resetDbState() {
   dbState.insertApprovalRequestsResults.length = 0;
   dbState.selectActionIntentsResults.length = 0;
   dbState.selectApprovalRequestsResults.length = 0;
-  dbState.selectOrgUsersResults.length = 0;
   dbState.updateActionIntentsResults.length = 0;
   dbState.insertedActionIntentValues.length = 0;
   dbState.insertedApprovalRequestsValues.length = 0;
@@ -231,6 +232,7 @@ function makeIntentRow(overrides?: Record<string, unknown>) {
   return {
     id: 'intent-1',
     orgId: ORG_ID,
+    partnerId: null,
     requestedByUserId: REQUESTER_ID,
     requestingApiKeyId: null,
     source: 'chat',
@@ -276,6 +278,9 @@ beforeEach(() => {
   permState.userCanDecideApprovals.mockImplementation((perms: { canDecide?: boolean } | null) => !!perms?.canDecide);
   pushState.getUserPushTokens.mockResolvedValue([]);
   pushState.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+  // No eligible approvers by default — tests that need a fan-out opt in via
+  // mockResolvedValueOnce.
+  intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -316,13 +321,13 @@ describe('createActionIntent — digest stability', () => {
     const inputB = { a: { y: 3, z: 2 }, b: 1 };
     const expectedDigest = computeArgumentDigest(canonicalizeArguments(inputA));
 
-    dbState.selectOrgUsersResults.push([]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
     dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-a', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
     dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-a', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
     await createActionIntent(makeAuth(), baseInput({ input: inputA, idempotencyKey: 'key-a' }));
     expect(dbState.insertedActionIntentValues[0]?.argumentDigest).toBe(expectedDigest);
 
-    dbState.selectOrgUsersResults.push([]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
     dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-b', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
     dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-b', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
     await createActionIntent(makeAuth(), baseInput({ input: inputB, idempotencyKey: 'key-b' }));
@@ -364,12 +369,14 @@ describe('createActionIntent — idempotency', () => {
 describe('createActionIntent — approver fan-out', () => {
   it('excludes the requester from the fanned-out approval rows', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
-    dbState.selectOrgUsersResults.push([
-      { userId: REQUESTER_ID },
-      { userId: APPROVER_1 },
-      { userId: APPROVER_2 },
+    // resolveIntentApprovers returns the full eligible set (both axes,
+    // possibly including the requester); createActionIntent excludes the
+    // requester before fanning out.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([
+      REQUESTER_ID,
+      APPROVER_1,
+      APPROVER_2,
     ]);
-    permState.getUserPermissions.mockImplementation(async (userId: string) => ({ userId, canDecide: true }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }, { id: 'approval-2' }]);
 
     const snapshot = await createActionIntent(makeAuth(), baseInput());
@@ -392,10 +399,8 @@ describe('createActionIntent — approver fan-out', () => {
 
   it('creates a single sole-operator row when the requester is the only eligible approver', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
-    dbState.selectOrgUsersResults.push([{ userId: REQUESTER_ID }]);
-    permState.getUserPermissions.mockImplementation(async (userId: string) =>
-      userId === REQUESTER_ID ? { userId, canDecide: true } : null,
-    );
+    // Only the requester is eligible → sole-operator single-row fan-out.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-solo' }]);
 
     const snapshot = await createActionIntent(makeAuth(), baseInput());
@@ -412,8 +417,8 @@ describe('createActionIntent — approver fan-out', () => {
 
   it('creates the intent then immediately cancels it when no one is eligible (not even the requester)', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
-    dbState.selectOrgUsersResults.push([{ userId: REQUESTER_ID }, { userId: APPROVER_1 }]);
-    permState.getUserPermissions.mockResolvedValue(null); // nobody passes userCanDecideApprovals
+    // Nobody is eligible — not even the requester.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
     dbState.updateActionIntentsResults.push([
       makeIntentRow({ status: 'cancelled', errorCode: 'no_eligible_approvers' }),
     ]);
@@ -449,42 +454,35 @@ describe('createActionIntent — approver fan-out', () => {
 type MockLike = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
 
 describe('createActionIntent — connection-hold (#1105)', () => {
-  it('resolves every eligible-approver permission check before the write transaction inserts the intent row', async () => {
+  it('resolves the eligible-approver set before the write transaction inserts the intent row', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
-    dbState.selectOrgUsersResults.push([
-      { userId: REQUESTER_ID },
-      { userId: APPROVER_1 },
-      { userId: APPROVER_2 },
+    // Approver resolution now lives entirely in resolveIntentApprovers, which
+    // opens its OWN system DB context (and closes it) before returning — so
+    // intentService never holds a pooled connection across the membership
+    // reads. This mock stands in for that resolver; the #1105 property we
+    // assert is that it completes before the creation write transaction opens.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([
+      REQUESTER_ID,
+      APPROVER_1,
+      APPROVER_2,
     ]);
-    permState.getUserPermissions.mockImplementation(async (userId: string) => ({ userId, canDecide: true }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }, { id: 'approval-2' }]);
 
     await createActionIntent(makeAuth(), baseInput());
 
-    // One getUserPermissions call per org member — confirms the approver
-    // resolution actually ran (not vacuously skipped).
-    expect(permState.getUserPermissions).toHaveBeenCalledTimes(3);
+    // Resolver ran exactly once, before the intent-row insert (invocationCallOrder
+    // is a global counter shared across every vi.fn — safe to compare directly).
+    const resolverMock = intentApproversState.resolveIntentApprovers as unknown as MockLike;
+    expect(resolverMock.mock.invocationCallOrder).toHaveLength(1);
+    const resolverOrder = resolverMock.mock.invocationCallOrder[0]!;
 
     const insertMock = db.insert as unknown as MockLike;
     const intentInsertIndex = insertMock.mock.calls.findIndex((call) => call[0] === schema.actionIntentsTbl);
     expect(intentInsertIndex).toBeGreaterThanOrEqual(0);
     const intentInsertOrder = insertMock.mock.invocationCallOrder[intentInsertIndex]!;
+    expect(resolverOrder).toBeLessThan(intentInsertOrder);
 
-    // invocationCallOrder is a global counter shared across every vi.fn in
-    // the test — safe to compare directly across mocks. Every permission
-    // check's call site must precede the intent-row insert, proving
-    // resolution completed before the write transaction opened (no pooled
-    // connection held across the N sequential round-trips).
-    const permCallOrders = (permState.getUserPermissions as unknown as MockLike).mock.invocationCallOrder;
-    expect(Math.max(...permCallOrders)).toBeLessThan(intentInsertOrder);
-
-    // withDbAccessContext must have opened a distinct (earlier) context for
-    // the members read, separate from the one wrapping the creation write.
-    const wrapMock = withDbAccessContext as unknown as MockLike;
-    expect(wrapMock.mock.invocationCallOrder.length).toBeGreaterThanOrEqual(2);
-    expect(Math.max(...permCallOrders)).toBeLessThan(wrapMock.mock.invocationCallOrder[1]!);
-
-    // Fan-out outcome itself is unchanged by the reordering.
+    // Fan-out outcome itself is unchanged.
     const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
     expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
   });
@@ -497,8 +495,7 @@ describe('createActionIntent — connection-hold (#1105)', () => {
 describe('createActionIntent — transactional outbox', () => {
   it('writes exactly one intent_created outbox row carrying only ids, no argument content', async () => {
     dbState.insertActionIntentsResults.push([makeIntentRow()]);
-    dbState.selectOrgUsersResults.push([{ userId: APPROVER_1 }]);
-    permState.getUserPermissions.mockResolvedValue({ canDecide: true });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
 
     await createActionIntent(makeAuth(), baseInput());

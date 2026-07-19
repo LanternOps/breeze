@@ -174,7 +174,9 @@ describe('buildAuthContextForIntent — user-owned intents', () => {
     const result = await buildAuthContextForIntent(baseIntent());
 
     expect(result).toBeNull();
-    expect(permState.getUserPermissions).toHaveBeenCalledWith('user-1', { orgId: 'org-1' });
+    // baseIntent() defaults partnerId to null → threaded through as
+    // undefined (CRITICAL-2b).
+    expect(permState.getUserPermissions).toHaveBeenCalledWith('user-1', { partnerId: undefined, orgId: 'org-1' });
   });
 
   it('builds an org-scoped AuthContext on the happy path', async () => {
@@ -209,6 +211,10 @@ describe('buildAuthContextForIntent — user-owned intents', () => {
     expect(result!.token.roleId).toBe('role-1');
     expect(result!.token.sub).toBe('user-1');
     expect(result!.token.scope).toBe('organization');
+    // CRITICAL-2b: intent.partnerId is threaded into getUserPermissions so a
+    // partner-scope requester's role (which lives in partner_users, not
+    // organization_users) can resolve at release time.
+    expect(permState.getUserPermissions).toHaveBeenCalledWith('user-1', { partnerId: 'partner-1', orgId: 'org-1' });
   });
 
   it('a fully unrestricted permission set (no allowedSiteIds) allows every site', async () => {

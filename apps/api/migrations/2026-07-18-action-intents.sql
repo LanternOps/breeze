@@ -67,8 +67,23 @@ CREATE TABLE IF NOT EXISTS action_intents (
     CHECK ((requested_by_user_id IS NULL) <> (requesting_api_key_id IS NULL))
 );
 
+-- Idempotency dedup is scoped to LIVE intents only (PARTIAL unique index), not
+-- a total one. A total unique index on (org_id, idempotency_key) would let a
+-- single TERMINAL intent (completed/expired/rejected/cancelled/failed) block
+-- every future identical request (same tool + same canonicalized args) from
+-- that requester forever — a legitimate re-run tomorrow of the same script on
+-- the same device would 23505 against a months-old, already-finished row.
+-- Restricting the index to the three LIVE statuses means at most one LIVE
+-- intent can exist per (org_id, idempotency_key) at a time (the actual
+-- invariant createActionIntent needs for its replay-vs-create branch), while
+-- a new request after the prior one terminalizes creates a fresh row.
+-- DROP INDEX IF EXISTS first: this migration is unshipped, but a dev DB may
+-- already have applied an earlier (total) revision of it, and DROP+CREATE
+-- keeps re-application idempotent regardless of which revision is present.
+DROP INDEX IF EXISTS action_intents_org_idem_uniq;
 CREATE UNIQUE INDEX IF NOT EXISTS action_intents_org_idem_uniq
-  ON action_intents (org_id, idempotency_key);
+  ON action_intents (org_id, idempotency_key)
+  WHERE status IN ('pending_approval', 'approved', 'executing');
 CREATE INDEX IF NOT EXISTS action_intents_org_status_idx
   ON action_intents (org_id, status, expires_at);
 

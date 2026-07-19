@@ -8,7 +8,6 @@ import {
   smallint,
   text,
   timestamp,
-  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -109,15 +108,18 @@ export const actionIntents = pgTable(
     errorCode: text('error_code'),
   },
   (table) => ({
-    orgIdemUniq: uniqueIndex('action_intents_org_idem_uniq').on(
-      table.orgId,
-      table.idempotencyKey,
-    ),
     orgStatusIdx: index('action_intents_org_status_idx').on(
       table.orgId,
       table.status,
       table.expiresAt,
     ),
+    // Note: action_intents_org_idem_uniq is a PARTIAL unique index (WHERE
+    // status IN ('pending_approval','approved','executing') — IMPORTANT-4)
+    // declared in the SQL migration only; Drizzle's index DSL doesn't model
+    // partial indexes cleanly (same precedent as intent_outbox_unpublished_idx
+    // below / elevations.ts's elevation_requests_org_pending_idx et al). The
+    // matching partial predicate is passed to onConflictDoNothing's `where`
+    // in intentService.ts's createActionIntent — see the comment there.
   }),
 );
 

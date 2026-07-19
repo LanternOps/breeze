@@ -69,7 +69,19 @@ async function buildUserOwnedAuthContext(
     // access to intent.orgId since the intent was created/approved. A
     // shrunk permission set must fail release, never silently execute with
     // the stale rights the intent was created under.
-    const perms = await getUserPermissions(userId, { orgId: intent.orgId });
+    //
+    // partnerId is threaded through too (CRITICAL-2b): a partner-scope
+    // requester (the primary MSP persona) has no organization_users row at
+    // all — their role lives in partner_users — so passing only { orgId }
+    // resolves NO role and getUserPermissions returns null for every
+    // partner-scope requester, failing release closed even though the
+    // requester still legitimately has access. intent.partnerId is the
+    // denormalized value createActionIntent now persists from the
+    // requester's auth at creation time (see intentService.ts).
+    const perms = await getUserPermissions(userId, {
+      partnerId: intent.partnerId ?? undefined,
+      orgId: intent.orgId,
+    });
     if (!perms) {
       return null;
     }
