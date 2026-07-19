@@ -324,8 +324,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   });
 
   if (!completed) {
-    // Lost the executing -> completed CAS AFTER executeTool already ran and
-    // had its real-world side effect (e.g. the stale-executing reaper beat
+    // Lost the executing -> completed CAS AFTER the tool already ran (via
+    // executeTool or executeGoogleToolHeadless) and had its real-world side
+    // effect (e.g. the stale-executing reaper beat
     // us to failed:execution_lost on an extremely slow tool call, or a
     // duplicate delivery raced this one to the terminal state first). The
     // side effect already happened and cannot be undone; there is nothing
