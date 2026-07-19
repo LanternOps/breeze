@@ -55,6 +55,11 @@ export interface MicrosoftGraphClient {
     maxItems: number;
     maxPages: number;
   }): Promise<{ items: Record<string, unknown>[]; truncated: boolean }>;
+  patch(input: {
+    accessToken: OpaqueAccessToken;
+    path: string;
+    body: Record<string, unknown>;
+  }): Promise<void>;
 }
 
 interface GraphClientConfig {
@@ -516,6 +521,38 @@ export function createMicrosoftGraphClient(
           : fixedCollectionNextLink(page.nextLink, expectedPath);
       }
       return { items, truncated };
+    },
+
+    async patch(input) {
+      if (!configValid
+        || typeof input.accessToken !== 'string'
+        || !input.accessToken
+        || !input.path.startsWith('/')) {
+        throw failure('graph_request_invalid');
+      }
+      const budget: RequestBudget = { bytes: 0, requests: 0, items: 0 };
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      try {
+        const response = await fetchImpl(graphUrl(input.path), {
+          method: 'PATCH',
+          redirect: 'error',
+          headers: { authorization: `Bearer ${input.accessToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify(input.body),
+          signal: controller.signal,
+        });
+        // Graph mutation success is 204 No Content (or 200). Consume/bound the
+        // body either way; only translate non-2xx into a typed failure.
+        const responseBody = await readBoundedBody(response, budget, maxResponseBytes);
+        if (!response.ok) throw readFailure(response, responseBody);
+      } catch (error) {
+        if (error instanceof GraphClientError) throw error;
+        if (timedOut) throw failure('graph_request_timeout');
+        throw failure('graph_transport_failed');
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
