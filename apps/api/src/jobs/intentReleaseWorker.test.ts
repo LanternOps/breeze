@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -33,6 +33,10 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
+    googleHeadlessMock: {
+      isHeadlessGoogleTool: vi.fn(() => false),
+      executeGoogleToolHeadless: vi.fn(),
+    },
   };
 });
 
@@ -92,6 +96,13 @@ vi.mock('../services/aiGuardrails', () => ({
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
+vi.mock('../services/googleToolsHeadless', () => ({
+  isHeadlessGoogleTool: googleHeadlessMock.isHeadlessGoogleTool,
+  executeGoogleToolHeadless: googleHeadlessMock.executeGoogleToolHeadless,
+  GoogleConnectionUnavailableError: class GoogleConnectionUnavailableError extends Error {
+    constructor(public readonly toolResult: string) { super('unavailable'); }
+  },
+}));
 // Partial mock: getToolTimeout is stubbed per-test, withToolTimeout stays the
 // REAL implementation so its setTimeout-based rejection genuinely fires.
 vi.mock('../services/toolTimeouts', async (importOriginal) => {
@@ -118,6 +129,7 @@ vi.mock('bullmq', () => ({
 
 import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseWorker';
 import type { ActionIntent } from '../db/schema/actionIntents';
+import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 
 function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
   return {
@@ -190,6 +202,7 @@ describe('releaseApprovedIntent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetDbState();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
   });
 
   it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
@@ -575,6 +588,58 @@ describe('releaseApprovedIntent', () => {
 
     await expect(releaseApprovedIntent('intent-missing')).resolves.toBeUndefined();
     expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+  });
+
+  describe('headless Google branch', () => {
+    it('executes a headless Google tool and CASes to completed (not session_required)', async () => {
+      const intent = baseIntent({ actionName: 'google_suspend_user' });
+      primeThroughRevalidation(intent);
+      googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+      googleHeadlessMock.executeGoogleToolHeadless.mockResolvedValueOnce('Suspended Google Workspace user u@x.com.');
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(googleHeadlessMock.executeGoogleToolHeadless).toHaveBeenCalledWith(
+        'google_suspend_user', intent.arguments, intent.orgId,
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+      );
+    });
+
+    it('fails connection_unavailable when the headless executor throws GoogleConnectionUnavailableError', async () => {
+      const intent = baseIntent({ actionName: 'google_suspend_user' });
+      primeThroughRevalidation(intent);
+      googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+      googleHeadlessMock.executeGoogleToolHeadless.mockRejectedValueOnce(
+        new GoogleConnectionUnavailableError(JSON.stringify({ error: 'no_google_connection' })),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'connection_unavailable' }),
+      );
+    });
+
+    it('still fails session_required for a session-aware M365 tool (deferral intact)', async () => {
+      const intent = baseIntent({ actionName: 'm365_disable_user' });
+      primeThroughRevalidation(intent);
+      googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+      aiToolsMock.requiresLiveSession.mockReturnValue(true);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(googleHeadlessMock.executeGoogleToolHeadless).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'session_required' }),
+      );
+    });
   });
 });
 

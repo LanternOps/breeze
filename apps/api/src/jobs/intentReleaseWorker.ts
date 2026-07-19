@@ -12,6 +12,11 @@ import { revalidateApprovedIntentForRelease } from '../services/actionIntents/re
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
+import {
+  isHeadlessGoogleTool,
+  executeGoogleToolHeadless,
+  GoogleConnectionUnavailableError,
+} from '../services/googleToolsHeadless';
 
 /**
  * Durable release worker (spec
@@ -241,46 +246,45 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
   const { auth } = revalidation;
 
-  // Phase-1 guard: the headless worker cannot run session-aware M365/Google
-  // Tier-3 tools — they need a live SSE session's per-tenant OAuth connection
-  // (see services/aiAgentSdkTools.ts makeSessionAwareHandler). executeTool would
-  // throw `Unknown tool`; fail with an explicit, categorized code instead. The
-  // inline chat path still runs these under its live session. Headless dispatch
-  // is deferred (Phase 2).
-  if (requiresLiveSession(intent.actionName)) {
+  // Phase-1 deferral: the headless worker still cannot run session-aware M365
+  // tools (they need the control-plane customer-graph-actions executor, not yet
+  // built). Google Tier-3 tools ARE headless-executable (org-keyed connection,
+  // resolved by intent.orgId) as of Phase 2 — so gate the session_required fail
+  // on "not a headless Google tool". See docs/superpowers/specs/
+  // 2026-07-19-action-intents-phase2-google-headless-design.md.
+  if (!isHeadlessGoogleTool(intent.actionName) && requiresLiveSession(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
   }
 
-  // Step 3: execute through the existing dispatch (guardrails, device
-  // gates, and whatever per-tool audit/ledger writes the handler itself
-  // makes) with the rebuilt context. Escape any inherited DB context first,
-  // then open the SAME org-scoped context a live request would run this
-  // call under (mirrors services/aiAgentSdkTools.ts's makeHandler /
-  // sessionHandler) so the tool handler's own `auth.orgCondition`-filtered
-  // reads see exactly the rebuilt actor's tenant scope — never a system-wide
-  // view, and never the short-lived system context the revalidation reads
-  // above used.
-  // Bounded by the same per-tool timeout the inline chat path uses
-  // (services/aiAgentSdkTools.ts) — withToolTimeout only bounds when THIS
-  // worker gives up waiting; it cannot cancel the underlying handler (JS
-  // promises aren't cancelable), same limitation the inline path has. A
-  // timeout rejection is caught below like any other thrown error and
-  // terminalizes the intent as execution_error with executed:true — an
-  // attempt was made, its outcome is just unknown to us now.
+  // Step 3: execute with the rebuilt context. Escape any inherited DB context,
+  // then open the SAME org-scoped context a live request would use, bounded by
+  // the same per-tool timeout. Headless Google tools resolve their per-tenant
+  // OAuth connection by intent.orgId (fresh + re-authorized at execution);
+  // everything else runs through executeTool.
+  const invoke = isHeadlessGoogleTool(intent.actionName)
+    ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
+    : () => executeTool(intent.actionName, intent.arguments, auth);
+
   let rawResult: string;
   try {
     rawResult = await withToolTimeout(
       runOutsideDbContext(() =>
-        withDbAccessContext(dbAccessContextFromAuth(auth), () =>
-          executeTool(intent.actionName, intent.arguments, auth),
-        ),
+        withDbAccessContext(dbAccessContextFromAuth(auth), invoke),
       ),
       getToolTimeout(intent.actionName),
       intent.actionName,
     );
   } catch (err) {
-    console.error(`[IntentReleaseWorker] executeTool threw for intent ${intent.id}:`, err);
+    if (err instanceof GoogleConnectionUnavailableError) {
+      // The org's Google connection is missing/rotated/inactive at release time
+      // — no API call was made. Fail closed with a distinct, categorized code.
+      await failIntent(intent, 'connection_unavailable', {
+        details: { actionName: intent.actionName },
+      });
+      return;
+    }
+    console.error(`[IntentReleaseWorker] tool execution threw for intent ${intent.id}:`, err);
     await failIntent(intent, 'execution_error', {
       details: { error: err instanceof Error ? err.message : String(err) },
       executed: true,
