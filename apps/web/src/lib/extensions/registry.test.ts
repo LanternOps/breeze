@@ -252,4 +252,18 @@ describe('loadExtensionModule — trust boundary', () => {
       .toThrow(UntrustedExtensionModuleUrlError);
     expect(importer).not.toHaveBeenCalled();
   });
+
+  it('SECURITY: refuses an encoded-slash/backslash pathname (defense in depth)', () => {
+    const importer = vi.fn();
+    __setExtensionModuleImporterForTests(importer);
+
+    for (const url of [
+      '/api/v1/extensions/assets/demo/abc123/web%2f..%2fserver/index.cjs',
+      '/api/v1/extensions/assets/demo/abc123/web%2Findex.js',
+      '/api/v1/extensions/assets/demo/abc123/web%5c..%5cserver%5cindex.cjs',
+    ]) {
+      expect(() => loadExtensionModule(url)).toThrow(UntrustedExtensionModuleUrlError);
+    }
+    expect(importer).not.toHaveBeenCalled();
+  });
 });

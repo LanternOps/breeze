@@ -201,6 +201,15 @@ const ASSET_PATH_PREFIX = '/api/v1/extensions/assets/';
 
 const ALLOWED_MODULE_PROTOCOLS = new Set(['http:', 'https:']);
 
+/** Encoded slash/backslash variants that could smuggle an extra path
+ *  segment past a naive `startsWith` prefix check on `resolved.pathname`
+ *  (the `URL` constructor does NOT decode these — they survive intact into
+ *  `pathname`). The server-side exact-inventory-key check + realpath
+ *  containment (extensionsWeb.ts) is the actual defense; this is
+ *  belt-and-suspenders so the client never even attempts to import such a
+ *  URL. */
+const ENCODED_SLASH_RE = /%2f|%5c/i;
+
 export class UntrustedExtensionModuleUrlError extends Error {
   constructor(moduleUrl: string, reason: string) {
     super(`refusing to import extension module ${JSON.stringify(moduleUrl)}: ${reason}`);
@@ -236,6 +245,9 @@ function assertSameOriginAssetUrl(moduleUrl: string): URL {
   }
   if (!resolved.pathname.startsWith(ASSET_PATH_PREFIX)) {
     throw new UntrustedExtensionModuleUrlError(moduleUrl, `must be under ${ASSET_PATH_PREFIX}`);
+  }
+  if (ENCODED_SLASH_RE.test(resolved.pathname)) {
+    throw new UntrustedExtensionModuleUrlError(moduleUrl, 'must not contain an encoded slash or backslash');
   }
   return resolved;
 }

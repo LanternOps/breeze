@@ -19,6 +19,16 @@ import ExtensionPageHost from '../../../components/extensions/ExtensionPageHost'
 
 const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;
 
+// A registry page `path` is always validated server-side against
+// `absoluteWebPath` (packages/extension-sdk/src/manifest.ts), which requires
+// the path to start with "/" and only contain [a-zA-Z0-9-_./] thereafter.
+// A bare space can never appear in a real page path, so using it as the
+// fallback when `!pathValid` guarantees `findExtensionPage` (registry.ts)
+// can never resolve a match — body and status agree on "not found" instead
+// of a malformed URL silently rendering whatever extension page happens to
+// live at "/".
+const UNMATCHABLE_EXTENSION_PATH = ' ';
+
 const { name } = Astro.params;
 const rawPath = Astro.params.path; // rest param: undefined | 'a' | 'a/b/c'
 const pathSegments = rawPath ? rawPath.split('/') : [];
@@ -33,7 +43,7 @@ if (!nameValid || !pathValid) {
 }
 
 const extensionName = nameValid ? (name as string) : '';
-const extensionPath = pathValid ? '/' + pathSegments.join('/') : '/';
+const extensionPath = pathValid ? '/' + pathSegments.join('/') : UNMATCHABLE_EXTENSION_PATH;
 ---
 
 <DashboardLayout title="Extension">
