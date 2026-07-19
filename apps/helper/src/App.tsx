@@ -405,7 +405,9 @@ export default function App() {
   const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
-  const [showWorkspace, setShowWorkspace] = useState(false);
+  // Files-first: land in the Files view; the render below still gates on the
+  // capability probe, so orgs without workspace files keep the chat home.
+  const [showWorkspace, setShowWorkspace] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -512,8 +514,8 @@ export default function App() {
     return <DeviceInfoView onClose={() => setShowDeviceInfo(false)} />;
   }
 
-  // Workspace files view (only reachable when the backend reports the capability)
-  if (showWorkspace) {
+  // Workspace files view (only renders once the backend reports the capability)
+  if (showWorkspace && workspaceAvailable) {
     return <WorkspacePanel onClose={() => setShowWorkspace(false)} />;
   }
 

@@ -1035,7 +1035,7 @@ pub fn run() {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Breeze Helper")
-            .inner_size(380.0, 600.0)
+            .inner_size(920.0, 640.0)
             .resizable(true)
             .center();
 
