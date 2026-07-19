@@ -6,6 +6,8 @@ import {
   type AgentConfig,
   type HelperFetchResponse,
 } from '../lib/helperFetch';
+import { WORKSPACE_CHAT_TOOLS, executeWorkspaceChatTool } from '../lib/workspaceChatTools';
+import { useWorkspaceStore } from './workspaceStore';
 
 interface ChatMessage {
   id: string;
@@ -266,12 +268,48 @@ async function helperStreamRequest(
 // SSE line parser (shared between Tauri and browser paths)
 // ---------------------------------------------------------------------------
 
-function processSSELines(
+/**
+ * Handle a `client_tool_request` SSE event: execute the named workspace tool
+ * client-side and POST the result back to `/tool-results`. A known tool's
+ * output is posted under `output` (including a degradable `{ error }` payload
+ * from a failed executor, which the model reads as tool output); an unknown
+ * tool name is posted under `error` so the model sees a hard tool failure.
+ */
+async function handleClientToolRequest(event: {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}): Promise<void> {
+  const { agentConfig, sessionId } = useChatStore.getState();
+  if (!agentConfig || !sessionId) return;
+
+  const known = WORKSPACE_CHAT_TOOLS.some((t) => t.name === event.toolName);
+  const body = known
+    ? { toolUseId: event.toolUseId, output: await executeWorkspaceChatTool(event.toolName, event.input ?? {}) }
+    : { toolUseId: event.toolUseId, error: `Unknown tool: ${event.toolName}` };
+
+  try {
+    await helperRequest(
+      agentConfig,
+      `${agentConfig.api_url}/api/v1/helper/chat/sessions/${sessionId}/tool-results`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (err) {
+    console.error('[Helper] Failed to post client tool result:', err);
+  }
+}
+
+export async function processSSELines(
   lines: string[],
   currentAssistantId: { value: string | null },
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
   setDirect: (partial: Partial<ChatState>) => void,
-) {
+): Promise<void> {
+  const pending: Promise<void>[] = [];
   for (const line of lines) {
     if (!line.startsWith('data:')) continue;
     const jsonStr = line.slice(5).trim();
@@ -367,6 +405,19 @@ function processSSELines(
           break;
         }
 
+        case 'client_tool_request': {
+          // Fire the executor + POST asynchronously; awaited via `pending`
+          // below so the synchronous UI updates above are never blocked.
+          pending.push(
+            handleClientToolRequest({
+              toolUseId: event.toolUseId,
+              toolName: event.toolName,
+              input: event.input,
+            }),
+          );
+          break;
+        }
+
         case 'done': {
           setDirect({ isStreaming: false });
           break;
@@ -385,6 +436,8 @@ function processSSELines(
       console.error('[Helper] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
     }
   }
+
+  await Promise.all(pending);
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +645,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Create session if needed
       let currentSessionId = sessionId;
       if (!currentSessionId) {
+        // Declare the workspace chat tools only when the estate is reachable;
+        // core builds the bridged MCP server from them and drives file-search /
+        // cited-RAG through the client executors.
+        const workspaceAvailable = useWorkspaceStore.getState().available === true;
         const createRes = await helperRequest(
           agentConfig,
           `${agentConfig.api_url}/api/v1/helper/chat/sessions`,
@@ -600,6 +657,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...(username ? { helperUser: username } : {}),
+              ...(workspaceAvailable ? { clientTools: WORKSPACE_CHAT_TOOLS } : {}),
             }),
           },
         );

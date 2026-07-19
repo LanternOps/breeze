@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { helperRequest, type AgentConfig } from '../lib/helperFetch';
+import { workspaceUrl } from '../lib/workspaceUrl';
 import { useChatStore } from './chatStore';
 
 // ---------------------------------------------------------------------------
@@ -187,11 +188,6 @@ interface WorkspaceState {
 
 function agentConfig(): AgentConfig | null {
   return useChatStore.getState().agentConfig;
-}
-
-function workspaceUrl(config: AgentConfig, path: string, params?: URLSearchParams): string {
-  const qs = params && params.size > 0 ? `?${params.toString()}` : '';
-  return `${config.api_url}/api/v1/workspace/helper${path}${qs}`;
 }
 
 function parseErrorBody(body: string, fallback: string): string {
