@@ -183,7 +183,7 @@ describe('makeClientDeclaredToolHandler', () => {
     const result = await handler({ q: 'x' });
     expect(dispatch).toHaveBeenCalledWith('find_files', { q: 'x' });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toBe(JSON.stringify({ files: ['a'] }));
+    expect(result.content[0]?.text).toBe(JSON.stringify({ files: ['a'] }));
   });
 
   it('maps a dispatch error to an isError CallToolResult', async () => {
@@ -191,14 +191,14 @@ describe('makeClientDeclaredToolHandler', () => {
     const handler = makeClientDeclaredToolHandler('find_files', dispatch);
     const result = await handler({});
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('nope');
+    expect(result.content[0]?.text).toContain('nope');
   });
 
   it('passes a plain string output through without double-encoding', async () => {
     const dispatch = vi.fn().mockResolvedValue({ output: 'hello' });
     const handler = makeClientDeclaredToolHandler('find_files', dispatch);
     const result = await handler({});
-    expect(result.content[0].text).toBe('hello');
+    expect(result.content[0]?.text).toBe('hello');
   });
 });
 

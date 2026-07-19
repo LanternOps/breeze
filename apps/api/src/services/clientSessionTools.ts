@@ -147,7 +147,8 @@ function jsonSchemaNodeToZodType(node: Record<string, unknown>): z.ZodTypeAny {
 }
 
 export function jsonSchemaObjectToZodShape(schema: Record<string, unknown>): z.ZodRawShape {
-  const shape: z.ZodRawShape = {};
+  // Mutable accumulator: ZodRawShape's index signature is read-only.
+  const shape: Record<string, z.ZodType> = {};
   const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
   const properties = (schema.properties as Record<string, unknown> | undefined) ?? {};
   for (const [key, prop] of Object.entries(properties)) {
