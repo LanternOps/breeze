@@ -144,14 +144,19 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // last browse that completed successfully. The Browse chip/tab effect below
   // re-runs on browsePath *and* tab changes now, so without this a rail
   // click (which already fetched) or a tab revisit with unchanged state would
-  // redundantly re-fetch. Seeded from the initial browsePath: if a folder is
-  // already loaded when the panel first renders (a preloaded view, or a
-  // remount while a browse was showing), entering Browse must not re-fetch it.
-  const lastBrowseKeyRef = useRef<string | null>(
-    browsePath
-      ? JSON.stringify([browsePath.sourceId, browsePath.parentPath, filters.project, filters.docType])
-      : null,
-  );
+  // redundantly re-fetch. Seeded to null, NOT from the initial browsePath +
+  // current filters: `filters` reflects whatever is active right now, not
+  // what was actually fetched to produce the currently-loaded `entries` —
+  // those can diverge (e.g. a project chip set from Search after the last
+  // Browse fetch, then the panel closed and reopened while `browsePath`
+  // survives in the module-level store). Trusting current filters at seed
+  // time would let a stale, wrongly-filtered (or wrongly-unfiltered) view
+  // through unrefreshed. Seeding null means the first Browse entry after a
+  // fresh mount always re-fetches once — a one-time, acceptable cost for
+  // guaranteed correctness — after which this ref is only ever written from
+  // an actual successful fetch's key (see `runBrowse`), so subsequent
+  // skip/refetch decisions are always trustworthy.
+  const lastBrowseKeyRef = useRef<string | null>(null);
 
   // `error` is a single store field shared by all four views (Search,
   // Browse, Recents, Filing), cleared only when the view whose fetch set it
@@ -284,12 +289,26 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // (sourceId, parentPath, project, docType) actually changed — so a rail
   // click (which already fetched via runBrowse) or a tab revisit with
   // unchanged state doesn't double-fetch.
+  //
+  // Skip guard: mirrors the search debounce effect's guard exactly — skip
+  // ONLY when the key matches the last *successful* browse AND no error is
+  // currently set (read via getState(), not a dependency, for the same
+  // reason as the search effect: adding `error` as a dependency would let
+  // browse()'s own error writes re-run this effect and auto-retry forever).
+  // Without the `!error` half: browse (s1, docs) unfiltered succeeds (key
+  // recorded) -> a project chip set on Search -> returning to Browse re-runs
+  // this effect, the filtered key doesn't match, so it fetches and FAILS
+  // (error set; the key is only recorded on success, so lastBrowseKeyRef is
+  // unchanged) -> clearing the chip mutates only `filters`, never `error` ->
+  // the effect re-runs with a key that once again matches the earlier
+  // unfiltered success, and a key-only guard would skip, leaving a stale
+  // ErrorRow masking the folder's still-valid entries indefinitely.
   useEffect(() => {
     if (tab !== 'browse' || !browsePath) return;
     const key = JSON.stringify([
       browsePath.sourceId, browsePath.parentPath, filters.project, filters.docType,
     ]);
-    if (key === lastBrowseKeyRef.current) return;
+    if (key === lastBrowseKeyRef.current && !useWorkspaceStore.getState().error) return;
     runBrowse(browsePath.sourceId, browsePath.parentPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, browsePath, filters.project, filters.docType]);

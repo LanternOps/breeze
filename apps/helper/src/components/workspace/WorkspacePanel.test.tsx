@@ -173,8 +173,12 @@ it('Browse tab shows only Project/Doc type chips, and selecting one re-issues th
   expect(within(chipRow).queryByRole('button', { name: 'Kind' })).not.toBeInTheDocument();
 
   // The mount-time "open first source" effect must not have fired — browsePath
-  // was already set, so this isolates the assertion below to the chip pick.
-  expect(browseSpy).not.toHaveBeenCalled();
+  // was already set, so it no-ops. The chip/tab effect DOES fire once here
+  // though: lastBrowseKeyRef seeds to null (not from browsePath + current
+  // filters — see Finding 2 in WorkspacePanel.tsx), so the first Browse entry
+  // after mount always re-fetches once, regardless of a preset browsePath.
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(1));
+  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', '');
 
   fireEvent.pointerDown(within(chipRow).getByRole('button', { name: 'Project' }), { button: 0 });
   // Menu item, not FileTable's own "Henderson Water Main Replacement" cell.
@@ -182,7 +186,8 @@ it('Browse tab shows only Project/Doc type chips, and selecting one re-issues th
   fireEvent.click(option);
 
   expect(useWorkspaceStore.getState().filters.project).toBe('Henderson Water Main Replacement');
-  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', ''));
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(2));
+  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', '');
 });
 
 // Regression test for the debounce-effect's `tab` dependency re-arming a
@@ -377,19 +382,110 @@ it('re-fetches Browse on return when a shared filter changed while off the tab',
 
   render(<WorkspacePanel onClose={() => {}} />);
 
-  // Enter Browse: the folder is already loaded (browsePath preset), so the
-  // seeded key means no redundant re-fetch on entry.
+  // Enter Browse: lastBrowseKeyRef seeds to null (Finding 2 — it no longer
+  // trusts browsePath + current filters at seed time), so this first entry
+  // after mount re-fetches once even though a folder was already loaded.
   fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
-  expect(browseSpy).not.toHaveBeenCalled();
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(1));
+  expect(browseSpy).toHaveBeenNthCalledWith(1, 's1', 'docs');
 
   // Leave Browse, then change the shared filters.project slice from another tab.
   fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
   act(() => {
     useWorkspaceStore.getState().setFilter('project', 'Henderson Water Main Replacement');
   });
-  expect(browseSpy).not.toHaveBeenCalled(); // still off Browse → no fetch yet
+  expect(browseSpy).toHaveBeenCalledTimes(1); // still off Browse → no new fetch yet
 
   // Return to Browse: the filter changed, so the current folder must re-fetch.
   fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(2));
+  expect(browseSpy).toHaveBeenNthCalledWith(2, 's1', 'docs');
+});
+
+// Regression test for Finding 1 (verification review, asymmetric browse
+// guard): the browse skip guard checked only the (sourceId, parentPath,
+// project, docType) key, not whether `error` was currently set — unlike the
+// search debounce effect's guard, which is error-aware. Repro: browse
+// (s1, docs) unfiltered succeeds (key recorded) -> a project chip set while
+// on Browse re-issues the fetch and it FAILS (error set; the key is only
+// recorded on success, so lastBrowseKeyRef is unchanged) -> clearing the
+// chip mutates only `filters`, never `error` -> the effect re-runs with a
+// key that once again matches the earlier unfiltered success, and a
+// key-only guard skips, leaving a stale ErrorRow masking the folder's
+// still-valid entries indefinitely.
+it('clearing a filter after a failed browse re-fetches instead of leaving a stale ErrorRow', async () => {
+  const browseSpy = vi.fn(async () => {
+    const { project } = useWorkspaceStore.getState().filters;
+    if (project) {
+      useWorkspaceStore.setState({ error: 'Could not reach the index.', loading: false });
+    } else {
+      // Deliberately does NOT touch `browsePath` — it's already correct
+      // ({ sourceId: 's1', parentPath: 'docs' }) from the initial setState
+      // below, and reassigning it to a fresh object on every success would
+      // change its identity, which is itself a dependency of the effect
+      // under test — an unrelated re-render/re-run loop that has nothing to
+      // do with the guard behavior this test is verifying.
+      useWorkspaceStore.setState({
+        entries: [file({ id: 'f1', name: 'alder-easement.pdf' })],
+        error: null,
+        loading: false,
+      });
+    }
+  });
+  useWorkspaceStore.setState({
+    browse: browseSpy,
+    browsePath: { sourceId: 's1', parentPath: 'docs' },
+  });
+
+  render(<WorkspacePanel onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
+  // First entry after mount: lastBrowseKeyRef seeds to null (Finding 2), so
+  // this fetch runs, succeeds unfiltered, and records the success key.
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(1));
+  expect(screen.getByText('alder-easement.pdf')).toBeInTheDocument();
+
+  // Set a project filter — the chip/tab effect re-fetches and it fails.
+  act(() => {
+    useWorkspaceStore.getState().setFilter('project', 'Henderson Water Main Replacement');
+  });
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('Could not reach the index.')).toBeInTheDocument();
+
+  // Clear the filter: the recomputed key matches the earlier unfiltered
+  // success, but `error` is still set, so the guard must still re-fetch
+  // instead of skipping and leaving the ErrorRow stuck over valid entries.
+  act(() => {
+    useWorkspaceStore.getState().clearFilter('project');
+  });
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledTimes(3));
+  expect(screen.queryByText('Could not reach the index.')).not.toBeInTheDocument();
+  expect(screen.getByText('alder-easement.pdf')).toBeInTheDocument();
+});
+
+// Regression test for Finding 2 (verification review, over-trusting seed):
+// lastBrowseKeyRef used to be seeded on mount from persisted browsePath +
+// *current* filters, conflating "what was successfully fetched" with
+// "current filter state". Repro: browse unfiltered succeeds -> a project
+// chip gets set (e.g. from Search) -> the panel is closed and reopened
+// (WorkspacePanel unmounts/remounts; `browsePath`/`filters` survive in the
+// module-level store) -> entering Browse must re-fetch, since the old seed
+// would otherwise match the *current* (filtered) state at mount and skip,
+// rendering stale unfiltered entries under an active filter chip.
+it('remounting the panel with a filter set after the last fetch re-fetches Browse on entry', async () => {
+  const browseSpy = vi.fn().mockResolvedValue(undefined);
+  useWorkspaceStore.setState({
+    browse: browseSpy,
+    browsePath: { sourceId: 's1', parentPath: 'docs' },
+    entries: [file({ id: 'f1', name: 'alder-easement.pdf' })],
+    filters: { project: 'Henderson Water Main Replacement' },
+  });
+
+  const { unmount } = render(<WorkspacePanel onClose={() => {}} />);
+  unmount();
+
+  render(<WorkspacePanel onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
   await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', 'docs'));
 });
