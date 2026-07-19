@@ -182,7 +182,8 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'client-ai', 'config', 'configuration-policies', 'contracts',
     'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
     'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-    'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
+    'events', 'ext', 'extensions', 'filters', 'google', 'groups', 'helper',
+    'huntress',
     'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
     'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
     'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
@@ -198,8 +199,8 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
   ];
 
-  it('has exactly 115 entries in the ground-truth contract', () => {
-    expect(CORE_NAMESPACES).toHaveLength(115);
+  it('has exactly 116 entries in the ground-truth contract', () => {
+    expect(CORE_NAMESPACES).toHaveLength(116);
   });
 
   it('reserves every core /api/v1 route namespace', () => {
