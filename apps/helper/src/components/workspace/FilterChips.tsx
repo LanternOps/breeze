@@ -147,7 +147,19 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
               {preset.label}
             </DropdownMenu.Item>
           ))}
-          <div className="ws-filter-chip-menu-custom">
+          <div
+            className="ws-filter-chip-menu-custom"
+            onKeyDownCapture={(e) => {
+              // Radix Menu.Content's onKeyDown unconditionally preventDefaults Tab
+              // for any keydown originating inside [data-radix-menu-content] (no
+              // focus-trap boundary check, unlike react-focus-scope). That leaves
+              // Tab non-functional between these two plain <input>s, which aren't
+              // registered Menu.Items and so get no arrow-key roving focus either.
+              // Stop the event here, in capture phase, before it reaches Content's
+              // bubble-phase handler, so native Tab focus movement is preserved.
+              if (e.key === 'Tab') e.stopPropagation();
+            }}
+          >
             <label>
               From
               <input
