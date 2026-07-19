@@ -1009,6 +1009,7 @@ fn build_tray_menu(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             read_agent_config,
             helper_fetch,
@@ -1036,6 +1037,7 @@ pub fn run() {
             )
             .title("Breeze Helper")
             .inner_size(920.0, 640.0)
+            .min_inner_size(360.0, 520.0)
             .resizable(true)
             .center();
 
