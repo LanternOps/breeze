@@ -66,10 +66,10 @@ html,
 body {
   height: 100%;
   overflow: hidden;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
+  font-family: var(--ws-font);
+  background: var(--ws-canvas);
+  color: var(--ws-ink);
+  font-size: var(--ws-text-13);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -77,6 +77,13 @@ body {
 
 #root {
   height: 100%;
+}
+
+/* ----------------------------------------------------------
+   Utility Classes
+   ---------------------------------------------------------- */
+.ws-tabular {
+  font-feature-settings: 'tnum';
 }
 
 /* ----------------------------------------------------------
@@ -665,18 +672,18 @@ body {
 }
 
 .helper-messages::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--ws-border);
   border-radius: 3px;
 }
 
 .helper-messages::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--ws-text-tertiary);
 }
 
 /* Firefox scrollbar */
 .helper-messages {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--ws-border) transparent;
 }
 
 /* ----------------------------------------------------------
@@ -861,13 +868,13 @@ body {
 }
 
 .helper-history-list::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--ws-border);
   border-radius: 3px;
 }
 
 .helper-history-list {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--ws-border) transparent;
 }
 
 /* ----------------------------------------------------------
@@ -956,7 +963,7 @@ body {
   overflow-y: auto;
   padding: 4px 8px 8px;
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--ws-border) transparent;
 }
 
 .helper-workspace-list::-webkit-scrollbar {
@@ -968,7 +975,7 @@ body {
 }
 
 .helper-workspace-list::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--ws-border);
   border-radius: 3px;
 }
 
