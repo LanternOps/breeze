@@ -91,6 +91,7 @@ export interface ActionIntentTransitionPatch {
   decidedByUserId?: string | null;
   decidedAssuranceLevel?: AssuranceLevel | null;
   decidedVia?: string | null;
+  executionStartedAt?: Date | null;
   executedAt?: Date | null;
   result?: Record<string, unknown> | null;
   errorCode?: string | null;

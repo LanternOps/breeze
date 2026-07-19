@@ -37,7 +37,11 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
  * 2. `reapStaleExecutingIntents` — intents stuck in `executing` with no
  *    `executed_at` for longer than STALE_EXECUTING_TIMEOUT_MINUTES (2x+ the
  *    longest tool timeout, spec §8) → `failed` with `error_code:
- *    'execution_lost'`. This does NOT use `recordActionIntentEvent`: its
+ *    'execution_lost'`. Keys off `execution_started_at` (the timestamp the
+ *    release worker CASes approved -> executing), COALESCE'd to `decided_at`
+ *    for rows that predate the column or were never stamped — approval can
+ *    lag execution start, so `decided_at` alone under-counts how long a row
+ *    has actually been stuck executing. This does NOT use `recordActionIntentEvent`: its
  *    `outcome` enum only treats `rejected`/`expired`/`cancelled` as audit
  *    failures (see metrics.ts's `FAILURE_OUTCOMES`), so recording outcome
  *    `'executed'` would mis-file this as `result: 'success'`. Instead this
@@ -104,6 +108,7 @@ type StaleExecutingIntentRow = {
   action_name: string;
   argument_digest: string;
   source: string;
+  execution_started_at: Date | string | null;
   decided_at: Date | null;
 };
 
@@ -193,8 +198,9 @@ export async function reapExpiredIntents(): Promise<number> {
 }
 
 /**
- * Flips intents stuck in `executing` (no `executed_at`, `decided_at` older
- * than STALE_EXECUTING_TIMEOUT_MINUTES) to `failed` with `error_code:
+ * Flips intents stuck in `executing` (no `executed_at`,
+ * `COALESCE(execution_started_at, decided_at)` older than
+ * STALE_EXECUTING_TIMEOUT_MINUTES) to `failed` with `error_code:
  * 'execution_lost'`. Writes an `action_intent.executed` audit event with
  * `result: 'failure'` directly (see file header for why this bypasses
  * `recordActionIntentEvent`). Returns the number of intents transitioned.
@@ -206,8 +212,9 @@ export async function reapStaleExecutingIntents(): Promise<number> {
       FROM ${actionIntents}
       WHERE ${actionIntents.status} = 'executing'
         AND ${actionIntents.executedAt} IS NULL
-        AND ${actionIntents.decidedAt} < now() - (${STALE_EXECUTING_TIMEOUT_MINUTES} * interval '1 minute')
-      ORDER BY ${actionIntents.decidedAt} ASC
+        AND COALESCE(${actionIntents.executionStartedAt}, ${actionIntents.decidedAt})
+              < now() - (${STALE_EXECUTING_TIMEOUT_MINUTES} * interval '1 minute')
+      ORDER BY COALESCE(${actionIntents.executionStartedAt}, ${actionIntents.decidedAt}) ASC
       LIMIT ${MAX_REAP_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
@@ -224,6 +231,7 @@ export async function reapStaleExecutingIntents(): Promise<number> {
       a.action_name,
       a.argument_digest,
       a.source,
+      a.execution_started_at,
       a.decided_at;
   `);
 
@@ -248,6 +256,10 @@ export async function reapStaleExecutingIntents(): Promise<number> {
           argumentDigest: row.argument_digest,
           source: row.source,
           errorCode: 'execution_lost',
+          executionStartedAt:
+            row.execution_started_at instanceof Date
+              ? row.execution_started_at.toISOString()
+              : row.execution_started_at,
           decidedAt: row.decided_at instanceof Date ? row.decided_at.toISOString() : row.decided_at,
           staleExecutingTimeoutMinutes: STALE_EXECUTING_TIMEOUT_MINUTES,
         },

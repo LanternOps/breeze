@@ -88,6 +88,11 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB integration test for the intent stale-execution
+      // reaper: proves the COALESCE(execution_started_at, decided_at) < now()
+      // - interval predicate the mocked unit suite can't verify against a
+      // real Postgres now().
+      'src/jobs/intentExpiryReaper.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
