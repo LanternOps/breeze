@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useChatStore } from '../../stores/chatStore';
@@ -14,6 +14,26 @@ const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.incl
 // History are reachable from the nav; device-info arrives only via the tray
 // menu. The shell header persists across every value — none of these unmount it.
 export type MainView = 'files' | 'chat' | 'history' | 'device-info';
+
+// At or above this inner width the chat rides as a right-side panel next to the
+// main region; below it there's no room, so the chat toggle full-swaps the main
+// region instead. Exported for tests.
+export const SHELL_WIDE_MIN = 720;
+
+function subscribeWidth(onChange: () => void) {
+  window.addEventListener('resize', onChange);
+  return () => window.removeEventListener('resize', onChange);
+}
+function widthSnapshot() {
+  return window.innerWidth;
+}
+// useSyncExternalStore keeps the breakpoint check in sync with live `resize`
+// events without a manual effect + state dance. The server snapshot returns the
+// breakpoint itself (treated as wide) — the shell only ever renders client-side.
+function useIsWide() {
+  const width = useSyncExternalStore(subscribeWidth, widthSnapshot, () => SHELL_WIDE_MIN);
+  return width >= SHELL_WIDE_MIN;
+}
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
@@ -348,11 +368,29 @@ export default function AppShell() {
   // Once the user navigates by hand, stop auto-steering the default view.
   const navigatedRef = useRef(false);
 
+  // Chat side panel (wide windows only) and the composer draft. The draft lives
+  // here — a single definition shared by whichever ChatView is mounted (panel or
+  // full-swap main region) — so text survives a breakpoint conversion.
+  const isWide = useIsWide();
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+
   useEffect(() => {
     if (workspaceAvailable === true && !navigatedRef.current) {
       setMainView('files');
     }
   }, [workspaceAvailable]);
+
+  // Cross the breakpoint downward with the panel open → convert the panel into a
+  // full swap (chat becomes the main region). The draft is untouched, so the
+  // in-flight composer text rides along.
+  useEffect(() => {
+    if (!isWide && chatPanelOpen) {
+      setChatPanelOpen(false);
+      setMainView('chat');
+      navigatedRef.current = true;
+    }
+  }, [isWide, chatPanelOpen]);
 
   const enter = (view: MainView) => {
     navigatedRef.current = true;
@@ -368,6 +406,17 @@ export default function AppShell() {
   const goBack = () => {
     navigatedRef.current = true;
     setMainView(returnViewRef.current);
+  };
+
+  // Chat toggle: on wide windows it rides as a side panel next to Files; on
+  // narrow windows there's no room, so it full-swaps the main region to chat.
+  const toggleChat = () => {
+    if (isWide) {
+      setChatPanelOpen((open) => !open);
+    } else {
+      setChatPanelOpen(false);
+      enter('chat');
+    }
   };
 
   // Tray menu "Device Info" click. Tray events only exist inside Tauri; the
@@ -392,6 +441,11 @@ export default function AppShell() {
   // view (matches the pre-shell header, which showed them only on the chat home).
   const chatScoped = mainView === 'chat';
 
+  // The chat toggle only makes sense from Files (the one primary view that can
+  // sit beside a chat panel). The panel itself renders only when wide + open.
+  const canToggleChat = mainView === 'files' && workspaceAvailable === true;
+  const panelOpen = canToggleChat && isWide && chatPanelOpen;
+
   return (
     <div className="helper-shell bg-ws-canvas">
       {/* Header — the shell's single draggable title bar */}
@@ -410,6 +464,17 @@ export default function AppShell() {
         </div>
         <div className="helper-header-drag-spacer" data-tauri-drag-region />
         <div className="helper-header-actions">
+          {canToggleChat && (
+            <button
+              onClick={toggleChat}
+              className="helper-btn helper-btn-sm helper-chat-toggle"
+              data-testid="chat-toggle"
+              aria-pressed={panelOpen}
+              title={panelOpen ? 'Hide chat' : 'Show chat'}
+            >
+              Chat
+            </button>
+          )}
           {chatScoped && sessionId && (
             <button
               onClick={() => flagSession('User flagged from helper')}
@@ -454,7 +519,7 @@ export default function AppShell() {
           The chat error banner and the tool-approval popup are chat-scoped
           chrome (as in the pre-shell chat home), so they render only with
           ChatView — not over Files/History. */}
-      <div className="helper-shell-main">
+      <div className={`helper-shell-main${panelOpen ? ' helper-shell-main-split' : ''}`}>
         {mainView === 'history' ? (
           <SessionHistory onClose={goBack} />
         ) : mainView === 'device-info' ? (
@@ -483,8 +548,17 @@ export default function AppShell() {
               />
             )}
 
-            <ChatView />
+            <ChatView draft={draft} setDraft={setDraft} />
           </>
+        )}
+
+        {/* Chat side panel (wide windows) — Files stays mounted to the left. The
+            same draft state feeds this ChatView and the full-swap one, so text
+            survives a breakpoint conversion. */}
+        {panelOpen && (
+          <aside className="helper-chat-panel" data-testid="chat-panel">
+            <ChatView draft={draft} setDraft={setDraft} />
+          </aside>
         )}
       </div>
     </div>

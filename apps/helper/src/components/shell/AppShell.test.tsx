@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 // jsdom doesn't implement scrollIntoView; ChatView's messages-end effect calls
 // it unconditionally on every render, which would otherwise throw the moment
@@ -112,10 +112,23 @@ function setWorkspaceState(overrides: Record<string, unknown> = {}) {
   return state;
 }
 
+// Drive the shell's `useSyncExternalStore` width tracking. jsdom's innerWidth is
+// writable; a `resize` event flushes the external-store snapshot.
+function setWidth(px: number) {
+  (window as unknown as { innerWidth: number }).innerWidth = px;
+  fireEvent(window, new Event('resize'));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   setChatState();
   setWorkspaceState();
+});
+
+// jsdom's default innerWidth (1024) is "wide"; restore it so width tweaks in one
+// test don't leak into the next.
+afterEach(() => {
+  setWidth(1024);
 });
 
 it('renders exactly one shell header, even with the Files panel embedded', () => {
@@ -208,4 +221,72 @@ it('renders the Flag and New actions only in chat context', () => {
   render(<AppShell />);
   expect(screen.queryByRole('button', { name: 'Flag' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'New' })).not.toBeInTheDocument();
+});
+
+it('opens a chat side panel on wide windows while the Files panel stays mounted', () => {
+  setWidth(1000);
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+  expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+
+  const panel = screen.getByTestId('chat-panel');
+  expect(panel).toBeInTheDocument();
+  // ChatView lives inside the side panel...
+  expect(within(panel).getByTestId('chat-view')).toBeInTheDocument();
+  // ...and Files is still mounted alongside it (not swapped away).
+  expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+});
+
+it('closing the chat panel unmounts it while the Files panel stays put', () => {
+  setWidth(1000);
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+  expect(screen.getByTestId('chat-panel')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+
+  expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument();
+  expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+});
+
+it('on narrow windows the chat toggle full-swaps to chat instead of opening a panel', () => {
+  setWidth(500);
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+
+  // Full swap: chat occupies the main region, Files is gone, no side panel.
+  expect(screen.getByTestId('chat-view')).toBeInTheDocument();
+  expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument();
+});
+
+it('converts an open panel to a full swap across the breakpoint without losing composer text', () => {
+  setWidth(1000);
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+
+  const composer = screen.getByPlaceholderText('Ask me anything...');
+  fireEvent.change(composer, { target: { value: 'draft in flight' } });
+  expect(composer).toHaveValue('draft in flight');
+
+  // Shrink below the breakpoint with the panel open.
+  setWidth(500);
+
+  // Panel is gone, chat is now the full main view, and the draft survived the
+  // move because it lives in shell state (single definition), not in ChatView.
+  expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument();
+  expect(screen.getByTestId('chat-view')).toBeInTheDocument();
+  expect(screen.getByPlaceholderText('Ask me anything...')).toHaveValue('draft in flight');
 });

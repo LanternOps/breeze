@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../../stores/chatStore';
 
-// Extracted verbatim from App.tsx's default return (messages map, composer,
-// ThinkingIndicator) — no visual/behavior change. Reads the chat store
-// directly, as App did; takes no props.
+// Extracted from App.tsx's default return (messages map, composer,
+// ThinkingIndicator). Reads the chat store directly, as App did. The composer
+// draft is owned by the shell (single definition) and threaded through props so
+// text survives a panel <-> full-swap conversion across the breakpoint.
 
 function ToolCallIndicator({ toolName }: { toolName?: string }) {
   const label = toolName
@@ -32,9 +33,14 @@ function ThinkingIndicator() {
   );
 }
 
-export default function ChatView() {
+export default function ChatView({
+  draft,
+  setDraft,
+}: {
+  draft: string;
+  setDraft: (value: string) => void;
+}) {
   const { messages, isStreaming, username, sendMessage } = useChatStore();
-  const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -43,9 +49,9 @@ export default function ChatView() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isStreaming) return;
-    sendMessage(input);
-    setInput('');
+    if (!draft.trim() || isStreaming) return;
+    sendMessage(draft);
+    setDraft('');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -106,8 +112,8 @@ export default function ChatView() {
       {/* Input */}
       <form onSubmit={handleSubmit} className="helper-input-form bg-ws-surface border-ws-border-subtle shadow-[var(--ws-shadow-1)]">
         <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Ask me anything..."
           disabled={isStreaming}
@@ -116,7 +122,7 @@ export default function ChatView() {
         />
         <button
           type="submit"
-          disabled={isStreaming || !input.trim()}
+          disabled={isStreaming || !draft.trim()}
           className="helper-btn helper-btn-send bg-ws-accent text-[var(--ws-accent-contrast)]"
         >
           Send
