@@ -127,6 +127,13 @@ body {
   background: var(--ws-canvas);
 }
 
+/* Grid items' min-width:auto would size the column to the header's
+   min-content and force horizontal overflow on narrow windows (down to the
+   360px minimum) — let rows shrink and truncate internally instead. */
+.helper-shell > * {
+  min-width: 0;
+}
+
 /* Nav sits between the title and the drag spacer; must stay clickable. */
 .helper-shell-nav {
   display: flex;
@@ -223,6 +230,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .helper-status-dot {
@@ -246,6 +254,9 @@ body {
   color: var(--ws-ink);
   letter-spacing: 0.01em;
   pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ----------------------------------------------------------
