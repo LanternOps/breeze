@@ -137,6 +137,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // (requirePartnerApiScope) — no user permissions context; results are
   // clamped to the principal's partner-accessible orgs by the export query.
   'routes/partnerApi/devices.ts:GET /devices',
+  // Helper-token path (helperAuth on all helperRoutes): no user permissions
+  // context, and the session lookup is pinned to the token's own device row
+  // (eq(aiSessions.deviceId, device.id)) before any write. (W7 #2637.)
+  'routes/helper/index.ts:POST /chat/sessions/:id/tool-results',
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
