@@ -138,3 +138,48 @@ it('switching tabs before the search debounce fires cancels the pending search',
     vi.useRealTimers();
   }
 });
+
+// Regression test for the debounce-effect's `tab` dependency re-arming a
+// redundant fetch: type a query on Search (debounce fires, search succeeds,
+// FileTable renders), navigate to Browse, then back to Search with the same
+// query/filters. Nothing changed, so no new fetch should be scheduled —
+// otherwise the already-correct results would flicker back to SkeletonRows
+// (or worse, a flaky refetch could mask them behind a stale ErrorRow) purely
+// from revisiting an already-loaded view.
+it('returning to Search with an unchanged query does not re-issue the search', async () => {
+  vi.useFakeTimers();
+  try {
+    const searchSpy = vi.fn().mockResolvedValue(undefined);
+    useWorkspaceStore.setState({
+      search: searchSpy,
+      browsePath: { sourceId: 's1', parentPath: '' },
+      entries: [file({ id: 'f1', name: 'alder-easement.pdf' })],
+    });
+
+    render(<WorkspacePanel onClose={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search shared files...'), {
+      target: { value: 'alder' },
+    });
+
+    // Let the debounce fire and the search's success handler (which records
+    // the query/filters key) run.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+
+    // Navigate away, then back to Search — query/filters are unchanged.
+    fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    // No redundant re-fetch of the already-loaded results.
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});

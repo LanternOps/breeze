@@ -132,6 +132,14 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   const [pendingDropId, setPendingDropId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const focusSearchPending = useRef(false);
+  // Key (query + filters) of the last search that completed *successfully*,
+  // so the debounce effect below can tell "revisiting an already-loaded
+  // Search view" apart from "query/filters actually changed" and skip
+  // re-arming the timer in the former case. Not updated on failure: a
+  // failed fetch left no valid content to protect, so a later revisit
+  // re-attempting the fetch is fine (and is the only way it'd ever recover
+  // without the user retyping).
+  const lastSearchKeyRef = useRef<string | null>(null);
 
   // `error` is a single store field shared by all four views (Search,
   // Browse, Recents, Filing), cleared only when the view whose fetch set it
@@ -160,6 +168,17 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Runs a Search fetch and records its (query, filters) key on success only,
+  // so the debounce effect and the error row's "retry" button share one
+  // notion of "this exact query/filters combo is already loaded" — see
+  // `lastSearchKeyRef` above.
+  const runSearch = (q: string, searchFilters: typeof filters) => {
+    const key = JSON.stringify([q, searchFilters]);
+    void search(q, searchFilters).then(() => {
+      if (!useWorkspaceStore.getState().error) lastSearchKeyRef.current = key;
+    });
+  };
+
   // Debounced search (300 ms). Filter chips re-issue this fetch too — they
   // only ever change the store's `filters`, which this effect already watches.
   //
@@ -173,14 +192,25 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   // completion race the tab-switch and mount-time error clears don't cover,
   // since both only clear `error` at the moment of switching/mounting, not
   // when a since-abandoned view's in-flight fetch settles afterward.
+  //
+  // But `tab` being a dependency also means this effect re-runs every time
+  // the user navigates *back into* Search, even when neither `query` nor
+  // `filters` changed — which would otherwise re-arm a fresh timer that
+  // redundantly refetches an already-loaded result set, flipping the
+  // correct FileTable back to SkeletonRows (and, on a flaky refetch, behind
+  // a stale ErrorRow) for no reason. Guard against that by skipping the
+  // (re)arm when this exact query/filters combo already succeeded.
   useEffect(() => {
     if (tab !== 'search') return;
     const q = query.trim();
     if (!q) return;
+    const key = JSON.stringify([q, filters]);
+    if (key === lastSearchKeyRef.current) return;
     const timer = setTimeout(() => {
-      search(q, filters);
+      runSearch(q, filters);
     }, 300);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, query, filters, search]);
 
   // Load recents when the tab is shown.
@@ -331,7 +361,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
           <div className="helper-workspace-list">
             {loading && <SkeletonRows />}
             {!loading && error && (
-              <ErrorRow message={error} onRetry={() => search(query.trim(), filters)} />
+              <ErrorRow message={error} onRetry={() => runSearch(query.trim(), filters)} />
             )}
             {!loading && !error && !query.trim() && (
               <EmptyState
