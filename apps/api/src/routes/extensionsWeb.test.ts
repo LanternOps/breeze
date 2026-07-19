@@ -223,9 +223,9 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     expect(res.status).toBe(404);
   });
 
-  it('404s a "module.node" member even when present in the inventory (disallowed content type)', async () => {
-    const { app } = harnessWithAsset({ 'module.node': { path: 'module.node', content: 'native-binary-bytes' } });
-    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/module.node`);
+  it('404s a "web/module.node" member even when present in the inventory (disallowed content type)', async () => {
+    const { app } = harnessWithAsset({ 'web/module.node': { path: 'web/module.node', content: 'native-binary-bytes' } });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/module.node`);
     expect(res.status).toBe(404);
   });
 
@@ -233,9 +233,9 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     const { app } = harnessWithAsset({
       'web/index.html': { path: 'web/index.html', content: '<html></html>' },
       'web/index.js.map': { path: 'web/index.js.map', content: '{}' },
-      'lib/native.node': { path: 'lib/native.node', content: 'bin' },
+      'web/lib/native.node': { path: 'web/lib/native.node', content: 'bin' },
     });
-    for (const member of ['web/index.html', 'web/index.js.map', 'lib/native.node']) {
+    for (const member of ['web/index.html', 'web/index.js.map', 'web/lib/native.node']) {
       const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/${member}`);
       expect(res.status).toBe(404);
     }
@@ -341,19 +341,28 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
     expect(await res.text()).toBe(content);
   });
 
+  it('still serves a nested web/nested/x.css asset', async () => {
+    const content = '.demo { color: red; }';
+    const { app } = harnessWithAsset({ 'web/nested/x.css': { path: 'web/nested/x.css', content } });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/web/nested/x.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/css/);
+    expect(await res.text()).toBe(content);
+  });
+
   it('sets the correct content type per allowed extension', async () => {
     const cases: Record<string, string> = {
-      'a.mjs': 'javascript',
-      'a.css': 'css',
-      'a.json': 'json',
-      'a.wasm': 'wasm',
-      'a.svg': 'svg',
-      'a.png': 'png',
-      'a.jpg': 'jpeg',
-      'a.jpeg': 'jpeg',
-      'a.gif': 'gif',
-      'a.webp': 'webp',
-      'a.woff2': 'font',
+      'web/a.mjs': 'javascript',
+      'web/a.css': 'css',
+      'web/a.json': 'json',
+      'web/a.wasm': 'wasm',
+      'web/a.svg': 'svg',
+      'web/a.png': 'png',
+      'web/a.jpg': 'jpeg',
+      'web/a.jpeg': 'jpeg',
+      'web/a.gif': 'gif',
+      'web/a.webp': 'webp',
+      'web/a.woff2': 'font',
     };
     const files: Record<string, { path: string; content: Buffer | string }> = {};
     for (const name of Object.keys(cases)) files[name] = { path: name, content: 'x' };
@@ -363,5 +372,52 @@ describe('GET /api/v1/extensions/assets/:name/:digest/*', () => {
       expect(res.status, `${name} should be served`).toBe(200);
       expect(res.headers.get('content-type'), name).toMatch(new RegExp(expected));
     }
+  });
+
+  // SECURITY (Plan-03 follow-up re-review): the OLD denylist excluded only
+  // manifest.json, RESERVED_MEMBERS, and the server/migrations subtrees — a
+  // root-level config.json/secrets.json, a data/seed.json, or a stray
+  // non-server/ .js helper was still servable to any authenticated user of
+  // any tenant where the extension is enabled. The fail-CLOSED web/-prefix
+  // allowlist closes this: only members actually under web/ are ever
+  // servable, regardless of name or content type.
+  it('404s a root-level config.json (member NOT under web/, .json content-type) even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'config.json': { path: 'config.json', content: '{"apiKey":"leak-me"}' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/config.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a root-level secrets.json even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'secrets.json': { path: 'secrets.json', content: '{"token":"leak-me"}' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/secrets.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a non-web data/seed.json even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'data/seed.json': { path: 'data/seed.json', content: '{"rows":[]}' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/data/seed.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a non-server/ .js helper at the bundle root even when present in the verified inventory', async () => {
+    const { app } = harnessWithAsset({
+      'app.js': { path: 'app.js', content: 'console.log("helper")' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/app.js`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a "webhook/x.js" sibling that shares the "web" prefix but not the exact "web/" segment', async () => {
+    const { app } = harnessWithAsset({
+      'webhook/x.js': { path: 'webhook/x.js', content: 'console.log("not web/")' },
+    });
+    const res = await app.request(`/api/v1/extensions/assets/demo/${DIGEST}/webhook/x.js`);
+    expect(res.status).toBe(404);
   });
 });

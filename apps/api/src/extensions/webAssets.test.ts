@@ -86,18 +86,18 @@ describe('extension web asset registry', () => {
     registerExtensionWebAsset('demo', {
       root: '/root-old',
       digest: `sha256:${'1'.repeat(64)}`,
-      files: new Map([['old.js', { sha256: 'x'.repeat(64), uncompressedSize: 1 }]]),
+      files: new Map([['web/old.js', { sha256: 'x'.repeat(64), uncompressedSize: 1 }]]),
     });
     registerExtensionWebAsset('demo', {
       root: '/root-new',
       digest: `sha256:${'2'.repeat(64)}`,
-      files: new Map([['new.js', { sha256: 'y'.repeat(64), uncompressedSize: 2 }]]),
+      files: new Map([['web/new.js', { sha256: 'y'.repeat(64), uncompressedSize: 2 }]]),
     });
 
     expect(getExtensionWebAsset('demo')).toEqual({
       root: '/root-new',
       digest: `sha256:${'2'.repeat(64)}`,
-      files: new Map([['new.js', { sha256: 'y'.repeat(64), uncompressedSize: 2 }]]),
+      files: new Map([['web/new.js', { sha256: 'y'.repeat(64), uncompressedSize: 2 }]]),
     });
   });
 });
@@ -138,29 +138,20 @@ describe('registerExtensionWebAsset retention-time filtering', () => {
     ]));
   });
 
-  it('strips a custom migrationsDir subtree in addition to the literal "migrations/" prefix', () => {
+  // SECURITY (Plan-03 follow-up re-review): a fail-OPEN denylist misses
+  // anything it doesn't explicitly enumerate — a root-level config.json (or
+  // secrets.json), a data/seed.json, or a non-server/ .js helper would all
+  // have been retained (and thus servable) under the old denylist. The
+  // fail-CLOSED web/-prefix allowlist excludes all of these by construction:
+  // only members actually under web/ survive.
+  it('strips root-level and other non-"web/" members regardless of name or extension', () => {
     const files = new Map([
-      ['db/0001_init.sql', { sha256: 'a'.repeat(64), uncompressedSize: 1 }],
-      ['migrations/leftover.sql', { sha256: 'b'.repeat(64), uncompressedSize: 2 }],
-      ['web/index.js', { sha256: 'c'.repeat(64), uncompressedSize: 3 }],
-    ]);
-
-    registerExtensionWebAsset('demo', {
-      root: '/root',
-      digest: `sha256:${'1'.repeat(64)}`,
-      files,
-      migrationsDir: 'db',
-    });
-
-    expect(getExtensionWebAsset('demo')?.files).toEqual(new Map([
-      ['web/index.js', { sha256: 'c'.repeat(64), uncompressedSize: 3 }],
-    ]));
-  });
-
-  it('retains a web.entry that does not live under a "web/" prefix (not schema-enforced)', () => {
-    const files = new Map([
-      ['app.js', { sha256: 'a'.repeat(64), uncompressedSize: 1 }],
-      ['manifest.json', { sha256: 'b'.repeat(64), uncompressedSize: 2 }],
+      ['config.json', { sha256: 'a'.repeat(64), uncompressedSize: 1 }],
+      ['secrets.json', { sha256: 'b'.repeat(64), uncompressedSize: 2 }],
+      ['data/seed.json', { sha256: 'c'.repeat(64), uncompressedSize: 3 }],
+      ['app.js', { sha256: 'd'.repeat(64), uncompressedSize: 4 }],
+      ['webhook/handler.js', { sha256: 'e'.repeat(64), uncompressedSize: 5 }],
+      ['web/index.js', { sha256: 'f'.repeat(64), uncompressedSize: 6 }],
     ]);
 
     registerExtensionWebAsset('demo', {
@@ -170,7 +161,7 @@ describe('registerExtensionWebAsset retention-time filtering', () => {
     });
 
     expect(getExtensionWebAsset('demo')?.files).toEqual(new Map([
-      ['app.js', { sha256: 'a'.repeat(64), uncompressedSize: 1 }],
+      ['web/index.js', { sha256: 'f'.repeat(64), uncompressedSize: 6 }],
     ]));
   });
 });
@@ -185,15 +176,27 @@ describe('isServableWebMember', () => {
     expect(isServableWebMember('migrations/0001_init.sql')).toBe(false);
   });
 
-  it('accepts ordinary web assets regardless of directory, including outside web/', () => {
-    expect(isServableWebMember('web/index.js')).toBe(true);
-    expect(isServableWebMember('app.js')).toBe(true);
-    expect(isServableWebMember('assets/logo.svg')).toBe(true);
+  it('rejects root-level and other non-"web/" members regardless of name or extension', () => {
+    expect(isServableWebMember('config.json')).toBe(false);
+    expect(isServableWebMember('secrets.json')).toBe(false);
+    expect(isServableWebMember('data/seed.json')).toBe(false);
+    expect(isServableWebMember('app.js')).toBe(false);
+    expect(isServableWebMember('assets/logo.svg')).toBe(false);
   });
 
-  it('respects a custom migrationsDir', () => {
-    expect(isServableWebMember('db/0001_init.sql', 'db')).toBe(false);
-    expect(isServableWebMember('migrations/0001_init.sql', 'db')).toBe(false);
-    expect(isServableWebMember('db/0001_init.sql')).toBe(true);
+  it('rejects a sibling directory that merely shares the "web" substring, not the exact segment', () => {
+    expect(isServableWebMember('webhook/x.js')).toBe(false);
+    expect(isServableWebMember('webby/x.js')).toBe(false);
+  });
+
+  it('rejects "web" and "web/" themselves — the allowlist can never resolve to the bundle root', () => {
+    expect(isServableWebMember('web')).toBe(false);
+    expect(isServableWebMember('web/')).toBe(false);
+  });
+
+  it('accepts any member under the web/ directory, regardless of nesting or extension', () => {
+    expect(isServableWebMember('web/index.js')).toBe(true);
+    expect(isServableWebMember('web/nested/x.css')).toBe(true);
+    expect(isServableWebMember('web/assets/logo.svg')).toBe(true);
   });
 });
