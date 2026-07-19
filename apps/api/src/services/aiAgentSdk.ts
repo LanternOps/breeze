@@ -563,7 +563,30 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return { allowed: false, error: 'Failed to create approval record' };
         }
 
-        // Emit approval_required event via session event bus → UI shows Approve/Reject
+        // Stamp the intent link onto the ledger row so handleApproval (web
+        // chat's POST /ai/sessions/:id/approve/:executionId route,
+        // services/aiAgent.ts) can detect this is an intent-backed execution
+        // and refuse to report a self-approval success for it (whole-branch
+        // review CRITICAL-3) — the intents flow is a four-eyes model, decided
+        // via the /approvals surface (mobile push or Approvals queue), never
+        // this endpoint. Stamped before the SSE event below so the row is
+        // already linked by the time the UI could possibly hit approve.
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .update(aiToolExecutions)
+                .set({ intentId: intent.id })
+                .where(eq(aiToolExecutions.id, approvalExec!.id))
+          );
+        } catch (err) {
+          console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
+        }
+
+        // Emit approval_required event via session event bus → UI shows the
+        // "waiting for an approver" state (intentBacked: true — the web chat
+        // card must NOT offer a self-approve button for this execution).
         session.eventBus.publish({
           type: 'approval_required',
           executionId: approvalExec.id,
@@ -572,6 +595,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           input,
           description,
           deviceContext,
+          intentBacked: true,
         });
 
         // Block until an approver decides, OR the chat wait window (still 300s

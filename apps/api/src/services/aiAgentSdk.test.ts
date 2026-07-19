@@ -533,6 +533,8 @@ describe('createSessionPreToolUse', () => {
       mockInsertReturning({ id: 'exec-1' });
       mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-1', approvalRequestIds: ['appr-1'] }));
       mockWaitForIntentDecision.mockResolvedValue('rejected');
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'auto_approve' });
 
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
@@ -545,11 +547,15 @@ describe('createSessionPreToolUse', () => {
         reason: 'Execute command',
         orgId: 'org-1',
       }));
+      // The ledger row is stamped with the intent id so handleApproval can
+      // detect it's intent-backed (CRITICAL-3).
+      expect(mockSet).toHaveBeenCalledWith({ intentId: 'intent-1' });
       expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
         type: 'approval_required',
         executionId: 'exec-1',
         approvalRequestId: 'appr-1',
         toolName: 'execute_command',
+        intentBacked: true,
       }));
       expect(mockWaitForIntentDecision).toHaveBeenCalledWith('intent-1', 300_000, expect.any(AbortSignal));
       // The old direct approval_requests bridge + push are gone — createActionIntent owns both now.
@@ -591,6 +597,8 @@ describe('createSessionPreToolUse', () => {
       mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3', approvalRequestIds: ['appr-3'] }));
       mockWaitForIntentDecision.mockResolvedValue('approved');
       mockTransitionIntent.mockResolvedValue(false);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
@@ -600,8 +608,11 @@ describe('createSessionPreToolUse', () => {
         error: 'This action is already being completed by the approval worker; it will not run twice.',
       });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null });
-      // No inline execution: the "mark as executing" update never fires.
-      expect(db.update).not.toHaveBeenCalled();
+      // The intent-id link stamp (unconditional, ahead of the release CAS)
+      // still happens, but no inline execution: the "mark as executing"
+      // update never fires.
+      expect(mockSet).toHaveBeenCalledWith({ intentId: 'intent-3' });
+      expect(mockSet).not.toHaveBeenCalledWith({ status: 'executing' });
     });
 
     it('returns allowed:false without touching the intent when rejected/cancelled/expired', async () => {
@@ -781,6 +792,12 @@ describe('createSessionPreToolUse', () => {
         toolName: 'take_screenshot',
         description: 'Take screenshot',
       }));
+      // Legacy Tier-2 per_step bridge is NOT intent-backed — the web chat
+      // card must still show a normal self-approve button for this one.
+      const publishedEvent = vi.mocked(session.eventBus.publish).mock.calls
+        .map(([evt]: [any]) => evt)
+        .find((evt: any) => evt.type === 'approval_required');
+      expect((publishedEvent as any)?.intentBacked).toBeUndefined();
 
       expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal));
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });

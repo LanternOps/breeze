@@ -373,6 +373,30 @@ export async function handleApproval(
     .limit(1);
 
   if (!execution || execution.status !== 'pending') return false;
+
+  if (execution.intentId) {
+    // Intent-backed (Tier-3 durable action-intents flow, spec §6.1): this
+    // execution's real approval state lives on action_intents.status, decided
+    // by services/actionIntents/intentService.ts's approver fan-out — NOT by
+    // this route. Flipping ai_tool_executions here would report success while
+    // nothing was actually decided (whole-branch review CRITICAL-3): the chat
+    // flow blocks on waitForIntentDecision reading action_intents.status, so
+    // a bare status flip is a silent no-op that times the session out.
+    //
+    // This also must NOT fall through to the SR5-10 owner-only check below —
+    // the intents model is a FOUR-EYES approval (the requester is usually NOT
+    // an eligible approver of their own intent), the opposite of the
+    // session-owner self-approval this function otherwise implements. Decide
+    // via the /approvals surface (mobile push or the Approvals queue)
+    // instead. Route callers use isIntentBackedExecution() to turn this
+    // `false` into an honest "pending" response instead of a bare 404.
+    console.warn(
+      '[AI] Self-approve attempt on intent-backed execution rejected (four-eyes model):',
+      JSON.stringify({ executionId, intentId: execution.intentId, actorId: auth.user.id }),
+    );
+    return false;
+  }
+
   if (expectedSessionId && execution.sessionId !== expectedSessionId) {
     // SECURITY: a caller approved an execution via a session route that does not
     // own it (cross-session approval-forgery attempt). We keep returning `false`
@@ -424,6 +448,25 @@ export async function handleApproval(
     .where(eq(aiToolExecutions.id, executionId));
 
   return true;
+}
+
+/**
+ * Whether a tool execution is bound to a durable action_intents row (Tier-3
+ * chat flow — services/actionIntents/intentService.ts's createActionIntent).
+ * Used by the sessions-approve routes to turn a `handleApproval` `false`
+ * into an honest "pending, decide via /approvals" response instead of a bare
+ * "not found" 404 when the false was actually due to the four-eyes guard
+ * above (whole-branch review CRITICAL-3), without changing handleApproval's
+ * boolean contract for the (unrelated, unchanged) non-intent paths.
+ */
+export async function isIntentBackedExecution(executionId: string): Promise<boolean> {
+  const [execution] = await db
+    .select({ intentId: aiToolExecutions.intentId })
+    .from(aiToolExecutions)
+    .where(eq(aiToolExecutions.id, executionId))
+    .limit(1);
+
+  return !!execution?.intentId;
 }
 
 // ============================================

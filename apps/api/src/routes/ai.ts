@@ -17,6 +17,7 @@ import {
   closeSession,
   getSessionMessages,
   handleApproval,
+  isIntentBackedExecution,
   searchSessions,
   listM365Connections,
   resolveDefaultModel
@@ -756,6 +757,21 @@ aiRoutes.post(
 
     const success = await handleApproval(executionId, approved, auth, sessionId);
     if (!success) {
+      // CRITICAL-3 (whole-branch review): a Tier-3 intent-backed execution
+      // NEVER reports success here — its real decision lives on
+      // action_intents.status, decided via the /approvals surface (mobile
+      // push or the Approvals queue), not this self-approve endpoint. Give
+      // the web chat client an honest "still pending" response instead of a
+      // generic "not found" so it can render a waiting state rather than
+      // silently timing out.
+      if (await isIntentBackedExecution(executionId)) {
+        return c.json({
+          success: false,
+          pending: true,
+          via: 'intent',
+          message: 'This action needs approval in the Approvals area or the Breeze mobile app.',
+        });
+      }
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }
 

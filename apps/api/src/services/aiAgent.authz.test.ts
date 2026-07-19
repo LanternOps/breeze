@@ -30,6 +30,7 @@ vi.mock('../db/schema', () => ({
     id: 'aiToolExecutions.id',
     status: 'aiToolExecutions.status',
     sessionId: 'aiToolExecutions.sessionId',
+    intentId: 'aiToolExecutions.intentId',
   },
   delegantM365Connections: {},
   devices: {},
@@ -47,7 +48,7 @@ vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base' }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn() }));
 vi.mock('./aiInputSanitizer', () => ({ sanitizePageContext: (x: unknown) => x }));
 
-import { getSession, getSessionMessages, handleApproval } from './aiAgent';
+import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
 
@@ -154,5 +155,64 @@ describe('handleApproval owner-binding (SR5-10)', () => {
     expect(setSpy).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: 'victim' }),
     );
+  });
+});
+
+// CRITICAL-3 (whole-branch review): the web chat "Approve" button was a
+// silent no-op for Tier-3 durable intents — handleApproval only ever flipped
+// ai_tool_executions, but the intent-backed chat flow blocks on
+// action_intents.status (waitForIntentDecision), so the row flip did nothing
+// and the route still reported `{ success: true }`. These tests pin down the
+// fix: an intent-backed execution is never flipped and never reported as a
+// successful self-approval, regardless of who's asking (unlike SR5-10, this
+// is NOT an owner check — it's a hard "this endpoint never decides intents").
+describe('handleApproval intent-backed guard (CRITICAL-3)', () => {
+  it('does not flip and returns false for an intent-backed execution, even for the session owner', async () => {
+    // Only the execution lookup should run — the intent-backed guard fires
+    // before getSession/owner-check, so a second select() must never happen.
+    stubSelectOnce([
+      { id: 'exec-1', status: 'pending', sessionId: 's1', intentId: 'intent-1' },
+    ]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
+
+    expect(ok).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejecting an intent-backed execution via this route is also refused (no reject-only bypass)', async () => {
+    stubSelectOnce([
+      { id: 'exec-1', status: 'pending', sessionId: 's1', intentId: 'intent-1' },
+    ]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const ok = await handleApproval('exec-1', false, auth('victim'), 's1');
+
+    expect(ok).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('isIntentBackedExecution', () => {
+  it('returns true when the execution row carries an intent_id', async () => {
+    stubSelectOnce([{ intentId: 'intent-1' }]);
+
+    await expect(isIntentBackedExecution('exec-1')).resolves.toBe(true);
+  });
+
+  it('returns false for a legacy (non-intent) execution', async () => {
+    stubSelectOnce([{ intentId: null }]);
+
+    await expect(isIntentBackedExecution('exec-1')).resolves.toBe(false);
+  });
+
+  it('returns false when the execution does not exist', async () => {
+    stubSelectOnce([]);
+
+    await expect(isIntentBackedExecution('exec-missing')).resolves.toBe(false);
   });
 });

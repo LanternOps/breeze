@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ShieldAlert, Check, X, Clock, Monitor } from "lucide-react";
+import { ShieldAlert, Check, X, Clock, Monitor, Hourglass } from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 
@@ -31,6 +31,15 @@ interface AiApprovalDialogProps {
   deviceContext?: DeviceContext;
   onApprove: () => void;
   onReject: () => void;
+  /**
+   * True for Tier-3 durable action-intents (spec §6.1). Intent-backed
+   * executions are decided via the /approvals surface (mobile push or the
+   * Approvals queue) — a four-eyes model where the requester is usually NOT
+   * an eligible approver of their own intent. This card must NEVER offer a
+   * self-approve button for one (whole-branch review CRITICAL-3: the
+   * sessions-approve route silently no-op'd for these before this fix).
+   */
+  intentBacked?: boolean;
 }
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -142,11 +151,18 @@ export default function AiApprovalDialog({
   deviceContext,
   onApprove,
   onReject,
+  intentBacked,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
 
+  // Intent-backed executions are decided durably via the /approvals surface,
+  // not this card (see the prop doc above) — there is nothing here to
+  // auto-reject on a client-side timer, and doing so would just fire a
+  // self-approval-shaped request the backend now correctly refuses. Skip the
+  // countdown entirely for that case.
   useEffect(() => {
+    if (intentBacked) return;
     const start = Date.now();
     const interval = setInterval(() => {
       const remaining = AUTO_DENY_MS - (Date.now() - start);
@@ -158,7 +174,7 @@ export default function AiApprovalDialog({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject]);
+  }, [onReject, intentBacked]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
@@ -168,7 +184,7 @@ export default function AiApprovalDialog({
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
-  const isUrgent = remainingMs < 30_000;
+  const isUrgent = !intentBacked && remainingMs < 30_000;
 
   return (
     <div
@@ -178,19 +194,25 @@ export default function AiApprovalDialog({
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-amber-400" />
+          {intentBacked ? (
+            <Hourglass className="h-4 w-4 text-amber-400" />
+          ) : (
+            <ShieldAlert className="h-4 w-4 text-amber-400" />
+          )}
           <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-            {t("aiApprovalDialog.title")}
+            {intentBacked ? t("aiApprovalDialog.pendingApproverTitle") : t("aiApprovalDialog.title")}
           </span>
         </div>
-        <div
-          className="flex items-center gap-1.5 text-xs text-gray-500"
-          role="timer"
-          aria-label={t("aiApprovalDialog.timeRemaining", { minutes, seconds })}
-        >
-          <Clock className="h-3 w-3" />
-          <span>{countdown}</span>
-        </div>
+        {!intentBacked && (
+          <div
+            className="flex items-center gap-1.5 text-xs text-gray-500"
+            role="timer"
+            aria-label={t("aiApprovalDialog.timeRemaining", { minutes, seconds })}
+          >
+            <Clock className="h-3 w-3" />
+            <span>{countdown}</span>
+          </div>
+        )}
       </div>
       {isUrgent && (
         <span className="sr-only" role="alert">
@@ -199,25 +221,33 @@ export default function AiApprovalDialog({
       )}
 
       {/* Countdown progress bar */}
-      <div
-        className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
-        role="progressbar"
-        aria-valuenow={Math.round(progressPct)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={t("aiApprovalDialog.progressLabel")}
-      >
+      {!intentBacked && (
         <div
-          className={cn(
-            "h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear",
-            widthPercentClass(progressPct),
-          )}
-        />
-      </div>
+          className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
+          role="progressbar"
+          aria-valuenow={Math.round(progressPct)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={t("aiApprovalDialog.progressLabel")}
+        >
+          <div
+            className={cn(
+              "h-full rounded-full bg-amber-500/60 transition-all duration-1000 ease-linear",
+              widthPercentClass(progressPct),
+            )}
+          />
+        </div>
+      )}
 
       <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
         {description}
       </p>
+
+      {intentBacked && (
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {t("aiApprovalDialog.pendingApproverDescription")}
+        </p>
+      )}
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 
@@ -232,24 +262,30 @@ export default function AiApprovalDialog({
         </details>
       )}
 
-      <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          onClick={onApprove}
-          className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500"
-        >
-          <Check className="h-3.5 w-3.5" />
-          {t("aiApprovalDialog.approve")}
-        </button>
-        <button
-          type="button"
-          onClick={onReject}
-          className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-        >
-          <X className="h-3.5 w-3.5" />
-          {t("aiApprovalDialog.reject")}
-        </button>
-      </div>
+      {/* Intent-backed executions never show a self-approve button here — the
+          four-eyes model means the requester is usually not an eligible
+          approver of their own action intent (whole-branch review
+          CRITICAL-3). Deciding happens on the /approvals surface instead. */}
+      {!intentBacked && (
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            onClick={onApprove}
+            className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500"
+          >
+            <Check className="h-3.5 w-3.5" />
+            {t("aiApprovalDialog.approve")}
+          </button>
+          <button
+            type="button"
+            onClick={onReject}
+            className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("aiApprovalDialog.reject")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
