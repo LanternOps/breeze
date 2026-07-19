@@ -29,13 +29,6 @@ const extensionHostEventShapeSchema = z.discriminatedUnion('type', [
 
 export type ExtensionHostEventV1 = z.infer<typeof extensionHostEventShapeSchema>;
 
-/**
- * Any occurrence of a percent-encoded '.' or '/' is treated as hostile, regardless of
- * case or position — these are the building blocks of encoded traversal / segment tricks
- * (e.g. %2e%2e, %2E%2E, %2f). Checked before any decoding happens.
- */
-const ENCODED_DOT_OR_SLASH_RE = /%2e|%2f/i;
-
 /** A URL scheme prefix, e.g. "http:", "javascript:", "data:". */
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 
@@ -48,8 +41,12 @@ function assertNamespacedNavigatePath(path: string, extensionName: string): void
   if (path.includes('\\')) {
     throw namespaceError('backslashes are not allowed');
   }
-  if (ENCODED_DOT_OR_SLASH_RE.test(path)) {
-    throw namespaceError('percent-encoded "." or "/" is not allowed');
+  // Extension nav paths are app-internal routes (/extensions/<name>/<author-defined-segments>)
+  // with no legitimate need for percent-encoding. Rejecting any '%' subsumes single-encoded
+  // (%2e, %2f), double-encoded (%252e, %252f), and encoded-backslash (%5c) traversal tricks
+  // in one rule, without needing to decode-and-reloop to a fixed point.
+  if (path.includes('%')) {
+    throw namespaceError('percent-encoded characters are not allowed in the extension namespace');
   }
   if (path.includes('..')) {
     throw namespaceError('parent traversal ".." is not allowed');

@@ -107,6 +107,9 @@ describe('parseExtensionHostEventV1', () => {
     ['encoded traversal uppercase', '/extensions/worktrack/%2E%2E/%2E%2E/etc/passwd'],
     ['encoded traversal mixed case', '/extensions/worktrack/%2e%2E/etc/passwd'],
     ['encoded slash', '/extensions/worktrack%2f..%2f..%2fetc%2fpasswd'],
+    ['double-encoded traversal', '/extensions/worktrack/%252e%252e/%252e%252e/etc/passwd'],
+    ['encoded backslash', '/extensions/worktrack/%5cetc%5cpasswd'],
+    ['encoded backslash uppercase', '/extensions/worktrack/%5Cetc%5Cpasswd'],
     ['javascript scheme', 'javascript:alert(1)'],
     ['data scheme', 'data:text/html,<script>alert(1)</script>'],
   ])('rejects hostile navigate path: %s', (_label, path) => {
