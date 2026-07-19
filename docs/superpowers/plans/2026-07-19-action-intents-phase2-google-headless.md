@@ -279,7 +279,6 @@ Expected: FAIL — cannot find module `./googleToolsHeadless`.
  */
 import {
   resolveContextByOrg,
-  googleToolTiers,
   googleResetPasswordAction,
   googleSuspendUserAction,
   googleRestoreUserAction,
@@ -335,10 +334,8 @@ export const GOOGLE_HEADLESS_ACTIONS: Record<string, GoogleAction> = {
   google_assign_license: googleAssignLicenseAction,
   google_remove_license: googleRemoveLicenseAction,
 };
-
-// Defense-in-depth: the map must equal the tier-3 googleToolTiers set. The
-// parity unit test is the real guard; this keeps the invariant visible here.
-void googleToolTiers;
+// Invariant: keys(GOOGLE_HEADLESS_ACTIONS) === tier-3 googleToolTiers set.
+// Enforced by the parity unit test in googleToolsHeadless.test.ts.
 
 export function isHeadlessGoogleTool(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_ACTIONS, name);
