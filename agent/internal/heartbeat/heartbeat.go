@@ -3812,6 +3812,36 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	return nil
 }
 
+// toWSCommandResult maps an internal tools.CommandResult onto the WebSocket
+// wire result. It carries stdout, stderr and the exit code through to the
+// server; before this they were dropped on the WS leg (only status/error and a
+// speculative stdout->result reparse survived), so script_executions persisted
+// blank stderr and NULL exit_code fleet-wide (#2474). The stdout->Result
+// reparse is preserved verbatim: several server handlers (discovery, backup,
+// snmp, monitor) still read the structured `result` field.
+func toWSCommandResult(commandID string, result tools.CommandResult) websocket.CommandResult {
+	wsResult := websocket.CommandResult{
+		CommandID: commandID,
+		Status:    result.Status,
+		ExitCode:  result.ExitCode,
+		Stdout:    result.Stdout,
+		Stderr:    result.Stderr,
+	}
+
+	if result.Error != "" {
+		wsResult.Error = result.Error
+	} else if result.Stdout != "" {
+		var jsonResult any
+		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
+			wsResult.Result = jsonResult
+		} else {
+			wsResult.Result = result.Stdout
+		}
+	}
+
+	return wsResult
+}
+
 // HandleCommand processes a command from WebSocket and returns a result
 func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResult {
 	if !h.accepting.Load() {
@@ -3830,21 +3860,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	result := h.executeCommandViaPool(cmd)
 
-	wsResult := websocket.CommandResult{
-		CommandID: cmd.ID,
-		Status:    result.Status,
-	}
-
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
-		var jsonResult any
-		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
-			wsResult.Result = jsonResult
-		} else {
-			wsResult.Result = result.Stdout
-		}
-	}
+	wsResult := toWSCommandResult(cmd.ID, result)
 
 	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
 		go h.submitCommandResult(cmd.ID, result)
