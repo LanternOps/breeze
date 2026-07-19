@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHash, type KeyObject } from 'node:crypto';
 import {
@@ -28,6 +28,7 @@ import {
 import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import type { VerifiedExtensionBundle } from './bundleVerifier';
 import type { ExtensionDeploymentConfig, ExtensionSelection } from './config';
+import { clearExtensionWebAsset, getExtensionWebAsset } from './webAssets';
 
 /**
  * The reconciler is exercised entirely through injected ports, so these unit
@@ -220,6 +221,38 @@ async function reconcileFixture(
 }
 
 describe('reconcileExtensions', () => {
+  afterEach(() => {
+    clearExtensionWebAsset('demo');
+  });
+
+  it('retains { root, digest, files } for an extension that activates successfully', async () => {
+    const { summary } = await reconcileFixture({ required: false });
+    expect(summary.activated).toEqual(['demo']);
+
+    // This is the SAME single retention path task-2 wires alongside
+    // registerExtensionRoot/clearExtensionRoot (reconciler.ts) — the digest and
+    // files inventory that VerifiedExtensionBundle otherwise discards after the
+    // reconcile loop.
+    expect(getExtensionWebAsset('demo')).toEqual({
+      root: '/tmp/extracted/demo',
+      digest: fakeBundle().artifactDigest,
+      files: fakeBundle().files,
+    });
+  });
+
+  it('clears a previously retained web asset when a later reconcile attempt fails', async () => {
+    await reconcileFixture({ required: false });
+    expect(getExtensionWebAsset('demo')).toBeDefined();
+
+    // A subsequent failed reconcile (e.g. an update attempt) must clear the
+    // stale entry on the SAME withdraw/failure path that clears the extracted
+    // root — otherwise a later asset route could keep serving a
+    // withdrawn/failed extension's bytes.
+    const { summary } = await reconcileFixture({ required: false, failAt: 'migration' });
+    expect(summary.failed).toEqual(['demo']);
+    expect(getExtensionWebAsset('demo')).toBeUndefined();
+  });
+
   it('continues after an optional migration rollback but fails startup for required', async () => {
     const optional = await reconcileFixture({ required: false, failAt: 'migration' });
     expect(optional.summary.failed).toEqual(['demo']);

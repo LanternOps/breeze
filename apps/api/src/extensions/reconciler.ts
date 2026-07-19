@@ -78,6 +78,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { ExtensionIncompatibleError, RequiredExtensionError } from './errors';
 import { clearExtensionRoot, registerExtensionRoot } from './faultAttribution';
+import { clearExtensionWebAsset, registerExtensionWebAsset } from './webAssets';
 
 /** The ordered phases of the pipeline; doubles as the coarse failure category. */
 type ReconcilePhase =
@@ -668,6 +669,16 @@ export async function reconcileExtensions(
         // only on FULL success; cleared on withdraw (the catch below).
         registerExtensionRoot(selection.name, extractedRoot);
 
+        // Retain the verified bundle's digest + files inventory alongside the
+        // root — the single source a later asset route reads to serve this
+        // extension's web/* files. Same success condition, same withdraw/failure
+        // clear path (the catch below) as registerExtensionRoot/clearExtensionRoot.
+        registerExtensionWebAsset(selection.name, {
+          root: extractedRoot,
+          digest: bundle.artifactDigest,
+          files: bundle.files,
+        });
+
         summary.activated.push(selection.name);
         console.log(`[extensions] reconciled "${selection.name}" ${bundle.manifest.version}`);
       } catch (error) {
@@ -688,6 +699,7 @@ export async function reconcileExtensions(
         }
         registry.withdraw(selection.name);
         clearExtensionRoot(selection.name);
+        clearExtensionWebAsset(selection.name);
         summary.failed.push(selection.name);
         console.error(
           `[extensions] reconcile failed for "${selection.name}" at phase "${phase}" (${

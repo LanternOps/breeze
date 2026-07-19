@@ -34,10 +34,15 @@ import { ExtensionIncompatibleError } from './errors';
  * set. Those constants define the PLATFORM contract the manifest schema validates
  * against, so advertising them means "this platform understands these capability
  * tokens", not "the API tier physically serves each one". The API loader wires the
- * server.* contributions; web.* contributions are wired by the web host. Slots are
- * a separate, versioned negotiation the API tier does not participate in, so
- * `slots` is empty and a manifest declaring web slots is reported incompatible
- * until web-host slot wiring lands.
+ * server.* contributions; web.* contributions are wired by the web host.
+ *
+ * Slot contracts: `slots` names the web extension-point contract versions THIS
+ * deployment supports, independent of the (unrelated) webSdkVersion gap above.
+ * `device.detail.tabs@1` and `organization.settings.sections@1` are the two
+ * contracts the web host currently implements (see plan03-seams.md). A manifest
+ * declaring a slot/version not listed here is reported incompatible by
+ * `checkExtensionCompatibility` (compatibility.ts). Widen this map only when the
+ * web host actually ships support for the new contract version.
  */
 export const HOST_API_VERSION = 'breeze.extensions/v1' as const;
 
@@ -53,7 +58,10 @@ export const HOST_DESCRIPTOR: ExtensionHostDescriptor = Object.freeze({
   serverSdkVersion: HOST_SERVER_SDK_VERSION,
   webSdkVersion: undefined,
   capabilities: Object.freeze([...SUPPORTED_EXTENSION_CAPABILITIES]),
-  slots: Object.freeze({}),
+  slots: Object.freeze({
+    'device.detail.tabs': Object.freeze([1]),
+    'organization.settings.sections': Object.freeze([1]),
+  }),
 });
 
 /**

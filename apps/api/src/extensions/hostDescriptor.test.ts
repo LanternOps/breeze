@@ -1,10 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  parseExtensionManifestV1,
+  type ExtensionManifestV1,
+} from '@breeze/extension-sdk';
+import {
   HOST_BREEZE_VERSION,
   HOST_DESCRIPTOR,
   HOST_SERVER_SDK_VERSION,
 } from './hostDescriptor';
+import {
+  checkExtensionCompatibility,
+  type ExtensionHostDescriptor,
+} from './compatibility';
 
 /**
  * hostDescriptor.ts pins the host's advertised versions as literal constants,
@@ -47,5 +55,102 @@ describe('host descriptor version constants', () => {
     // reading a stale number from somewhere else.
     expect(HOST_DESCRIPTOR.serverSdkVersion).toBe(HOST_SERVER_SDK_VERSION);
     expect(HOST_DESCRIPTOR.breezeVersion).toBe(HOST_BREEZE_VERSION);
+  });
+});
+
+/**
+ * Task 2: HOST_DESCRIPTOR.slots was `Object.freeze({})` by design (see the doc
+ * comment above HOST_DESCRIPTOR) — every manifest declaring a web slot was
+ * reported incompatible. These tests pin the populated contract and prove,
+ * against the compatibility checker itself, that the population is what makes
+ * a `device.detail.tabs@1` declaration pass — not some other relaxed check.
+ */
+describe('HOST_DESCRIPTOR web slot contracts', () => {
+  function makeSlotManifest(
+    slots: { slot: string; contractVersion: number; element: string }[],
+  ): ExtensionManifestV1 {
+    return parseExtensionManifestV1({
+      apiVersion: 'breeze.extensions/v1',
+      name: 'slot-demo',
+      version: '1.0.0',
+      routeNamespace: 'slot-demo',
+      requires: {
+        breeze: '*',
+        serverSdk: '*',
+        webSdk: '*',
+        capabilities: ['web.slots.v1'],
+      },
+      server: { entry: 'server/index.cjs' },
+      web: { entry: 'web/index.js', pages: [], navigation: [], slots },
+      schemaCompatibilityFloor: '1.0.0',
+      jobs: [],
+      aiTools: [],
+    });
+  }
+
+  // The API tier deliberately advertises no webSdkVersion (see the doc comment
+  // above HOST_DESCRIPTOR) — that is a separate, unrelated gap the web host
+  // owns. Isolate the slot check under test by supplying a satisfying
+  // webSdkVersion on top of the real HOST_DESCRIPTOR.
+  function hostWithWebSdk(overrides: Partial<ExtensionHostDescriptor> = {}): ExtensionHostDescriptor {
+    return { ...HOST_DESCRIPTOR, webSdkVersion: '1.0.0', ...overrides };
+  }
+
+  it('advertises exactly the device.detail.tabs and organization.settings.sections v1 contracts', () => {
+    expect(HOST_DESCRIPTOR.slots).toEqual({
+      'device.detail.tabs': [1],
+      'organization.settings.sections': [1],
+    });
+  });
+
+  it('TRIPWIRE: an empty slots map rejects device.detail.tabs@1 (proves population, not something else, makes it pass)', () => {
+    const manifest = makeSlotManifest([
+      { slot: 'device.detail.tabs', contractVersion: 1, element: 'slot-demo-tab' },
+    ]);
+
+    const result = checkExtensionCompatibility(manifest, hostWithWebSdk({ slots: {} }));
+
+    expect(result.compatible).toBe(false);
+    expect(result.reasons).toContain('unsupported slot device.detail.tabs@1');
+  });
+
+  it('accepts device.detail.tabs@1 against the real (now-populated) HOST_DESCRIPTOR slots', () => {
+    const manifest = makeSlotManifest([
+      { slot: 'device.detail.tabs', contractVersion: 1, element: 'slot-demo-tab' },
+    ]);
+
+    expect(checkExtensionCompatibility(manifest, hostWithWebSdk()))
+      .toEqual({ compatible: true, reasons: [] });
+  });
+
+  it('accepts organization.settings.sections@1 against the real HOST_DESCRIPTOR slots', () => {
+    const manifest = makeSlotManifest([
+      { slot: 'organization.settings.sections', contractVersion: 1, element: 'slot-demo-section' },
+    ]);
+
+    expect(checkExtensionCompatibility(manifest, hostWithWebSdk()))
+      .toEqual({ compatible: true, reasons: [] });
+  });
+
+  it('rejects device.detail.tabs@2 against the real HOST_DESCRIPTOR slots', () => {
+    const manifest = makeSlotManifest([
+      { slot: 'device.detail.tabs', contractVersion: 2, element: 'slot-demo-tab' },
+    ]);
+
+    const result = checkExtensionCompatibility(manifest, hostWithWebSdk());
+
+    expect(result.compatible).toBe(false);
+    expect(result.reasons).toContain('unsupported slot device.detail.tabs@2');
+  });
+
+  it('rejects an unknown slot name against the real HOST_DESCRIPTOR slots', () => {
+    const manifest = makeSlotManifest([
+      { slot: 'some.unknown.slot', contractVersion: 1, element: 'slot-demo-tab' },
+    ]);
+
+    const result = checkExtensionCompatibility(manifest, hostWithWebSdk());
+
+    expect(result.compatible).toBe(false);
+    expect(result.reasons).toContain('unsupported slot some.unknown.slot@1');
   });
 });
