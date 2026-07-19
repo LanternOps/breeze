@@ -181,6 +181,10 @@ describe('parseExtensionManifestV1', () => {
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'devices' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'ext' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'extensions' })).toThrow();
+    // #2634 — auth-sensitive core mounts that shipped unreserved.
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'service-principals' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'partner-service-principals' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'partner-api' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/*'] })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/agent/hook'] })).toThrow();
     expect(() => parseExtensionManifestV1({

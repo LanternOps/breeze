@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   parseExtensionManifest,
@@ -5,6 +7,7 @@ import {
   RESERVED_ROUTE_NAMESPACES,
   SUPPORTED_EXTENSION_CAPABILITIES,
 } from './index';
+import { RESERVED_ROUTE_NAMESPACES as LEGACY_RESERVED_ROUTE_NAMESPACES } from './legacy';
 
 describe('versioned SDK adapter', () => {
   it('re-exports the v1 SDK alongside legacy names', () => {
@@ -168,43 +171,74 @@ describe('parseExtensionManifest', () => {
 });
 
 describe('RESERVED_ROUTE_NAMESPACES', () => {
-  // Hand-maintained contract. Regenerate the inner-mount list with:
-  //   grep -oE "api\.route\('/[a-z0-9-]+" apps/api/src/index.ts
-  // That yields the 111 `/api/v1/*` mounts inside the versioned router. Add
-  // the outer-app mounts that don't go through that router: `oauth`,
-  // `settings` (both mounted directly on the outer Hono app), and the
-  // shortlink prefix `s` (`app.route('/s', publicShortLinkRoutes)`).
-  const CORE_NAMESPACES = [
-    'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
-    'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
-    'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-    'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
-    'client-ai', 'config', 'configuration-policies', 'contracts',
-    'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
-    'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-    'events', 'ext', 'extensions', 'filters', 'google', 'groups', 'helper',
-    'huntress',
-    'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
-    'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
-    'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
-    'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
-    'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
-    'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
-    'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
-    'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
-    'software-inventory', 'software-policies', 'sso', 'system',
-    'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
-    'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
-    'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
-    'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
-  ];
+  // Ground truth is DERIVED from apps/api/src/index.ts at test time, not
+  // hand-maintained (#2635). A core mount added without reserving it fails
+  // this suite automatically — there is no list to keep in sync.
+  const API_INDEX = fileURLToPath(
+    new URL('../../../apps/api/src/index.ts', import.meta.url),
+  );
 
-  it('has exactly 116 entries in the ground-truth contract', () => {
-    expect(CORE_NAMESPACES).toHaveLength(116);
+  const validManifest = {
+    name: 'sample',
+    routeNamespace: 'sample',
+    entry: 'src/index.ts',
+    migrationsDir: 'migrations',
+    tenancy: { orgCascadeDeleteTables: ['sample_items'] },
+  };
+
+  /** Strip comments so a commented-out mount is not read as a live one. */
+  function stripComments(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  }
+
+  function deriveCoreNamespaces(): string[] {
+    const source = stripComments(readFileSync(API_INDEX, 'utf8'));
+    const namespaces = new Set<string>();
+    // Mounts on the versioned router: api.route('/devices', …) → /api/v1/devices
+    for (const m of source.matchAll(/\bapi\.route\(\s*'\/([a-z0-9-]+)/g)) {
+      namespaces.add(m[1]);
+    }
+    // Mounts placed directly on the outer app under the same prefix:
+    // app.route('/api/v1/oauth', …) → oauth
+    for (const m of source.matchAll(/\bapp\.route\(\s*'\/api\/v1\/([a-z0-9-]+)/g)) {
+      namespaces.add(m[1]);
+    }
+    return [...namespaces].sort();
+  }
+
+  const coreNamespaces = deriveCoreNamespaces();
+
+  it('derives the core mount list from apps/api/src/index.ts', () => {
+    // Guards against the derivation silently matching nothing (moved file,
+    // renamed router, changed mount style) and passing vacuously.
+    expect(coreNamespaces.length).toBeGreaterThan(100);
+    expect(coreNamespaces).toContain('devices');
+    expect(coreNamespaces).toContain('service-principals');
   });
 
   it('reserves every core /api/v1 route namespace', () => {
-    const missing = CORE_NAMESPACES.filter((ns) => !RESERVED_ROUTE_NAMESPACES.has(ns));
+    const missing = coreNamespaces.filter((ns) => !RESERVED_ROUTE_NAMESPACES.has(ns));
     expect(missing).toEqual([]);
+  });
+
+  it('keeps the extension-sdk and legacy reserved sets identical', () => {
+    // Both sets gate routeNamespace validation on their own code path, so a
+    // namespace reserved in only one of them is still hijackable via the other.
+    expect([...LEGACY_RESERVED_ROUTE_NAMESPACES].sort())
+      .toEqual([...RESERVED_ROUTE_NAMESPACES].sort());
+  });
+
+  it.each([
+    'service-principals',
+    'partner-service-principals',
+    'partner-api',
+  ])('rejects core auth surface %s as a routeNamespace', (namespace) => {
+    // Regression guard for #2634 — these three shipped unreserved, letting an
+    // installed+enabled extension shadow auth-sensitive core endpoints.
+    expect(RESERVED_ROUTE_NAMESPACES.has(namespace)).toBe(true);
+    expect(() => parseExtensionManifest({ ...validManifest, routeNamespace: namespace }))
+      .toThrow();
   });
 });

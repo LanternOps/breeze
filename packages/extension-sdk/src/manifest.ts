@@ -14,7 +14,14 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
   'web.slots.v1',
 ] as const;
 
-/** Route namespaces already owned by the Breeze API. */
+/**
+ * Route namespaces already owned by the Breeze API.
+ *
+ * Mirrored verbatim in packages/extension-api/src/legacy.ts; the two sets are
+ * asserted equal by packages/extension-api/src/index.test.ts, which also
+ * derives the core mounts from apps/api/src/index.ts at test time so a new
+ * core mount that isn't reserved here fails the build automatically.
+ */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
@@ -28,11 +35,13 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
   'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
   'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
-  'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
+  'pam', 'partner', 'partner-api', 'partner-service-principals', 'partners',
+  'patch-policies', 'patches', 'pax8',
   'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
   'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
-  'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
+  'search', 'security', 'sensitive-data', 'service-principals', 'settings',
+  'snmp', 'software',
   'software-inventory', 'software-policies', 'sso', 'system',
   'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
   'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
