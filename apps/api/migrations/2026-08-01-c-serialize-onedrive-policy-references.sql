@@ -9,11 +9,17 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  -- Prod migrates as a non-superuser that cannot SET custom breeze.* GUCs as
+  -- function attributes (42501), so elevate in-body — after the transition-
+  -- table-only no-op gates — and restore the caller's context before every
+  -- normal return. breeze.* is held for the whole request transaction, so a
+  -- leaked 'system' scope would be an RLS hole; error paths restore
+  -- automatically via (sub)transaction rollback.
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   new_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
@@ -45,6 +51,12 @@ BEGIN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM old_rows row;
   END IF;
+
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   -- Stabilize existing rows in one closed relation order before 1000302.
   PERFORM link.id
@@ -134,6 +146,9 @@ BEGIN
       candidate.settings_id, candidate.org_id
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -143,11 +158,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   new_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
@@ -179,6 +194,12 @@ BEGIN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM old_rows row;
   END IF;
+
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   PERFORM link.id
   FROM public.config_policy_feature_links link
@@ -256,6 +277,9 @@ BEGIN
       );
     END LOOP;
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -265,11 +289,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
   candidate record;
@@ -308,6 +332,12 @@ BEGIN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM old_rows row;
   END IF;
+
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   -- The parent statement already owns its changed rows. Lock every currently
   -- visible descendant in the same physical order used by child writers.
@@ -422,6 +452,9 @@ BEGIN
       candidate.feature_link_id, candidate.org_id
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;

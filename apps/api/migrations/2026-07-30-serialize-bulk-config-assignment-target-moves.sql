@@ -9,16 +9,24 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  -- Prod migrates as a non-superuser that cannot SET custom breeze.* GUCs as
+  -- function attributes (42501), so elevate in-body and restore the caller's
+  -- context before every normal return. breeze.* is held for the whole request
+  -- transaction, so a leaked 'system' scope would be an RLS hole; error paths
+  -- restore automatically via (sub)transaction rollback.
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   new_values jsonb[] := ARRAY[]::jsonb[];
   target_row record;
   lock_key integer;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   IF TG_OP = 'INSERT' THEN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM new_rows row;
@@ -166,6 +174,9 @@ BEGIN
   IF TG_OP <> 'DELETE' THEN
     PERFORM public.breeze_validate_config_policy_assignment_new_rows(new_values);
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -175,11 +186,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   identities text[] := ARRAY[]::text[];
   values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
@@ -208,6 +219,12 @@ BEGIN
       (SELECT id, org_id FROM new_rows EXCEPT SELECT id, org_id FROM old_rows)
     ) THEN RETURN NULL; END IF;
   END IF;
+
+  -- Elevate only past the no-op gates above: they read nothing but transition
+  -- tables, so their RETURN NULL paths carry no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   IF TG_TABLE_NAME = 'configuration_policies' THEN
     SELECT COALESCE(array_agg(identity), ARRAY[]::text[]) INTO identities FROM (
@@ -309,6 +326,9 @@ BEGIN
     END;
   END IF;
   PERFORM public.breeze_validate_config_policy_assignment_new_rows(values);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -318,15 +338,18 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   identities text[] := ARRAY[]::text[];
   values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   IF TG_TABLE_NAME = 'configuration_policies' THEN
     SELECT COALESCE(array_agg(identity), ARRAY[]::text[]) INTO identities FROM (
       SELECT 'policy:' || id::text AS identity FROM old_rows

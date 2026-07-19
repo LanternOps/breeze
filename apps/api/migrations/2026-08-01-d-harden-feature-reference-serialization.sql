@@ -10,14 +10,14 @@
 --   * two physical candidates for one polymorphic UUID changing together;
 --   * a link DELETE/retarget racing a referenced-row DELETE/owner change.
 
+-- No breeze.* elevation: the gate only takes an advisory lock and reads no
+-- RLS-governed rows. (Prod migrates as a non-superuser that cannot SET custom
+-- GUCs as function attributes anyway — 42501.)
 CREATE OR REPLACE FUNCTION public.breeze_feature_reference_integrity_gate()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 BEGIN
   PERFORM pg_catalog.pg_advisory_xact_lock(1000302, -2147483648);

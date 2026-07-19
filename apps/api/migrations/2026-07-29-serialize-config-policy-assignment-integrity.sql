@@ -58,14 +58,22 @@ RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  -- Prod migrates as a non-superuser that cannot SET custom breeze.* GUCs as
+  -- function attributes (42501), so elevate in-body and restore the caller's
+  -- context before every normal return. breeze.* is held for the whole request
+  -- transaction, so a leaked 'system' scope would be an RLS hole; error paths
+  -- restore automatically via (sub)transaction rollback.
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   org_ids uuid[];
   partner_ids uuid[];
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   WITH assignment_rows AS (
     SELECT value,
       NULLIF(value->>'config_policy_id', '')::uuid AS policy_id,
@@ -127,6 +135,9 @@ BEGIN
   IF cardinality(org_ids) > 0 THEN
     PERFORM public.breeze_partner_export_lock_orgs_under_exclusive_partners(org_ids, partner_ids);
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
 END;
 $$;
 
@@ -139,16 +150,19 @@ RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   policy_org_id uuid;
   policy_partner_id uuid;
   target_org_id uuid;
   target_partner_id uuid;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   -- The assignment FK already holds KEY SHARE on this policy for INSERT and
   -- config_policy_id UPDATE. Keep the explicit lock for direct validation
   -- callers; target rows deliberately rely on the canonical advisory lock so
@@ -175,6 +189,9 @@ BEGIN
       RAISE EXCEPTION 'partner assignment target must match the policy owner partner'
         USING ERRCODE = '23503', CONSTRAINT = 'config_policy_assignments_target_owner_fk';
     END IF;
+    PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+    PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+    PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
     RETURN;
   ELSIF checked_level = 'organization' THEN
     SELECT organization.id, organization.partner_id INTO target_org_id, target_partner_id
@@ -202,6 +219,9 @@ BEGIN
     RAISE EXCEPTION 'configuration assignment target is incompatible with the policy owner'
       USING ERRCODE = '23503', CONSTRAINT = 'config_policy_assignments_target_owner_fk';
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
 END;
 $$;
 
@@ -210,12 +230,16 @@ RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
-DECLARE assignment_row jsonb;
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+  assignment_row jsonb;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   FOR assignment_row IN
     SELECT value FROM unnest(COALESCE(row_values, ARRAY[]::jsonb[])) value
     ORDER BY value->>'config_policy_id', value->>'level', value->>'target_id', value->>'id'
@@ -226,20 +250,31 @@ BEGIN
       (assignment_row->>'target_id')::uuid
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.breeze_enforce_config_policy_assignment_insert()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = '' AS $$
-DECLARE values jsonb[];
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+  values jsonb[];
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   SELECT array_agg(to_jsonb(row)) INTO values FROM new_rows row;
   PERFORM public.breeze_lock_config_policy_assignment_rows(values);
   PERFORM public.breeze_validate_config_policy_assignment_new_rows(values);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -247,16 +282,24 @@ $$;
 CREATE OR REPLACE FUNCTION public.breeze_enforce_config_policy_assignment_update()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = '' AS $$
-DECLARE old_values jsonb[]; new_values jsonb[]; all_values jsonb[];
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+  old_values jsonb[]; new_values jsonb[]; all_values jsonb[];
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   SELECT array_agg(to_jsonb(row)) INTO old_values FROM old_rows row;
   SELECT array_agg(to_jsonb(row)) INTO new_values FROM new_rows row;
   all_values := COALESCE(old_values, ARRAY[]::jsonb[]) || COALESCE(new_values, ARRAY[]::jsonb[]);
   PERFORM public.breeze_lock_config_policy_assignment_rows(all_values);
   PERFORM public.breeze_validate_config_policy_assignment_new_rows(new_values);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -264,13 +307,21 @@ $$;
 CREATE OR REPLACE FUNCTION public.breeze_enforce_config_policy_assignment_delete()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = '' AS $$
-DECLARE values jsonb[];
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+  values jsonb[];
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   SELECT array_agg(to_jsonb(row)) INTO values FROM old_rows row;
   PERFORM public.breeze_lock_config_policy_assignment_rows(values);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -280,15 +331,18 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   values jsonb[] := ARRAY[]::jsonb[];
   org_ids uuid[] := ARRAY[]::uuid[];
   partner_ids uuid[] := ARRAY[]::uuid[];
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   IF TG_TABLE_NAME = 'configuration_policies' THEN
     SELECT COALESCE(array_agg(to_jsonb(assignment)), ARRAY[]::jsonb[]) INTO values
     FROM public.config_policy_assignments assignment WHERE assignment.config_policy_id = OLD.id;
@@ -324,24 +378,119 @@ BEGIN
     ], NULL);
   END IF;
   PERFORM public.breeze_lock_config_policy_assignment_rows(values, org_ids, partner_ids);
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END;
 $$;
 
--- Recreate the 07-28 reverse validator with a fixed system context. Its AFTER
--- checks run under locks acquired by the BEFORE serializer above.
-ALTER FUNCTION public.breeze_enforce_config_policy_assignment_target()
-  SET breeze.scope = 'system';
-ALTER FUNCTION public.breeze_enforce_config_policy_assignment_target()
-  SET breeze.accessible_org_ids = '';
-ALTER FUNCTION public.breeze_enforce_config_policy_assignment_target()
-  SET breeze.accessible_partner_ids = '';
-ALTER FUNCTION public.breeze_revalidate_config_policy_assignment_targets()
-  SET breeze.scope = 'system';
-ALTER FUNCTION public.breeze_revalidate_config_policy_assignment_targets()
-  SET breeze.accessible_org_ids = '';
-ALTER FUNCTION public.breeze_revalidate_config_policy_assignment_targets()
-  SET breeze.accessible_partner_ids = '';
+-- Recreate the 07-28 reverse validators with a system context. Their AFTER
+-- checks run under locks acquired by the BEFORE serializer above. Elevation is
+-- in-body (ALTER FUNCTION ... SET on a custom GUC needs superuser, same as the
+-- attribute form), with the caller's context restored before normal returns.
+CREATE OR REPLACE FUNCTION public.breeze_enforce_config_policy_assignment_target()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
+  PERFORM public.breeze_validate_config_policy_assignment_target(
+    NEW.config_policy_id, NEW.level::text, NEW.target_id
+  );
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_revalidate_config_policy_assignment_targets()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
+  assignment_row record;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
+  IF TG_TABLE_NAME = 'configuration_policies' THEN
+    FOR assignment_row IN
+      SELECT assignment.config_policy_id, assignment.level::text AS level, assignment.target_id
+      FROM public.config_policy_assignments assignment
+      WHERE assignment.config_policy_id = NEW.id
+    LOOP
+      PERFORM public.breeze_validate_config_policy_assignment_target(
+        assignment_row.config_policy_id, assignment_row.level, assignment_row.target_id
+      );
+    END LOOP;
+    PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+    PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+    PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
+    RETURN NEW;
+  END IF;
+
+  IF TG_TABLE_NAME = 'organizations' THEN
+    FOR assignment_row IN
+      SELECT DISTINCT assignment.config_policy_id, assignment.level::text AS level, assignment.target_id
+      FROM public.config_policy_assignments assignment
+      JOIN public.configuration_policies policy ON policy.id = assignment.config_policy_id
+      WHERE policy.org_id = OLD.id
+         OR (assignment.level = 'organization' AND assignment.target_id = OLD.id)
+         OR (assignment.level = 'site' AND EXISTS (
+           SELECT 1 FROM public.sites site
+           WHERE site.id = assignment.target_id AND site.org_id = OLD.id
+         ))
+         OR (assignment.level = 'device_group' AND EXISTS (
+           SELECT 1 FROM public.device_groups device_group
+           WHERE device_group.id = assignment.target_id AND device_group.org_id = OLD.id
+         ))
+         OR (assignment.level = 'device' AND EXISTS (
+           SELECT 1 FROM public.devices device
+           WHERE device.id = assignment.target_id AND device.org_id = OLD.id
+         ))
+    LOOP
+      PERFORM public.breeze_validate_config_policy_assignment_target(
+        assignment_row.config_policy_id, assignment_row.level, assignment_row.target_id
+      );
+    END LOOP;
+  ELSE
+    FOR assignment_row IN
+      SELECT assignment.config_policy_id, assignment.level::text AS level, assignment.target_id
+      FROM public.config_policy_assignments assignment
+      WHERE assignment.target_id = OLD.id
+        AND assignment.level = CASE TG_TABLE_NAME
+          WHEN 'sites' THEN 'site'::public.config_assignment_level
+          WHEN 'device_groups' THEN 'device_group'::public.config_assignment_level
+          WHEN 'devices' THEN 'device'::public.config_assignment_level
+        END
+    LOOP
+      PERFORM public.breeze_validate_config_policy_assignment_target(
+        assignment_row.config_policy_id, assignment_row.level, assignment_row.target_id
+      );
+    END LOOP;
+  END IF;
+
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
 
 DROP TRIGGER IF EXISTS config_policy_assignment_target_integrity ON public.config_policy_assignments;
 DROP TRIGGER IF EXISTS a_config_policy_assignment_integrity_insert ON public.config_policy_assignments;

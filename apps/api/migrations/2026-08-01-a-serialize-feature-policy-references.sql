@@ -8,16 +8,24 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  -- Prod migrates as a non-superuser that cannot SET custom breeze.* GUCs as
+  -- function attributes (42501), so elevate in-body and restore the caller's
+  -- context before every normal return. breeze.* is held for the whole request
+  -- transaction, so a leaked 'system' scope would be an RLS hole; error paths
+  -- restore automatically via (sub)transaction rollback.
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   new_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
   candidate record;
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
   IF TG_OP = 'INSERT' THEN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM new_rows row;
@@ -199,6 +207,9 @@ BEGIN
       );
     END LOOP;
   END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -208,11 +219,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
   candidate record;
@@ -237,6 +248,12 @@ BEGIN
     SELECT COALESCE(array_agg(to_jsonb(row)), ARRAY[]::jsonb[])
       INTO row_values FROM old_rows row;
   END IF;
+
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   -- Stabilize every currently-visible affected link before entering 1000302.
   -- A concurrently-uncommitted link is instead serialized by the shared
@@ -275,6 +292,9 @@ BEGIN
       candidate.config_policy_id, candidate.feature_type, candidate.feature_policy_id
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -287,11 +307,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   target_feature_type public.config_feature_type;
   changed_values boolean;
@@ -382,6 +402,12 @@ BEGIN
       INTO row_values FROM old_rows row;
   END IF;
 
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
+
   -- Stabilize links visible before the serializer.  A link that is still
   -- uncommitted is serialized by the shared ref identity and is picked up by
   -- the post-lock query under a fresh command snapshot.
@@ -416,6 +442,9 @@ BEGIN
       candidate.config_policy_id, candidate.feature_type, candidate.feature_policy_id
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
@@ -425,11 +454,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET breeze.scope = 'system'
-SET breeze.accessible_org_ids = ''
-SET breeze.accessible_partner_ids = ''
 AS $$
 DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _prev_org_ids text := current_setting('breeze.accessible_org_ids', true);
+  _prev_partner_ids text := current_setting('breeze.accessible_partner_ids', true);
   row_values jsonb[] := ARRAY[]::jsonb[];
   lock_key integer;
   candidate record;
@@ -449,6 +478,12 @@ BEGIN
     UNION ALL
     SELECT to_jsonb(row) AS value FROM new_rows row
   ) rows;
+
+  -- Elevate only here: everything above reads nothing but transition tables,
+  -- so the no-op RETURN NULL path carries no scope to restore.
+  PERFORM set_config('breeze.scope', 'system', true);
+  PERFORM set_config('breeze.accessible_org_ids', '', true);
+  PERFORM set_config('breeze.accessible_partner_ids', '', true);
 
   PERFORM link.id
   FROM public.config_policy_feature_links link
@@ -492,6 +527,9 @@ BEGIN
       candidate.config_policy_id, candidate.feature_type, candidate.feature_policy_id
     );
   END LOOP;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  PERFORM set_config('breeze.accessible_org_ids', COALESCE(_prev_org_ids, ''), true);
+  PERFORM set_config('breeze.accessible_partner_ids', COALESCE(_prev_partner_ids, ''), true);
   RETURN NULL;
 END;
 $$;
