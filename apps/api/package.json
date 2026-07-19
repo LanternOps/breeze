@@ -11,6 +11,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "db:seed:e2e": "tsx src/db/seedE2eFixtures.ts",
     "check:migrations": "tsx scripts/check-migrations.ts",
+    "check:migrations:nonsuperuser": "tsx scripts/check-migrations-nonsuperuser.ts",
     "db:studio": "drizzle-kit studio",
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",

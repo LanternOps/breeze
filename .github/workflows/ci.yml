@@ -259,6 +259,71 @@ jobs:
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
 
+  # Real-Postgres apply of every migration as a NON-SUPERUSER role that mirrors
+  # a managed-Postgres admin (DigitalOcean doadmin / AWS RDS). The class-complete
+  # guard against superuser-only DDL: `check-migrations` above (and every
+  # integration shard) migrates as the container superuser, which silently
+  # tolerates statements prod's non-superuser role cannot run, then prod
+  # crash-loops on boot. This has shipped twice — v0.95.0 (ALTER FUNCTION ...
+  # OWNER TO) and v0.97.0 (SET breeze.scope GUC attribute). Cheap (~1 min) and
+  # blocking on PRs. See apps/api/scripts/check-migrations-nonsuperuser.ts.
+  check-migrations-nonsuperuser:
+    name: Check Migrations (non-superuser)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The superuser connection is used ONLY to provision the non-superuser
+      # migration role + its owned database; the migration set itself runs as
+      # breeze_migrator (NOSUPERUSER). See the script for the role attributes.
+      SUPERUSER_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      MIGRATOR_PASSWORD: migrator
+      # The migration role (non-superuser) and the unprivileged request role.
+      # Set statically so src/db/index.ts resolves them at module-load time.
+      DATABASE_URL: postgresql://breeze_migrator:migrator@localhost:5432/breeze
+      DATABASE_URL_APP: postgresql://breeze_app:breeze_app_ci@localhost:5432/breeze
+      # breeze_app password (ensureAppRole reads BREEZE_APP_DB_PASSWORD first);
+      # must match the password in DATABASE_URL_APP above.
+      BREEZE_APP_DB_PASSWORD: breeze_app_ci
+      # Seed runs at the end of autoMigrate when users is empty; provide
+      # non-secret CI values so it doesn't bail on missing env.
+      JWT_SECRET: ci-nonsuperuser-migrations-jwt-secret-not-used-in-prod
+      APP_ENCRYPTION_KEY: ci-nonsuperuser-migrations-app-key-32bytes-pad
+      MFA_ENCRYPTION_KEY: ci-nonsuperuser-migrations-mfa-key-32bytes-pad
+      AGENT_ENROLLMENT_SECRET: ci-nonsuperuser-migrations-agent-enrollment
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations as a non-superuser role
+        run: pnpm --filter @breeze/api run check:migrations:nonsuperuser
+
   test-web:
     name: Test Web
     runs-on: ubuntu-latest
@@ -1596,7 +1661,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1622,6 +1687,7 @@ jobs:
           TEST_AGENT_WINDOWS_RESULT: ${{ needs.test-agent-windows.result }}
           WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
+          CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
@@ -1647,6 +1713,7 @@ jobs:
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
+             [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
              [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
