@@ -5,6 +5,7 @@ import * as dbModule from '../db';
 import { devices } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
@@ -136,19 +137,27 @@ export async function publishSecurityScoreChangedEvents(
 
 export function getSecurityPostureQueue(): Queue<SecurityPostureJobData> {
   if (!securityPostureQueue) {
-    securityPostureQueue = new Queue<SecurityPostureJobData>(SECURITY_POSTURE_QUEUE, {
-      connection: getBullMQConnection()
-    });
+    // Instrumented so an enqueue inside a held DB context trips the #1105
+    // tripwire instead of silently pinning a pooled connection (the bare
+    // `new Queue` here is how the scan-orgs addBulk hold went unnoticed).
+    securityPostureQueue = createInstrumentedQueue<SecurityPostureJobData>(SECURITY_POSTURE_QUEUE);
   }
   return securityPostureQueue;
 }
 
 async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
-  const orgRows = await db
-    .select({ orgId: devices.orgId })
-    .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned'`)
-    .groupBy(devices.orgId);
+  // #1105 (BREEZE-K class): read the org list in its own short-lived context so
+  // the fan-out enqueue below runs AFTER the transaction closes — addBulk is a
+  // Redis round-trip that must not run while a pooled Postgres connection sits
+  // idle-in-transaction. Mirrors metricAnomalies.ts; the worker handler
+  // deliberately does not wrap this job type.
+  const orgRows = await runWithSystemDbAccess(async () =>
+    db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(sql`${devices.status} <> 'decommissioned'`)
+      .groupBy(devices.orgId)
+  );
 
   if (orgRows.length === 0) {
     return { queued: 0 };
@@ -199,12 +208,12 @@ export function createSecurityPostureWorker(): Worker<SecurityPostureJobData> {
   return new Worker<SecurityPostureJobData>(
     SECURITY_POSTURE_QUEUE,
     async (job: Job<SecurityPostureJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'scan-orgs') {
-          return processScanOrgs(job.data);
-        }
-        return processComputeOrg(job.data);
-      });
+      const data = job.data;
+      if (data.type === 'scan-orgs') {
+        // Manages its own context: DB read inside, enqueue outside (#1105).
+        return processScanOrgs(data);
+      }
+      return runWithSystemDbAccess(async () => processComputeOrg(data));
     },
     {
       connection: getBullMQConnection(),
