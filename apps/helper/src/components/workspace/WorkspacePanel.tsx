@@ -390,7 +390,7 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="helper-container" onKeyDown={handlePanelKeyDown}>
+    <div className="helper-container" onKeyDown={handlePanelKeyDown} data-testid="workspace-panel">
       <Toaster />
       <div
         className={`helper-header${isMacOS ? ' helper-header-macos' : ''}`}

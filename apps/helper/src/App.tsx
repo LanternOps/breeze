@@ -1,37 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useChatStore } from './stores/chatStore';
 import type { SessionSummary, PendingApproval, DeviceContext } from './stores/chatStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import WorkspacePanel from './components/workspace/WorkspacePanel';
-
-function ToolCallIndicator({ toolName }: { toolName?: string }) {
-  const label = toolName
-    ? `Using ${toolName.replace(/_/g, ' ')}...`
-    : 'Checking your system...';
-  return (
-    <div className="helper-tool-indicator text-ws-secondary">
-      <span className="helper-spinner" />
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function ThinkingIndicator() {
-  return (
-    <div className="helper-message helper-message-assistant bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]">
-      <div className="helper-thinking">
-        <span className="helper-thinking-dot" />
-        <span className="helper-thinking-dot" />
-        <span className="helper-thinking-dot" />
-        <span className="helper-thinking-label text-ws-secondary">Thinking</span>
-      </div>
-    </div>
-  );
-}
+import ChatView from './components/shell/ChatView';
 
 function UsernamePrompt({ osUsername }: { osUsername?: string }) {
   const setUsername = useChatStore((s) => s.setUsername);
@@ -386,14 +360,11 @@ export default function App() {
     connectionError,
     agentConfig,
     sessionId,
-    messages,
-    isStreaming,
     error,
     username,
     pendingApproval,
     isFlagged,
     initialize,
-    sendMessage,
     clearMessages,
     approveExecution,
     flagSession,
@@ -402,13 +373,11 @@ export default function App() {
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
   const probeWorkspace = useWorkspaceStore((s) => s.probe);
 
-  const [input, setInput] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [showDeviceInfo, setShowDeviceInfo] = useState(false);
   // Files-first: land in the Files view; the render below still gates on the
   // capability probe, so orgs without workspace files keep the chat home.
   const [showWorkspace, setShowWorkspace] = useState(true);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     initialize();
@@ -433,24 +402,6 @@ export default function App() {
     }).then((fn: () => void) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isStreaming) return;
-    sendMessage(input);
-    setInput('');
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e);
-    }
-  };
 
   // Connection states
   if (connectionState === 'connecting') {
@@ -606,71 +557,7 @@ export default function App() {
         />
       )}
 
-      {/* Messages */}
-      <div className="helper-messages">
-        {messages.length === 0 && (
-          <div className="helper-empty text-ws-secondary">
-            <p>Hi{username ? `, ${username}` : ''}! I'm Breeze Helper.</p>
-            <p>Ask me anything about your computer.</p>
-          </div>
-        )}
-
-        {messages.map((msg) => {
-          if (msg.role === 'tool_use') {
-            return <ToolCallIndicator key={msg.id} toolName={msg.toolName} />;
-          }
-
-          if (msg.role === 'tool_result') {
-            return null; // Tool results are internal, not shown to end users
-          }
-
-          return (
-            <div
-              key={msg.id}
-              className={`helper-message helper-message-${msg.role} bg-ws-surface rounded-surface shadow-[var(--ws-shadow-1)]`}
-            >
-              <div className="helper-message-content">
-                {msg.role === 'assistant' ? (
-                  <>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content}
-                    </ReactMarkdown>
-                    {msg.isStreaming && <span className="helper-cursor" />}
-                  </>
-                ) : (
-                  msg.content
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-        {isStreaming && messages[messages.length - 1]?.role !== 'assistant' && (
-          <ThinkingIndicator />
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input */}
-      <form onSubmit={handleSubmit} className="helper-input-form bg-ws-surface border-ws-border-subtle shadow-[var(--ws-shadow-1)]">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask me anything..."
-          disabled={isStreaming}
-          rows={1}
-          className="helper-input bg-ws-canvas text-ws-ink"
-        />
-        <button
-          type="submit"
-          disabled={isStreaming || !input.trim()}
-          className="helper-btn helper-btn-send bg-ws-accent text-[var(--ws-accent-contrast)]"
-        >
-          Send
-        </button>
-      </form>
+      <ChatView />
     </div>
   );
 }
