@@ -173,6 +173,12 @@ body {
   min-height: 0;
 }
 
+/* An error surfacing while the chat panel rides beside Files spans both grid
+   columns as a top strip rather than getting wedged into a single cell. */
+.helper-shell-main-split > .helper-error-banner {
+  grid-column: 1 / -1;
+}
+
 /* The chat side panel: a raised surface hinged on a subtle left border, sliding
    in from the right. It's a flex column so ChatView's messages scroll and the
    composer pins to the bottom, mirroring the full-swap chat. */

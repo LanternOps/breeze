@@ -204,7 +204,7 @@ it('returns to the previous main view when leaving History via Back', () => {
   expect(screen.queryByText('No conversations yet')).not.toBeInTheDocument();
 });
 
-it('renders the Flag and New actions only in chat context', () => {
+it('renders the Flag and New actions whenever a chat is on screen', () => {
   // Chat context: chat-scoped actions present (Flag needs an active session).
   setChatState({ sessionId: 's1' });
   setWorkspaceState({ available: false });
@@ -214,13 +214,21 @@ it('renders the Flag and New actions only in chat context', () => {
   expect(screen.getByRole('button', { name: 'New' })).toBeInTheDocument();
   unmount();
 
-  // Files context: the same chat-scoped actions are gone.
+  // Files context with the panel CLOSED: no chat on screen, so the actions are gone.
+  setWidth(1000);
   setChatState({ sessionId: 's1' });
   setWorkspaceState({ available: true });
 
-  render(<AppShell />);
+  const { unmount: unmount2 } = render(<AppShell />);
   expect(screen.queryByRole('button', { name: 'Flag' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'New' })).not.toBeInTheDocument();
+
+  // Open the chat side panel on Files: a chat is now on screen, so the
+  // chat-scoped actions render (plan Task 2 — chat==='chat' OR panel open).
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+  expect(screen.getByRole('button', { name: 'Flag' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'New' })).toBeInTheDocument();
+  unmount2();
 });
 
 it('opens a chat side panel on wide windows while the Files panel stays mounted', () => {
@@ -289,4 +297,59 @@ it('converts an open panel to a full swap across the breakpoint without losing c
   expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument();
   expect(screen.getByTestId('chat-view')).toBeInTheDocument();
   expect(screen.getByPlaceholderText('Ask me anything...')).toHaveValue('draft in flight');
+});
+
+it('shows the tool-approval popup when a chat panel is open on Files', () => {
+  setWidth(1000);
+  setChatState({
+    pendingApproval: {
+      executionId: 'e1',
+      description: 'Run diagnostics on this device',
+      input: {},
+    },
+  });
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  // Main view is Files; open the chat as a side panel.
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+  expect(screen.getByTestId('chat-panel')).toBeInTheDocument();
+
+  // The approval popup must surface even though Files is the main view — without
+  // the hoist it would silently hang until the server timeout.
+  expect(screen.getByText('Approval Required')).toBeInTheDocument();
+  expect(screen.getByText('Run diagnostics on this device')).toBeInTheDocument();
+});
+
+it('shows the chat error banner when a chat panel is open on Files', () => {
+  setWidth(1000);
+  setChatState({ error: 'stream disconnected' });
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  fireEvent.click(screen.getByTestId('chat-toggle'));
+  expect(screen.getByTestId('chat-panel')).toBeInTheDocument();
+
+  expect(screen.getByText('stream disconnected')).toBeInTheDocument();
+});
+
+it('routes to the chat view when a past conversation is selected from History', () => {
+  setWorkspaceState({ available: true });
+  setChatState({
+    sessions: [
+      { id: 's1', title: 'Past conversation', updatedAt: new Date().toISOString(), turnCount: 2 },
+    ],
+  });
+
+  render(<AppShell />);
+  // Files → History.
+  fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+  expect(screen.getByText('Past conversation')).toBeInTheDocument();
+
+  // Selecting a session must land on chat (not back on Files, where the loaded
+  // session would never be shown).
+  fireEvent.click(screen.getByText('Past conversation'));
+
+  expect(screen.getByTestId('chat-view')).toBeInTheDocument();
+  expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument();
 });

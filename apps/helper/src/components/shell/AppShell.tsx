@@ -49,7 +49,13 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString();
 }
 
-function SessionHistory({ onClose }: { onClose: () => void }) {
+function SessionHistory({
+  onClose,
+  onSelectSession,
+}: {
+  onClose: () => void;
+  onSelectSession: () => void;
+}) {
   const { sessions, sessionsLoading, loadSession, loadSessions } = useChatStore();
 
   useEffect(() => {
@@ -58,15 +64,16 @@ function SessionHistory({ onClose }: { onClose: () => void }) {
 
   const handleSelect = (session: SessionSummary) => {
     loadSession(session.id);
-    onClose();
+    onSelectSession();
   };
 
   return (
     <div className="helper-history">
-      <div className="helper-history-header" data-tauri-drag-region>
-        {isMacOS && <div className="helper-traffic-light-spacer" />}
+      {/* No drag region / traffic-light spacer: this bar lives inside the shell's
+          main region, whose header above owns the traffic lights and dragging. */}
+      <div className="helper-history-header">
         <span className="helper-history-title">History</span>
-        <div className="helper-header-drag-spacer" data-tauri-drag-region />
+        <div className="helper-header-drag-spacer" />
         <button onClick={onClose} className="helper-btn helper-btn-sm">
           Back
         </button>
@@ -284,10 +291,11 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="helper-history">
-      <div className="helper-history-header" data-tauri-drag-region>
-        {isMacOS && <div className="helper-traffic-light-spacer" />}
+      {/* No drag region / traffic-light spacer: this bar lives inside the shell's
+          main region, whose header above owns the traffic lights and dragging. */}
+      <div className="helper-history-header">
         <span className="helper-history-title">Device Info</span>
-        <div className="helper-header-drag-spacer" data-tauri-drag-region />
+        <div className="helper-header-drag-spacer" />
         <button onClick={onClose} className="helper-btn helper-btn-sm">Back</button>
       </div>
       <div className="helper-messages" style={{ padding: '16px' }}>
@@ -437,14 +445,14 @@ export default function AppShell() {
     { key: 'history', label: 'History' },
   ];
 
-  // Flag/New are chat-scoped — they only make sense while the chat is the main
-  // view (matches the pre-shell header, which showed them only on the chat home).
-  const chatScoped = mainView === 'chat';
-
   // The chat toggle only makes sense from Files (the one primary view that can
   // sit beside a chat panel). The panel itself renders only when wide + open.
   const canToggleChat = mainView === 'files' && workspaceAvailable === true;
   const panelOpen = canToggleChat && isWide && chatPanelOpen;
+
+  // Flag/New are chat-scoped — they render whenever a chat is on screen: the
+  // full-swap chat view OR the side panel riding beside Files (plan Task 2).
+  const chatScoped = mainView === 'chat' || panelOpen;
 
   return (
     <div className="helper-shell bg-ws-canvas">
@@ -516,17 +524,13 @@ export default function AppShell() {
       </div>
 
       {/* Main region — one view at a time; the header above never unmounts.
-          The chat error banner and the tool-approval popup are chat-scoped
-          chrome (as in the pre-shell chat home), so they render only with
-          ChatView — not over Files/History. */}
+          The chat error banner and the tool-approval popup are chat chrome, so
+          they render whenever a chat is on screen — the full-swap chat view OR
+          the side panel beside Files. The popup is an inset:0 overlay, so it
+          composes over the split grid; the banner rides as a full-width strip
+          above the split (see .helper-shell-main-split > .helper-error-banner). */}
       <div className={`helper-shell-main${panelOpen ? ' helper-shell-main-split' : ''}`}>
-        {mainView === 'history' ? (
-          <SessionHistory onClose={goBack} />
-        ) : mainView === 'device-info' ? (
-          <DeviceInfoView onClose={goBack} />
-        ) : mainView === 'files' && workspaceAvailable === true ? (
-          <WorkspacePanel embedded onClose={goBack} />
-        ) : (
+        {(mainView === 'chat' || panelOpen) && (
           <>
             {error && (
               <div className="helper-error-banner">
@@ -547,9 +551,20 @@ export default function AppShell() {
                 onDeny={() => approveExecution(pendingApproval.executionId, false)}
               />
             )}
-
-            <ChatView draft={draft} setDraft={setDraft} />
           </>
+        )}
+
+        {mainView === 'history' ? (
+          <SessionHistory
+            onClose={goBack}
+            onSelectSession={() => setMainView('chat')}
+          />
+        ) : mainView === 'device-info' ? (
+          <DeviceInfoView onClose={goBack} />
+        ) : mainView === 'files' && workspaceAvailable === true ? (
+          <WorkspacePanel embedded onClose={goBack} />
+        ) : (
+          <ChatView draft={draft} setDraft={setDraft} />
         )}
 
         {/* Chat side panel (wide windows) — Files stays mounted to the left. The
