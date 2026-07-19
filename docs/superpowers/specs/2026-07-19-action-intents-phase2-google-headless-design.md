@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-19
 **Branch:** `ToddHebebrand/action-intents-durability`
-**Status:** Design approved, pending spec review
+**Status:** Implemented on ToddHebebrand/action-intents-durability (commits ed56872b8..eb0ce2dd6)
 **Related:** [[action_intents_durable_approval_review]], `docs/superpowers/plans/2026-07-19-action-intents-durability-followups.md`, `docs/superpowers/specs/2026-07-13-breeze-m365-control-plane-design.md`
 
 ## Problem
