@@ -428,6 +428,24 @@ async function decideHandler(
       existing.boundArgumentDigest &&
       existing.boundArgumentDigest !== linkedIntent.argumentDigest
     ) {
+      // Tamper-detection tripwire: content changed after fan-out. Audit
+      // this refusal — the release worker audits the same condition
+      // (jobs/intentReleaseWorker.ts's `digest_mismatch` errorCode), and
+      // this decide-time refusal is equally security-relevant. Ids/digests
+      // only, never raw arguments (spec §3.2/§7).
+      recordActionIntentEvent({
+        orgId: linkedIntent.orgId,
+        intentId: linkedIntent.id,
+        actionName: linkedIntent.actionName,
+        argumentDigest: linkedIntent.argumentDigest,
+        source: linkedIntent.source,
+        outcome: 'digest_mismatch',
+        actorId: userId,
+        details: {
+          approvalId: existing.id,
+          boundArgumentDigest: existing.boundArgumentDigest,
+        },
+      });
       return c.json({ error: 'digest_mismatch' }, 409);
     }
   }

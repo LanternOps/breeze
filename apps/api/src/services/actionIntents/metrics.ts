@@ -18,6 +18,12 @@ import type { ActionIntentSource } from '../../db/schema/actionIntents';
  * as `no_eligible_approvers`) belongs in `details.errorCode`, never a new
  * outcome value — keeps the metrics cardinality and the audit vocabulary
  * both bounded and matching the spec exactly.
+ *
+ * `digest_mismatch` is the one deliberate addition beyond the spec's seven:
+ * the decide handler's tamper-detection tripwire (routes/approvals.ts —
+ * `existing.boundArgumentDigest !== linkedIntent.argumentDigest`) refuses a
+ * decision without ever calling `transitionIntent`, so none of the seven
+ * lifecycle outcomes fit. It is a failure outcome (see `FAILURE_OUTCOMES`).
  */
 export type ActionIntentOutcome =
   | 'created'
@@ -26,7 +32,8 @@ export type ActionIntentOutcome =
   | 'expired'
   | 'cancelled'
   | 'executed'
-  | 'self_approved_sole_operator';
+  | 'self_approved_sole_operator'
+  | 'digest_mismatch';
 
 interface ActionIntentMetricsRecorder {
   onEvent: (source: ActionIntentSource, action: string, outcome: ActionIntentOutcome) => void;
@@ -75,7 +82,12 @@ export function registerActionIntentPrometheusCounter(
   return counter;
 }
 
-const FAILURE_OUTCOMES = new Set<ActionIntentOutcome>(['rejected', 'expired', 'cancelled']);
+const FAILURE_OUTCOMES = new Set<ActionIntentOutcome>([
+  'rejected',
+  'expired',
+  'cancelled',
+  'digest_mismatch',
+]);
 
 export interface ActionIntentAuditInput {
   orgId: string;

@@ -1353,7 +1353,7 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
   });
 
-  it('refuses the decision when bound_argument_digest no longer matches the intent (digest_mismatch)', async () => {
+  it('refuses the decision when bound_argument_digest no longer matches the intent (digest_mismatch) and audits it', async () => {
     mockDecideWithIntent({ boundArgumentDigest: 'stale-digest', intentDigest: 'digest-abc' });
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
@@ -1362,6 +1362,21 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(body.error).toBe('digest_mismatch');
     expect(transitionIntent).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-9',
+        intentId: 'intent-1',
+        actionName: 'y',
+        argumentDigest: 'digest-abc',
+        source: 'mcp_api',
+        outcome: 'digest_mismatch',
+        actorId: TEST_USER.id,
+        details: expect.objectContaining({
+          approvalId: 'appr-1',
+          boundArgumentDigest: 'stale-digest',
+        }),
+      }),
+    );
   });
 
   it('first-wins: a decide arriving after the intent already moved is a no-op but still 200s for this row', async () => {
