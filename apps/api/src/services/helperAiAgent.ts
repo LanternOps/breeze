@@ -17,6 +17,8 @@ interface HelperContext {
   osType?: string;
   osVersion?: string;
   agentVersion?: string;
+  /** True when the session declared client-provided tools (generic seam). */
+  hasClientTools?: boolean;
 }
 
 /**
@@ -93,6 +95,12 @@ ${capabilities.join('\n')}
 
   if (ctx.osType) parts.push(`- OS: ${ctx.osType}${ctx.osVersion ? ` ${ctx.osVersion}` : ''}`);
   if (ctx.agentVersion) parts.push(`- Agent Version: ${ctx.agentVersion}`);
+
+  if (ctx.hasClientTools) {
+    parts.push(
+      '\n## Client Tools\nThis session has client-provided tools; prefer them for questions about the user\'s files/content, and follow each tool description\'s citation instructions.',
+    );
+  }
 
   return parts.join('\n');
 }
