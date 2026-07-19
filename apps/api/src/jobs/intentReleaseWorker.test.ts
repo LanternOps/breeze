@@ -592,9 +592,17 @@ describe('releaseApprovedIntent', () => {
 
   describe('headless Google branch', () => {
     it('executes a headless Google tool and CASes to completed (not session_required)', async () => {
-      const intent = baseIntent({ actionName: 'google_suspend_user' });
+      // orgId deliberately distinct from fakeAuth.orgId ('org-1') so the
+      // executeGoogleToolHeadless assertion below can only pass if the worker
+      // threads intent.orgId through — not auth.orgId.
+      const intent = baseIntent({ actionName: 'google_suspend_user', orgId: 'org-2' });
       primeThroughRevalidation(intent);
       googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+      // Real-world case is isHeadlessGoogleTool=true AND requiresLiveSession=true:
+      // this proves the worker's `!isHeadlessGoogleTool(...) && requiresLiveSession(...)`
+      // gate genuinely short-circuits on the headless clause rather than the
+      // test passing only because requiresLiveSession defaulted to falsy.
+      aiToolsMock.requiresLiveSession.mockReturnValue(true);
       googleHeadlessMock.executeGoogleToolHeadless.mockResolvedValueOnce('Suspended Google Workspace user u@x.com.');
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
@@ -623,6 +631,7 @@ describe('releaseApprovedIntent', () => {
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'connection_unavailable' }),
       );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     });
 
     it('still fails session_required for a session-aware M365 tool (deferral intact)', async () => {
