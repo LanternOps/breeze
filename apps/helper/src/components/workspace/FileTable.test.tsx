@@ -74,3 +74,25 @@ it('Escape clears the selection and does not bubble past the table; a second Esc
   fireEvent.keyDown(table, { key: 'Escape' });
   expect(onOuterEscape).toHaveBeenCalledTimes(1);
 });
+
+it('Escape closes a mouse-opened row context menu without also walking the panel back — RowMenu never sets `selected`, so this is not covered by the selection guard above', async () => {
+  const onOuterEscape = vi.fn();
+  const onOuterKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') onOuterEscape();
+  };
+  render(
+    <div onKeyDown={onOuterKeyDown}>
+      <FileTable view="search" rows={rows} onOpen={vi.fn()} onCopy={vi.fn()} />
+    </div>,
+  );
+
+  // Right-click opens the row's context menu via the mouse — this never
+  // calls setSelected, so `selected` stays null throughout.
+  fireEvent.contextMenu(screen.getByText('a.pdf'));
+  const menu = await screen.findByRole('menu');
+  const firstRow = screen.getByText('a.pdf').closest('[role="row"]')!;
+  expect(firstRow).toHaveAttribute('aria-selected', 'false');
+
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(onOuterEscape).not.toHaveBeenCalled();
+});

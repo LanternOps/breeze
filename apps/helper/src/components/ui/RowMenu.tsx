@@ -14,6 +14,21 @@ export interface MenuItem {
  * (Radix DropdownMenu, triggered by a small button revealed on row hover),
  * both rendering the same menu list.
  */
+/**
+ * Radix's DismissableLayer closes an open menu on Escape via its own
+ * document-level capture listener (it only calls `preventDefault()`, never
+ * `stopPropagation()`), so the same keydown still bubbles through React's
+ * synthetic tree to whatever's listening above this row (FileTable, then
+ * WorkspacePanel's Back handler) — collapsing "close menu" and "go Back"
+ * into a single keystroke. Stop it here, on the portalled content itself,
+ * so Escape's first job is only ever to close *this* menu; the walk-back
+ * to selection-clear / Back resumes on the next Escape once the content
+ * (and this handler) has unmounted.
+ */
+function stopEscapePropagation(e: React.KeyboardEvent) {
+  if (e.key === 'Escape') e.stopPropagation();
+}
+
 export function RowMenu({ items, children }: { items: MenuItem[]; children: ReactNode }) {
   return (
     <ContextMenu.Root>
@@ -27,7 +42,12 @@ export function RowMenu({ items, children }: { items: MenuItem[]; children: Reac
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
-              <DropdownMenu.Content className="ws-row-menu-content" align="end" sideOffset={4}>
+              <DropdownMenu.Content
+                className="ws-row-menu-content"
+                align="end"
+                sideOffset={4}
+                onKeyDown={stopEscapePropagation}
+              >
                 {items.map((item) => (
                   <DropdownMenu.Item
                     key={item.label}
@@ -44,7 +64,7 @@ export function RowMenu({ items, children }: { items: MenuItem[]; children: Reac
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
-        <ContextMenu.Content className="ws-row-menu-content">
+        <ContextMenu.Content className="ws-row-menu-content" onKeyDown={stopEscapePropagation}>
           {items.map((item) => (
             <ContextMenu.Item
               key={item.label}

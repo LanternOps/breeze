@@ -45,3 +45,37 @@ it('the hover ⋯ button opens the same items via a dropdown menu', async () => 
   expect(within(menu).getByText('Open')).toBeInTheDocument();
   expect(within(menu).getByText('Copy path')).toBeInTheDocument();
 });
+
+it('Escape closes the context menu without bubbling to an ancestor handler', async () => {
+  const onOuterEscape = vi.fn();
+  render(
+    <div onKeyDown={(e) => { if (e.key === 'Escape') onOuterEscape(); }}>
+      <RowMenu items={items(vi.fn(), vi.fn())}>
+        <div>my-file.docx</div>
+      </RowMenu>
+    </div>,
+  );
+
+  fireEvent.contextMenu(screen.getByText('my-file.docx'));
+  const menu = await screen.findByRole('menu');
+
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(onOuterEscape).not.toHaveBeenCalled();
+});
+
+it('Escape closes the ⋯ dropdown menu without bubbling to an ancestor handler', async () => {
+  const onOuterEscape = vi.fn();
+  render(
+    <div onKeyDown={(e) => { if (e.key === 'Escape') onOuterEscape(); }}>
+      <RowMenu items={items(vi.fn(), vi.fn())}>
+        <div>my-file.docx</div>
+      </RowMenu>
+    </div>,
+  );
+
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0 });
+  const menu = await screen.findByRole('menu');
+
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  expect(onOuterEscape).not.toHaveBeenCalled();
+});
