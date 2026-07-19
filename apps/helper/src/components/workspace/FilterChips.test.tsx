@@ -15,6 +15,32 @@ function renderChips(filters: WorkspaceFilters = {}) {
   );
 }
 
+it('renders only the requested chips (Browse tab: Project/Doc type only, no Date/Source/Kind)', () => {
+  render(
+    <FilterChips
+      rows={[]}
+      sources={[{ id: 's1', displayName: 'Firm Share', kind: 'smb_share' }]}
+      filters={{}}
+      onSetFilter={vi.fn()}
+      onClearFilter={vi.fn()}
+      chips={['project', 'docType']}
+    />,
+  );
+  expect(screen.getByRole('button', { name: 'Project' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Doc type' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Date' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Source' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Kind' })).not.toBeInTheDocument();
+});
+
+it('defaults to all five chips when `chips` is omitted (Search tab)', () => {
+  renderChips();
+  expect(screen.getByRole('button', { name: 'Project' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Doc type' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Date' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Kind' })).toBeInTheDocument();
+});
+
 it('does not swallow Tab inside the Date chip custom From/To inputs (regression: Radix Menu.Content preventDefaults Tab)', async () => {
   renderChips();
 

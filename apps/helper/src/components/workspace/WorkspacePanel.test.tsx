@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 vi.mock('../../lib/helperFetch', () => ({
   helperRequest: vi.fn(),
@@ -137,6 +137,52 @@ it('switching tabs before the search debounce fires cancels the pending search',
   } finally {
     vi.useRealTimers();
   }
+});
+
+// Browse-chips extension (controller adjudication): the plan's Architecture
+// line authorizes project/docType — the same two params Task 6 gave
+// /helper/search — on the browse endpoint too. Browse's chip row must show
+// only those two (Date/Source/Kind stay Search-only, since browse doesn't
+// accept the other params), and picking a value must re-issue the browse
+// fetch for the current folder with the new filter.
+it('Browse tab shows only Project/Doc type chips, and selecting one re-issues the browse fetch', async () => {
+  const browseSpy = vi.fn().mockResolvedValue(undefined);
+  useWorkspaceStore.setState({
+    browse: browseSpy,
+    browsePath: { sourceId: 's1', parentPath: '' },
+    entries: [
+      file({
+        id: 'f1',
+        name: 'alder-easement.pdf',
+        inferredProjectLabel: 'Henderson Water Main Replacement',
+        inferredDocType: 'easement',
+      }),
+    ],
+  });
+
+  render(<WorkspacePanel onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
+
+  // Only Project/Doc type render — no Date/Source/Kind chips on Browse.
+  // Scoped to the chip row itself: FileTable's sortable "Project" column
+  // header button would otherwise collide with the chip's own "Project" name.
+  const chipRow = document.querySelector('.ws-filter-chip-row') as HTMLElement;
+  expect(within(chipRow).getByRole('button', { name: 'Project' })).toBeInTheDocument();
+  expect(within(chipRow).getByRole('button', { name: 'Doc type' })).toBeInTheDocument();
+  expect(within(chipRow).queryByRole('button', { name: 'Date' })).not.toBeInTheDocument();
+  expect(within(chipRow).queryByRole('button', { name: 'Kind' })).not.toBeInTheDocument();
+
+  // The mount-time "open first source" effect must not have fired — browsePath
+  // was already set, so this isolates the assertion below to the chip pick.
+  expect(browseSpy).not.toHaveBeenCalled();
+
+  fireEvent.pointerDown(within(chipRow).getByRole('button', { name: 'Project' }), { button: 0 });
+  // Menu item, not FileTable's own "Henderson Water Main Replacement" cell.
+  const option = await screen.findByRole('menuitem', { name: 'Henderson Water Main Replacement' });
+  fireEvent.click(option);
+
+  expect(useWorkspaceStore.getState().filters.project).toBe('Henderson Water Main Replacement');
+  await waitFor(() => expect(browseSpy).toHaveBeenCalledWith('s1', ''));
 });
 
 // Regression test for the debounce-effect's `tab` dependency re-arming a

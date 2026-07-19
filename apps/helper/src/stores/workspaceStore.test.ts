@@ -8,7 +8,9 @@ vi.mock('../lib/helperFetch', () => ({
 
 import { helperRequest } from '../lib/helperFetch';
 import { useChatStore } from './chatStore';
-import { useWorkspaceStore, sortRows, buildSearchParams, type FinderFile } from './workspaceStore';
+import {
+  useWorkspaceStore, sortRows, buildSearchParams, buildBrowseParams, type FinderFile,
+} from './workspaceStore';
 
 const helperRequestMock = vi.mocked(helperRequest);
 
@@ -87,6 +89,29 @@ describe('buildSearchParams', () => {
     const params = buildSearchParams('x', {});
     expect(params.toString()).toBe('q=x');
     expect(buildSearchParams('x').toString()).toBe('q=x');
+  });
+});
+
+describe('buildBrowseParams', () => {
+  it('passes sourceId + parentPath through and omits absent project/docType', () => {
+    const params = buildBrowseParams('s1', 'clients/alder', {});
+    expect(params.toString()).toBe('sourceId=s1&parentPath=clients%2Falder');
+    expect(buildBrowseParams('s1', '').toString()).toBe('sourceId=s1&parentPath=');
+  });
+
+  it('forwards project/docType only; other filter keys are not browse params', () => {
+    const params = buildBrowseParams('s1', '', {
+      project: 'Henderson Water Main Replacement',
+      docType: 'easement',
+      kind: 'pdf',
+      dateFrom: '2020-01-01',
+      sourceId: 'ignored-should-not-override',
+    });
+    expect(params.get('sourceId')).toBe('s1');
+    expect(params.get('project')).toBe('Henderson Water Main Replacement');
+    expect(params.get('docType')).toBe('easement');
+    expect(params.has('ext')).toBe(false);
+    expect(params.has('modifiedAfter')).toBe(false);
   });
 });
 
@@ -228,6 +253,19 @@ describe('browse', () => {
     expect(url.pathname).toBe('/api/v1/workspace/helper/browse');
     expect(url.searchParams.get('sourceId')).toBe('s1');
     expect(url.searchParams.get('parentPath')).toBe('clients/alder');
+  });
+
+  it('forwards project/docType from the filters slice to the browse request', async () => {
+    useWorkspaceStore.setState({
+      filters: { project: 'Henderson Water Main Replacement', docType: 'easement' },
+    });
+    helperRequestMock.mockResolvedValueOnce(ok({ entries: [] }));
+
+    await useWorkspaceStore.getState().browse('s1', '');
+
+    const url = new URL(helperRequestMock.mock.calls[0][1]);
+    expect(url.searchParams.get('project')).toBe('Henderson Water Main Replacement');
+    expect(url.searchParams.get('docType')).toBe('easement');
   });
 
   it('surfaces a browse failure and keeps the previous browsePath', async () => {

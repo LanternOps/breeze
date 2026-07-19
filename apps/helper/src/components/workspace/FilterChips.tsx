@@ -1,7 +1,9 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import type { FinderFile, WorkspaceFilters, WorkspaceSource } from '../../stores/workspaceStore';
 
-type ChipKey = 'project' | 'docType' | 'date' | 'sourceId' | 'kind';
+export type ChipKey = 'project' | 'docType' | 'date' | 'sourceId' | 'kind';
+
+const ALL_CHIPS: ChipKey[] = ['project', 'docType', 'date', 'sourceId', 'kind'];
 
 const CHIP_LABELS: Record<ChipKey, string> = {
   project: 'Project',
@@ -46,10 +48,20 @@ export interface FilterChipsProps {
   filters: WorkspaceFilters;
   onSetFilter: <K extends keyof WorkspaceFilters>(key: K, value: WorkspaceFilters[K]) => void;
   onClearFilter: (key: keyof WorkspaceFilters) => void;
+  /**
+   * Which chips to render, in order. Defaults to all five (Search toolbar).
+   * Browse passes just `['project', 'docType']` — the only two params the
+   * browse endpoint accepts (see the Architecture note authorizing them
+   * there); Date/Source/Kind stay Search-only.
+   */
+  chips?: ChipKey[];
 }
 
-/** Chip row for the Search toolbar: Project, Doc type, Date, Source, Kind — each a Radix DropdownMenu. */
-export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter }: FilterChipsProps) {
+/** Chip row: Project, Doc type, Date, Source, Kind — each a Radix DropdownMenu; `chips` narrows which render. */
+export function FilterChips({
+  rows, sources, filters, onSetFilter, onClearFilter, chips = ALL_CHIPS,
+}: FilterChipsProps) {
+  const enabled = new Set(chips);
   function chip(
     key: ChipKey,
     activeLabel: string | null,
@@ -115,19 +127,19 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
 
   return (
     <div className="ws-filter-chip-row">
-      {chip(
+      {enabled.has('project') && chip(
         'project',
         filters.project ?? null,
         () => onClearFilter('project'),
         optionList(projectValues, (v) => onSetFilter('project', v)),
       )}
-      {chip(
+      {enabled.has('docType') && chip(
         'docType',
         filters.docType ?? null,
         () => onClearFilter('docType'),
         optionList(docTypeValues, (v) => onSetFilter('docType', v)),
       )}
-      {chip(
+      {enabled.has('date') && chip(
         'date',
         dateChipLabel(filters),
         () => {
@@ -179,7 +191,7 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
           </div>
         </div>,
       )}
-      {sources.length > 1 && chip(
+      {enabled.has('sourceId') && sources.length > 1 && chip(
         'sourceId',
         sources.find((s) => s.id === filters.sourceId)?.displayName ?? null,
         () => onClearFilter('sourceId'),
@@ -193,7 +205,7 @@ export function FilterChips({ rows, sources, filters, onSetFilter, onClearFilter
           </DropdownMenu.Item>
         )),
       )}
-      {chip(
+      {enabled.has('kind') && chip(
         'kind',
         filters.kind ?? null,
         () => onClearFilter('kind'),

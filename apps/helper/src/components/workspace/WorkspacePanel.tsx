@@ -230,6 +230,17 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
     browse(sources[0].id, '');
   }, [tab, browsePath, sources, browse]);
 
+  // Browse's own chip row (Project/Doc type only — see FilterChips' `chips`
+  // prop below) writes to the same `filters` slice Search's chips use.
+  // Selecting or clearing either one re-issues the current folder's browse
+  // fetch with the new filters. Chips only render while browsePath is set
+  // (folder already loaded), so this never fights the mount effect above.
+  useEffect(() => {
+    if (tab !== 'browse' || !browsePath) return;
+    browse(browsePath.sourceId, browsePath.parentPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.project, filters.docType]);
+
   // Cmd/Ctrl+F focuses the search input from anywhere in Files, switching to
   // the Search tab first if another tab is active.
   useEffect(() => {
@@ -410,6 +421,16 @@ export default function WorkspacePanel({ onClose }: { onClose: () => void }) {
             )}
           </div>
           <div className="helper-workspace-main">
+            {browsePath && (
+              <FilterChips
+                rows={entries}
+                sources={sources}
+                filters={filters}
+                onSetFilter={setFilter}
+                onClearFilter={clearFilter}
+                chips={['project', 'docType']}
+              />
+            )}
             {browsePath && (
               <div className="helper-workspace-breadcrumb">
                 <button

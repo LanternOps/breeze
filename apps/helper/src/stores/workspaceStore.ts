@@ -121,6 +121,24 @@ export function buildSearchParams(q: string, filters: WorkspaceFilters = {}): UR
   return params;
 }
 
+/**
+ * Pure query-param builder for /helper/browse. Unlike search, browse's
+ * Architecture-authorized extension is just project + docType (Date/Source/
+ * Kind are Search-only — Source is a path segment there, not a filter, and
+ * the browse endpoint doesn't accept the other three params), so every other
+ * WorkspaceFilters key is deliberately ignored here.
+ */
+export function buildBrowseParams(
+  sourceId: string,
+  parentPath: string,
+  filters: WorkspaceFilters = {},
+): URLSearchParams {
+  const params = new URLSearchParams({ sourceId, parentPath });
+  if (filters.project) params.set('project', filters.project);
+  if (filters.docType) params.set('docType', filters.docType);
+  return params;
+}
+
 export type ActivityAction = 'open' | 'reveal' | 'copy_path';
 
 interface WorkspaceState {
@@ -287,7 +305,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const config = agentConfig();
     if (!config) return;
 
-    const params = new URLSearchParams({ sourceId, parentPath });
+    // project/docType are shared state (the same `filters` slice Search's
+    // chips write to) — the Browse tab's own chips write to the identical
+    // slice, so reading it here means callers never need to thread filters
+    // through every browse() call site (rail clicks, breadcrumbs, drill-down).
+    const params = buildBrowseParams(sourceId, parentPath, get().filters);
 
     set({ loading: true, error: null });
 
