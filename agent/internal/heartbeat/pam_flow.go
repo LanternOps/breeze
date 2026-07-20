@@ -214,10 +214,19 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 		}
 	}()
 	if alreadyUncertain {
-		// Deliberate, and NOT safe to "fix" by dismissing anyway: an unproven
-		// prior dismissal means the helper may still be injecting input at the
-		// consent desktop, and pamActuateMu cannot serialize against a
-		// helper-side goroutine we could not prove had stopped.
+		// Deliberate: an unproven prior dismissal means the helper may still be
+		// injecting input at the consent desktop, and pamActuateMu cannot
+		// serialize against a helper-side goroutine we could not prove had
+		// stopped. Dismissing again from here would risk two input streams.
+		//
+		// Recovery (recoverPamDismissalGate) DOES re-dismiss under exactly that
+		// uncertainty, which looks contradictory — the difference is who owns
+		// the resolution. Recovery is the single, bounded, serialized owner of
+		// getting the gate un-stuck, and it accepts the input-collision risk
+		// knowingly because the alternative is a permanently dead PAM; the
+		// worst case there is a corrupted Escape keystroke, never a credential.
+		// This path has a strictly better option available — skip, and let
+		// recovery resolve it — so it takes that instead of racing recovery.
 		//
 		// The cost is real though: this denial is not enforced, so the prompt
 		// is left live for the user to answer themselves. The gate fail-closes
@@ -229,8 +238,13 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 		return
 	}
 	if err != nil {
-		log.Warn("pam: deny enforcement FAILED — dismissal IPC error; consent.exe may still be live",
-			"elevationRequestId", requestID, "reason", reason, "error", err.Error())
+		// The uncertain case already logged at Error with the gate context;
+		// don't repeat it at a lower severity.
+		var uncertain *sessionbroker.PamDismissUncertainError
+		if !errors.As(err, &uncertain) {
+			log.Warn("pam: deny enforcement FAILED — dismissal IPC error; consent.exe may still be live",
+				"elevationRequestId", requestID, "reason", reason, "error", err.Error())
+		}
 		return
 	}
 
@@ -263,9 +277,12 @@ func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession stri
 	defer func() {
 		if r := recover(); r != nil {
 			// Never let a panic here leave the gate in an unattended state; the
-			// gate stays closed, which is the safe direction.
+			// gate stays closed, which is the safe direction. Start the
+			// durability alarm too — a panic strands the gate exactly like an
+			// exhausted recovery does, and would otherwise be logged once.
 			log.Error("pam: panic while resolving dismissal gate; PAM actuation remains fail-closed",
 				"elevationRequestId", requestID, "panic", r)
+			go h.reassertStuckPamGate(requestID)
 		}
 	}()
 
@@ -328,7 +345,7 @@ func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession stri
 			"dismiss_message", outcome.Result.DetailMessage, "error", detail)
 	}
 
-	h.recoverPamDismissalGate(requestID, targetWinSession)
+	h.recoverPamDismissalGate(requestID, targetWinSession, quiesced)
 }
 
 // recoverPamDismissalGate re-establishes proof after an unproven or failed
@@ -348,7 +365,7 @@ func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession stri
 // and there is nothing for an actuation to attach to), but it is a real user
 // visible cost, bounded by the attempt cap. A read-only presence probe would be
 // the better primitive and needs a new helper IPC verb.
-func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string) {
+func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string, quiesced <-chan sessionbroker.PamDismissOutcome) {
 	delay := h.pamRecoveryDelay
 	if delay <= 0 {
 		delay = defaultPamRecoveryDelay
@@ -365,6 +382,19 @@ func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string) 
 				"elevationRequestId", requestID, "attempt", attempt)
 			return
 		case <-time.After(delay):
+		}
+
+		// A helper that was merely slow may have answered after the proof
+		// timeout gave up on it. That late answer is still real proof, so
+		// drain it (non-blocking) before spending another probe — otherwise
+		// recovery can exhaust while the evidence sits unread in the buffer.
+		select {
+		case late, ok := <-quiesced:
+			if ok && late.Cleared() {
+				h.releasePamDismissalGate(requestID, "late helper response proved dismissal", attempt)
+				return
+			}
+		default:
 		}
 
 		outcome, probed := h.probePamDismissalRecovery(requestID, targetWinSession, attempt, delay)

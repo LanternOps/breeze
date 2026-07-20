@@ -822,7 +822,10 @@ func TestPamGateRecoveryExhaustionStaysFailClosed(t *testing.T) {
 	var probes atomic.Int32
 	var idMu sync.Mutex
 	seenIDs := map[string]int{}
+	stuckStop := make(chan struct{})
+	t.Cleanup(func() { close(stuckStop) })
 	h := &Heartbeat{
+		stopChan:               stuckStop, // lets reassertStuckPamGate exit with the test
 		pamRecoveryDelay:       time.Millisecond,
 		pamRecoveryMaxAttempts: 4,
 		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
@@ -1068,4 +1071,119 @@ func TestRunPamFlowPassesRequesterSessionToDeny(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReassertStuckPamGateKeepsWarning covers the durability half of #2610:
+// the terminal "PAM disabled" state must stay visible, not be logged once and
+// then go silent for the rest of the agent's life.
+func TestReassertStuckPamGateKeepsWarning(t *testing.T) {
+	t.Run("re-announces while the gate stays stuck", func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop)
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Millisecond,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+
+		// It must still be running (i.e. still re-asserting) after several
+		// intervals rather than having returned after a single announcement.
+		select {
+		case <-done:
+			t.Fatal("reassert loop exited while the gate was still stuck")
+		case <-time.After(25 * time.Millisecond):
+		}
+	})
+
+	t.Run("exits once the gate clears", func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop)
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Millisecond,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+
+		h.pamActuateMu.Lock()
+		h.pamDismissalUncertain = false
+		h.pamActuateMu.Unlock()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reassert loop kept running after the gate cleared")
+		}
+	})
+
+	t.Run("exits on shutdown", func(t *testing.T) {
+		stop := make(chan struct{})
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Hour,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+		close(stop)
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reassert loop did not exit on agent shutdown")
+		}
+	})
+}
+
+// TestRecoveryDrainsLateProof pins that a helper which answers AFTER the proof
+// timeout still gets its answer honored: recovery drains the late outcome
+// instead of exhausting while real evidence sits unread in the buffer.
+func TestRecoveryDrainsLateProof(t *testing.T) {
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	var probes atomic.Int32
+	var firstDismissDone atomic.Bool
+	h := &Heartbeat{
+		stopChan:               stop,
+		pamGateProofTimeout:    2 * time.Millisecond,
+		pamRecoveryDelay:       5 * time.Millisecond,
+		pamRecoveryMaxAttempts: 50,
+		// No helper is reachable, so the ONLY way the gate can open is by
+		// draining the late proof.
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			probes.Add(1)
+			return nil
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: quiesced,
+				}
+			}
+			return ipc.PamDismissConsentResult{}, errors.New("no helper")
+		},
+	}
+
+	h.denyConsent(&sessionbroker.Session{SessionID: "slow-helper"}, "req-late", "policy_denied", "")
+	if !gateClosed(h) {
+		t.Fatal("gate must engage while the dismissal is unproven")
+	}
+
+	// The helper finally answers, well after the proof window closed.
+	quiesced <- sessionbroker.PamDismissOutcome{
+		Proven: true,
+		Result: ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"},
+	}
+	close(quiesced)
+
+	waitForGate(t, h, false, "recovery ignored a late but valid dismissal proof")
 }

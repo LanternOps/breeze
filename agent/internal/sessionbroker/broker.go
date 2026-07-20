@@ -1492,7 +1492,12 @@ func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Dur
 // pamDismissQuiescence decodes the late helper envelope into a typed outcome so
 // the fail-closed gate can distinguish "the dismissal succeeded" from "the
 // dismissal definitively failed" and from "the helper died and we never found
-// out". The returned channel yields exactly one outcome, then closes.
+// out".
+//
+// The returned channel yields AT MOST one outcome, then closes. It yields
+// nothing at all while the helper is hung but its session stays connected,
+// because the upstream envelope channel is only resolved by a correlated
+// response or session teardown. Readers must bound their receive.
 func pamDismissQuiescence(envelopes <-chan *ipc.Envelope) <-chan PamDismissOutcome {
 	out := make(chan PamDismissOutcome, 1)
 	go func() {

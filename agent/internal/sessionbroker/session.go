@@ -156,8 +156,7 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 // registration after a timeout or transport error. The returned channel is
 // non-nil only when execution is uncertain.
 //
-// The channel always closes exactly once, and it carries the RESULT rather
-// than a bare completion signal:
+// The channel carries the RESULT rather than a bare completion signal:
 //
 //   - a correlated helper response arrived -> the envelope is sent, then the
 //     channel closes. The command is proven finished, and the envelope says
@@ -169,6 +168,12 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 // mean the command succeeded, and it does not mean the helper stopped. Closing
 // on session death exists so callers can run a bounded recovery instead of
 // blocking forever — never so they can assume success (issue #2610).
+//
+// CRITICAL: the channel is resolved ONLY by those two events. A helper that
+// hangs while its session stays CONNECTED never closes it, so callers must
+// bound their receive rather than assuming an outcome always arrives —
+// blocking forever here is what turns a fail-closed gate into a permanent
+// lockout.
 func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, <-chan *ipc.Envelope, error) {
 	ch := make(chan *ipc.Envelope, 1)
 	quiesced := make(chan *ipc.Envelope, 1)
