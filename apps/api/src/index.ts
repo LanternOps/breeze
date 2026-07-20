@@ -154,6 +154,7 @@ import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
+import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
@@ -281,6 +282,20 @@ import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
+import { join as joinPath } from 'node:path';
+import { reconcileExtensions } from './extensions/reconciler';
+import { resolveExtensionsRoot } from './extensions/discovery';
+import { resolveArtifactStoreRoot } from './extensions/artifactStore';
+import { createExtensionStateStore } from './extensions/stateStore';
+import { createEnabledGate } from './extensions/enabledGate';
+import {
+  initializeExtensionJobHost,
+  shutdownExtensionJobHost,
+} from './extensions/jobHost';
+import {
+  attributeExtensionError,
+  extensionRootsSnapshot,
+} from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -949,10 +964,20 @@ api.route('/m365', m365CustomerGraphReadRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
+// Runtime-extension operations. Mounted BEFORE `/admin` on purpose: it carries
+// its own platformAdminMiddleware, and registering the more specific path first
+// means adminRoutes' `use('*')` gate never also fires for these requests (which
+// would authenticate and audit-log the same request twice).
+api.route('/admin/extensions', extensionsAdminRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
 
-mountExtensionGateway(app, extensionContributionRegistry, async () => true);
+// One system-scoped state store, shared by the per-request enabled gate, the
+// startup reconciler, and the BullMQ job host. The gate checks
+// installed_extensions.enabled on EVERY dispatched extension request (no cache)
+// so an admin disabling an extension takes effect fleet-wide on the next request.
+const extensionStateStore = createExtensionStateStore();
+mountExtensionGateway(app, extensionContributionRegistry, createEnabledGate(extensionStateStore));
 
 app.route('/api/v1', api);
 
@@ -1194,6 +1219,7 @@ async function initializeWorkers(): Promise<void> {
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
+    ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
@@ -1392,6 +1418,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
     shutdownAuditRetentionWorker,
+    shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
@@ -1504,8 +1531,21 @@ function installSignalHandlers(): void {
       captureException(reason instanceof Error ? reason : new Error(String(reason)));
       return;
     }
-    console.error('[FATAL] Unhandled rejection:', reason);
-    captureException(reason instanceof Error ? reason : new Error(String(reason)));
+    // Attribution ADDS a culprit name to the log + Sentry tag ONLY. It does not
+    // suppress or resolve the fault — the existing capture/telemetry behavior is
+    // unchanged; we simply name the likely extension when its loaded code is in
+    // the stack.
+    const attributed = attributeExtensionError(reason, extensionRootsSnapshot());
+    if (attributed) {
+      console.error(`[FATAL] Unhandled rejection attributed to extension "${attributed}":`, reason);
+    } else {
+      console.error('[FATAL] Unhandled rejection:', reason);
+    }
+    captureException(
+      reason instanceof Error ? reason : new Error(String(reason)),
+      undefined,
+      attributed ? { extension: attributed } : undefined,
+    );
   });
 
   // #1379 B4 — a synchronous uncaughtException otherwise tears the process
@@ -1525,8 +1565,15 @@ function installSignalHandlers(): void {
       captureException(err);
       return;
     }
-    console.error('[FATAL] Uncaught exception:', err);
-    captureException(err);
+    // Attribution ADDS a culprit name/tag ONLY — the crash path below (flush +
+    // exit(1)) is preserved exactly so the supervisor still restarts us.
+    const attributed = attributeExtensionError(err, extensionRootsSnapshot());
+    if (attributed) {
+      console.error(`[FATAL] Uncaught exception attributed to extension "${attributed}":`, err);
+    } else {
+      console.error('[FATAL] Uncaught exception:', err);
+    }
+    captureException(err, undefined, attributed ? { extension: attributed } : undefined);
     // Best-effort drain, then exit non-zero so the supervisor restarts us.
     void flushSentry().finally(() => process.exit(1));
   });
@@ -1553,6 +1600,19 @@ async function bootstrap(): Promise<void> {
   }
 
   await loadSourceExtensions(extensionContributionRegistry);
+
+  // Reconcile SIGNED runtime-extension bundles declared in extensions.yaml. Core
+  // + legacy-extension migrations already ran (initializeDatabaseForStartup
+  // above). A MISSING extensions.yaml — the common case — is a clean no-op and
+  // must never break startup; a REQUIRED extension that fails any phase throws
+  // and aborts boot on purpose (see reconcileExtensions).
+  await reconcileExtensions({
+    app,
+    configPath: joinPath(resolveExtensionsRoot(), 'extensions.yaml'),
+    storeRoot: resolveArtifactStoreRoot(),
+    registry: extensionContributionRegistry,
+    stateStore: extensionStateStore,
+  });
 
   try {
     await bootstrapPlatformAdmins();
