@@ -99,6 +99,13 @@ export default defineConfig({
       // pool) and forks real child processes against `:5433`. Belongs to
       // vitest.integration.config.ts (already in its include).
       'src/extensions/twoReplicaReconcile.integration.test.ts',
+      // Reset-password reveal secret lifecycle (CAS burn + expiry-reaper
+      // sweep): imports `__tests__/integration/setup` (real postgres pool
+      // + autoMigrate) and lives in src/services/actionIntents/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts
+      // (registered in its include list).
+      'src/services/actionIntents/resultSecrets.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

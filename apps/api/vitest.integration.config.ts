@@ -93,6 +93,13 @@ export default defineConfig({
       // - interval predicate the mocked unit suite can't verify against a
       // real Postgres now().
       'src/jobs/intentExpiryReaper.integration.test.ts',
+      // Co-located real-DB integration test for the reset-password reveal
+      // secret lifecycle: proves the CAS burn is exactly-once under
+      // concurrent callers and that the expiry-reaper sweep redacts both
+      // the encrypted and legacy-plaintext key forms past the reveal
+      // window while leaving recent/revealed rows untouched — predicates
+      // the mocked unit suite can't verify against real Postgres.
+      'src/services/actionIntents/resultSecrets.integration.test.ts',
       // Co-located real-DB integration test for the decide-path intent fan-in
       // atomicity (Task 6): drives the real approve route + injects a DB-level
       // fault into the intent_approved outbox insert to prove {CAS + sibling

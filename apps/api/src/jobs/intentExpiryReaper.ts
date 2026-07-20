@@ -9,6 +9,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
+import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 
 /**
  * Reaps `action_intents` rows past their deadline (spec
@@ -278,6 +279,30 @@ export async function reapStaleExecutingIntents(): Promise<number> {
   return rows.length;
 }
 
+/**
+ * Redact un-revealed reset-password secrets past the reveal window so no
+ * ciphertext (or legacy plaintext) outlives REVEAL_WINDOW_DAYS at rest.
+ * Counterpart of the reveal endpoint's lazy redaction; count-only logging.
+ */
+export async function redactExpiredUnrevealedSecrets(): Promise<number> {
+  const res = await db.execute<{ id: string }>(sql`
+    UPDATE ${actionIntents}
+    SET result = (result - 'temporaryPasswordEnc' - 'temporaryPassword')
+                 || jsonb_build_object('temporaryPasswordExpired', true)
+    WHERE ${actionIntents.status} = 'completed'
+      AND ${actionIntents.result} ?| array['temporaryPasswordEnc', 'temporaryPassword']
+      AND ${actionIntents.executedAt} < now() - make_interval(days => ${REVEAL_WINDOW_DAYS})
+    RETURNING ${actionIntents.id} AS id;
+  `);
+  const rows = extractRows<{ id: string }>(res);
+  if (rows.length > 0) {
+    console.log(
+      `[IntentExpiryReaper] Redacted ${rows.length} expired un-revealed temp password(s)`,
+    );
+  }
+  return rows.length;
+}
+
 function createWorker(): Worker<ReaperJobData> {
   return new Worker<ReaperJobData>(
     QUEUE_NAME,
@@ -285,12 +310,13 @@ function createWorker(): Worker<ReaperJobData> {
       try {
         const expired = await runWithSystemDbAccess(reapExpiredIntents);
         const staleFailed = await runWithSystemDbAccess(reapStaleExecutingIntents);
+        const secretsRedacted = await runWithSystemDbAccess(redactExpiredUnrevealedSecrets);
         if (expired > 0 || staleFailed > 0) {
           console.log(
             `[IntentExpiryReaper] Expired ${expired} intent(s), failed ${staleFailed} stale-executing intent(s)`,
           );
         }
-        return { expired, staleFailed };
+        return { expired, staleFailed, secretsRedacted };
       } catch (err) {
         console.error('[IntentExpiryReaper] Run failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));
