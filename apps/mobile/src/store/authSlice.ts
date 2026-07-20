@@ -12,6 +12,14 @@ import { storeToken, storeUser, clearAuthData } from '../services/auth';
 
 export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
 
+/**
+ * Whether this phone managed to register as a hardware approver.
+ * `unsupported` (no biometric hardware / simulator) is a normal resting state;
+ * only `failed` is worth telling the user about, because it silently caps every
+ * approval from this device at L1.
+ */
+export type ApproverRegistrationStatus = 'idle' | 'registered' | 'failed' | 'unsupported';
+
 interface AuthState {
   user: User | null;
   token: string | null;
@@ -20,6 +28,8 @@ interface AuthState {
   mfaChallenge: MfaChallenge | null;
   pushRegistration: PushRegistrationStatus;
   pushRegistrationReason: string | null;
+  approverRegistration: ApproverRegistrationStatus;
+  approverRegistrationReason: string | null;
 }
 
 const initialState: AuthState = {
@@ -30,6 +40,8 @@ const initialState: AuthState = {
   mfaChallenge: null,
   pushRegistration: 'idle',
   pushRegistrationReason: null,
+  approverRegistration: 'idle',
+  approverRegistrationReason: null,
 };
 
 export const loginAsync = createAsyncThunk(
@@ -122,6 +134,10 @@ const authSlice = createSlice({
       state.isLoading = false;
       state.error = null;
       state.mfaChallenge = null;
+      // Approver registration is per-user, not per-device: leaving it set would
+      // show the next user on this phone the previous user's banner.
+      state.approverRegistration = 'idle';
+      state.approverRegistrationReason = null;
     },
     clearError: (state) => {
       state.error = null;
@@ -139,6 +155,13 @@ const authSlice = createSlice({
     ) => {
       state.pushRegistration = action.payload.status;
       state.pushRegistrationReason = action.payload.reason ?? null;
+    },
+    setApproverRegistration: (
+      state,
+      action: PayloadAction<{ status: ApproverRegistrationStatus; reason?: string | null }>
+    ) => {
+      state.approverRegistration = action.payload.status;
+      state.approverRegistrationReason = action.payload.reason ?? null;
     },
   },
   extraReducers: (builder) => {
@@ -206,5 +229,6 @@ export const {
   clearMfaChallenge,
   setLoading,
   setPushRegistration,
+  setApproverRegistration,
 } = authSlice.actions;
 export default authSlice.reducer;

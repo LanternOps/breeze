@@ -4,7 +4,7 @@ import { Alert, Pressable, Text, View } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 
 import { useAppSelector, useAppDispatch } from '../store';
-import { setCredentials, logout, logoutAsync } from '../store/authSlice';
+import { setCredentials, logout, logoutAsync, setApproverRegistration } from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
 import { getCurrentUser, onDeviceBlocked } from '../services/api';
 import { spacing, type } from '../theme';
@@ -83,11 +83,21 @@ export function RootNavigator() {
   // this phone an approver. Idempotent + fails open — never blocks the UI and
   // never prompts for biometrics here (the first real approval is the first
   // Face ID, which also activates the key server-side).
+  //
+  // "Fails open" must not mean "fails invisibly": we record the outcome so
+  // ApprovalGate can warn when registration failed, otherwise every approval
+  // from this phone is silently capped at L1.
   useEffect(() => {
-    if (token && user) {
-      void ensureApproverDevice();
-    }
-  }, [token, user]);
+    if (!token || !user) return;
+    void ensureApproverDevice().then((outcome) => {
+      dispatch(
+        setApproverRegistration({
+          status: outcome.status === 'already_registered' ? 'registered' : outcome.status,
+          reason: 'reason' in outcome ? outcome.reason : null,
+        })
+      );
+    });
+  }, [token, user, dispatch]);
 
   useEffect(() => {
     async function checkAuth() {

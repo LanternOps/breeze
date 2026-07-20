@@ -51,10 +51,20 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
       token = String(tokenData.data);
     } else {
       // Android stays on the Expo push relay: the API's approval dispatcher
-      // does not send to raw FCM tokens yet (deliberately skipped server-side),
-      // so a native device token here would silently drop approval pushes.
+      // does not send to raw FCM tokens yet (deliberately skipped server-side
+      // in expoPush.ts), so a native device token here would silently drop
+      // approval pushes.
+      //
+      // The iOS-native-APNs switch removed `extra.eas.projectId` from app.json,
+      // so on a stock build there is no relay to register with. That is a
+      // not-built-yet state, NOT a failure: reporting it as 'failed' would show
+      // Android users a red "push failed to register" banner for a feature that
+      // was never wired. Android push needs either an Expo projectId restored
+      // here or a real FCM sender added server-side.
       const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-      if (!projectId) throw new Error('EAS projectId missing — run `eas init`');
+      if (!projectId) {
+        return { status: 'unsupported', reason: 'android_push_not_configured' };
+      }
       const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
       token = tokenData.data;
     }
