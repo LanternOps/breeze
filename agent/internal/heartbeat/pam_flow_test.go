@@ -509,7 +509,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			h.denyConsent(selectedSession, "req-deny", "policy_denied")
+			h.denyConsent(selectedSession, "req-deny", "policy_denied", "")
 		}()
 	}
 	wg.Wait()
@@ -523,7 +523,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 }
 
 func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
-	quiesced := make(chan struct{})
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
 	selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper"}
 	manager := &fakeElevationManager{promoteErr: errors.New("simulated promote failure")}
 	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
@@ -538,7 +538,7 @@ func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
 		},
 	}
 
-	h.denyConsent(selectedSession, "req-timeout", "policy_denied")
+	h.denyConsent(selectedSession, "req-timeout", "policy_denied", "")
 
 	resultCh := make(chan pamactuator.Result, 1)
 	go func() {
@@ -556,11 +556,16 @@ func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
 	if manager.promoteSeen != 0 {
 		t.Fatalf("Promote calls while dismissal uncertain = %d, want 0", manager.promoteSeen)
 	}
-	h.denyConsent(selectedSession, "req-second-deny", "policy_denied")
+	h.denyConsent(selectedSession, "req-second-deny", "policy_denied", "")
 	if got := dismissCalls.Load(); got != 1 {
 		t.Fatalf("dismiss calls while previous completion uncertain = %d, want 1", got)
 	}
 
+	// Only a PROVEN-SUCCESSFUL dismissal reopens the gate.
+	quiesced <- sessionbroker.PamDismissOutcome{
+		Proven: true,
+		Result: ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"},
+	}
 	close(quiesced)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -647,4 +652,538 @@ func TestRunPamFlowSurvivesActuatorPanic(t *testing.T) {
 	if manager.demoteSeen != 1 {
 		t.Fatalf("Demote called %d times after panic, want 1 (deferred cleanup must run)", manager.demoteSeen)
 	}
+}
+
+// gateClosed reports whether PAM actuation is currently fail-closed.
+func gateClosed(h *Heartbeat) bool {
+	h.pamActuateMu.Lock()
+	defer h.pamActuateMu.Unlock()
+	return h.pamDismissalUncertain
+}
+
+// waitForGate polls until the gate reaches want, or fails the test.
+func waitForGate(t *testing.T, h *Heartbeat, want bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if gateClosed(h) == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s (gate closed = %v, want %v)", msg, gateClosed(h), want)
+}
+
+// TestDenyConsentProvenFailedDismissalKeepsGateClosed covers issue #2610
+// Critical 1: a LATE helper response that definitively reports the dismissal
+// FAILED must not reopen PAM actuation. The old gate closed on "a correlated
+// response arrived" (execution finished), which let the next approved
+// actuation type freshly-promoted admin credentials into a still-live,
+// previously-DENIED consent.exe window — silently reversing the deny.
+func TestDenyConsentProvenFailedDismissalKeepsGateClosed(t *testing.T) {
+	failureReasons := []string{"consent_did_not_close", "send_input_failed", "desktop_open_failed"}
+	for _, reason := range failureReasons {
+		t.Run(reason, func(t *testing.T) {
+			quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+			// Proven: the helper finished and answered. But it answered "I did
+			// NOT close the prompt" — the denied window is still on screen.
+			quiesced <- sessionbroker.PamDismissOutcome{
+				Proven: true,
+				Result: ipc.PamDismissConsentResult{Success: false, Reason: reason},
+			}
+			close(quiesced)
+
+			manager := &fakeElevationManager{}
+			swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+			var recoveryProbes atomic.Int32
+			h := &Heartbeat{
+				pamRecoveryDelay:       time.Millisecond,
+				pamRecoveryMaxAttempts: 3,
+				// No helper is findable, so recovery can never prove the
+				// desktop is clear and the gate must stay closed throughout.
+				pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+					recoveryProbes.Add(1)
+					return nil
+				},
+				pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+					return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+						Cause:    sessionbroker.ErrCommandTimeout,
+						Quiesced: quiesced,
+					}
+				},
+			}
+
+			h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-denied", "policy_denied", "")
+
+			// Give the quiescence goroutine time to (wrongly) release the gate.
+			time.Sleep(50 * time.Millisecond)
+			if !gateClosed(h) {
+				t.Fatal("gate released on a CONFIRMED-FAILED dismissal — a live denied consent.exe can now be credentialed")
+			}
+
+			res := h.actuateElevation(context.Background(), "req-next", defaultActuateTimeoutMs, pamTarget{})
+			if res.Reason != "dismissal_uncertain" {
+				t.Fatalf("actuation reason = %q, want dismissal_uncertain", res.Reason)
+			}
+			if manager.promoteSeen != 0 {
+				t.Fatalf("Promote calls after a failed dismissal = %d, want 0 (credentials must never be promoted)", manager.promoteSeen)
+			}
+			// Recovery must actually have been attempted — otherwise this test
+			// would pass on a build that simply never recovers.
+			if recoveryProbes.Load() == 0 {
+				t.Fatal("recovery was never attempted after a confirmed-failed dismissal")
+			}
+		})
+	}
+}
+
+// TestDenyConsentHelperDeathRecoversViaProof covers issue #2610 Critical 2: if
+// the helper session dies mid-dismiss, the gate must not strand PAM for the
+// agent's whole lifetime. Recovery re-establishes PROOF (a fresh helper
+// reporting no_consent_window) rather than timing out into an open state.
+func TestDenyConsentHelperDeathRecoversViaProof(t *testing.T) {
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+	// Helper died: no correlated response ever arrived.
+	quiesced <- sessionbroker.PamDismissOutcome{Proven: false}
+	close(quiesced)
+
+	manager := &fakeElevationManager{}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{
+			trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+				return pamactuator.Result{Success: true, Reason: "actuated"}
+			},
+		}
+	})
+
+	reconnected := &sessionbroker.Session{SessionID: "reconnected-helper"}
+	// The helper stays "down" until the test opens this barrier, so the
+	// gate-engaged assertion below cannot race a fast recovery release.
+	allowReconnect := make(chan struct{})
+	var findCalls atomic.Int32
+	var firstDismissDone atomic.Bool
+	h := &Heartbeat{
+		pamRecoveryDelay:       2 * time.Millisecond,
+		pamRecoveryMaxAttempts: 200,
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			findCalls.Add(1)
+			select {
+			case <-allowReconnect:
+				return reconnected
+			default:
+				return nil // helper still down
+			}
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: quiesced,
+				}
+			}
+			// Recovery probe on the reconnected helper: it looked at the
+			// desktop and there is no consent window left. That is proof.
+			return ipc.PamDismissConsentResult{Success: false, Reason: "no_consent_window"}, nil
+		},
+	}
+
+	h.denyConsent(&sessionbroker.Session{SessionID: "dying-helper"}, "req-death", "policy_denied", "2")
+
+	// Safe to assert unconditionally: recovery cannot prove anything until the
+	// barrier opens, so the gate is deterministically still closed here.
+	if !gateClosed(h) {
+		t.Fatal("gate must engage when the helper dies with the dismissal unproven")
+	}
+	close(allowReconnect)
+	waitForGate(t, h, false, "PAM stayed permanently locked out after helper death — recovery never re-established proof")
+
+	res := h.actuateElevation(context.Background(), "req-after-recovery", defaultActuateTimeoutMs, pamTarget{})
+	if res.Reason == "dismissal_uncertain" {
+		t.Fatal("actuation still fail-closed after recovery proved the consent desktop is clear")
+	}
+}
+
+// TestPamGateRecoveryExhaustionStaysFailClosed pins the safety direction of the
+// recovery bound: when recovery never obtains proof, PAM stays DISABLED. The
+// attempt cap bounds probing, not the fail-closed guarantee — timing out into
+// an open state would reintroduce Critical 1.
+func TestPamGateRecoveryExhaustionStaysFailClosed(t *testing.T) {
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+	quiesced <- sessionbroker.PamDismissOutcome{Proven: false}
+	close(quiesced)
+
+	manager := &fakeElevationManager{}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+	stillLive := &sessionbroker.Session{SessionID: "helper-with-stuck-prompt"}
+	var firstDismissDone atomic.Bool
+	var probes atomic.Int32
+	var idMu sync.Mutex
+	seenIDs := map[string]int{}
+	stuckStop := make(chan struct{})
+	t.Cleanup(func() { close(stuckStop) })
+	h := &Heartbeat{
+		stopChan:               stuckStop, // lets reassertStuckPamGate exit with the test
+		pamRecoveryDelay:       time.Millisecond,
+		pamRecoveryMaxAttempts: 4,
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			return stillLive
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: quiesced,
+				}
+			}
+			idMu.Lock()
+			seenIDs[id]++
+			idMu.Unlock()
+			probes.Add(1)
+			// Every recovery probe still finds the denied prompt on screen.
+			return ipc.PamDismissConsentResult{Success: false, Reason: "consent_did_not_close"}, nil
+		},
+	}
+
+	h.denyConsent(stillLive, "req-stuck", "policy_denied", "")
+
+	// Let recovery run to exhaustion.
+	deadline := time.Now().Add(2 * time.Second)
+	for probes.Load() < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	if got := probes.Load(); got != 4 {
+		t.Fatalf("recovery probes = %d, want 4 (bounded retry)", got)
+	}
+	// Each probe must carry its own IPC correlation ID: reusing the original
+	// one collides with a pending registration left by an earlier uncertain
+	// probe (ErrDuplicateCommand) and silently neuters recovery.
+	idMu.Lock()
+	defer idMu.Unlock()
+	if len(seenIDs) != 4 {
+		t.Fatalf("distinct recovery command IDs = %d, want 4 (IDs: %v)", len(seenIDs), seenIDs)
+	}
+	for id := range seenIDs {
+		if id == "req-stuck" {
+			t.Fatal("recovery probe reused the original elevation request ID")
+		}
+	}
+	if !gateClosed(h) {
+		t.Fatal("gate opened after recovery exhaustion — recovery must never time out into an OPEN state")
+	}
+	res := h.actuateElevation(context.Background(), "req-post-exhaustion", defaultActuateTimeoutMs, pamTarget{})
+	if res.Reason != "dismissal_uncertain" {
+		t.Fatalf("actuation reason = %q, want dismissal_uncertain", res.Reason)
+	}
+}
+
+// TestPamDismissOutcomeCleared pins the single predicate that reopens PAM.
+func TestPamDismissOutcomeCleared(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome sessionbroker.PamDismissOutcome
+		want    bool
+	}{
+		{"proven success", sessionbroker.PamDismissOutcome{Proven: true, Result: ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"}}, true},
+		{"proven no consent window", sessionbroker.PamDismissOutcome{Proven: true, Result: ipc.PamDismissConsentResult{Reason: "no_consent_window"}}, true},
+		{"proven failure", sessionbroker.PamDismissOutcome{Proven: true, Result: ipc.PamDismissConsentResult{Reason: "consent_did_not_close"}}, false},
+		{"proven but undecodable", sessionbroker.PamDismissOutcome{Proven: true, Err: errors.New("decode failed"), Result: ipc.PamDismissConsentResult{Success: true}}, false},
+		{"unproven helper death", sessionbroker.PamDismissOutcome{Proven: false}, false},
+		{"unproven despite success payload", sessionbroker.PamDismissOutcome{Proven: false, Result: ipc.PamDismissConsentResult{Success: true}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.outcome.Cleared(); got != tc.want {
+				t.Fatalf("Cleared() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDenyConsentSilentHelperReachesRecovery covers the half of #2610's
+// permanent-lockout bug that survived the first fix: quiesced is only closed
+// when a correlated response arrives OR the session tears down, so a helper
+// that HANGS while its IPC session stays connected — exactly what produces the
+// ErrCommandTimeout that opens the gate — never yields an outcome at all.
+// Without a bounded proof wait the gate goroutine parks forever, recovery never
+// runs, and PAM is dead until restart.
+func TestDenyConsentSilentHelperReachesRecovery(t *testing.T) {
+	// Never written to, never closed — the hung-helper case.
+	silent := make(chan sessionbroker.PamDismissOutcome)
+
+	manager := &fakeElevationManager{}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+	recovered := &sessionbroker.Session{SessionID: "recovered-helper"}
+	var firstDismissDone atomic.Bool
+	var probes atomic.Int32
+	h := &Heartbeat{
+		pamGateProofTimeout:    5 * time.Millisecond,
+		pamRecoveryDelay:       2 * time.Millisecond,
+		pamRecoveryMaxAttempts: 10,
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			return recovered
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: silent,
+				}
+			}
+			probes.Add(1)
+			return ipc.PamDismissConsentResult{Reason: pamactuator.ReasonNoConsentWindow}, nil
+		},
+	}
+
+	h.denyConsent(recovered, "req-silent", "policy_denied", "")
+
+	if !gateClosed(h) {
+		t.Fatal("gate must engage when the dismissal cannot be proven")
+	}
+	waitForGate(t, h, false, "silent helper stranded PAM — bounded proof wait never fell through to recovery")
+	if probes.Load() == 0 {
+		t.Fatal("recovery never probed; the gate goroutine was still parked on the silent channel")
+	}
+}
+
+// TestDenyConsentNilQuiescenceReachesRecovery pins the defensive branch: a
+// PamDismissUncertainError carrying a nil Quiesced must engage the gate and
+// reach recovery. Receiving from a nil channel blocks forever, so without the
+// bounded wait this deadlocks with PAM permanently disabled and no further log.
+func TestDenyConsentNilQuiescenceReachesRecovery(t *testing.T) {
+	manager := &fakeElevationManager{}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+	helper := &sessionbroker.Session{SessionID: "helper"}
+	var firstDismissDone atomic.Bool
+	var probes atomic.Int32
+	h := &Heartbeat{
+		pamGateProofTimeout:    5 * time.Millisecond,
+		pamRecoveryDelay:       2 * time.Millisecond,
+		pamRecoveryMaxAttempts: 10,
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			return helper
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: nil,
+				}
+			}
+			probes.Add(1)
+			return ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"}, nil
+		},
+	}
+
+	h.denyConsent(helper, "req-nil-chan", "policy_denied", "")
+
+	if !gateClosed(h) {
+		t.Fatal("a nil quiescence channel must still engage the fail-closed gate")
+	}
+	waitForGate(t, h, false, "nil quiescence channel deadlocked the gate instead of reaching recovery")
+	if probes.Load() == 0 {
+		t.Fatal("recovery never probed after a nil quiescence channel")
+	}
+}
+
+// TestPamGateRecoveryStopsOnShutdown proves recovery abandons cleanly on agent
+// shutdown rather than spinning, and leaves the gate CLOSED.
+func TestPamGateRecoveryStopsOnShutdown(t *testing.T) {
+	stop := make(chan struct{})
+	silent := make(chan sessionbroker.PamDismissOutcome)
+
+	h := &Heartbeat{
+		stopChan:               stop,
+		pamGateProofTimeout:    time.Hour, // force the stopChan branch of the proof wait
+		pamRecoveryDelay:       time.Hour,
+		pamRecoveryMaxAttempts: 10,
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			return &sessionbroker.Session{SessionID: "helper"}
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+				Cause:    sessionbroker.ErrCommandTimeout,
+				Quiesced: silent,
+			}
+		},
+	}
+
+	h.denyConsent(&sessionbroker.Session{SessionID: "helper"}, "req-shutdown", "policy_denied", "")
+	if !gateClosed(h) {
+		t.Fatal("gate must engage before shutdown")
+	}
+	close(stop)
+
+	// The gate must remain closed — shutdown is not proof of anything.
+	time.Sleep(20 * time.Millisecond)
+	if !gateClosed(h) {
+		t.Fatal("gate released on shutdown; shutdown proves nothing about the consent desktop")
+	}
+}
+
+// TestRunPamFlowPassesRequesterSessionToDeny pins the targetWinSession wiring
+// that recovery depends on. If RunPamFlow stopped forwarding the requester's
+// Windows session, recovery would probe (and Escape prompts on) the console
+// fallback desktop instead of the requester's.
+func TestRunPamFlowPassesRequesterSessionToDeny(t *testing.T) {
+	cases := []struct {
+		name             string
+		subjectSessionID uint32
+		wantTarget       string
+	}{
+		{"resolved requester session", 3, "3"},
+		{"zero is unresolved", 0, ""},
+		{"windows invalid-session sentinel", 0xFFFFFFFF, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var findTargets []string
+			var mu sync.Mutex
+			h := &Heartbeat{
+				pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+					mu.Lock()
+					findTargets = append(findTargets, targetWinSession)
+					mu.Unlock()
+					return &sessionbroker.Session{SessionID: "helper"}
+				},
+				pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+					return ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"}, nil
+				},
+			}
+
+			h.RunPamFlow(context.Background(),
+				etwlua.Event{SubjectSessionID: tc.subjectSessionID},
+				etwlua.ElevationOutcome{Status: etwlua.ElevationDenied, RequestID: "req-wiring"})
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(findTargets) == 0 {
+				t.Fatal("RunPamFlow never located a helper session")
+			}
+			if findTargets[0] != tc.wantTarget {
+				t.Fatalf("targetWinSession = %q, want %q", findTargets[0], tc.wantTarget)
+			}
+		})
+	}
+}
+
+// TestReassertStuckPamGateKeepsWarning covers the durability half of #2610:
+// the terminal "PAM disabled" state must stay visible, not be logged once and
+// then go silent for the rest of the agent's life.
+func TestReassertStuckPamGateKeepsWarning(t *testing.T) {
+	t.Run("re-announces while the gate stays stuck", func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop)
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Millisecond,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+
+		// It must still be running (i.e. still re-asserting) after several
+		// intervals rather than having returned after a single announcement.
+		select {
+		case <-done:
+			t.Fatal("reassert loop exited while the gate was still stuck")
+		case <-time.After(25 * time.Millisecond):
+		}
+	})
+
+	t.Run("exits once the gate clears", func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop)
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Millisecond,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+
+		h.pamActuateMu.Lock()
+		h.pamDismissalUncertain = false
+		h.pamActuateMu.Unlock()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reassert loop kept running after the gate cleared")
+		}
+	})
+
+	t.Run("exits on shutdown", func(t *testing.T) {
+		stop := make(chan struct{})
+		h := &Heartbeat{
+			stopChan:                     stop,
+			pamGateStuckReassertInterval: time.Hour,
+			pamDismissalUncertain:        true,
+		}
+
+		done := make(chan struct{})
+		go func() { h.reassertStuckPamGate("req-stuck"); close(done) }()
+		close(stop)
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reassert loop did not exit on agent shutdown")
+		}
+	})
+}
+
+// TestRecoveryDrainsLateProof pins that a helper which answers AFTER the proof
+// timeout still gets its answer honored: recovery drains the late outcome
+// instead of exhausting while real evidence sits unread in the buffer.
+func TestRecoveryDrainsLateProof(t *testing.T) {
+	quiesced := make(chan sessionbroker.PamDismissOutcome, 1)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	var probes atomic.Int32
+	var firstDismissDone atomic.Bool
+	h := &Heartbeat{
+		stopChan:               stop,
+		pamGateProofTimeout:    2 * time.Millisecond,
+		pamRecoveryDelay:       5 * time.Millisecond,
+		pamRecoveryMaxAttempts: 50,
+		// No helper is reachable, so the ONLY way the gate can open is by
+		// draining the late proof.
+		pamFindSession: func(capability, targetWinSession string) *sessionbroker.Session {
+			probes.Add(1)
+			return nil
+		},
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			if !firstDismissDone.Swap(true) {
+				return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+					Cause:    sessionbroker.ErrCommandTimeout,
+					Quiesced: quiesced,
+				}
+			}
+			return ipc.PamDismissConsentResult{}, errors.New("no helper")
+		},
+	}
+
+	h.denyConsent(&sessionbroker.Session{SessionID: "slow-helper"}, "req-late", "policy_denied", "")
+	if !gateClosed(h) {
+		t.Fatal("gate must engage while the dismissal is unproven")
+	}
+
+	// The helper finally answers, well after the proof window closed.
+	quiesced <- sessionbroker.PamDismissOutcome{
+		Proven: true,
+		Result: ipc.PamDismissConsentResult{Success: true, Reason: "dismissed"},
+	}
+	close(quiesced)
+
+	waitForGate(t, h, false, "recovery ignored a late but valid dismissal proof")
 }

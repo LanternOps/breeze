@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
@@ -280,8 +281,10 @@ function makeHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Unknown error';
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        // The guardrail path also touches the DB (approval records, rate limits),
+        // so `reason` can be a raw driver message — sanitize before embedding it
+        // in a string that is streamed to the chat (#2603).
+        const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
@@ -375,9 +378,12 @@ function makeHandler(
       await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      // A thrown error here is an internal fault — its message is very often a
+      // raw Drizzle/postgres.js string carrying the full query and column list.
+      // sanitizeThrownToolError logs it server-side and returns a safe generic
+      // string for the stream (#2603).
+      const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {
@@ -438,8 +444,10 @@ function makeSessionAwareHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Unknown error';
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        // The guardrail path also touches the DB (approval records, rate limits),
+        // so `reason` can be a raw driver message — sanitize before embedding it
+        // in a string that is streamed to the chat (#2603).
+        const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
@@ -479,9 +487,12 @@ function makeSessionAwareHandler(
       await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      // A thrown error here is an internal fault — its message is very often a
+      // raw Drizzle/postgres.js string carrying the full query and column list.
+      // sanitizeThrownToolError logs it server-side and returns a safe generic
+      // string for the stream (#2603).
+      const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {

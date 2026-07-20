@@ -23,15 +23,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import type { Hono } from 'hono';
-import type {
-  AiToolLike,
-  BreezeExtension,
-  ExtensionContext,
-  ExtensionDatabase,
-} from '@breeze/extension-api';
 import {
   parseExtensionManifestV1,
+  type BreezeExtensionV1,
   type ExtensionManifestV1,
+  type ExtensionRegistrar,
+  type ExtensionRuntimeContext,
 } from '@breeze/extension-sdk';
 import {
   loadExtensionDeploymentConfig,
@@ -66,13 +63,8 @@ import {
   getExtensionTenancy,
   registerRuntimeExtensionTenancy,
 } from './tenancyRegistry';
-import {
-  legacyExtensionAgentAuthMiddleware,
-  legacyExtensionAuthMiddleware,
-  legacyExtensionHelperAuthMiddleware,
-} from './gateway';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
-import { aiTools, hasCoreAiToolName } from '../services/aiTools';
+import { hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -127,7 +119,7 @@ export interface ReconcilePorts {
   ): Promise<VerifiedExtensionBundle>;
   assertCompatible(manifest: ExtensionManifestV1, host: ExtensionHostDescriptor): void;
   extractVerifiedPayload(bundle: VerifiedExtensionBundle, storeRoot: string): Promise<string>;
-  loadServerEntry(extractedRoot: string, entry: string): Promise<BreezeExtension>;
+  loadServerEntry(extractedRoot: string, entry: string): Promise<BreezeExtensionV1>;
   runMigrations(
     bundle: VerifiedExtensionBundle,
     sql: postgres.Sql | null,
@@ -136,7 +128,7 @@ export interface ReconcilePorts {
   ): Promise<void>;
   publishTenancy(manifest: ExtensionManifestV1): void;
   stageExtension(
-    module: BreezeExtension,
+    module: BreezeExtensionV1,
     manifest: ExtensionManifestV1,
   ): Promise<StagedExtensionContributions>;
   validateTenancyAndContributions(
@@ -434,86 +426,82 @@ export async function extractVerifiedPayload(
 export async function loadServerEntry(
   extractedRoot: string,
   entry: string,
-): Promise<BreezeExtension> {
+): Promise<BreezeExtensionV1> {
   const target = path.join(extractedRoot, entry);
   const mod = await import(pathToFileURL(target).href);
   const ext = [mod.default?.default, mod.default?.extension, mod.default, mod.extension]
-    .find((candidate): candidate is BreezeExtension => typeof candidate?.register === 'function');
+    .find((candidate): candidate is BreezeExtensionV1 => typeof candidate?.register === 'function');
   if (!ext || typeof ext.register !== 'function') {
-    throw new Error(`[extensions] ${target} must default-export a BreezeExtension ({ register })`);
+    throw new Error(`[extensions] ${target} must default-export a BreezeExtensionV1 ({ register })`);
   }
   return ext;
 }
 
 /**
- * Stage a signed extension's contributions into an isolated session. Mirrors the
- * ExtensionContext wiring in loader.ts (mountRoute / auth / db / secrets / audit
- * / aiTools / log) but drives the extension's REAL v1 manifest — so the session's
- * declared-vs-registered checks bind to what the manifest actually declares. The
- * returned contributions are NOT live: only `registry.activate` exposes them.
+ * Stage a signed extension's contributions into an isolated session, through
+ * the PUBLIC v1 SDK contract: `register(registrar, context)`. Signed bundles
+ * are v1 by verification (`apiVersion: breeze.extensions/v1`), and the SDK the
+ * platform publishes types their entry as {@link BreezeExtensionV1} — the
+ * legacy single-argument `ExtensionContext` shape (injected auth middleware,
+ * `aiTools` map, message-only `log`) remains loader.ts's path for repo-local
+ * SOURCE extensions only. Staging drives the extension's REAL v1 manifest so
+ * the session's declared-vs-registered checks bind to what the manifest
+ * actually declares. The returned contributions are NOT live: only
+ * `registry.activate` exposes them.
  */
-async function defaultStageExtension(
-  module: BreezeExtension,
+export async function defaultStageExtension(
+  module: BreezeExtensionV1,
   manifest: ExtensionManifestV1,
   registry: ExtensionContributionRegistry,
 ): Promise<StagedExtensionContributions> {
   const session = registry.begin(manifest);
-  const stagedAiTools = new Map<string, AiToolLike>(aiTools as Map<string, AiToolLike>);
 
-  // Same collision-guarding proxy as the legacy loader, minus the manifest
-  // mutation: a signed manifest already DECLARES its aiTools, so registrations
-  // must match the declaration (the session's finish() enforces that) rather
-  // than grow it.
-  const stagedAiToolMap = new Proxy(stagedAiTools, {
-    get(target, prop) {
-      if (prop === 'set') {
-        return (key: string, value: AiToolLike) => {
-          if (hasCoreAiToolName(key) || target.has(key)) {
-            throw new Error(
-              `[extensions] AI tool "${key}" already registered (extension "${manifest.name}")`,
-            );
-          }
-          session.registrar.registerAiTool(key, value);
-          target.set(key, value);
-          return stagedAiToolMap;
-        };
+  // The session registrar already IS the v1 ExtensionRegistrar; wrap only the
+  // aiTool channel so a signed bundle can never shadow a core tool name.
+  // Intra-session duplicates are the session's own concern (finish() enforces
+  // declared-vs-registered parity and rejects duplicates).
+  const registrar: ExtensionRegistrar = Object.freeze({
+    mountRoute: (app: Parameters<ExtensionRegistrar['mountRoute']>[0]) =>
+      session.registrar.mountRoute(app),
+    registerJob: (job: Parameters<ExtensionRegistrar['registerJob']>[0]) =>
+      session.registrar.registerJob(job),
+    registerAiTool: (name: string, tool: Parameters<ExtensionRegistrar['registerAiTool']>[1]) => {
+      if (hasCoreAiToolName(name)) {
+        throw new Error(
+          `[extensions] AI tool "${name}" already registered (extension "${manifest.name}")`,
+        );
       }
-      if (prop === 'delete' || prop === 'clear') {
-        return () => {
-          throw new Error('[extensions] AI tool staging does not support delete or clear');
-        };
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === 'function' ? value.bind(target) : value;
+      session.registrar.registerAiTool(name, tool);
     },
   });
 
-  const context: ExtensionContext = {
-    mountRoute: (subApp) => session.registrar.mountRoute(subApp),
-    // Signed manifests may DECLARE jobs; without this channel a job-declaring
-    // extension could never register them and session.finish() would fail its
-    // declared-vs-registered parity check. Registrations land in the session and
-    // surface as registry.get(name).jobs for the BullMQ job host to schedule.
-    registerJob: (job) => session.registrar.registerJob(job),
-    authMiddleware: legacyExtensionAuthMiddleware,
-    agentAuthMiddleware: legacyExtensionAgentAuthMiddleware,
-    helperAuthMiddleware: legacyExtensionHelperAuthMiddleware,
-    db: db as unknown as ExtensionDatabase,
+  const context: ExtensionRuntimeContext = {
+    db: db as unknown as ExtensionRuntimeContext['db'],
     secrets: {
       encryptForColumn: (table, column, plaintext) =>
         encryptSecret(plaintext, { aad: `${table}.${column}` }) ?? '',
       decryptForColumn: (table, column, ciphertext) =>
         decryptForColumn(table, column, ciphertext) ?? '',
     },
-    audit: (event) => createAuditLogAsync({
-      ...event,
-      initiatedBy: event.actorType === 'agent' ? 'agent' : 'manual',
-    }),
-    aiTools: stagedAiToolMap,
-    log: (message) => console.log(`[extensions:${manifest.name}] ${message}`),
+    audit: async (event) => {
+      await createAuditLogAsync({
+        ...event,
+        initiatedBy: (event as { actorType?: string }).actorType === 'agent' ? 'agent' : 'manual',
+      } as Parameters<typeof createAuditLogAsync>[0]);
+    },
+    // Level-first v1 logger; error/warn land on the matching console stream so
+    // container log filters see them.
+    log: (level, message, fields) => {
+      const line = `[extensions:${manifest.name}] ${message}`;
+      const args = fields === undefined ? [line] : [line, fields];
+      if (level === 'error') console.error(...args);
+      else if (level === 'warn') console.warn(...args);
+      else console.log(...args);
+    },
+    config: Object.freeze({}),
   };
 
-  await module.register(context);
+  await module.register(registrar, context);
   // Re-parse as a defence in depth; the bundle verifier already validated it.
   parseExtensionManifestV1(manifest);
   return session.finish();
