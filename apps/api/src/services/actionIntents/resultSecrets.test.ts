@@ -1,16 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { encryptSecretMock, decryptSecretMock, updateMock } = vi.hoisted(() => ({
-  encryptSecretMock: vi.fn(
-    (v: string | null | undefined, opts?: { aad?: string }) =>
-      v == null ? null : `enc:v3:test:${opts?.aad}:${v}`,
+  // The fake ciphertext base64-encodes the plaintext rather than embedding it
+  // verbatim, so it never contains the plaintext as an ASCII substring —
+  // matching the real encryptSecret (AES-256-GCM) guarantee that tests assert
+  // against via JSON.stringify non-containment checks.
+  encryptSecretMock: vi.fn((v: string | null | undefined, opts?: { aad?: string }) =>
+    v == null ? null : `enc:v3:test:${opts?.aad}:${Buffer.from(v).toString('base64')}`,
   ),
   decryptSecretMock: vi.fn(
     (v: string | null | undefined, opts?: { aad?: string; strict?: boolean }) => {
       if (v == null) return null;
       const prefix = `enc:v3:test:${opts?.aad}:`;
       if (!v.startsWith(prefix)) throw new Error('AAD mismatch / tampered ciphertext');
-      return v.slice(prefix.length);
+      return Buffer.from(v.slice(prefix.length), 'base64').toString();
     },
   ),
   updateMock: vi.fn(),
@@ -67,20 +70,10 @@ describe('sealActionResultSecrets', () => {
   it('replaces temporaryPassword with AAD-bound ciphertext for reset results', () => {
     const sealed = sealActionResultSecrets(RESET_RESULT);
     expect(sealed.temporaryPasswordEnc).toBe(
-      `enc:v3:test:${ACTION_INTENT_RESULT_AAD}:Tmp-Pass-1234!`,
+      `enc:v3:test:${ACTION_INTENT_RESULT_AAD}:VG1wLVBhc3MtMTIzNCE=`,
     );
     expect(sealed).not.toHaveProperty('temporaryPassword');
-    // NOTE: no JSON.stringify(sealed) non-containment check here — the test
-    // double above deliberately embeds the plaintext inside its fake
-    // ciphertext string (`enc:v3:test:${aad}:${v}`) so it can round-trip
-    // through decryptSecretMock. That makes a substring-absence assertion on
-    // `sealed` self-contradictory with the toBe assertion above, which pins
-    // sealed.temporaryPasswordEnc to a string that itself ends in the
-    // plaintext. The real encryptSecret (AES-256-GCM) never produces
-    // ciphertext containing the plaintext as an ASCII substring; the
-    // no-plaintext-in-audit/log/error/metric guarantee is covered by the
-    // non-containment assertions in the route/service tests that exercise
-    // real logging and audit paths (Tasks 2-5), not by this unit test.
+    expect(JSON.stringify(sealed)).not.toContain('Tmp-Pass-1234!');
     // Non-secret fields pass through untouched.
     expect(sealed.userId).toBe('target-user-1');
     expect(sealed.forceChangeNextSignIn).toBe(true);
