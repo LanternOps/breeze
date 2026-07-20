@@ -40,6 +40,7 @@ import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToo
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import {
   beginMcpToolExecutionLedger,
@@ -818,8 +819,8 @@ async function handleJsonRpc(
         return jsonRpcError(req.id, -32601, `Method not found: ${req.method}`);
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal error';
-    console.error('[MCP] JSON-RPC handler error:', err);
+    // Raw driver text must not reach an MCP client (#2603).
+    const message = sanitizeThrownToolError('mcp_jsonrpc', err, { method: req.method });
     return jsonRpcError(req.id, -32000, message);
   }
 }
@@ -1048,7 +1049,7 @@ async function handleToolsCall(
 
       return { status: 'success', ledgerResult: safeResult, response };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const message = sanitizeThrownToolError(toolName, err);
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       return {
         status: 'failure',
@@ -1429,7 +1430,7 @@ async function dispatchBootstrapAuthTool(
           }),
         };
       }
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
+      const message = sanitizeThrownToolError(tool.definition.name, err);
       return {
         status: 'failure',
         error: err,
@@ -1790,7 +1791,7 @@ async function handleResourcesRead(
 
     return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to read resource';
+    const message = sanitizeThrownToolError('mcp_resources_read', err, { uri });
     return jsonRpcError(id, -32603, message);
   }
 }

@@ -20,6 +20,7 @@ import {
   decryptNotificationChannelConfig,
 } from './notificationChannelSecrets';
 import { validateNotificationChannelConfig } from '../routes/alerts/helpers';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -502,7 +503,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
           return JSON.stringify({ success: true, channelId: channel.id, name: channel.name, type: channel.type });
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
+          const message = sanitizeThrownToolError('alerts', err);
           return JSON.stringify({ error: `Failed to create channel: ${message}` });
         }
       }

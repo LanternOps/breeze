@@ -12,6 +12,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { listReliabilityDevices } from './reliabilityScoring';
 import { assignSecurityTraining, getUserRiskDetail, listUserRiskScores } from './userRiskScoring';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -134,7 +135,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
           },
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
+        const message = sanitizeThrownToolError('user-risk', err);
         console.error('[fleet:get_fleet_health]', message, err);
         return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
       }
@@ -303,7 +304,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         });
       } catch (error) {
         return JSON.stringify({
-          error: error instanceof Error ? error.message : 'Failed to assign security training'
+          error: sanitizeThrownToolError('user-risk', error)
         });
       }
     }

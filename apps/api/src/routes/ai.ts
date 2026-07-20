@@ -23,6 +23,7 @@ import {
   resolveDefaultModel
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
@@ -585,10 +586,11 @@ aiRoutes.post(
             if (event.type === 'done') break;
           }
         } catch (err) {
-          console.error('[AI/OpenAI] Stream error:', err);
+          // Never stream a raw error to the browser (#2603).
+          const message = sanitizeThrownToolError('ai_stream_openai', err);
           await stream.writeSSE({
             event: 'error',
-            data: JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' }),
+            data: JSON.stringify({ type: 'error', message }),
           });
         } finally {
           openaiSession.eventBus.unsubscribe(subscriptionId);
@@ -670,12 +672,13 @@ aiRoutes.post(
           if (event.type === 'done') break;
         }
       } catch (err) {
-        console.error('[AI] Stream error:', err);
+        // Never stream a raw error to the browser (#2603).
+        const message = sanitizeThrownToolError('ai_stream', err);
         await stream.writeSSE({
           event: 'error',
           data: JSON.stringify({
             type: 'error',
-            message: err instanceof Error ? err.message : 'Stream failed',
+            message,
           }),
         });
       } finally {

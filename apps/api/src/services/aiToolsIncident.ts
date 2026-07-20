@@ -20,6 +20,7 @@ import { queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { HIGH_RISK_CONTAINMENT_ACTIONS } from '../routes/incidents.validation';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -161,7 +162,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
           warning: eventWarning,
         });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
+        const message = sanitizeThrownToolError('incident', err);
         return JSON.stringify({ error: `Failed to create incident: ${message}` });
       }
     },
