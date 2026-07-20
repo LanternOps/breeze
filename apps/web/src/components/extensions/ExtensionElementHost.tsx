@@ -159,7 +159,7 @@ function ExtensionElementHostInner({
       }
       elementRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- contextKey stands in for `context`
+    // deps note: contextKey stands in for `context`
   }, [moduleUrl, elementName, extensionName, contextKey]);
 
   // Scoped event bridge: attached to THIS host's container, not `window`, so
