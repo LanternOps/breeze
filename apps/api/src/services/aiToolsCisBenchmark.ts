@@ -23,6 +23,11 @@ import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSit
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
+// Derived from the schema so the aliased subquery fields below cannot drift from
+// the real column types (e.g. `level` and `status` are enums, not string/number).
+type CisBaselineRow = typeof cisBaselines.$inferSelect;
+type DeviceRow = typeof devices.$inferSelect;
+
 async function verifyDeviceAccess(
   deviceId: string,
   auth: AuthContext,
@@ -127,14 +132,20 @@ registerTool({
         failedChecks: cisBaselineResults.failedChecks,
         score: cisBaselineResults.score,
         summary: cisBaselineResults.summary,
-        baselineName: cisBaselines.name,
-        baselineBenchmarkVersion: cisBaselines.benchmarkVersion,
-        baselineLevel: cisBaselines.level,
-        baselineIsActive: cisBaselines.isActive,
-        baselineOsType: cisBaselines.osType,
-        deviceHostname: devices.hostname,
-        deviceStatus: devices.status,
-        deviceOsType: devices.osType,
+        // Joined columns MUST carry explicit aliases. Drizzle names a subquery's
+        // output columns after the underlying DB column, so selecting both
+        // cis_baselines.os_type and devices.os_type emitted two columns named
+        // "os_type" — and the outer SELECT then failed with
+        // `column reference "os_type" is ambiguous` (42702) on EVERY call,
+        // regardless of whether any CIS data existed (#2603).
+        baselineName: sql<CisBaselineRow['name']>`${cisBaselines.name}`.as('baseline_name'),
+        baselineBenchmarkVersion: sql<CisBaselineRow['benchmarkVersion']>`${cisBaselines.benchmarkVersion}`.as('baseline_benchmark_version'),
+        baselineLevel: sql<CisBaselineRow['level']>`${cisBaselines.level}`.as('baseline_level'),
+        baselineIsActive: sql<CisBaselineRow['isActive']>`${cisBaselines.isActive}`.as('baseline_is_active'),
+        baselineOsType: sql<CisBaselineRow['osType']>`${cisBaselines.osType}`.as('baseline_os_type'),
+        deviceHostname: sql<DeviceRow['hostname']>`${devices.hostname}`.as('device_hostname'),
+        deviceStatus: sql<DeviceRow['status']>`${devices.status}`.as('device_status'),
+        deviceOsType: sql<DeviceRow['osType']>`${devices.osType}`.as('device_os_type'),
         rn: sql<number>`row_number() over (partition by ${cisBaselineResults.deviceId}, ${cisBaselineResults.baselineId} order by ${cisBaselineResults.checkedAt} desc)`.as('rn'),
       })
       .from(cisBaselineResults)
@@ -205,6 +216,18 @@ registerTool({
     const totalMatched = Number(summaryRow?.total ?? 0);
     const averageScore = Number(summaryRow?.averageScore ?? 100);
     const failingDevices = Number(summaryRow?.failingDevices ?? 0);
+
+    // Graceful empty result, matching sibling tools (e.g. manage_patches) rather
+    // than returning a bare zeroed summary the model may read as "0% compliant".
+    if (totalMatched === 0 && items.length === 0) {
+      return JSON.stringify({
+        message: 'No CIS compliance data available yet',
+        count: 0,
+        totalMatched: 0,
+        summary: { averageScore: 100, devicesAudited: 0, failingDevices: 0, compliantDevices: 0 },
+        results: [],
+      });
+    }
 
     return JSON.stringify({
       count: items.length,
