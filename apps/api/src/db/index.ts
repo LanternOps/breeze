@@ -371,6 +371,18 @@ export const runOutsideDbContext: RunOutsideDbContextFn = <T>(fn: () => T): T =>
   return dbContextStorage.exit(() => dbContextMetaStorage.exit(fn));
 };
 
+/**
+ * TEST ONLY. Enters the tx-routing store without opening a real transaction,
+ * so the contextless-write guard can be exercised against the REAL `db` proxy
+ * with no database. Production code must use withDbAccessContext /
+ * withSystemDbAccessContext — this sets no GUCs and grants no RLS visibility;
+ * it only makes `hasDbAccessContext()` true, which is precisely the condition
+ * the guard keys on.
+ */
+export function __runInDbContextForTests<T>(fn: () => T): T {
+  return dbContextStorage.run(baseDb, fn);
+}
+
 // Query-builder write methods that, when invoked on the bare pool (no active
 // RLS access context), silently match 0 rows under the forced-RLS `breeze_app`
 // role instead of erroring (#1375). We instrument these to surface the
@@ -424,10 +436,26 @@ function reportContextlessWrite(label: string): void {
   // negative-control integration tests deliberately issue contextless writes
   // through this proxy to prove DB-layer rejection, and must be migrated off
   // the proxy (or opt out) before the gate can be flipped on suite-wide
-  // (tracked as a #1379 follow-up). The genuinely-intentional production paths
-  // never reach here anyway: auditAdminPool bypasses this proxy, and
-  // device_commands writes under an explicit system context. Mirrors
-  // assertOutsideHeldDbContext's strict gate.
+  // (tracked as a #1379 follow-up). Mirrors assertOutsideHeldDbContext's
+  // strict gate.
+  //
+  // This comment used to assert, flatly, that "device_commands writes run
+  // under an explicit system context" and therefore nothing intentional ever
+  // reaches here. That was FALSE for ~2 months and produced BREEZE-7: the
+  // agent WS result path, its REST twin, and the restore-cancel path all wrote
+  // device_commands contextless. All three are fixed (agentWs.ts,
+  // routes/agents/commands.ts, routes/backup/restore.ts) — but the claim is
+  // stated narrowly now, because the broad version is what stopped anyone
+  // checking:
+  //   - auditAdminPool bypasses this proxy entirely (verified: separate pool).
+  //   - The three device_commands paths above nest withSystemDbAccessContext
+  //     inside runOutsideDbContext.
+  // It is NOT a verified claim about every device_commands write in the repo
+  // (there are ~30), nor about writes issued through db.transaction(...) —
+  // `transaction` is not in CONTEXTLESS_WRITE_GUARD_METHODS and the `tx` handed
+  // to the callback is a raw Drizzle transaction, not this Proxy, so those
+  // writes are invisible to the guard entirely. Before flipping the strict gate
+  // on suite-wide, re-verify rather than trusting this paragraph.
   if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXTLESS_WRITE_STRICT ?? '').trim().toLowerCase())) {
     throw new Error(message);
   }

@@ -6,6 +6,7 @@ import {
   GetObjectLockConfigurationCommand,
   ListObjectsV2Command,
   PutObjectRetentionCommand,
+  type S3Client,
 } from '@aws-sdk/client-s3';
 import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { buildS3Client } from './recoveryMediaService';
@@ -309,9 +310,21 @@ async function deleteS3ObjectKeys(
   providerConfig: Record<string, unknown>,
   keys: string[],
 ): Promise<BackupObjectDeleteResult> {
-  const { bucket, client } = buildS3StorageClient(providerConfig);
   const deletedKeys: string[] = [];
   const failedKeys: { key: string; error: string }[] = [];
+
+  // Client construction is inside the soft-failure contract this function
+  // documents: a config error (bad endpoint, missing bucket/region) must be
+  // reported as "these keys were not confirmed deleted", not thrown, or the GC
+  // sweep aborts wholesale instead of recording a resumable partial failure.
+  let bucket: string;
+  let client: S3Client;
+  try {
+    ({ bucket, client } = buildS3StorageClient(providerConfig));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { deletedKeys, failedKeys: keys.map((key) => ({ key, error: message })) };
+  }
 
   for (let i = 0; i < keys.length; i += 1000) {
     const batch = keys.slice(i, i + 1000);
@@ -553,8 +566,16 @@ export async function checkBackupProviderCapabilities(input: {
 
   const providerConfig = asRecord(input.providerConfig);
 
+  // Client construction is deliberately OUTSIDE the try below. A failure here
+  // means the stored config itself is unusable (bad endpoint, missing bucket
+  // or region) — that is not an "object lock is unsupported" answer, and
+  // folding it into objectLock.error made callers report a broken endpoint to
+  // the user as "Bucket object lock is not enabled" (routes/backup/snapshots.ts)
+  // and silently downgrade WORM enforcement (services/backupResultPersistence.ts).
+  // Let a config error propagate so callers can tell the two apart.
+  const { bucket, client } = buildS3StorageClient(providerConfig);
+
   try {
-    const { bucket, client } = buildS3StorageClient(providerConfig);
     const response = await client.send(new GetObjectLockConfigurationCommand({
       Bucket: bucket,
     }));
