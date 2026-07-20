@@ -11,6 +11,11 @@ import type { ActionPlanStep } from "@breeze/shared";
 import { isDocsUrl } from "@/lib/safeHref";
 import { useHelpStore } from "@/stores/helpStore";
 import { useTranslation } from "react-i18next";
+// Single source of truth: the store owns the shape the stream writes (incl.
+// intentBacked / selfApprovalRequestId). Redeclaring it here meant both
+// copies had to be edited in lockstep. Type-only import — no runtime edge to
+// the store, so no cycle.
+import type { PendingApproval } from "@/stores/processStreamEvent";
 
 interface Message {
   id: string;
@@ -22,33 +27,6 @@ interface Message {
   toolUseId?: string;
   isError?: boolean;
   isStreaming?: boolean;
-}
-
-interface PendingApproval {
-  executionId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  description: string;
-  deviceContext?: {
-    hostname: string;
-    displayName?: string;
-    status: string;
-    lastSeenAt?: string;
-    activeSessions?: Array<{
-      username: string;
-      activityState?: string;
-      idleMinutes?: number;
-      sessionType: string;
-    }>;
-  };
-  /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
-  intentBacked?: boolean;
-  /**
-   * The requester's own fanned-out approval row, set only when the server
-   * decided the requester is the sole eligible approver. Undefined in a
-   * multi-approver org — that absence is what preserves four-eyes.
-   */
-  selfApprovalRequestId?: string;
 }
 
 interface PendingPlan {

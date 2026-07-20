@@ -68,7 +68,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
-      { name: 'file_operations (list/read)', description: 'List and read files', category: 'Files, Disk & Registry' },
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry', category: 'Files, Disk & Registry' },
@@ -147,6 +146,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       { name: 'set_device_context', description: 'Set brain device context', category: 'Remote Access & Control' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Remote Access & Control' },
+      // Files, Disk & Registry
+      { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
       { name: 'set_agent_log_level', description: 'Set agent log level', category: 'Logs & Audit' },
@@ -162,7 +163,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_saved_filters (create/delete)', description: 'Create or delete saved filters', category: 'Other' },
       // Fleet Operations
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
-      { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
+      { name: 'manage_patches (scan/approve/decline/defer)', description: 'Scan for patches and make approval decisions', category: 'Fleet Operations' },
       { name: 'manage_groups (add/remove devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_maintenance_windows (create/update)', description: 'Create or update maintenance windows', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
@@ -194,7 +195,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
-      { name: 'file_operations (write/delete/mkdir/rename)', description: 'Mutate files on device', category: 'Files, Disk & Registry' },
+      { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set/create/delete)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
@@ -213,7 +214,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_configuration_policy (create/update/delete)', description: 'Create, update, or delete config policies', category: 'Configuration Policies' },
       // Fleet Operations
       { name: 'manage_deployments (create/start/cancel)', description: 'Create, start, or cancel deployments', category: 'Fleet Operations' },
-      { name: 'manage_patches (scan/install/rollback)', description: 'Scan, install, or rollback patches', category: 'Fleet Operations' },
+      { name: 'manage_patches (install/rollback)', description: 'Install or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
       { name: 'manage_maintenance_windows (delete)', description: 'Delete maintenance windows', category: 'Fleet Operations' },
       { name: 'manage_automations (create/update/delete/run)', description: 'Manage automation lifecycle', category: 'Fleet Operations' },

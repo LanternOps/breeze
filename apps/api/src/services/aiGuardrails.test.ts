@@ -583,24 +583,11 @@ describe('checkToolPermission — action-multiplexed tools require action arg', 
 
 // ─── SR5-01: filesystem read/write are privileged (execute + Tier 3) ────
 
-describe('checkGuardrails — file_operations read escalates to Tier 3 (SR5-01)', () => {
-  it('read requires interactive approval, not auto-execute', () => {
-    const result = checkGuardrails('file_operations', { action: 'read', path: '/etc/shadow' });
-    expect(result.tier).toBe(3);
-    expect(result.allowed).toBe(true);
-    expect(result.requiresApproval).toBe(true);
-  });
-
-  it('write/delete/mkdir/rename remain Tier 3', () => {
-    for (const action of ['write', 'delete', 'mkdir', 'rename']) {
-      const result = checkGuardrails('file_operations', { action, path: '/tmp/x' });
-      expect(result.tier).toBe(3);
-      expect(result.requiresApproval).toBe(true);
-    }
-  });
-});
-
-describe('file_operations tier boundary (SR5-01 partial relaxation)', () => {
+// SR5-01 (agent runs as root / LocalSystem) plus this branch's partial
+// relaxation, asserted once: `list` is recon-only and was deliberately
+// downgraded to Tier 2, everything that touches file CONTENT — `read`
+// included — stays Tier 3.
+describe('file_operations tier boundary (SR5-01 + partial relaxation)', () => {
   it('list is Tier 2 (auto-execute + audit) — recon only, deliberate downgrade', () => {
     const result = checkGuardrails('file_operations', { action: 'list', deviceId: 'd1', path: '/tmp' });
     expect(result.tier).toBe(2);
@@ -613,6 +600,7 @@ describe('file_operations tier boundary (SR5-01 partial relaxation)', () => {
     (action) => {
       const result = checkGuardrails('file_operations', { action, deviceId: 'd1', path: '/tmp/x' });
       expect(result.tier).toBe(3);
+      expect(result.allowed).toBe(true);
       expect(result.requiresApproval).toBe(true);
     },
   );

@@ -87,6 +87,17 @@ interface Scenario {
   roleIds: string[];
 }
 
+/** The sole-operator tenant: one partner, one org, one user (the requester)
+ * who is also the only eligible approver. */
+interface SoloScenario {
+  partnerId: string;
+  orgId: string;
+  requester: { id: string; email: string };
+  requesterRoleId: string;
+  userIds: string[];
+  roleIds: string[];
+}
+
 /** Seeds one org under one partner, plus three users:
  *  - requester: org member, ALSO holds approvals:decide (proves the id-based
  *    self-exclusion filter, not just incidental ineligibility).
@@ -128,10 +139,38 @@ async function seedScenario(): Promise<Scenario> {
   };
 }
 
+/** Seeds a SEPARATE partner+org whose ONLY member is the requester, who holds
+ * approvals:decide. `resolveIntentApprovers` therefore returns exactly the
+ * requester, the cross-user eligible set is empty after self-exclusion, and
+ * `createActionIntent` takes the sole-operator branch — the population the
+ * inline self-approve (Touch ID) flow exists for. Kept in its own tenant so
+ * the multi-approver scenario above stays a true multi-approver org. */
+async function seedSoloScenario(): Promise<SoloScenario> {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+
+  const orgRole = await createRole({ scope: 'organization', orgId: org.id });
+  await grantRolePermissions(orgRole.id, [PERMISSIONS.APPROVALS_DECIDE]);
+
+  const requester = await createUser({ partnerId: partner.id, orgId: org.id, email: `solo-${randomUUID()}@intentfanout.test` });
+  await assignUserToOrganization(requester.id, org.id, orgRole.id);
+
+  return {
+    partnerId: partner.id,
+    orgId: org.id,
+    requester: { id: requester.id, email: requester.email },
+    requesterRoleId: orgRole.id,
+    userIds: [requester.id],
+    roleIds: [orgRole.id],
+  };
+}
+
 let seeded: Scenario | null = null;
+let seededSolo: SoloScenario | null = null;
 
 beforeEach(async () => {
   seeded = await seedScenario();
+  seededSolo = await seedSoloScenario();
 });
 
 // Belt-and-suspenders cleanup on top of setup.ts's own per-test TRUNCATE —
@@ -148,10 +187,7 @@ beforeEach(async () => {
 // can clear it). The next test's global `beforeEach` (setup.ts) TRUNCATEs
 // both tables CASCADE as the superuser client regardless, so leaving these
 // two rows for that sweep is correct, not merely convenient.
-afterEach(async () => {
-  const s = seeded;
-  seeded = null;
-  if (!s) return;
+async function cleanupScenario(s: Scenario | SoloScenario) {
   await withSystemDbAccessContext(async () => {
     // action_intents FK-cascades approval_requests + intent_outbox
     // (ON DELETE CASCADE — migration 2026-07-18-action-intents.sql), so
@@ -163,6 +199,15 @@ afterEach(async () => {
     await db.delete(roles).where(inArray(roles.id, s.roleIds));
     await db.delete(users).where(inArray(users.id, s.userIds));
   });
+}
+
+afterEach(async () => {
+  const s = seeded;
+  const solo = seededSolo;
+  seeded = null;
+  seededSolo = null;
+  if (s) await cleanupScenario(s);
+  if (solo) await cleanupScenario(solo);
 });
 
 describe('createActionIntent — approver fan-out across org+partner axes (real Postgres, breeze_app)', () => {
@@ -208,6 +253,44 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
     expect(intentRow?.partnerId).toBe(s.partnerId);
     expect(intentRow?.status).toBe('pending_approval');
     expect(intentRow?.requestedByUserId).toBe(s.requester.id);
+
+    // Four-eyes property at the persistence layer: in a multi-approver org
+    // the requester gets NO row of their own, so there is nothing for the web
+    // client to self-approve with. `requesterApprovalRequestId` is what
+    // aiAgentSdk forwards as `selfApprovalRequestId` on the
+    // `approval_required` stream event — null here means no Touch ID
+    // self-approve button is ever offered to the requester.
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
+  });
+
+  it('sole-operator org: the single fanned-out row belongs to the requester and is returned as requesterApprovalRequestId', async () => {
+    const s = seededSolo!;
+    const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
+
+    const snapshot = await createActionIntent(auth, {
+      toolName: 'execute_command',
+      input: { deviceId: randomUUID(), commandType: 'list_processes' },
+      source: 'chat',
+    });
+
+    expect(snapshot.status).toBe('pending_approval');
+    expect(snapshot.approvalRequestIds).toHaveLength(1);
+
+    const soloRows = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: approvalRequests.id, userId: approvalRequests.userId, boundDigest: approvalRequests.boundArgumentDigest })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.intentId, snapshot.id)),
+    );
+    expect(soloRows).toHaveLength(1);
+    expect(soloRows[0]?.userId).toBe(s.requester.id);
+    // The exact id the web client needs for the inline self-approve tap —
+    // proven against the real persisted row, not a mock projection.
+    expect(snapshot.requesterApprovalRequestId).toBe(soloRows[0]?.id);
+    expect(snapshot.approvalRequestIds).toEqual([soloRows[0]?.id]);
+    // Still bound to the intent's argument digest (the L3 decide gate
+    // re-checks this bind before releasing).
+    expect(soloRows[0]?.boundDigest).toBe(snapshot.argumentDigest);
   });
 
   it('creates a NEW intent for an identical duplicate request once the prior intent has terminalized (partial idempotency index)', async () => {

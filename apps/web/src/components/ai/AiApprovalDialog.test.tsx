@@ -129,6 +129,53 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
   });
 
+  it('needs_device → Deny still works (deny needs no WebAuthn proof)', async () => {
+    // Regression guard: `needs_device` used to be a dead end — the whole
+    // button block was gated on idle|deciding, so Deny vanished along with
+    // Approve and the user's only exits were registering an authenticator or
+    // waiting out the 5-minute expiry. Deny requires no L3 proof (the server
+    // gate is `status === 'approved'`-only), so it must survive.
+    decideIntentApproval.mockResolvedValueOnce('needs_device');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /register this device/i })).toBeInTheDocument(),
+    );
+    // Only Approve is gone.
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+
+    decideIntentApproval.mockResolvedValueOnce('decided');
+    fireEvent.click(screen.getByRole('button', { name: /deny/i }));
+    await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
+    expect(decideIntentApproval).toHaveBeenLastCalledWith('ap-1', 'deny');
+  });
+
+  it('deny → terminal confirmation reads "Action denied", not "Action approved"', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /deny/i }));
+    // role="status" so screen-reader users hear the outcome, matching the
+    // sibling error path's role="alert".
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument());
+    expect(screen.getByRole('status')).toHaveTextContent(/action denied/i);
+    expect(screen.queryByText(/action approved/i)).toBeNull();
+  });
+
   it('ceremony failure → inline error, buttons stay', async () => {
     decideIntentApproval.mockRejectedValue(
       new DOMException('cancelled', 'NotAllowedError'),

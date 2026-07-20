@@ -13,7 +13,12 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     idempotencyKey: col('idempotency_key'),
     status: col('status'),
   };
-  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id') };
+  // `userId` MUST be present here: createActionIntent projects
+  // `approvalRequests.userId` on the idempotent-replay path and matches it
+  // against the requester to derive `requesterApprovalRequestId`. Without the
+  // column the projection key is `undefined` and every
+  // requesterApprovalRequestId assertion below passes vacuously.
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), userId: col('user_id') };
   const intentOutboxTbl = { id: col('id'), intentId: col('intent_id') };
 
   return {
