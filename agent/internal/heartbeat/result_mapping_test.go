@@ -28,18 +28,50 @@ func TestToWSCommandResultCarriesStderrAndExitCode(t *testing.T) {
 		t.Errorf("Status = %q, want %q", got.Status, "failed")
 	}
 	if got.ExitCode != 3 {
-		t.Errorf("ExitCode = %d, want 3 (was dropped before #2474)", got.ExitCode)
+		t.Errorf("ExitCode = %d, want 3", got.ExitCode)
 	}
 	if got.Stderr != "something went wrong" {
-		t.Errorf("Stderr = %q, want %q (was dropped before #2474)", got.Stderr, "something went wrong")
+		t.Errorf("Stderr = %q, want %q", got.Stderr, "something went wrong")
 	}
 	if got.Stdout != "line one\nline two" {
-		t.Errorf("Stdout = %q, want the raw multi-line text (was mangled via Result before #2474)", got.Stdout)
+		t.Errorf("Stdout = %q, want the raw multi-line text", got.Stdout)
+	}
+	// Non-JSON stdout must ride ONLY in Stdout. Duplicating it into Result
+	// doubles the payload and, near the executor's 1MB stdout cap, trips the
+	// server's 1MB refine on `result` — rejecting the whole command_result.
+	if got.Result != nil {
+		t.Errorf("Result = %#v, want nil for non-JSON stdout", got.Result)
+	}
+}
+
+// TestToWSCommandResultErrorSuppressesResult pins the Error branch: when the
+// handler reports an error, Result stays empty but stdout/stderr still flow —
+// an errored script's captured output must remain visible in the UI.
+func TestToWSCommandResultErrorSuppressesResult(t *testing.T) {
+	got := toWSCommandResult("cmd-err", tools.CommandResult{
+		Status:   "failed",
+		ExitCode: 1,
+		Error:    "boom",
+		Stdout:   `{"partial":true}`,
+		Stderr:   "trace",
+	})
+
+	if got.Error != "boom" {
+		t.Errorf("Error = %q, want %q", got.Error, "boom")
+	}
+	if got.Result != nil {
+		t.Errorf("Result = %#v, want nil when Error is set", got.Result)
+	}
+	if got.Stdout != `{"partial":true}` {
+		t.Errorf("Stdout = %q, want it carried even when Error is set", got.Stdout)
+	}
+	if got.Stderr != "trace" {
+		t.Errorf("Stderr = %q, want it carried even when Error is set", got.Stderr)
 	}
 }
 
 // TestToWSCommandResultExitZeroIsWireVisible proves a successful command (exit
-// 0) still serializes an explicit "exitCode":0. If exitCode were omitempty the
+// 0) serializes an explicit "exitCode":0. If exitCode were omitempty the
 // server would coalesce it to NULL for every completed row — the exact symptom
 // #2474 set out to fix.
 func TestToWSCommandResultExitZeroIsWireVisible(t *testing.T) {

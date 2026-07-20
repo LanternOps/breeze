@@ -62,15 +62,15 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
-// CommandResult represents the result of a command execution.
+// CommandResult is the WS wire form of a command execution result.
 //
-// Stdout, Stderr and ExitCode mirror the fields the server's command_result
-// schema already accepts (apps/api/src/routes/agentWs.ts). They were absent
-// here before, so the WS leg silently dropped stderr and the exit code for
-// every command it carried — script_executions persisted blank stderr / NULL
-// exit_code fleet-wide (#2474). ExitCode is intentionally NOT omitempty: a
-// successful command exits 0, and omitting it would persist NULL for exactly
-// the completed rows the fix is meant to populate.
+// Stdout, Stderr and ExitCode mirror the server's command_result schema
+// (apps/api/src/routes/agentWs.ts, commandResultSchema). ExitCode is
+// deliberately NOT omitempty — matching tools.CommandResult — because the
+// server persists `result.exitCode ?? null`: omitting the zero value would
+// store NULL exit_code for every successful (exit-0) script run (#2474).
+// Failure paths that never spawn a process send a synthetic exit code 1 so
+// exitCode:0 always means "a process ran and exited cleanly".
 type CommandResult struct {
 	Type      string `json:"type"`
 	CommandID string `json:"commandId"`
