@@ -190,7 +190,7 @@ function buildApp(auth: any, permissions?: { allowedSiteIds?: string[] }): Hono 
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', auth);
-    if (permissions) c.set('permissions', permissions);
+    if (permissions) c.set('permissions', permissions as any);
     await next();
   });
   app.route('/devices', groupsRoutes);

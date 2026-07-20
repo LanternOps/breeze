@@ -266,7 +266,7 @@ describe('search routes', () => {
 
       expect(res.status).toBe(200);
       expect(inArray).toHaveBeenCalledWith('devices.siteId', ['site-abc']);
-      expect(vi.mocked(inArray).mock.calls.filter(([column]) => column === 'devices.siteId')).toHaveLength(2);
+      expect(vi.mocked(inArray).mock.calls.filter(([column]) => String(column) === 'devices.siteId')).toHaveLength(2);
     });
 
     it('returns empty device results when site-restricted caller has empty allowedSiteIds (fail-closed)', async () => {

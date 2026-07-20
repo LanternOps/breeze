@@ -35,7 +35,7 @@ vi.mock('../../db', () => {
     };
     return chain;
   };
-  const makeMutation = (capture: ReturnType<typeof vi.fn>, result: unknown[]) => {
+  const makeMutation = (capture: (value: unknown) => unknown, result: unknown[]) => {
     const chain: any = {
       values: (value: unknown) => { capture(value); return chain; },
       set: (value: unknown) => { capture(value); return chain; },

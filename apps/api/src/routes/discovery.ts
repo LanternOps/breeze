@@ -79,7 +79,7 @@ function resolveOrgId(
   if (auth.scope === 'partner') {
     const accessibleOrgIds = auth.accessibleOrgIds ?? [];
     if (!requireForNonOrg && accessibleOrgIds.length === 1) {
-      return { orgId: accessibleOrgIds[0] } as const;
+      return { orgId: accessibleOrgIds[0]! } as const;
     }
     return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
   }
