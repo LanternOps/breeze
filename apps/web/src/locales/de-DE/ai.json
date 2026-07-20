@@ -26,6 +26,8 @@
     "verifying": "Warte auf Verifizierung…",
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
+    "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "noApproverDevice": "Zum Genehmigen der eigenen Anfrage ist Touch ID / Windows Hello erforderlich.",
     "registerDevice": "Dieses Gerät registrieren",
     "decideFailed": "Entscheidung konnte nicht übermittelt werden",

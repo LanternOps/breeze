@@ -299,6 +299,12 @@ export default function AiChatMessages({
 
       {pendingApproval && (
         <AiApprovalDialog
+          // Each approval_required event REPLACES pendingApproval in place; without
+          // a key React reconciles the same instance and the previous card's decide
+          // state (needs_device / error / decided) leaks into an unrelated approval —
+          // e.g. a card that renders with no Approve button after the user registered
+          // an authenticator in response to the previous one.
+          key={pendingApproval.executionId}
           toolName={pendingApproval.toolName}
           description={pendingApproval.description}
           input={pendingApproval.input}

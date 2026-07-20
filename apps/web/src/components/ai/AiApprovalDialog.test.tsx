@@ -4,9 +4,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AiApprovalDialog from './AiApprovalDialog';
 
 const decideIntentApproval = vi.fn();
-vi.mock('@/lib/intentApprovals', () => ({
-  decideIntentApproval: (...args: unknown[]) => decideIntentApproval(...args),
-}));
+// Partial mock: the real CeremonyError class must stay exported, since the
+// component discriminates a failed WebAuthn ceremony from a failed POST with
+// `err instanceof CeremonyError`.
+vi.mock('@/lib/intentApprovals', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/intentApprovals')>();
+  return { ...actual, decideIntentApproval: (...args: unknown[]) => decideIntentApproval(...args) };
+});
+
+import { CeremonyError } from '@/lib/intentApprovals';
+import { ActionError } from '@/lib/runAction';
+
+/** What @simplewebauthn/browser@13 really throws when the user dismisses the
+ *  Touch ID sheet: `WebAuthnError extends Error`, never a DOMException. */
+function cancelledCeremony(): CeremonyError {
+  return new CeremonyError(Object.assign(new Error('cancelled'), { name: 'NotAllowedError' }));
+}
 
 // CRITICAL-3 (whole-branch review): the web chat "Approve" button was a
 // silent no-op for Tier-3 durable intents — the sessions-approve route only
@@ -177,9 +190,7 @@ describe('intent-backed self-approve (sole operator)', () => {
   });
 
   it('ceremony failure → inline error, buttons stay', async () => {
-    decideIntentApproval.mockRejectedValue(
-      new DOMException('cancelled', 'NotAllowedError'),
-    );
+    decideIntentApproval.mockRejectedValue(cancelledCeremony());
     render(
       <AiApprovalDialog
         {...selfProps}
@@ -194,6 +205,65 @@ describe('intent-backed self-approve (sole operator)', () => {
     // Localized copy, not the browser-authored DOMException message.
     expect(screen.getByRole('alert')).toHaveTextContent(/verification failed/i);
     expect(screen.queryByText(/cancelled/i)).toBeNull();
+  });
+
+  it('POST failure (not a ceremony failure) → the submit-failed line, not "verification failed"', async () => {
+    // The two failures are distinguished by WHERE they happened, not by error
+    // class: a rejected POST is an ActionError, a dismissed Touch ID prompt is
+    // a CeremonyError. Neither is a DOMException.
+    decideIntentApproval.mockRejectedValue(new ActionError('server exploded', 500));
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/failed to submit the decision/i);
+    expect(screen.queryByText(/verification failed/i)).toBeNull();
+  });
+
+  it('409 already decided → terminal state, no doomed retry button', async () => {
+    decideIntentApproval.mockRejectedValue(
+      new ActionError('Already approved', 409, undefined, { finalStatus: 'approved' }),
+    );
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/already decided/i);
+    // Retrying could only burn a fresh WebAuthn prompt before the same 409.
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
+    expect(onIntentDecided).toHaveBeenCalled();
+  });
+
+  it('410 expired → terminal state with the expiry copy', async () => {
+    decideIntentApproval.mockRejectedValue(
+      new ActionError('Expired', 410, undefined, { finalStatus: 'expired' }),
+    );
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /deny/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/expired/i);
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
   });
 
   it('deny → decideIntentApproval(deny) → onIntentDecided', async () => {
@@ -255,6 +325,40 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(
       screen.queryByText(/needs approval in the approvals area or the breeze mobile app/i),
     ).toBeNull();
+  });
+
+  it('a keyed remount after needs_device restores the Approve button', async () => {
+    // Companion to the AiChatMessages "remounts the approval card" test: that
+    // one proves the parent passes key={executionId}; this one proves keying is
+    // the right fix — a fresh instance for the next execution comes back with a
+    // usable Approve button instead of inheriting `needs_device` forever.
+    decideIntentApproval.mockResolvedValue('needs_device');
+    const { rerender } = render(
+      <AiApprovalDialog
+        {...selfProps}
+        key="exec-1"
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /register this device/i })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+
+    rerender(
+      <AiApprovalDialog
+        {...selfProps}
+        key="exec-2"
+        intentBacked
+        selfApprovalRequestId="ap-2"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /register this device/i })).toBeNull();
   });
 
   it('renders neither Approve nor Deny in the four-eyes case', () => {

@@ -586,9 +586,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
         }
 
-        // Emit approval_required event via session event bus → UI shows the
-        // "waiting for an approver" state (intentBacked: true — the web chat
-        // card must NOT offer a self-approve button for this execution).
+        // Emit approval_required event via session event bus. `intentBacked:
+        // true` always means the four-eyes waiting state UNLESS
+        // selfApprovalRequestId is also set — in that case the sole-operator
+        // branch applies and the card offers an inline WebAuthn self-approve
+        // for that one row (an L3 proof satisfying, not bypassing, the decide
+        // handler's gate).
         session.eventBus.publish({
           type: 'approval_required',
           executionId: approvalExec.id,

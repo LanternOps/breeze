@@ -562,10 +562,42 @@ describe('getActionIntent', () => {
 
   it('returns a snapshot with approval request ids when found', async () => {
     dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1' })]);
-    dbState.selectApprovalRequestsResults.push([{ id: 'approval-1' }, { id: 'approval-2' }]);
+    // Rows carry userId in production (the select projects it); a fixture that
+    // omits it makes the requesterApprovalRequestId derivation unfalsifiable.
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', userId: APPROVER_1 },
+      { id: 'approval-2', userId: APPROVER_2 },
+    ]);
     const result = await getActionIntent(makeAuth(), 'intent-1');
     expect(result?.id).toBe('intent-1');
     expect(result?.approvalRequestIds).toEqual(['approval-1', 'approval-2']);
+  });
+
+  it('requesterApprovalRequestId is the CALLER’s row (the one they may self-approve)', async () => {
+    // Caller-derived, matching the idempotent-replay path. Keying on the
+    // intent's requestedByUserId would hand an approver reading somebody
+    // else's intent a row id that is not theirs to decide.
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', requestedByUserId: APPROVER_1 }),
+    ]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-other', userId: APPROVER_1 },
+      { id: 'approval-mine', userId: REQUESTER_ID },
+    ]);
+    const result = await getActionIntent(makeAuth(), 'intent-1');
+    expect(result?.requesterApprovalRequestId).toBe('approval-mine');
+  });
+
+  it('requesterApprovalRequestId is null when every row belongs to someone else', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID }),
+    ]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', userId: APPROVER_1 },
+      { id: 'approval-2', userId: APPROVER_2 },
+    ]);
+    const result = await getActionIntent(makeAuth(), 'intent-1');
+    expect(result?.requesterApprovalRequestId).toBeNull();
   });
 });
 

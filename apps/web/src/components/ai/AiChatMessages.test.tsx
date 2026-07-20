@@ -14,13 +14,24 @@ vi.mock('./AiToolCallCard', () => ({ default: () => null }));
 // Records the props AiChatMessages forwards to the approval card. The real
 // dialog is heavy (WebAuthn + i18n), and what this file owns is the wiring:
 // that the self-approve id and the decided callback reach the card at all.
-const approvalDialog = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
-vi.mock('./AiApprovalDialog', () => ({
-  default: (props: Record<string, unknown>) => {
-    approvalDialog.props.push(props);
-    return null;
-  },
+const approvalDialog = vi.hoisted(() => ({
+  props: [] as Array<Record<string, unknown>>,
+  mounts: 0,
 }));
+vi.mock('./AiApprovalDialog', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: (props: Record<string, unknown>) => {
+      approvalDialog.props.push(props);
+      // Counts MOUNTS, not renders — the only way to observe from here whether
+      // the parent keyed the card (new key ⇒ fresh instance ⇒ fresh state).
+      useEffect(() => {
+        approvalDialog.mounts += 1;
+      }, []);
+      return null;
+    },
+  };
+});
 vi.mock('./AiPlanReviewCard', () => ({ default: () => null }));
 vi.mock('./AiPlanProgressBar', () => ({ default: () => null }));
 
@@ -226,6 +237,44 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(props.selfApprovalRequestId).toBe('ap-1');
     (props.onIntentDecided as () => void)();
     expect(onIntentDecided).toHaveBeenCalledTimes(1);
+  });
+
+  it('remounts the approval card for each new execution so decide state cannot leak', () => {
+    // pendingApproval is REPLACED in place by every approval_required event.
+    // Without key={executionId} React reconciles the same instance and the
+    // previous card's needs_device / error / decided state survives into an
+    // unrelated approval — the reported symptom being a card that renders with
+    // no Approve button for the rest of the session after the user hit
+    // needs_device once and then registered a passkey.
+    approvalDialog.props.length = 0;
+    approvalDialog.mounts = 0;
+    const messages = [{ id: '1', role: 'user', content: 'read that file' }] as never;
+    const approval = (executionId: string, selfApprovalRequestId: string) => ({
+      executionId,
+      toolName: 'file_operations',
+      input: {},
+      description: 'Read a file',
+      intentBacked: true,
+      selfApprovalRequestId,
+    });
+
+    const { rerender } = render(
+      <AiChatMessages {...baseProps} messages={messages} pendingApproval={approval('e1', 'ap-1')} />,
+    );
+    expect(approvalDialog.mounts).toBe(1);
+
+    // Same execution, incidental re-render → no remount (state is preserved).
+    rerender(
+      <AiChatMessages {...baseProps} messages={messages} pendingApproval={approval('e1', 'ap-1')} />,
+    );
+    expect(approvalDialog.mounts).toBe(1);
+
+    // New execution → fresh instance, so the Approve button is back.
+    rerender(
+      <AiChatMessages {...baseProps} messages={messages} pendingApproval={approval('e2', 'ap-2')} />,
+    );
+    expect(approvalDialog.mounts).toBe(2);
+    expect(approvalDialog.props.at(-1)!.selfApprovalRequestId).toBe('ap-2');
   });
 
   it('cancels the pending frame on unmount so it never scrolls a torn-down container', () => {

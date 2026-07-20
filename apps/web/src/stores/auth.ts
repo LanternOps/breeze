@@ -503,7 +503,19 @@ export class AuthSessionExpiredError extends Error {
   }
 }
 
-export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
+export interface FetchWithAuthOptions extends RequestInit {
+  /**
+   * Skip the automatic refresh-and-replay on a 401. Opt-in, for the rare
+   * request whose body is SINGLE-USE: `/mobile/approvals/:id/approve` carries a
+   * WebAuthn assertion that the server consumes (and may reject with 401
+   * `assertion_failed`). Replaying it re-sends an already-burned assertion,
+   * which can only fail again. Callers that set this get the raw 401 and must
+   * handle it themselves (e.g. runAction's `treatUnauthorizedAsError`).
+   */
+  skipUnauthorizedRetry?: boolean;
+}
+
+export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOptions = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
   const orgId = _getOrgId?.();
@@ -588,8 +600,9 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   }
   if (timeout) clearTimeout(timeout);
 
-  // If unauthorized, attempt cookie-backed refresh once
-  if (response.status === 401) {
+  // If unauthorized, attempt cookie-backed refresh once (unless the caller's
+  // body is single-use and must never be replayed — see skipUnauthorizedRetry).
+  if (response.status === 401 && !options.skipUnauthorizedRetry) {
     const newTokens = await requestTokenRefreshShared();
     if (newTokens) {
       setTokens(newTokens);

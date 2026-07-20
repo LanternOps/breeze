@@ -26,6 +26,8 @@
     "verifying": "Waiting for verification…",
     "deny": "Deny",
     "verificationFailed": "Verification failed. Try again.",
+    "alreadyDecided": "This request was already decided.",
+    "expired": "This request expired before it could be decided.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",

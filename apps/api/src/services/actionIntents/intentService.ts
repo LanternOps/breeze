@@ -510,10 +510,16 @@ export async function getActionIntent(auth: AuthContext, intentId: string): Prom
       .select({ id: approvalRequests.id, userId: approvalRequests.userId })
       .from(approvalRequests)
       .where(eq(approvalRequests.intentId, intent.id));
+    // Caller-derived, matching the sibling derivation in the idempotent-replay
+    // path (`r.userId === requesterId`). The field's contract is "the approval
+    // row YOU may self-approve", so it must key on the caller — keying on
+    // intent.requestedByUserId would hand an approver looking at somebody
+    // else's intent a row id that is not theirs to decide.
+    const callerId = auth.user.id;
     return toSnapshot(
       intent,
       approvalRows.map((r) => r.id),
-      approvalRows.find((r) => r.userId === intent.requestedByUserId)?.id ?? null,
+      approvalRows.find((r) => r.userId === callerId)?.id ?? null,
     );
   });
 }

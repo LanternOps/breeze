@@ -256,6 +256,26 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
   });
 
+  it('skipUnauthorizedRetry: never replays a single-use body after a 401', async () => {
+    // The approvals decide POST carries a WebAuthn assertion the server
+    // consumes and can reject with 401 (`assertion_failed`). Refreshing the
+    // (still valid) session and replaying re-sends an already-burned assertion.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const unauthorized = makeResponse({ error: 'assertion_failed' }, false, 401);
+    const fetchMock = vi.fn().mockResolvedValueOnce(unauthorized);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/mobile/approvals/ap-1/approve', {
+      method: 'POST',
+      body: JSON.stringify({ proof: { type: 'webauthn_platform' } }),
+      skipUnauthorizedRetry: true,
+    });
+
+    expect(response).toBe(unauthorized);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
   it('logs out when token refresh fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
 

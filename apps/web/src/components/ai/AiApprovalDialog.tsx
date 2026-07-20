@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-import { decideIntentApproval } from "@/lib/intentApprovals";
+import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
+import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
@@ -175,7 +176,7 @@ export default function AiApprovalDialog({
   const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
   const [intentDecideState, setIntentDecideState] = useState<
-    "idle" | "deciding" | "needs_device" | "decided"
+    "idle" | "deciding" | "needs_device" | "decided" | "unavailable"
   >("idle");
   const [decidedAs, setDecidedAs] = useState<"approve" | "deny" | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
@@ -188,7 +189,12 @@ export default function AiApprovalDialog({
     // guards `approved`). Only an in-flight or already-settled decision
     // blocks a new one.
     if (!selfApprovalRequestId) return;
-    if (intentDecideState === "deciding" || intentDecideState === "decided") return;
+    if (
+      intentDecideState === "deciding" ||
+      intentDecideState === "decided" ||
+      intentDecideState === "unavailable"
+    )
+      return;
     if (decision === "approve" && intentDecideState === "needs_device") return;
     const priorState = intentDecideState;
     setIntentDecideState("deciding");
@@ -207,11 +213,24 @@ export default function AiApprovalDialog({
       setIntentDecideState("decided");
       onIntentDecided?.();
     } catch (err) {
-      // Never surface err.message: a cancelled WebAuthn ceremony throws a
-      // browser-authored (untranslated) DOMException, and server rejections
+      // 409 (already decided elsewhere) / 410 (expired) are TERMINAL for this
+      // row. Falling back to `idle` would re-offer a button whose only possible
+      // outcome is another WebAuthn prompt followed by the same rejection.
+      if (err instanceof ActionError && (err.status === 409 || err.status === 410)) {
+        if (err.status === 410) setIntentError(t("aiApprovalDialog.expired"));
+        else setIntentError(t("aiApprovalDialog.alreadyDecided"));
+        setIntentDecideState("unavailable");
+        onIntentDecided?.();
+        return;
+      }
+      // Never surface err.message: a failed WebAuthn ceremony throws a
+      // browser/library-authored (untranslated) error, and server rejections
       // were already toasted by runAction. Show a localized line instead.
+      // Discriminate on WHERE it failed (CeremonyError ⇒ nothing was POSTed),
+      // not on the error class — @simplewebauthn wraps a user-cancelled prompt
+      // in a plain `WebAuthnError extends Error`, never a DOMException.
       setIntentError(
-        err instanceof DOMException
+        err instanceof CeremonyError
           ? t("aiApprovalDialog.verificationFailed")
           : t("aiApprovalDialog.decideFailed"),
       );
@@ -364,12 +383,18 @@ export default function AiApprovalDialog({
           gate requires. Multi-approver intents never get these buttons
           (selfApprovalRequestId is undefined — four-eyes preserved).
 
+          Hidden once the row is settled (`decided`) or terminally unusable
+          (`unavailable` — a 409/410 from the server), so a doomed retry is
+          never offered.
+
           Gated on "not yet decided" rather than on idle|deciding: in the
           `needs_device` state only APPROVE is impossible (no registered
           authenticator ⇒ no L3 proof). Deny needs no proof at all, so it must
           survive — otherwise the user's only exits from `needs_device` are
           registering an authenticator or waiting out the 5-minute expiry. */}
-      {canSelfDecide && intentDecideState !== "decided" && (
+      {canSelfDecide &&
+        intentDecideState !== "decided" &&
+        intentDecideState !== "unavailable" && (
         <div className="mt-3 flex gap-2">
           {intentDecideState !== "needs_device" && (
             <button
