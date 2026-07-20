@@ -4,17 +4,18 @@ import { z } from 'zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
+import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 
 export const unifiRoutes = new Hono();
 
-type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'canAccessOrg'>;
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'canAccessOrg'>;
 
 function requestedPartnerId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
   return c.req.query('partnerId');
@@ -76,6 +77,12 @@ const collectorSchema = z.object({
 });
 
 unifiRoutes.use('*', authMiddleware);
+unifiRoutes.use('*', async (c, next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth'))) {
+    return c.json({ error: 'Full partner scope is required to manage the shared UniFi integration' }, 403);
+  }
+  return next();
+});
 
 // GET /unifi — connection status
 unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
@@ -103,7 +110,7 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
   const { apiKey, baseUrl, accountLabel } = c.req.valid('json');
   const base = baseUrl ?? 'https://api.ui.com';
   try {
-    await createUnifiClient({ baseUrl: base, apiKey }).listHosts();
+    await runOutsideDbContext(() => createUnifiClient({ baseUrl: base, apiKey }).listHosts());
   } catch (err) {
     // Only a 401/403 means the key is actually bad (→ 400, user-actionable).
     // A UniFi outage, DNS/network fault, or a bug here is NOT "wrong key":
@@ -151,7 +158,7 @@ unifiRoutes.post('/test', partnerScopes, writePerm, requireMfa(), async (c) => {
   if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
   try {
     const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
-    const hosts = await client.listHosts();
+    const hosts = await runOutsideDbContext(() => client.listHosts());
     return c.json({ success: true, hostsFound: hosts.length });
   } catch (err) {
     return c.json({ success: false, message: err instanceof Error ? err.message : String(err) }, 502);
@@ -181,7 +188,9 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
   if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
   try {
     const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
-    const [hosts, allSites] = await Promise.all([client.listHosts(), client.listSites()]);
+    const [hosts, allSites] = await runOutsideDbContext(() =>
+      Promise.all([client.listHosts(), client.listSites()])
+    );
     // listSites already drops sites with a malformed id, so this map only ever holds
     // genuinely mappable sites.
     const sitesByHost = new Map<string, Array<{ id: string; name: string }>>();

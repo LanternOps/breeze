@@ -26,11 +26,12 @@ import { checkSsrfSafe } from '../services/ssrfGuard';
 // Any tenant-supplied URL pointing elsewhere is treated as SSRF. Shared with
 // the client's egress-time re-check so the allowlist has a single source of truth.
 import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 export const sentinelOneRoutes = new Hono();
 sentinelOneRoutes.use('*', authMiddleware);
 
-type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'accessibleOrgIds' | 'canAccessOrg'>;
 
 // B1: Partner-scope resolution helpers
 
@@ -60,6 +61,9 @@ export function requirePartnerManager(
 ): { partnerId: string } | { error: string; status: 400 | 403 } {
   if (auth.scope === 'organization') {
     return { error: 'SentinelOne credentials and mappings are managed at partner scope', status: 403 };
+  }
+  if (!canManagePartnerWidePolicies(auth)) {
+    return { error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 };
   }
   return resolvePartnerId(auth, requested);
 }
@@ -260,7 +264,9 @@ sentinelOneRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    const partnerResult = auth.scope === 'organization'
+      ? resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c))
+      : requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const [integration] = await db
