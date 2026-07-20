@@ -14,6 +14,7 @@
     "ariaLabel": "Tool-Genehmigung erforderlich: {{toolName}}",
     "title": "Genehmigung erforderlich",
     "pendingApproverTitle": "Warten auf eine genehmigende Person",
+    "selfApproveTitle": "Ihre Genehmigung ist erforderlich",
     "pendingApproverDescription": "Diese Aktion muss im Bereich „Genehmigungen“ oder in der Breeze-Mobile-App genehmigt werden.",
     "timeRemaining": "Verbleibend: {{minutes}} Min., {{seconds}} Sek.",
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",

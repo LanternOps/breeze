@@ -14,6 +14,7 @@
     "ariaLabel": "Tool approval required: {{toolName}}",
     "title": "Approval Required",
     "pendingApproverTitle": "Waiting for an Approver",
+    "selfApproveTitle": "Your Approval Is Required",
     "pendingApproverDescription": "This action needs approval in the Approvals area or the Breeze mobile app.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} seconds remaining",
     "urgentWarning": "Less than 30 seconds remaining. This request will be auto-rejected.",

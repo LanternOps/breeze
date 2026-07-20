@@ -175,14 +175,15 @@ export default function AiApprovalDialog({
   const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
   const [intentDecideState, setIntentDecideState] = useState<
-    "idle" | "deciding" | "needs_device"
+    "idle" | "deciding" | "needs_device" | "decided"
   >("idle");
+  const [decidedAs, setDecidedAs] = useState<"approve" | "deny" | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
 
   const canSelfDecide = Boolean(intentBacked && selfApprovalRequestId);
 
   const handleIntentDecision = async (decision: "approve" | "deny") => {
-    if (!selfApprovalRequestId || intentDecideState === "deciding") return;
+    if (!selfApprovalRequestId || intentDecideState !== "idle") return;
     setIntentDecideState("deciding");
     setIntentError(null);
     try {
@@ -191,14 +192,21 @@ export default function AiApprovalDialog({
         setIntentDecideState("needs_device");
         return;
       }
+      // Terminal: the parent normally unmounts this card via onIntentDecided,
+      // but don't depend on that — settle into a decided state so the button
+      // never sits frozen on "Waiting for verification…" if the clear lags.
+      // Still non-idle, so the double-submit guard above holds.
+      setDecidedAs(decision);
+      setIntentDecideState("decided");
       onIntentDecided?.();
     } catch (err) {
-      // Cancelled/failed ceremony or a server rejection (the latter already
-      // toasted by runAction) — surface inline and let the user retry.
+      // Never surface err.message: a cancelled WebAuthn ceremony throws a
+      // browser-authored (untranslated) DOMException, and server rejections
+      // were already toasted by runAction. Show a localized line instead.
       setIntentError(
-        err instanceof Error && err.message
-          ? err.message
-          : t("aiApprovalDialog.verificationFailed"),
+        err instanceof DOMException
+          ? t("aiApprovalDialog.verificationFailed")
+          : t("aiApprovalDialog.decideFailed"),
       );
       setIntentDecideState("idle");
     }
@@ -242,13 +250,20 @@ export default function AiApprovalDialog({
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {intentBacked ? (
+          {/* Four-eyes intents wait on somebody else (hourglass). When the
+              viewer is the sole eligible approver the card is actionable, so
+              it must not read "waiting" above the user's own buttons. */}
+          {intentBacked && !canSelfDecide ? (
             <Hourglass className="h-4 w-4 text-amber-400" />
           ) : (
             <ShieldAlert className="h-4 w-4 text-amber-400" />
           )}
           <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-            {intentBacked ? t("aiApprovalDialog.pendingApproverTitle") : t("aiApprovalDialog.title")}
+            {canSelfDecide
+              ? t("aiApprovalDialog.selfApproveTitle")
+              : intentBacked
+                ? t("aiApprovalDialog.pendingApproverTitle")
+                : t("aiApprovalDialog.title")}
           </span>
         </div>
         {!intentBacked && (
@@ -338,29 +353,42 @@ export default function AiApprovalDialog({
           Hello), which is exactly what the decide handler's self-approve
           gate requires. Multi-approver intents never get these buttons
           (selfApprovalRequestId is undefined — four-eyes preserved). */}
-      {canSelfDecide && intentDecideState !== "needs_device" && (
-        <div className="mt-3 flex gap-2">
-          <button
-            type="button"
-            disabled={intentDecideState === "deciding"}
-            onClick={() => handleIntentDecision("approve")}
-            className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
-          >
-            <Fingerprint className="h-3.5 w-3.5" />
-            {intentDecideState === "deciding"
-              ? t("aiApprovalDialog.verifying")
-              : t("aiApprovalDialog.approveVerify")}
-          </button>
-          <button
-            type="button"
-            disabled={intentDecideState === "deciding"}
-            onClick={() => handleIntentDecision("deny")}
-            className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-          >
-            <X className="h-3.5 w-3.5" />
-            {t("aiApprovalDialog.deny")}
-          </button>
-        </div>
+      {canSelfDecide &&
+        (intentDecideState === "idle" || intentDecideState === "deciding") && (
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              disabled={intentDecideState === "deciding"}
+              onClick={() => handleIntentDecision("approve")}
+              className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
+            >
+              <Fingerprint className="h-3.5 w-3.5" />
+              {intentDecideState === "deciding"
+                ? t("aiApprovalDialog.verifying")
+                : t("aiApprovalDialog.approveVerify")}
+            </button>
+            <button
+              type="button"
+              disabled={intentDecideState === "deciding"}
+              onClick={() => handleIntentDecision("deny")}
+              className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            >
+              <X className="h-3.5 w-3.5" />
+              {t("aiApprovalDialog.deny")}
+            </button>
+          </div>
+        )}
+
+      {/* Terminal confirmation — the parent normally unmounts the card here,
+          but if that clear lags the user sees a settled result rather than a
+          permanently disabled "Waiting for verification…" button. */}
+      {canSelfDecide && intentDecideState === "decided" && (
+        <p className="mt-3 flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300">
+          <Check className="h-3.5 w-3.5 text-green-500" />
+          {decidedAs === "deny"
+            ? t("aiApprovalDialog.deniedToast")
+            : t("aiApprovalDialog.approvedToast")}
+        </p>
       )}
 
       {canSelfDecide && intentError && (

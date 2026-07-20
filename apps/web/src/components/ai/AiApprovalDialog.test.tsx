@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AiApprovalDialog from './AiApprovalDialog';
 
@@ -11,10 +11,15 @@ vi.mock('@/lib/intentApprovals', () => ({
 // CRITICAL-3 (whole-branch review): the web chat "Approve" button was a
 // silent no-op for Tier-3 durable intents — the sessions-approve route only
 // ever flipped ai_tool_executions while the chat flow actually blocked on
-// action_intents.status. The fix is: intent-backed executions never render a
-// self-approve button here — they render a "waiting for an approver" state
-// instead, since deciding happens on the /approvals surface (mobile push or
-// the Approvals queue).
+// action_intents.status. Intent-backed executions are therefore never decided
+// through the legacy sessions-approve path. Current contract:
+//   - intentBacked WITHOUT selfApprovalRequestId (four-eyes): no decision
+//     buttons at all — a "waiting for an approver" state, since somebody else
+//     must decide it on the /approvals surface (mobile push or the queue).
+//   - intentBacked WITH selfApprovalRequestId (sole operator): the server
+//     fanned the approval row out to the requester, so this card renders
+//     inline Verify & Approve / Deny, which POST a WebAuthn L3 proof via
+//     decideIntentApproval — satisfying, not bypassing, the decide gate.
 
 const baseProps = {
   toolName: 'execute_command',
@@ -23,6 +28,11 @@ const baseProps = {
   onApprove: vi.fn(),
   onReject: vi.fn(),
 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  decideIntentApproval.mockReset();
+});
 
 describe('AiApprovalDialog', () => {
   it('renders Approve/Reject buttons for a non-intent-backed (legacy Tier-2) execution', () => {
@@ -51,13 +61,20 @@ describe('AiApprovalDialog', () => {
 });
 
 describe('intent-backed self-approve (sole operator)', () => {
-  const selfProps = {
+  // Fresh spies per test — sharing vi.fn() instances across tests makes call
+  // counts accumulate and couples the suite to execution order.
+  const makeSelfProps = () => ({
     toolName: 'file_operations',
     description: 'Read a file',
-    input: {},
-    onApprove: vi.fn(),
-    onReject: vi.fn(),
-  };
+    input: {} as Record<string, unknown>,
+    onApprove: vi.fn<() => void>(),
+    onReject: vi.fn<() => void>(),
+  });
+  let selfProps: ReturnType<typeof makeSelfProps>;
+
+  beforeEach(() => {
+    selfProps = makeSelfProps();
+  });
 
   it('renders Approve/Deny when selfApprovalRequestId is present', () => {
     render(
@@ -91,6 +108,10 @@ describe('intent-backed self-approve (sole operator)', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
     await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
     expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve');
+    // Does not sit frozen on a disabled "Waiting for verification…" button if
+    // the parent's pendingApproval clear lags or never lands.
+    expect(screen.queryByText(/waiting for verification/i)).toBeNull();
+    expect(screen.getByText(/action approved/i)).toBeInTheDocument();
   });
 
   it('needs_device → shows the register-device CTA instead of buttons', async () => {
@@ -123,6 +144,9 @@ describe('intent-backed self-approve (sole operator)', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+    // Localized copy, not the browser-authored DOMException message.
+    expect(screen.getByRole('alert')).toHaveTextContent(/verification failed/i);
+    expect(screen.queryByText(/cancelled/i)).toBeNull();
   });
 
   it('deny → decideIntentApproval(deny) → onIntentDecided', async () => {
@@ -139,5 +163,57 @@ describe('intent-backed self-approve (sole operator)', () => {
     fireEvent.click(screen.getByRole('button', { name: /deny/i }));
     await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
     expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'deny');
+  });
+
+  it('disables both buttons while the ceremony is in flight', async () => {
+    let resolveDecide: (value: string) => void = () => {};
+    decideIntentApproval.mockReturnValue(
+      new Promise<string>(resolve => {
+        resolveDecide = resolve;
+      }),
+    );
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /waiting for verification/i })).toBeDisabled(),
+    );
+    expect(screen.getByRole('button', { name: /deny/i })).toBeDisabled();
+
+    // Settle the in-flight promise inside act() so the final state update is
+    // flushed before the test ends (otherwise React logs an act() warning).
+    await act(async () => {
+      resolveDecide('decided');
+    });
+  });
+
+  it('shows an actionable header and no "waiting for an approver" hint when self-deciding', () => {
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/your approval is required/i)).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for an approver/i)).toBeNull();
+    expect(
+      screen.queryByText(/needs approval in the approvals area or the breeze mobile app/i),
+    ).toBeNull();
+  });
+
+  it('renders neither Approve nor Deny in the four-eyes case', () => {
+    render(<AiApprovalDialog {...selfProps} intentBacked />);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
+    expect(screen.getByText(/waiting for an approver/i)).toBeInTheDocument();
   });
 });
