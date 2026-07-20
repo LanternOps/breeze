@@ -132,4 +132,19 @@ describe('decideIntentApproval server rejections', () => {
     expect(toasted.message).not.toBe('step_up_required');
     expect(toasted.message).toMatch(/Touch ID/i);
   });
+
+  it('maps a 403 not_sole_approver to its own outcome and copy, not decideFailed', async () => {
+    // #2685: the decide handler re-derives sole-operator status at decide time.
+    // The POST succeeded — the answer was "somebody else has to approve now" —
+    // so the generic "Failed to submit the decision" fallback would be a lie.
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'not_sole_approver' }), { status: 403 }),
+    );
+    const outcome = await decideIntentApproval('ap-1', 'approve');
+    expect(outcome).toBe('not_sole_approver');
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).not.toBe('not_sole_approver');
+    expect(toasted.message).not.toMatch(/failed to submit the decision/i);
+    expect(toasted.message).toMatch(/another approver is now required/i);
+  });
 });

@@ -217,6 +217,18 @@ export default function AiApprovalDialog({
         setIntentDecideState("needs_device");
         return;
       }
+      // The org gained another eligible approver since this intent was created
+      // (#2685), so the viewer may no longer decide their own request — an
+      // outcome no retry can change. Settle into the same terminal `unavailable`
+      // presentation a 409/410 produces so no button is left offering an action
+      // guaranteed to fail. Deliberately does NOT call onIntentDecided: unlike
+      // 409/410 the intent is still pending — it now waits on somebody else —
+      // and clearing it would unmount the card before this line is read.
+      if (outcome === "not_sole_approver") {
+        setIntentError(t("aiApprovalDialog.notSoleApprover"));
+        setIntentDecideState("unavailable");
+        return;
+      }
       // Terminal: the parent normally unmounts this card via onIntentDecided,
       // but don't depend on that — settle into a decided state so the button
       // never sits frozen on "Waiting for verification…" if the clear lags.

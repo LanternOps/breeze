@@ -3,7 +3,7 @@ import { getApprovalAssertion } from '../stores/authenticator';
 import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
 
-export type IntentDecisionOutcome = 'decided' | 'needs_device';
+export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver';
 
 /**
  * Wraps any failure of the WebAuthn (Touch ID / Windows Hello) ceremony.
@@ -39,12 +39,41 @@ function isNoApproverDeviceError(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === 'NoApproverDeviceError';
 }
 
+/** Reads the route's bare machine token out of an ActionError body. The decide
+ *  route answers `{ error: '<token>' }` with no `code`, which is also the field
+ *  runAction's `friendly` hook is handed when `code` is absent. */
+function errorToken(err: unknown): string | undefined {
+  if (!(err instanceof ActionError)) return undefined;
+  const body = err.body as { error?: unknown } | null | undefined;
+  return typeof body?.error === 'string' ? body.error : undefined;
+}
+
 /** The server's L3 self-approve rejection (approvals.ts, 403). Same remedy as
  *  a missing authenticator: register a device — so it drives the same CTA. */
 function isStepUpRequired(err: unknown): boolean {
-  if (!(err instanceof ActionError)) return false;
-  const body = err.body as { error?: unknown } | null | undefined;
-  return body?.error === 'step_up_required';
+  return errorToken(err) === 'step_up_required';
+}
+
+/**
+ * The decide handler re-derives sole-operator status at decide time (#2685) and
+ * answers 403 `not_sole_approver` once the org has gained another eligible
+ * approver since the intent was created. Unlike `step_up_required` there is no
+ * remedy the viewer can apply: they are no longer allowed to decide their own
+ * request at all, so this is terminal for this card — somebody else has to
+ * approve it on the /approvals surface. The submission itself worked, so it
+ * must never surface as the generic `decideFailed` copy.
+ */
+function isNotSoleApprover(err: unknown): boolean {
+  return errorToken(err) === 'not_sole_approver';
+}
+
+/** Bare machine tokens the decide route emits in `error` (no `code`), mapped to
+ *  translated copy. Without this the user is shown the literal token. Keys are
+ *  spelled out as literals so the i18n key-usage scanner can see them. */
+function decideErrorCopy(token: string): string | undefined {
+  if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
+  if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
+  return undefined;
 }
 
 /**
@@ -56,7 +85,11 @@ function isStepUpRequired(err: unknown): boolean {
  *
  * Returns 'needs_device' when no approver device is registered (before any
  * network write) or when the server answers `step_up_required` — the caller
- * should show a "register a device" CTA rather than retrying. Throws
+ * should show a "register a device" CTA rather than retrying. Returns
+ * 'not_sole_approver' when the server answers that token: the org gained
+ * another eligible approver, so self-approval is off the table for good and the
+ * caller should settle the card terminally rather than re-offer a button.
+ * Throws
  * CeremonyError on a cancelled/failed ceremony (nothing was POSTed) and
  * ActionError on server rejection (runAction has already toasted the latter).
  *
@@ -99,12 +132,7 @@ export async function decideIntentApproval(
         }),
       errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
       treatUnauthorizedAsError: true,
-      // The route emits bare machine tokens in `error` with no `code`; without
-      // this the user is shown the literal string "step_up_required".
-      friendly: (token) =>
-        token === 'step_up_required'
-          ? i18n.t('ai:aiApprovalDialog.noApproverDevice')
-          : undefined,
+      friendly: decideErrorCopy,
       successMessage:
         decision === 'approve'
           ? i18n.t('ai:aiApprovalDialog.approvedToast')
@@ -112,6 +140,7 @@ export async function decideIntentApproval(
     });
   } catch (err) {
     if (isStepUpRequired(err)) return 'needs_device';
+    if (isNotSoleApprover(err)) return 'not_sole_approver';
     throw err;
   }
 

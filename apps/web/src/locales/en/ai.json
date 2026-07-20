@@ -28,6 +28,7 @@
     "verificationFailed": "Verification failed. Try again.",
     "alreadyDecided": "This request was already decided.",
     "expired": "This request expired before it could be decided.",
+    "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",

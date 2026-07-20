@@ -266,6 +266,34 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
   });
 
+  it('not_sole_approver → terminal state with its own copy, not decideFailed', async () => {
+    // #2685: the org gained another eligible approver after this intent was
+    // created, so the viewer may no longer self-approve. The POST worked — the
+    // answer was no — so the generic failure copy must not appear, and neither
+    // button may stay live offering an action that can only be refused again.
+    decideIntentApproval.mockResolvedValue('not_sole_approver');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/another approver is now required/i);
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/failed to submit the decision/i);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
+    // The register-a-device CTA is for a recoverable state; this one is not.
+    expect(screen.queryByText(/register this device/i)).toBeNull();
+    // Still pending — it now waits on somebody else, so the parent must not
+    // clear it out from under the explanation.
+    expect(onIntentDecided).not.toHaveBeenCalled();
+  });
+
   it('deny → decideIntentApproval(deny) → onIntentDecided', async () => {
     decideIntentApproval.mockResolvedValue('decided');
     const onIntentDecided = vi.fn();
