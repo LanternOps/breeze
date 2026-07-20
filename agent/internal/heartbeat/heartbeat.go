@@ -279,9 +279,12 @@ type Heartbeat struct {
 	inFlightSeq      atomic.Uint64
 
 	// Guard against concurrent cert renewals from successive heartbeats
-	certRenewing      atomic.Bool
-	tokenRotating     atomic.Bool
-	upgradeInProgress atomic.Bool
+	certRenewing  atomic.Bool
+	tokenRotating atomic.Bool
+	// Issue #2621 — a staged credential rotation is sitting on disk unconfirmed.
+	// Drives the per-tick retry so recovery does not depend on a process restart.
+	pendingRotationOnDisk atomic.Bool
+	upgradeInProgress     atomic.Bool
 
 	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
 	// Suspends auto-update until the rotation conflict is resolved (server
@@ -1080,6 +1083,16 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			// Issue #2621 — retry an unfinished credential rotation on every tick
+			// while one is outstanding. This runs BEFORE the auth-dead skip on
+			// purpose: if the server already promoted but the confirmation
+			// response was lost, the agent is heartbeating with a credential that
+			// is about to stop working, and the staged token on disk is the way
+			// out. Waiting for a process restart to reconcile would leave the
+			// device dark until someone restarted the service.
+			if h.pendingRotationOnDisk.Load() {
+				go h.reconcilePendingRotation()
+			}
 			if h.authMon != nil && h.authMon.ShouldSkip() {
 				log.Debug("skipping heartbeat tick, auth-dead",
 					"backoff", h.authMon.BackoffDuration())
@@ -3660,6 +3673,21 @@ func (h *Heartbeat) handleTokenRotation() {
 			"error", err.Error())
 		return
 	}
+	h.pendingRotationOnDisk.Store(true)
+
+	// A pre-#2621 server has ALREADY committed these hashes as current — its
+	// response carries no confirmationRequired and it has no confirm endpoint.
+	// Treating that as a two-phase rotation would be fatal: the confirm would
+	// 404, we would never promote locally, and the agent would sit on a
+	// credential the server has already demoted — permanently stranded once the
+	// grace window closed. So against an old server, promote immediately; the
+	// durable write above already happened, which is still strictly better
+	// ordering than the code this replaces.
+	if !rotateResp.ConfirmationRequired {
+		log.Info("server committed the rotation without a confirmation phase (pre-#2621 server); promoting locally")
+		h.applyRotatedCredentials(rotateResp.AuthToken, rotateResp.WatchdogAuthToken, rotateResp.HelperAuthToken)
+		return
+	}
 
 	// The staged set is on disk and verified by readback. Only now is it safe to
 	// ask the server to promote it, authenticating WITH the new token — that is
@@ -3692,9 +3720,11 @@ func (h *Heartbeat) confirmTokenRotation(newAuthToken string) bool {
 			// The staged set can never be promoted now. Drop it so startup
 			// reconciliation doesn't retry forever; the durable current
 			// credentials are untouched and still valid.
-			log.Warn("pending token rotation expired before it could be confirmed; discarding staged credentials")
+			log.Warn("pending token rotation can no longer be promoted (expired or revoked); discarding staged credentials")
 			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
-				log.Error("failed to clear expired staged credentials", "error", clearErr.Error())
+				log.Error("failed to clear unusable staged credentials", "error", clearErr.Error())
+			} else {
+				h.pendingRotationOnDisk.Store(false)
 			}
 			return false
 		}
@@ -3715,12 +3745,24 @@ func (h *Heartbeat) applyRotatedCredentials(authToken, watchdogAuthToken, helper
 		// The server has promoted, and the tokens remain on disk under their
 		// pending_* keys, which startup reconciliation reads back. The agent is
 		// not stranded, but this file is now in a shape that needs attention.
-		log.Error("rotation confirmed by server but promoting staged credentials on disk failed; staged copy is still on disk and will be recovered on restart",
+		log.Error("rotation confirmed by server but promoting staged credentials on disk failed; staged copy is still on disk and the per-tick retry will recover it",
 			"error", err.Error())
+		// Leave pendingRotationOnDisk set so the retry keeps trying; the server
+		// has already promoted, so the reconcile will take the alreadyCurrent
+		// path and finish the local write.
+	} else {
+		h.pendingRotationOnDisk.Store(false)
 	}
 
 	h.mu.Lock()
 	h.secureToken.Replace(authToken)
+	// Keep the in-memory config in step with disk. SaveTo rebuilds secrets.yaml
+	// from this struct, so leaving these stale would let an unrelated save (the
+	// cert-renewal path calls config.Save) write PRE-rotation watchdog/helper
+	// tokens back over the promoted ones. AuthToken stays cleared — secureToken
+	// is the authority for it and the struct copy is zeroed after startup.
+	h.config.WatchdogAuthToken = watchdogAuthToken
+	h.config.HelperAuthToken = helperAuthToken
 	h.mu.Unlock()
 
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
@@ -3759,6 +3801,7 @@ func (h *Heartbeat) reconcilePendingRotation() {
 	}
 
 	if persisted.PendingAuthToken == "" {
+		h.pendingRotationOnDisk.Store(false)
 		return
 	}
 	if persisted.PendingWatchdogAuthToken == "" || persisted.PendingHelperAuthToken == "" {
@@ -3767,9 +3810,14 @@ func (h *Heartbeat) reconcilePendingRotation() {
 		log.Warn("discarding incomplete staged credential set")
 		if clearErr := config.ClearPendingCredentials(); clearErr != nil {
 			log.Error("failed to clear incomplete staged credentials", "error", clearErr.Error())
+		} else {
+			h.pendingRotationOnDisk.Store(false)
 		}
 		return
 	}
+
+	// Keep the per-tick retry armed until this rotation actually resolves.
+	h.pendingRotationOnDisk.Store(true)
 
 	log.Info("found an unconfirmed credential rotation on disk; resuming confirmation")
 

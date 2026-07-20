@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -152,10 +153,90 @@ func TestTokenRotationDoesNotConfirmWhenPersistenceFails(t *testing.T) {
 			"the server would commit credentials the agent cannot reproduce after a restart (#2621)", confirm)
 	}
 
-	// The agent must still be using the credentials it can actually prove it has.
+	// THE load-bearing assertion. Pre-fix, handleTokenRotation called
+	// secureToken.Replace BEFORE config.Save and treated a save error as a log
+	// line, so this would read "brz_staged_agent". Do not weaken this to
+	// t.Errorf-and-continue or delete it as redundant — the confirm-count checks
+	// above are vacuous against the old code (it had no confirm endpoint at all),
+	// and this is what actually pins the bug.
 	if got := h.secureToken.Reveal(); got != "brz_current_agent" {
-		t.Errorf("in-memory token = %q, want brz_current_agent — the agent swapped to "+
-			"credentials it failed to persist", got)
+		t.Fatalf("in-memory token = %q, want brz_current_agent — the agent swapped to "+
+			"credentials it failed to persist (#2621)", got)
+	}
+}
+
+// A pre-#2621 server commits the rotation in the initial call and has no confirm
+// endpoint. Taking the two-phase path against it would be fatal: the confirm
+// 404s, the agent never promotes locally, and it keeps using a credential the
+// server has already demoted — stranded permanently once the grace lapses.
+func TestTokenRotationPromotesImmediatelyAgainstLegacyServer(t *testing.T) {
+	rs := &rotationServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents/", func(w http.ResponseWriter, r *http.Request) {
+		if pathHasSuffix(r.URL.Path, "/rotate-token/confirm") {
+			rs.mu.Lock()
+			rs.confirmCalls++
+			rs.mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		rs.mu.Lock()
+		rs.rotateCalls++
+		rs.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		// No confirmationRequired: the legacy server already committed.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"authToken":         "brz_staged_agent",
+			"watchdogAuthToken": "brz_staged_watchdog",
+			"helperAuthToken":   "brz_staged_helper",
+			"rotatedAt":         "2026-07-19T00:00:00Z",
+		})
+	})
+	rs.Server = httptest.NewServer(mux)
+	t.Cleanup(rs.Close)
+
+	h, _ := newRotationTestHeartbeat(t, rs.URL)
+	h.handleTokenRotation()
+
+	if _, confirm := rs.counts(); confirm != 0 {
+		t.Errorf("confirm was called %d time(s) against a server that has no confirm phase", confirm)
+	}
+
+	persisted, err := config.ReadPersistedCredentials()
+	if err != nil {
+		t.Fatalf("ReadPersistedCredentials: %v", err)
+	}
+	if persisted.AuthToken != "brz_staged_agent" {
+		t.Errorf("persisted auth token = %q, want brz_staged_agent — against a legacy "+
+			"server the agent must promote locally or it strands itself", persisted.AuthToken)
+	}
+	if persisted.PendingAuthToken != "" {
+		t.Errorf("staged credentials were left behind: %q", persisted.PendingAuthToken)
+	}
+	if got := h.secureToken.Reveal(); got != "brz_staged_agent" {
+		t.Errorf("in-memory token = %q, want brz_staged_agent", got)
+	}
+}
+
+// The Helper runs as the logged-in user, cannot read the root-only secrets.yaml,
+// and reads helper_auth_token from agent.yaml. A promotion that only rewrote
+// secrets.yaml would leave it on the superseded token.
+func TestTokenRotationUpdatesHelperTokenInAgentYAML(t *testing.T) {
+	srv := newRotationServer(t)
+	h, cfgPath := newRotationTestHeartbeat(t, srv.URL)
+
+	h.handleTokenRotation()
+
+	agentYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if !strings.Contains(string(agentYAML), "brz_staged_helper") {
+		t.Errorf("agent.yaml does not carry the rotated helper token — the Breeze Helper "+
+			"reads it from here and would 401 after the grace window:\n%s", agentYAML)
+	}
+	if strings.Contains(string(agentYAML), "brz_current_helper") {
+		t.Errorf("agent.yaml still carries the superseded helper token:\n%s", agentYAML)
 	}
 }
 

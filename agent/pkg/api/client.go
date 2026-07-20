@@ -360,7 +360,7 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to send rotate-token confirm request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -374,6 +374,15 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		if result.Code == "pending_rotation_expired" {
+			return nil, ErrPendingRotationExpired
+		}
+		// A 401 here means the server would not accept the STAGED token at all —
+		// it expired (auth rejects an expired pending hash before this route ever
+		// runs, so the code above is not reachable in that case), or it was
+		// revoked by an admin rotation or re-enrollment. Either way it can never
+		// be promoted, so treat it as expired and stop retrying. This is safe:
+		// the agent's current credentials are untouched by a failed confirm.
+		if resp.StatusCode == http.StatusUnauthorized {
 			return nil, ErrPendingRotationExpired
 		}
 		return nil, fmt.Errorf("rotate-token confirm failed with status %d: %s", resp.StatusCode, string(bodyBytes))

@@ -641,6 +641,14 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             previousWatchdogTokenExpiresAt: null,
             previousHelperTokenHash: null,
             previousHelperTokenExpiresAt: null,
+            // Issue #2621 — re-enrollment is a full credential reset, so it must
+            // also drop any staged rotation. Leaving it would let a staged set
+            // minted before the re-enrollment keep authenticating, and be
+            // promoted over the freshly issued credentials.
+            pendingTokenHash: null,
+            pendingWatchdogTokenHash: null,
+            pendingHelperTokenHash: null,
+            pendingTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,

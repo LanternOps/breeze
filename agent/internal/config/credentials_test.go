@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -111,22 +112,53 @@ func TestStagePendingCredentialsFailsWhenDiskWriteFails(t *testing.T) {
 	}
 }
 
-// A write that lands but reads back wrong must be reported as a failure. The
-// readback is the agent's only evidence that config.Save actually produced a
-// durable, parseable credential file — reporting success on an unverified write
-// is the assumption that #2621 punished.
-func TestStagePendingCredentialsVerifiesReadback(t *testing.T) {
+// The failure mode the issue actually reported: the write itself fails (full or
+// read-only volume, ACL denial on the atomic rename). Injected at the write seam
+// because the config layer re-asserts directory permissions on every write, so a
+// filesystem-level injection is undone by the code under test.
+func TestStagePendingCredentialsFailsWhenWriteReturnsError(t *testing.T) {
+	bindConfig(t)
+
+	atomicWriteFileForTests = func(string, []byte, os.FileMode) error {
+		return errors.New("no space left on device")
+	}
+	t.Cleanup(func() { atomicWriteFileForTests = nil })
+
+	err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper")
+	if err == nil {
+		t.Fatal("StagePendingCredentials swallowed a write error — the rotation would " +
+			"confirm credentials that never reached disk (#2621)")
+	}
+
+	// The credentials the agent is actually using must be untouched.
+	atomicWriteFileForTests = nil
+	got, readErr := ReadPersistedCredentials()
+	if readErr != nil {
+		t.Fatalf("ReadPersistedCredentials: %v", readErr)
+	}
+	if got.AuthToken != "brz_current_agent" {
+		t.Errorf("current auth token = %q, want brz_current_agent", got.AuthToken)
+	}
+	if got.PendingAuthToken != "" {
+		t.Errorf("pending auth token persisted despite the write failure: %q", got.PendingAuthToken)
+	}
+}
+
+// ReadPersistedCredentials must report what is actually on disk, not what a
+// previous call believed it wrote. It is the evidence the whole persist-verify
+// step rests on, so it must not be satisfiable by stale in-memory state.
+func TestReadPersistedCredentialsReflectsDiskNotMemory(t *testing.T) {
 	cfgPath := bindConfig(t)
 
 	if err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper"); err != nil {
 		t.Fatalf("StagePendingCredentials: %v", err)
 	}
 
-	// Corrupt the file behind the staged write, then prove a fresh read surfaces
-	// the divergence rather than trusting the earlier success.
+	// Rewrite the file behind the staged write; a fresh read must surface the
+	// divergence rather than echo the earlier success.
 	secretsPath := secretsFilePathFor(cfgPath)
 	if err := os.WriteFile(secretsPath, []byte("auth_token: brz_current_agent\n"), 0600); err != nil {
-		t.Fatalf("corrupt secrets file: %v", err)
+		t.Fatalf("rewrite secrets file: %v", err)
 	}
 
 	got, err := ReadPersistedCredentials()
@@ -135,6 +167,46 @@ func TestStagePendingCredentialsVerifiesReadback(t *testing.T) {
 	}
 	if got.PendingAuthToken != "" {
 		t.Errorf("readback reported a staged token that is not on disk: %q", got.PendingAuthToken)
+	}
+}
+
+// The readback-mismatch branch itself: if the write lands but the file does not
+// contain what we asked for, staging MUST fail. Reporting success on an
+// unverified write is the assumption #2621 punished.
+func TestStagePendingCredentialsFailsWhenReadbackDisagrees(t *testing.T) {
+	bindConfig(t)
+
+	// Inject a write that lands but silently drops the helper token, so the
+	// readback disagrees with what staging was asked to persist. Delegates to the
+	// real atomicWriteFile — NOT to the seam's previous value, which is nil in
+	// production and would panic.
+	atomicWriteFileForTests = func(path string, data []byte, perm os.FileMode) error {
+		return atomicWriteFile(path, []byte(strings.ReplaceAll(string(data), "brz_new_helper", "")), perm)
+	}
+	t.Cleanup(func() { atomicWriteFileForTests = nil })
+
+	err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper")
+	if err == nil {
+		t.Fatal("StagePendingCredentials succeeded even though the readback did not match what was written")
+	}
+	if !strings.Contains(err.Error(), "readback") {
+		t.Errorf("error = %v, want a readback-verification failure", err)
+	}
+}
+
+// Staging must never clobber the credentials the agent is currently using —
+// they are the fallback the whole design depends on.
+func TestStagePendingCredentialsFailsIfCurrentTokenLost(t *testing.T) {
+	bindConfig(t)
+
+	atomicWriteFileForTests = func(path string, data []byte, perm os.FileMode) error {
+		return atomicWriteFile(path, []byte(strings.ReplaceAll(string(data), "brz_current_agent", "")), perm)
+	}
+	t.Cleanup(func() { atomicWriteFileForTests = nil })
+
+	err := StagePendingCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper")
+	if err == nil {
+		t.Fatal("StagePendingCredentials succeeded despite losing the current auth token")
 	}
 }
 
@@ -294,13 +366,15 @@ func TestSaveToPreservesStagedCredentials(t *testing.T) {
 		t.Fatalf("StagePendingCredentials: %v", err)
 	}
 
-	// An unrelated save, as the cert-renewal path would issue.
+	// Model the REAL caller: the cert-renewal path calls config.Save(h.config)
+	// with a config whose token fields have been cleared for security (AuthToken
+	// is zeroed after startup) and which never carried the rotated watchdog and
+	// helper tokens in the first place. An earlier version of this test set all
+	// three, which hid the bug — SaveTo rebuilds secrets.yaml from scratch, so
+	// empty fields mean "delete" unless the on-disk fallback rescues them.
 	cfg := Default()
 	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
 	cfg.ServerURL = "https://api.example.test"
-	cfg.AuthToken = "brz_current_agent"
-	cfg.WatchdogAuthToken = "brz_current_watchdog"
-	cfg.HelperAuthToken = "brz_current_helper"
 	cfg.MtlsCertPEM = "cert"
 	if err := SaveTo(cfg, cfgPath); err != nil {
 		t.Fatalf("SaveTo: %v", err)
@@ -309,6 +383,13 @@ func TestSaveToPreservesStagedCredentials(t *testing.T) {
 	got, err := ReadPersistedCredentials()
 	if err != nil {
 		t.Fatalf("ReadPersistedCredentials: %v", err)
+	}
+	// Every credential must survive a save that carried none of them in memory.
+	if got.WatchdogAuthToken != "brz_current_watchdog" {
+		t.Errorf("watchdog token = %q, want brz_current_watchdog — an unrelated SaveTo wiped it", got.WatchdogAuthToken)
+	}
+	if got.HelperAuthToken != "brz_current_helper" {
+		t.Errorf("helper token = %q, want brz_current_helper — an unrelated SaveTo wiped it", got.HelperAuthToken)
 	}
 	if got.PendingAuthToken != "brz_new_agent" {
 		t.Errorf("staged auth token = %q, want brz_new_agent — an unrelated SaveTo dropped it", got.PendingAuthToken)
@@ -324,16 +405,21 @@ func TestSaveToPreservesStagedCredentials(t *testing.T) {
 	}
 }
 
-// The pending_* keys must be classified as secrets so the generic strip/migrate
-// machinery keeps them out of agent.yaml.
-func TestPendingTokenKeysAreSecretKeys(t *testing.T) {
-	for _, key := range []string{
-		"pending_auth_token",
-		"pending_watchdog_auth_token",
-		"pending_helper_auth_token",
-	} {
-		if !isSecretYAMLKey(key) {
-			t.Errorf("isSecretYAMLKey(%q) = false, want true", key)
-		}
+// helper_auth_token is deliberately exempted from stripping because the Breeze
+// Helper runs as the logged-in user and reads it from agent.yaml. Its STAGED
+// counterpart must NOT inherit that exemption: a staged credential is not yet
+// the Helper's identity, and putting it in the 0644 agent.yaml would publish an
+// unpromoted token to every local user. This asymmetry is easy to "tidy up" by
+// accident, so pin it.
+func TestPendingHelperTokenIsNotExemptedFromStripping(t *testing.T) {
+	if !secretKeyAllowedInAgentYAML["helper_auth_token"] {
+		t.Fatal("precondition changed: helper_auth_token is no longer agent.yaml-exempt; " +
+			"revisit whether the Helper still reads it from there")
+	}
+	if secretKeyAllowedInAgentYAML[secretKeyPendingHelperAuthToken] {
+		t.Error("pending_helper_auth_token must not be exempted into the world-readable agent.yaml")
+	}
+	if !isSecretYAMLKey(secretKeyPendingHelperAuthToken) {
+		t.Error("isSecretYAMLKey(pending_helper_auth_token) = false, want true")
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -607,41 +608,53 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	// Write secrets to a separate root-only file.
 	secretsPath := secretsFilePathFor(cfgPath)
 	sv := viper.New()
-	// Only overwrite auth_token if non-empty. At runtime the token may be
-	// cleared from the config struct for security; writing "" would wipe
-	// the persisted token and break the agent on next startup.
-	if cfg.AuthToken != "" {
-		sv.Set("auth_token", cfg.AuthToken)
+
+	// Issue #2621 — SaveTo rebuilds the secrets file from scratch, so every
+	// credential it does not re-write is DROPPED. Two ways that bites:
+	//
+	//   - Staged rotation credentials on disk are invisible to an unrelated
+	//     caller (the mTLS renewal path calls config.Save mid-flight), so a cert
+	//     renewal during a rotation would delete the staged set the server may
+	//     already have promoted.
+	//   - The in-memory config clears tokens for security (AuthToken is zeroed
+	//     after startup) and applyRotatedCredentials updates the credential file
+	//     directly rather than the struct, so cfg's watchdog/helper tokens can be
+	//     stale or empty relative to disk.
+	//
+	// So for every credential: prefer a non-empty in-memory value, otherwise
+	// preserve exactly what is on disk. Never write an empty token over a real
+	// one. A read failure is logged rather than swallowed — silently proceeding
+	// would delete credentials this fallback exists to protect.
+	credsOnDisk, readErr := readPersistedCredentialsAt(cfgPath)
+	// A missing secrets file is the normal first-save/enrollment case, not a
+	// problem — there is simply nothing to preserve. Anything else means the file
+	// exists but could not be parsed, and we are about to overwrite it, so say so.
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		log.Warn("could not read existing credentials while saving config; on-disk credential preservation is degraded",
+			"error", readErr.Error())
 	}
-	if cfg.WatchdogAuthToken != "" {
-		sv.Set("watchdog_auth_token", cfg.WatchdogAuthToken)
-	}
-	if cfg.HelperAuthToken != "" {
-		sv.Set("helper_auth_token", cfg.HelperAuthToken)
-	}
-	// Issue #2621 — SaveTo rebuilds the secrets file from scratch, so any staged
-	// rotation credentials on disk would be silently dropped by an unrelated
-	// caller (the mTLS renewal path calls config.Save mid-flight). Losing them
-	// would strand an agent whose staged set is the only one the server still
-	// accepts, which is the very failure this design removes. Carry them
-	// forward: prefer the in-memory values, else preserve what is on disk.
-	pendingOnDisk, _ := readPersistedCredentialsAt(cfgPath)
-	setPendingSecret := func(key, fromCfg string, fromDisk func(*PersistedCredentials) string) {
+	setCredential := func(key, fromCfg string, fromDisk func(*PersistedCredentials) string) {
 		if fromCfg != "" {
 			sv.Set(key, fromCfg)
 			return
 		}
-		if pendingOnDisk != nil {
-			if v := fromDisk(pendingOnDisk); v != "" {
+		if credsOnDisk != nil {
+			if v := fromDisk(credsOnDisk); v != "" {
 				sv.Set(key, v)
 			}
 		}
 	}
-	setPendingSecret(secretKeyPendingAuthToken, cfg.PendingAuthToken,
+	setCredential(secretKeyAuthToken, cfg.AuthToken,
+		func(p *PersistedCredentials) string { return p.AuthToken })
+	setCredential(secretKeyWatchdogAuthToken, cfg.WatchdogAuthToken,
+		func(p *PersistedCredentials) string { return p.WatchdogAuthToken })
+	setCredential(secretKeyHelperAuthToken, cfg.HelperAuthToken,
+		func(p *PersistedCredentials) string { return p.HelperAuthToken })
+	setCredential(secretKeyPendingAuthToken, cfg.PendingAuthToken,
 		func(p *PersistedCredentials) string { return p.PendingAuthToken })
-	setPendingSecret(secretKeyPendingWatchdogAuthToken, cfg.PendingWatchdogAuthToken,
+	setCredential(secretKeyPendingWatchdogAuthToken, cfg.PendingWatchdogAuthToken,
 		func(p *PersistedCredentials) string { return p.PendingWatchdogAuthToken })
-	setPendingSecret(secretKeyPendingHelperAuthToken, cfg.PendingHelperAuthToken,
+	setCredential(secretKeyPendingHelperAuthToken, cfg.PendingHelperAuthToken,
 		func(p *PersistedCredentials) string { return p.PendingHelperAuthToken })
 
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)

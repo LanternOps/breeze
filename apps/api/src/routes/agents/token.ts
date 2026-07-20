@@ -5,6 +5,10 @@ import { Hono } from 'hono';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
+import {
+  PREVIOUS_TOKEN_GRACE_MS,
+  promotePendingAgentCredentials,
+} from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { generateApiKey } from './helpers';
 
@@ -18,9 +22,6 @@ export const tokenRoutes = new Hono();
  * staged credentials authenticate, so no crash point can strand the endpoint.
  */
 const PENDING_ROTATION_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-/** Grace window the superseded credential keeps after a confirmed promotion. */
-const PREVIOUS_TOKEN_GRACE_MS = 5 * 60 * 1000;
 
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
@@ -260,36 +261,23 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
   }
 
   const confirmedAt = new Date();
-  const previousTokenExpiresAt = new Date(confirmedAt.getTime() + PREVIOUS_TOKEN_GRACE_MS);
 
-  // Promote pending -> current and demote current -> previous, in one CAS bound
-  // to the staged hash so a concurrent re-stage cannot be promoted by a stale
-  // confirmation.
-  let promotedRows: { id: string }[];
+  if (!device.agentTokenHash) {
+    return c.json({ error: 'Rotation confirm conflict; re-authenticate and retry' }, 409);
+  }
+
+  let promoted: boolean;
   try {
-    promotedRows = await db
-      .update(devices)
-      .set({
-        previousTokenHash: device.agentTokenHash,
-        previousTokenExpiresAt,
-        agentTokenHash: device.pendingTokenHash,
-        tokenIssuedAt: confirmedAt,
-        previousWatchdogTokenHash: device.watchdogTokenHash,
-        previousWatchdogTokenExpiresAt: previousTokenExpiresAt,
-        watchdogTokenHash: device.pendingWatchdogTokenHash,
-        watchdogTokenIssuedAt: confirmedAt,
-        previousHelperTokenHash: device.helperTokenHash,
-        previousHelperTokenExpiresAt: previousTokenExpiresAt,
-        helperTokenHash: device.pendingHelperTokenHash,
-        helperTokenIssuedAt: confirmedAt,
-        pendingTokenHash: null,
-        pendingWatchdogTokenHash: null,
-        pendingHelperTokenHash: null,
-        pendingTokenExpiresAt: null,
-        updatedAt: confirmedAt,
-      })
-      .where(and(eq(devices.id, device.id), eq(devices.pendingTokenHash, authTokenHash)))
-      .returning({ id: devices.id });
+    promoted = await promotePendingAgentCredentials({
+      deviceId: device.id,
+      pendingTokenHash: authTokenHash,
+      expectedAgentTokenHash: device.agentTokenHash,
+      pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
+      pendingHelperTokenHash: device.pendingHelperTokenHash,
+      watchdogTokenHash: device.watchdogTokenHash,
+      helperTokenHash: device.helperTokenHash,
+      now: confirmedAt,
+    });
   } catch (error) {
     console.error('[agents] token rotation confirm DB update failed:', {
       agentId,
@@ -299,7 +287,7 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
     return c.json({ error: 'Failed to confirm agent token rotation' }, 500);
   }
 
-  if (promotedRows.length !== 1) {
+  if (!promoted) {
     console.warn('[agents] token rotation confirm compare-and-swap matched no rows:', {
       agentId,
       deviceId: device.id,

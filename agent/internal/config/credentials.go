@@ -32,6 +32,21 @@ const (
 	secretKeyPendingHelperAuthToken   = "pending_helper_auth_token"
 )
 
+// atomicWriteFileForTests is the write seam for credential persistence. Tests
+// override it to inject the failure modes the issue actually reported (ENOSPC,
+// EROFS, ACL denial on the rename) and to simulate a write that lands but does
+// not contain what was asked for — neither of which can be provoked through the
+// filesystem here, because the config layer re-asserts directory permissions on
+// every write. Nil in production; see mutateSecretsAndPersist.
+var atomicWriteFileForTests func(string, []byte, os.FileMode) error
+
+func writeSecretsFile(path string, data []byte, perm os.FileMode) error {
+	if atomicWriteFileForTests != nil {
+		return atomicWriteFileForTests(path, data, perm)
+	}
+	return atomicWriteFile(path, data, perm)
+}
+
 // PersistedCredentials is the credential state actually on disk, as read back
 // from secrets.yaml.
 type PersistedCredentials struct {
@@ -82,7 +97,7 @@ func mutateSecretsAndPersist(mutate func(map[string]any)) error {
 	if err != nil {
 		return fmt.Errorf("marshaling secrets file: %w", err)
 	}
-	if err := atomicWriteFile(path, secretsYAML, 0600); err != nil {
+	if err := writeSecretsFile(path, secretsYAML, 0600); err != nil {
 		return err
 	}
 	return enforceSecretFilePermissions(path)
@@ -194,6 +209,16 @@ func PromotePendingCredentials(authToken, watchdogAuthToken, helperAuthToken str
 		persisted.WatchdogAuthToken != watchdogAuthToken ||
 		persisted.HelperAuthToken != helperAuthToken {
 		return fmt.Errorf("promoted credentials failed readback verification")
+	}
+
+	// The Breeze Helper runs as the logged-in user and cannot read the root-only
+	// secrets.yaml, so helper_auth_token is deliberately exempted from stripping
+	// and also lives in agent.yaml (see secretKeyAllowedInAgentYAML). Promoting
+	// only into secrets.yaml would leave the Helper reading the SUPERSEDED token
+	// and 401ing as soon as its 5-minute grace lapsed — the same stranding bug,
+	// one component over.
+	if err := SetAndPersist(secretKeyHelperAuthToken, helperAuthToken); err != nil {
+		return fmt.Errorf("persisting rotated helper token to agent config: %w", err)
 	}
 	return nil
 }
