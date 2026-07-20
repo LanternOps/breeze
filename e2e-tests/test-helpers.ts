@@ -28,7 +28,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export function clearRefreshState() {
   try {
-    const stackFile = process.env.E2E_STACK_FILE ?? path.resolve(__dirname, '.breeze-stack.json');
+    // The descriptor is written to the REPO ROOT, not e2e-tests/ — resolving it
+    // here (as playwright.config.ts already does with '..') is what makes the
+    // wt-stack branch below actually fire. Without the '..' the file is never
+    // found, `project` stays undefined, and every worktree run silently falls
+    // back to the non-existent `breeze-redis` container this doc warns about.
+    const stackFile = process.env.E2E_STACK_FILE ?? path.resolve(__dirname, '..', '.breeze-stack.json');
     const stackRaw = existsSync(stackFile) ? readFileSync(stackFile, 'utf8') : null;
     const project = stackRaw ? (JSON.parse(stackRaw) as { project?: string }).project : undefined;
     const repoRoot = path.resolve(__dirname, '..');
