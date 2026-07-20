@@ -176,6 +176,15 @@ function canAccessRecordSite(
   return typeof siteId === 'string' && canAccessSite(permissions, siteId);
 }
 
+function withVerifiedAssetLink<
+  T extends { linkedDeviceId: string | null; linkSource: string | null },
+>(asset: T, verifiedLinkedDeviceId: string | null | undefined): T {
+  if (verifiedLinkedDeviceId) {
+    return { ...asset, linkedDeviceId: verifiedLinkedDeviceId };
+  }
+  return { ...asset, linkedDeviceId: null, linkSource: null };
+}
+
 async function authorizeRequestedSite(
   orgId: string,
   siteId: string,
@@ -946,15 +955,24 @@ discoveryRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const assets = (await db.select().from(discoveredAssets)
+    const assetRows = await db
+      .select({ asset: discoveredAssets, linkedDeviceId: devices.id })
+      .from(discoveredAssets)
+      .leftJoin(devices, and(
+        eq(discoveredAssets.linkedDeviceId, devices.id),
+        eq(discoveredAssets.orgId, devices.orgId),
+        eq(discoveredAssets.siteId, devices.siteId),
+      ))
       .where(and(
         eq(discoveredAssets.lastJobId, jobId),
         eq(discoveredAssets.orgId, job.orgId),
         eq(discoveredAssets.siteId, job.siteId),
-      )))
-      .filter((asset) => asset.orgId === job.orgId
-        && asset.siteId === job.siteId
-        && canAccessRecordSite(permissions, asset.siteId));
+      ));
+    const assets = assetRows
+      .filter((row) => row.asset.orgId === job.orgId
+        && row.asset.siteId === job.siteId
+        && canAccessRecordSite(permissions, row.asset.siteId))
+      .map((row) => withVerifiedAssetLink(row.asset, row.linkedDeviceId));
 
     return c.json({
       ...job,
@@ -1080,6 +1098,7 @@ discoveryRoutes.get(
             and ${networkMonitors.orgId} = ${discoveredAssets.orgId}
             and ${networkMonitors.isActive} = true
         )`,
+        linkedDeviceId: devices.id,
         linkedDeviceHostname: devices.hostname,
         linkedDeviceDisplayName: devices.displayName,
         profileId: discoveryProfiles.id,
@@ -1087,7 +1106,11 @@ discoveryRoutes.get(
         profileSubnets: discoveryProfiles.subnets
       })
       .from(discoveredAssets)
-      .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
+      .leftJoin(devices, and(
+        eq(discoveredAssets.linkedDeviceId, devices.id),
+        eq(discoveredAssets.orgId, devices.orgId),
+        eq(discoveredAssets.siteId, devices.siteId),
+      ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
       .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
       .where(where)
@@ -1111,9 +1134,9 @@ discoveryRoutes.get(
           openPorts: a.openPorts,
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
-          linkedDeviceId: a.linkedDeviceId,
+          linkedDeviceId: row.linkedDeviceId ?? null,
           linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
-          linkSource: a.linkSource,
+          linkSource: row.linkedDeviceId ? a.linkSource : null,
           typeSource: a.typeSource,
           detectedAssetType: a.detectedAssetType,
           snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
@@ -1174,6 +1197,7 @@ discoveryRoutes.get(
             and ${networkMonitors.orgId} = ${discoveredAssets.orgId}
             and ${networkMonitors.isActive} = true
         )`,
+        linkedDeviceId: devices.id,
         linkedDeviceHostname: devices.hostname,
         linkedDeviceDisplayName: devices.displayName,
         profileId: discoveryProfiles.id,
@@ -1181,7 +1205,11 @@ discoveryRoutes.get(
         profileSubnets: discoveryProfiles.subnets
       })
       .from(discoveredAssets)
-      .leftJoin(devices, eq(discoveredAssets.linkedDeviceId, devices.id))
+      .leftJoin(devices, and(
+        eq(discoveredAssets.linkedDeviceId, devices.id),
+        eq(discoveredAssets.orgId, devices.orgId),
+        eq(discoveredAssets.siteId, devices.siteId),
+      ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
       .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
       .where(and(...conditions))
@@ -1213,9 +1241,9 @@ discoveryRoutes.get(
         osFingerprint: a.osFingerprint,
         snmpData: a.snmpData,
         responseTimeMs: a.responseTimeMs,
-        linkedDeviceId: a.linkedDeviceId,
+        linkedDeviceId: row.linkedDeviceId ?? null,
         linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
-        linkSource: a.linkSource,
+        linkSource: row.linkedDeviceId ? a.linkSource : null,
         typeSource: a.typeSource,
         detectedAssetType: a.detectedAssetType,
         snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
@@ -1366,7 +1394,21 @@ discoveryRoutes.patch(
       details: { changedFields: Object.keys(updates) }
     });
 
-    return c.json(updated);
+    let verifiedLinkedDeviceId: string | null = null;
+    if (updated.linkedDeviceId && updated.siteId) {
+      const [linkedDevice] = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(
+          eq(devices.id, updated.linkedDeviceId),
+          eq(devices.orgId, updated.orgId),
+          eq(devices.siteId, updated.siteId),
+        ))
+        .limit(1);
+      verifiedLinkedDeviceId = linkedDevice?.id ?? null;
+    }
+
+    return c.json(withVerifiedAssetLink(updated, verifiedLinkedDeviceId));
   }
 );
 

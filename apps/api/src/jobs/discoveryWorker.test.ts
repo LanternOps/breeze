@@ -24,7 +24,16 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   discoveryProfiles: {},
   discoveryJobs: { id: 'discoveryJobs.id' },
-  discoveredAssets: { id: 'discoveredAssets.id', ipAddress: 'discoveredAssets.ipAddress', typeSource: 'discoveredAssets.typeSource', detectedAssetType: 'discoveredAssets.detectedAssetType' },
+  discoveredAssets: {
+    id: 'discoveredAssets.id',
+    orgId: 'discoveredAssets.orgId',
+    siteId: 'discoveredAssets.siteId',
+    ipAddress: 'discoveredAssets.ipAddress',
+    linkedDeviceId: 'discoveredAssets.linkedDeviceId',
+    linkSource: 'discoveredAssets.linkSource',
+    typeSource: 'discoveredAssets.typeSource',
+    detectedAssetType: 'discoveredAssets.detectedAssetType'
+  },
   networkTopology: {
     id: 'networkTopology.id',
     orgId: 'networkTopology.orgId',
@@ -39,8 +48,17 @@ vi.mock('../db/schema', () => ({
     $inferInsert: {}
   },
   organizations: {},
-  devices: {},
-  deviceNetwork: {}
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    deviceRoleSource: 'devices.deviceRoleSource'
+  },
+  deviceNetwork: {
+    deviceId: 'deviceNetwork.deviceId',
+    macAddress: 'deviceNetwork.macAddress',
+    ipAddress: 'deviceNetwork.ipAddress'
+  }
 }));
 
 vi.mock('../services/assetApproval', () => ({
@@ -85,18 +103,45 @@ const { cleanupSpeculativeTopologyLinks, processResults } = await import('./disc
 
 // Helper: build a chainable Drizzle-like mock that resolves to resolveValue
 // when awaited directly (thenable) or via .limit() / .returning().
-function makeSelectChain(resolveValue: unknown[]) {
+function makeSelectChain(
+  resolveValue: unknown[],
+  onWhere?: (condition: unknown) => unknown[] | void,
+) {
+  let currentValue = resolveValue;
   const chain: Record<string, unknown> = {};
   chain.from = () => chain;
-  chain.where = () => chain;
-  chain.limit = () => Promise.resolve(resolveValue);
+  chain.where = (condition: unknown) => {
+    const replacement = onWhere?.(condition);
+    if (replacement) currentValue = replacement;
+    return chain;
+  };
+  chain.limit = () => Promise.resolve(currentValue);
+  chain.leftJoin = () => chain;
   chain.innerJoin = () => chain;
   chain.onConflictDoNothing = () => chain;
   chain.returning = () => Promise.resolve(resolveValue);
   // Make thenable so `await db.select().from().where()` (no .limit) works
   chain.then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-    Promise.resolve(resolveValue).then(resolve, reject);
+    Promise.resolve(currentValue).then(resolve, reject);
   return chain;
+}
+
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
 }
 
 describe('processResults — type_source', () => {
@@ -105,6 +150,7 @@ describe('processResults — type_source', () => {
   // FIFO queue of resolved values for each successive db.select() call
   let selectQueue: unknown[][];
   let selectCallIndex: number;
+  let capturedWherePredicates: unknown[];
 
   // Minimal host payload that exercises the asset upsert path
   const makeData = (hosts: DiscoveredHostResult[]) => ({
@@ -123,11 +169,14 @@ describe('processResults — type_source', () => {
     capturedInsertValues = null;
     selectQueue = [];
     selectCallIndex = 0;
+    capturedWherePredicates = [];
 
     vi.mocked(buildApprovalDecision).mockReturnValue({ approvalStatus: 'pending', shouldAlert: false });
 
     vi.mocked(mockDb.select).mockImplementation(() =>
-      makeSelectChain(selectQueue[selectCallIndex++] ?? [])
+      makeSelectChain(selectQueue[selectCallIndex++] ?? [], (condition) => {
+        capturedWherePredicates.push(condition);
+      })
     );
 
     vi.mocked(mockDb.update).mockImplementation(() => {
@@ -253,6 +302,85 @@ describe('processResults — type_source', () => {
     ]));
 
     expect(deviceRoleUpdated).toBe(false);
+  });
+
+  it('does not auto-link a same-MAC/private-IP device from a sibling site', async () => {
+    selectQueue = [
+      ...baseSelectQueue(),
+      [], // [6] no existing asset in this site
+    ];
+
+    const updatePayloads: Record<string, unknown>[] = [];
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (args: Record<string, unknown>) => {
+        updatePayloads.push(args);
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    vi.mocked(mockDb.select).mockImplementation(() => {
+      const callIndex = selectCallIndex++;
+      const initialRows = callIndex === 7
+        ? [{ deviceId: 'sibling-site-device' }]
+        : (selectQueue[callIndex] ?? []);
+      return makeSelectChain(initialRows, (condition) => {
+        capturedWherePredicates.push(condition);
+        if (callIndex !== 7) return;
+        const leaves = collectSqlLeafStrings(condition);
+        return leaves.includes('devices.siteId') && leaves.includes('site-1')
+          ? []
+          : initialRows;
+      });
+    });
+
+    await processResults(makeData([
+      {
+        ip: '192.168.1.53',
+        mac: 'aa:bb:cc:dd:ee:ff',
+        assetType: 'unknown',
+        methods: [],
+      },
+    ]));
+
+    expect(updatePayloads).not.toContainEqual(expect.objectContaining({
+      linkedDeviceId: 'sibling-site-device',
+    }));
+    const allWhereLeaves = capturedWherePredicates.flatMap((condition) => collectSqlLeafStrings(condition));
+    expect(allWhereLeaves).toContain('devices.siteId');
+    expect(allWhereLeaves).toContain('site-1');
+  });
+
+  it('clears a stale cross-site link before applying the current scan result', async () => {
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{ id: 'asset-1', typeSource: 'auto' }],
+      [{ linkedDeviceId: 'sibling-site-device', linkedDeviceSiteId: 'site-2' }],
+      [],
+    ];
+
+    const updatePayloads: Record<string, unknown>[] = [];
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (args: Record<string, unknown>) => {
+        updatePayloads.push(args);
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    await processResults(makeData([
+      { ip: '192.168.1.54', assetType: 'unknown', methods: [] },
+    ]));
+
+    expect(updatePayloads).toContainEqual(expect.objectContaining({
+      linkedDeviceId: null,
+      linkSource: null,
+    }));
+    expect(buildApprovalDecision).toHaveBeenCalled();
   });
 });
 
