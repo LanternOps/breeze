@@ -12,9 +12,17 @@ import type { ExtensionJobDefinition } from '@breeze/extension-sdk';
  * `@breeze/extension-sdk` (packages/extension-sdk/src/manifest.ts) — both are
  * asserted equal by src/index.test.ts.
  *
- * There is no manual regeneration step: src/index.test.ts derives the core
- * mounts from apps/api/src/index.ts at test time and fails if any mount is
- * missing here. Adding a core mount without reserving it breaks the build.
+ * There is no manual regeneration step for the common case: src/index.test.ts
+ * derives the core mounts from apps/api/src/index.ts at test time and fails if
+ * a `api.route('/<ns>', …)` or `app.route('/api/v1/<ns>', …)` mount is missing
+ * here.
+ *
+ * The one case that still needs a human: `api.route('/', subRouter)`, where the
+ * sub-router declares its own top-level segments in another file. The
+ * derivation cannot see those, so they are reserved by hand and the number of
+ * such mounts is pinned by a tripwire test. If that count changes, resolve the
+ * new sub-router's paths and reserve them here.
+ *
  * Entries with no matching mount (e.g. `s`, `oauth`, `settings`, `ext`) are
  * deliberate extra reservations and are allowed.
  */
@@ -22,7 +30,8 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-  'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
+  'backup', 'billing', 'browser-security', 'c2c', 'catalog', 'changes',
+  'cis',
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
@@ -38,9 +47,10 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
   'search', 'security', 'sensitive-data', 'service-principals', 'settings',
   'snmp', 'software',
-  'software-inventory', 'software-policies', 'sso', 'system',
-  'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
-  'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
+  'software-inventory', 'software-policies', 'sso', 'support',
+  'system', 'system-tools', 'tags', 'third-party-catalog',
+  'ticket-categories', 'ticket-config', 'ticket-forms',
+  'ticket-response-templates', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
   'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
 ]);

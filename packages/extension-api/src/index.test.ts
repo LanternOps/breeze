@@ -171,9 +171,15 @@ describe('parseExtensionManifest', () => {
 });
 
 describe('RESERVED_ROUTE_NAMESPACES', () => {
-  // Ground truth is DERIVED from apps/api/src/index.ts at test time, not
-  // hand-maintained (#2635). A core mount added without reserving it fails
-  // this suite automatically — there is no list to keep in sync.
+  // Ground truth is DERIVED from apps/api/src/index.ts at test time rather
+  // than hand-maintained (#2635), so a core mount added without reserving it
+  // fails this suite automatically.
+  //
+  // KNOWN BLIND SPOT: `api.route('/', subRouter)` mounts a sub-router that
+  // declares its OWN top-level segments in another file, which this
+  // single-file derivation cannot see. Those namespaces are reserved by hand
+  // and pinned by the ROOT_MOUNT_COUNT tripwire below — if that count changes,
+  // resolve the new sub-router's paths manually and reserve them.
   const API_INDEX = fileURLToPath(
     new URL('../../../apps/api/src/index.ts', import.meta.url),
   );
@@ -186,36 +192,59 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     tenancy: { orgCascadeDeleteTables: ['sample_items'] },
   };
 
-  /** Strip comments so a commented-out mount is not read as a live one. */
-  function stripComments(source: string): string {
-    return source
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-  }
+  const source = readFileSync(API_INDEX, 'utf8');
+
+  // Matches are anchored to statement position (`^\s*`), which excludes
+  // commented-out mounts by construction — no comment stripping needed, and
+  // no risk of a stray `/*` in a route pattern eating real code.
+  // Mounts on the versioned router: api.route('/devices', …) → /api/v1/devices
+  const INNER_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/([a-z0-9-]+)/gm;
+  // Mounts placed directly on the outer app under the same prefix:
+  // app.route('/api/v1/oauth', …) → oauth
+  const OUTER_MOUNT_RE = /^\s*app\.route\(\s*['"`]\/api\/v1\/([a-z0-9-]+)/gm;
+  // api.route('/', subRouter) — see the blind-spot note above.
+  const ROOT_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/['"`]\s*,/gm;
 
   function deriveCoreNamespaces(): string[] {
-    const source = stripComments(readFileSync(API_INDEX, 'utf8'));
     const namespaces = new Set<string>();
-    // Mounts on the versioned router: api.route('/devices', …) → /api/v1/devices
-    for (const m of source.matchAll(/\bapi\.route\(\s*'\/([a-z0-9-]+)/g)) {
-      namespaces.add(m[1]);
-    }
-    // Mounts placed directly on the outer app under the same prefix:
-    // app.route('/api/v1/oauth', …) → oauth
-    for (const m of source.matchAll(/\bapp\.route\(\s*'\/api\/v1\/([a-z0-9-]+)/g)) {
-      namespaces.add(m[1]);
-    }
+    for (const m of source.matchAll(INNER_MOUNT_RE)) namespaces.add(m[1]);
+    for (const m of source.matchAll(OUTER_MOUNT_RE)) namespaces.add(m[1]);
     return [...namespaces].sort();
   }
 
   const coreNamespaces = deriveCoreNamespaces();
 
   it('derives the core mount list from apps/api/src/index.ts', () => {
-    // Guards against the derivation silently matching nothing (moved file,
-    // renamed router, changed mount style) and passing vacuously.
-    expect(coreNamespaces.length).toBeGreaterThan(100);
+    // Guards against the derivation silently matching nothing or only part of
+    // the file (moved file, renamed router, changed mount style) and passing
+    // vacuously. Keep the floor just under the real count.
+    expect(coreNamespaces.length).toBeGreaterThan(110);
     expect(coreNamespaces).toContain('devices');
     expect(coreNamespaces).toContain('service-principals');
+  });
+
+  it('pins the number of root-mounted sub-routers the derivation cannot see', () => {
+    // Tripwire for the blind spot documented above. These eight resolve to:
+    //   externalServices        → billing, support
+    //   invoices/assembly       → orgs, tickets
+    //   invoices/settings       → orgs, partner
+    //   tickets/ticketResponseTemplates → ticket-response-templates
+    //   tickets/forms           → ticket-forms
+    //   lifecycle (x2)          → admin, me
+    //   c2c/m365Auth callback   → c2c
+    // All are reserved. If this count changes, resolve the new sub-router's
+    // top-level segments by hand and add them to RESERVED_ROUTE_NAMESPACES.
+    const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].length;
+    expect(rootMounts).toBe(8);
+  });
+
+  it.each([
+    'billing',
+    'support',
+    'ticket-forms',
+    'ticket-response-templates',
+  ])('reserves root-mounted sub-router namespace %s', (namespace) => {
+    expect(RESERVED_ROUTE_NAMESPACES.has(namespace)).toBe(true);
   });
 
   it('reserves every core /api/v1 route namespace', () => {

@@ -21,12 +21,17 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
  * asserted equal by packages/extension-api/src/index.test.ts, which also
  * derives the core mounts from apps/api/src/index.ts at test time so a new
  * core mount that isn't reserved here fails the build automatically.
+ *
+ * Exception: `api.route('/', subRouter)` mounts declare their segments in
+ * another file and are reserved by hand; a tripwire test pins how many exist.
+ * See the fuller note in packages/extension-api/src/legacy.ts.
  */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-  'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
+  'backup', 'billing', 'browser-security', 'c2c', 'catalog', 'changes',
+  'cis',
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
@@ -42,9 +47,10 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
   'search', 'security', 'sensitive-data', 'service-principals', 'settings',
   'snmp', 'software',
-  'software-inventory', 'software-policies', 'sso', 'system',
-  'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
-  'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
+  'software-inventory', 'software-policies', 'sso', 'support',
+  'system', 'system-tools', 'tags', 'third-party-catalog',
+  'ticket-categories', 'ticket-config', 'ticket-forms',
+  'ticket-response-templates', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
   'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
 ]);
