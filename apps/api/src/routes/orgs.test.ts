@@ -152,7 +152,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { inArray } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { sites } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -175,6 +175,7 @@ describe('org routes', () => {
     partnerId: string | null;
     orgId: string | null;
     scope: 'system' | 'partner' | 'organization';
+    partnerOrgAccess: 'all' | 'selected' | 'none' | null;
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
     // Per-user site confinement. When provided (even as []), it is exposed via
@@ -196,6 +197,9 @@ describe('org routes', () => {
         partnerId: 'partnerId' in overrides ? overrides.partnerId : 'partner-123',
         orgId: 'orgId' in overrides ? overrides.orgId : 'org-123',
         scope,
+        partnerOrgAccess: 'partnerOrgAccess' in overrides
+          ? overrides.partnerOrgAccess
+          : scope === 'partner' ? 'all' : null,
         accessibleOrgIds,
         orgCondition: () => undefined,
         canAccessOrg: overrides.canAccessOrg ?? ((orgId: string) => {
@@ -3377,6 +3381,27 @@ describe('org routes', () => {
         })
       } as any);
     }
+
+    it.each(['selected', 'none'] as const)(
+      'rejects partnerOrgAccess=%s before entering system context',
+      async (partnerOrgAccess) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerOrgAccess,
+          accessibleOrgIds: partnerOrgAccess === 'selected' ? [id1] : [],
+        });
+
+        const res = await app.request('/orgs/organizations/order', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderedIds: [id1] }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      },
+    );
 
     it('persists a sanitized order and returns 200', async () => {
       setAuthContext({ scope: 'partner', accessibleOrgIds: [id1, id2, id3] });
