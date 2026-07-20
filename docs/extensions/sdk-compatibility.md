@@ -27,9 +27,10 @@ happen as incidental test cleanup.
 
 ## Legacy source-directory (build-time) loading
 
-Source-directory extension loading is deprecated as of v0.98.0 and gated
-behind `BREEZE_LEGACY_SOURCE_EXTENSIONS=true` for a one-release compatibility
-window; the earliest release allowed to remove it is v0.99.0, behind the dated
-gate recorded in `build-time-transition.md`. That removal retires a delivery
+The v1 runtime host first shipped in v0.98.0; source-directory extension
+loading is deprecated and gated behind `BREEZE_LEGACY_SOURCE_EXTENSIONS=true`
+starting with the first stable release after v0.98.0 that contains the gate,
+for a one-release-series compatibility window recorded (with its removal
+conditions) in `build-time-transition.md`. That removal retires a delivery
 path only — it does not remove the public v1 SDK, the v1 manifest schema, or
 this document's CI gate, which are governed by the SDK v2 window above.

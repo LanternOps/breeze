@@ -33,14 +33,20 @@ that contains public SDK/host code only.
 ## Compatibility window and removal gate
 
 - **First stable release containing the server SDK v1 runtime host:**
-  **v0.98.0** (host descriptor: `breezeVersion 0.1.0`, `serverSdk 1.0.0`,
-  `breeze.extensions/v1`). This release deprecates source-directory loading and
-  introduces the `BREEZE_LEGACY_SOURCE_EXTENSIONS` gate.
+  **v0.98.0**, tagged 2026-07-19 (host descriptor: `breezeVersion 0.1.0`,
+  `serverSdk 1.0.0`, `breeze.extensions/v1`). Note v0.98.0 was cut hours
+  before this deprecation merged, so it carries the v1 host but NOT the
+  `BREEZE_LEGACY_SOURCE_EXTENSIONS` gate.
+- **The deprecation itself** (the flag gate, structured warnings, same-name
+  simultaneity check, and extension-free stock images) ships in the first
+  stable release cut after 2026-07-19 that contains it — call that release
+  **D** (v0.99.0, unless a v0.98.x patch release picks it up).
 - **Earliest stable release allowed to remove the legacy adapter and
-  source-directory discovery path: v0.99.0** — i.e. the legacy path ships for
-  at least the full v0.98.x series.
+  source-directory discovery path: the first stable minor release after D** —
+  i.e. the legacy path remains loadable, behind the flag, for D's entire
+  release series.
 
-Removal (in v0.99.0 or later) additionally requires ALL of:
+Removal additionally requires ALL of:
 
 1. The SDK v1 compatibility fixtures (`packages/extension-sdk/fixtures/v1/*`
    and the blocking API CI gate described in `sdk-compatibility.md`) are green
@@ -51,7 +57,7 @@ Removal (in v0.99.0 or later) additionally requires ALL of:
 3. A release-note entry announcing the removal.
 
 What removal covers: `loadSourceExtensions`, `discoverExtensions`'
-source-directory scanning, the legacy `breeze-extension.json` →  v1 manifest
+source-directory scanning, the legacy `breeze-extension.json` → v1 manifest
 adapter in the loader, and the `BREEZE_LEGACY_SOURCE_EXTENSIONS` flag itself.
 
 **What removal does NOT cover:** the public v1 SDK
