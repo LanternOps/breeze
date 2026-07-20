@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
@@ -55,13 +56,20 @@ vi.mock('../../middleware/clientAiAuth', async (importOriginal) => {
   };
 });
 
-import { createClientAiExtRoutes, CLIENT_AI_EXT_MOUNT_PREFIX } from './ext';
+import {
+  createClientAiExtRoutes,
+  createClientSurfaceWrapper,
+  isProxyable,
+  CLIENT_AI_EXT_MOUNT_PREFIX,
+} from './ext';
 import { requirePartner, requireScope } from '../../middleware/auth';
 
 let capturedAuth: AuthContext | undefined;
 let capturedAuthorization: string | null | undefined;
 let capturedCookie: string | null | undefined;
 let capturedQuery: string | undefined;
+let capturedApiKey: string | null | undefined;
+let capturedProxyAuthorization: string | null | undefined;
 
 /**
  * A neutral fixture extension. It deliberately registers routes both inside
@@ -75,7 +83,16 @@ function buildFixtureExtensionApp(): Hono {
     capturedAuthorization = c.req.header('authorization') ?? null;
     capturedCookie = c.req.header('cookie') ?? null;
     capturedQuery = new URL(c.req.url).search;
+    capturedApiKey = c.req.header('x-api-key') ?? null;
+    capturedProxyAuthorization = c.req.header('proxy-authorization') ?? null;
     return c.json({ ok: true, seen: c.req.method });
+  });
+
+  // Extension code trying to write a cookie on the API origin.
+  app.get('/client/sets-cookie', (c) => {
+    c.header('set-cookie', 'evil=1; Path=/');
+    c.header('x-extension-header', 'kept');
+    return c.json({ ok: true });
   });
 
   // Gated with the REAL core scope gates — an organization-scoped context must
@@ -92,7 +109,7 @@ function buildFixtureExtensionApp(): Hono {
 }
 
 function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
-  return {
+  const manifest: ExtensionManifestV1 = {
     apiVersion: 'breeze.extensions/v1',
     name: 'fixture-ext',
     version: '1.0.0',
@@ -109,7 +126,8 @@ function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionMa
       deviceOrgDenormalizedTables: [],
     },
     ...overrides,
-  } as ExtensionManifestV1;
+  };
+  return manifest;
 }
 
 function makeSnapshot(
@@ -149,7 +167,7 @@ function buildApp(
 
 const optedIn = makeManifest({
   clientSurfaces: [{ pathPrefix: '/client' }],
-} as Partial<ExtensionManifestV1>);
+});
 
 function url(path: string): string {
   return `http://local.test${CLIENT_AI_EXT_MOUNT_PREFIX}${path}`;
@@ -169,6 +187,8 @@ beforeEach(() => {
   capturedAuthorization = undefined;
   capturedCookie = undefined;
   capturedQuery = undefined;
+  capturedApiKey = undefined;
+  capturedProxyAuthorization = undefined;
   getOrgPolicyMock.mockResolvedValue({ orgId: ORG_ID, enabled: true, userAccess: 'all', selectedUserIds: [] });
 });
 
@@ -222,7 +242,7 @@ describe('client-ai extension client-surface proxy', () => {
 
     it('404s for an empty clientSurfaces declaration', async () => {
       const app = buildApp({
-        'fixture-ext': makeSnapshot(makeManifest({ clientSurfaces: [] } as Partial<ExtensionManifestV1>)),
+        'fixture-ext': makeSnapshot(makeManifest({ clientSurfaces: [] })),
       });
       const res = await app.request(url('/fixture-ext/client/echo'), authed());
       expect(res.status).toBe(404);
@@ -241,11 +261,124 @@ describe('client-ai extension client-surface proxy', () => {
       expect(await res.text()).not.toContain('leaked');
     });
 
-    it('404s on a crafted traversal that would escape the declared prefix', async () => {
+    // NOTE: the URL parser normalizes `/client/../agent/ping` to `/agent/ping`
+    // before any of this code runs, so what this asserts is the reserved-prefix
+    // backstop, NOT the `..`-segment check. The `.`/`..` branch of `isProxyable`
+    // is covered directly in the `isProxyable (unit)` block below.
+    it('404s on a dot-segment URL that normalizes onto a reserved prefix', async () => {
       const app = buildApp({ 'fixture-ext': makeSnapshot(optedIn) });
       const res = await app.request(url('/fixture-ext/client/../agent/ping'), authed());
       expect(res.status).toBe(404);
       expect(await res.text()).not.toContain('leaked');
+    });
+
+    it.each([
+      ['/AGENT/ping'],
+      ['/Helper/ping'],
+    ])('404s for %s — the reserved-prefix backstop is case-insensitive', async (path) => {
+      const app = buildApp({
+        // A prefix that would otherwise open the reserved namespace, as an
+        // unvalidated manifest could carry.
+        'fixture-ext': makeSnapshot(makeManifest({ clientSurfaces: [{ pathPrefix: '/AGENT' }, { pathPrefix: '/Helper' }] })),
+      });
+      const res = await app.request(url(`/fixture-ext${path}`), authed());
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toContain('leaked');
+    });
+  });
+
+  // I4: the `.`/`..` branch is unreachable through a parsed URL, so cover it
+  // where it actually lives rather than pretending an HTTP request exercises it.
+  describe('isProxyable (unit)', () => {
+    const prefixes = ['/client'];
+
+    it('accepts the declared prefix and its sub-tree', () => {
+      expect(isProxyable('/client', prefixes)).toBe(true);
+      expect(isProxyable('/client/echo', prefixes)).toBe(true);
+    });
+
+    it('rejects a prefix-adjacent path', () => {
+      expect(isProxyable('/clientele/echo', prefixes)).toBe(false);
+    });
+
+    it('rejects a relative path', () => {
+      expect(isProxyable('client/echo', prefixes)).toBe(false);
+    });
+
+    it.each([
+      ['/client/../agent/ping'],
+      ['/client/./echo'],
+      ['/client/..'],
+      ['/../client/echo'],
+    ])('rejects %s — dot segments are refused outright', (path) => {
+      expect(isProxyable(path, prefixes)).toBe(false);
+    });
+
+    it.each([
+      ['/agent/ping'],
+      ['/AGENT/ping'],
+      ['/Helper/ping'],
+      ['/helper'],
+    ])('rejects reserved namespace %s regardless of case', (path) => {
+      expect(isProxyable(path, ['/agent', '/helper', '/AGENT', '/Helper'])).toBe(false);
+    });
+  });
+
+  // I5: the wrapper's defence-in-depth is unreachable via dispatch (the outer
+  // check always wins), so exercise it directly instead of shipping it untested.
+  describe('createClientSurfaceWrapper (unit)', () => {
+    const mountPrefix = `${CLIENT_AI_EXT_MOUNT_PREFIX}/fixture-ext`;
+
+    it('404s a path outside the declared prefixes even when dispatch would not', async () => {
+      const wrapper = createClientSurfaceWrapper(makeSnapshot(optedIn), mountPrefix, ['/client']);
+      const res = await wrapper.fetch(new Request(`http://local.test${mountPrefix}/agent/ping`));
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toContain('leaked');
+    });
+
+    it('404s when no synthesized auth context is on the seam', async () => {
+      const wrapper = createClientSurfaceWrapper(makeSnapshot(optedIn), mountPrefix, ['/client']);
+      const res = await wrapper.fetch(new Request(`http://local.test${mountPrefix}/client/echo`));
+      expect(res.status).toBe(404);
+      expect(capturedAuth).toBeUndefined();
+    });
+  });
+
+  // M1: the mount arithmetic is spread across three files; a drift silently
+  // 404s the whole surface. Derive it from the real sources.
+  describe('mount prefix', () => {
+    it('matches the mount arithmetic of the real app', () => {
+      const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+      const appSrc = read('../../index.ts');
+      const clientAiSrc = read('./index.ts');
+
+      const apiMount = appSrc.match(/app\.route\('([^']+)',\s*api\)/)?.[1];
+      const clientAiMount = appSrc.match(/api\.route\('([^']+)',\s*clientAiRoutes\)/)?.[1];
+      const extMount = clientAiSrc.match(/clientAiRoutes\.route\('([^']+)',\s*clientAiExtRoutes\)/)?.[1];
+
+      expect(apiMount).toBeDefined();
+      expect(clientAiMount).toBeDefined();
+      expect(extMount).toBeDefined();
+      expect(`${apiMount}${clientAiMount}${extMount}`).toBe(CLIENT_AI_EXT_MOUNT_PREFIX);
+    });
+  });
+
+  // I2: 403 and 503 are each emitted for several distinct reasons across this
+  // proxy and the client-ai middleware chain, so the proxy's own responses
+  // carry a stable machine-readable `code` callers can branch on.
+  describe('status codes are distinguishable', () => {
+    it('tags its own 404 with extension_surface_not_found', async () => {
+      const app = buildApp({});
+      const res = await app.request(url('/no-such-ext/client/echo'), authed());
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ code: 'extension_surface_not_found' });
+    });
+
+    it('tags its own 503 with extension_disabled', async () => {
+      const app = buildApp({ 'fixture-ext': makeSnapshot(optedIn, false) });
+      const res = await app.request(url('/fixture-ext/client/echo'), authed());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'extension_disabled' });
     });
   });
 
@@ -304,6 +437,24 @@ describe('client-ai extension client-surface proxy', () => {
       expect(res.status).toBe(200);
       expect(capturedAuthorization).toBeNull();
       expect(capturedCookie).toBeNull();
+    });
+
+    it('strips every other caller credential header before forwarding', async () => {
+      const app = buildApp({ 'fixture-ext': makeSnapshot(optedIn) });
+      const res = await app.request(url('/fixture-ext/client/echo'), authed({
+        headers: { 'x-api-key': 'core-api-key', 'proxy-authorization': 'Basic abc' },
+      }));
+      expect(res.status).toBe(200);
+      expect(capturedApiKey).toBeNull();
+      expect(capturedProxyAuthorization).toBeNull();
+    });
+
+    it('strips Set-Cookie off the downstream response but keeps other headers', async () => {
+      const app = buildApp({ 'fixture-ext': makeSnapshot(optedIn) });
+      const res = await app.request(url('/fixture-ext/client/sets-cookie'), authed());
+      expect(res.status).toBe(200);
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(res.headers.get('x-extension-header')).toBe('kept');
     });
 
     it('strips a query-string session token before forwarding', async () => {

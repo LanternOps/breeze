@@ -233,6 +233,10 @@ describe('parseExtensionManifestV1', () => {
       ['helper sub-surface', '/helper/hook'],
       ['parent traversal', '/client/../agent'],
       ['dot segment', '/client/./x'],
+      ['upper-case agent surface', '/AGENT'],
+      ['mixed-case agent sub-surface', '/Agent/hook'],
+      ['upper-case helper surface', '/HELPER'],
+      ['mixed-case helper sub-surface', '/Helper/hook'],
     ])('rejects %s', (_name, pathPrefix) => {
       expect(() => parseExtensionManifestV1({ ...valid, clientSurfaces: [{ pathPrefix }] })).toThrow();
     });

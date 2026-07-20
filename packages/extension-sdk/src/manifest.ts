@@ -141,6 +141,12 @@ const aiToolSchema = z.object({
 
 const capabilitySchema = z.enum(SUPPORTED_EXTENSION_CAPABILITIES);
 
+/** True when `path` is the reserved namespace `reserved` or below it. */
+function isReservedSurface(path: string, reserved: string): boolean {
+  const lower = path.toLowerCase();
+  return lower === reserved || lower.startsWith(`${reserved}/`);
+}
+
 /**
  * An extension's opt-in for the end-user client proxy.
  *
@@ -165,10 +171,12 @@ const clientSurfaceSchema = z.object({
     .refine((path) => !path.split('/').some((segment) => segment === '.' || segment === '..'), {
       message: 'clientSurfaces pathPrefix may not contain "." or ".." path segments',
     })
-    .refine((path) => path !== '/agent' && !path.startsWith('/agent/'), {
+    // Case-insensitive: a reserved namespace stays reserved however it is
+    // spelled, so no manifest can smuggle one past this gate with casing.
+    .refine((path) => !isReservedSurface(path, '/agent'), {
       message: 'clientSurfaces may not expose /agent/ paths',
     })
-    .refine((path) => path !== '/helper' && !path.startsWith('/helper/'), {
+    .refine((path) => !isReservedSurface(path, '/helper'), {
       message: 'clientSurfaces may not expose /helper/ paths',
     }),
 }).strict();
@@ -214,7 +222,7 @@ const manifestSchemaV1 = z.object({
   agentRoutes: z.boolean().optional(),
   clientSurfaces: z.array(clientSurfaceSchema).optional(),
   // TODO(runtime-platform): carry legacy helperRoutes forward as capability
-  // 'server.helper-routes.v1' (see internal/plans/2026-07-18-workspace-finder-phase3-plan.md).
+  // 'server.helper-routes.v1' (tracked in the internal runtime-platform plan).
   jobs: z.array(jobSchema),
   aiTools: z.array(aiToolSchema),
   tenancy: tenancySchema.default({
