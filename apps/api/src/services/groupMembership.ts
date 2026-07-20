@@ -86,6 +86,38 @@ export async function evaluateDeviceMembershipForGroup(
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
+  const [device] = await db
+    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, group.orgId)))
+    .limit(1);
+  if (!device) {
+    return { evaluatedGroups: 0, added: 0, removed: 0 };
+  }
+
+  if (group.siteId !== null && device.siteId !== group.siteId) {
+    const [membership] = await db
+      .select({
+        deviceId: deviceGroupMemberships.deviceId,
+        isPinned: deviceGroupMemberships.isPinned,
+      })
+      .from(deviceGroupMemberships)
+      .where(and(
+        eq(deviceGroupMemberships.groupId, groupId),
+        eq(deviceGroupMemberships.deviceId, deviceId),
+      ))
+      .limit(1);
+    if (membership) {
+      await db.delete(deviceGroupMemberships).where(and(
+        eq(deviceGroupMemberships.groupId, groupId),
+        eq(deviceGroupMemberships.deviceId, deviceId),
+      ));
+      await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
+      return { evaluatedGroups: 1, added: 0, removed: 1 };
+    }
+    return { evaluatedGroups: 1, added: 0, removed: 0 };
+  }
+
   const matchesFilter = await deviceMatchesFilter(deviceId, filter);
   const [membership] = await db
     .select({
@@ -148,7 +180,10 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
-  const filterResults = await evaluateFilter(filter, { orgId: group.orgId });
+  const filterResults = await evaluateFilter(filter, {
+    orgId: group.orgId,
+    allowedSiteIds: group.siteId ? [group.siteId] : null,
+  });
   const matchingIds = new Set<string>(filterResults.deviceIds);
 
   const currentMemberships = await db
@@ -255,7 +290,7 @@ export async function updateDeviceMembership(
       ? group.filterFieldsUsed
       : await ensureFilterFieldsUsed(group.id, group.filterConditions, group.filterFieldsUsed);
 
-    if (!hasFieldOverlap(filterFields, changedFields)) {
+    if (!changedFields.includes('siteId') && !hasFieldOverlap(filterFields, changedFields)) {
       continue;
     }
 

@@ -10,6 +10,7 @@ const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const DEVICE_ID_2 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const SITE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const SITE_ID_2 = '12121212-1212-4121-8121-121212121212';
 
 vi.mock('../services', () => ({}));
 
@@ -154,6 +155,21 @@ describe('groups routes', () => {
     app.route('/groups', groupRoutes);
   });
 
+  function restrictToSite(siteId = SITE_ID) {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', { allowedSiteIds: [siteId] });
+      return next();
+    });
+  }
+
   // ----------------------------------------------------------------
   // GET /:id - Get single group
   // ----------------------------------------------------------------
@@ -234,6 +250,38 @@ describe('groups routes', () => {
   // POST / - Create group
   // ----------------------------------------------------------------
   describe('POST /groups', () => {
+    it('rejects an org-wide group for a site-restricted caller before insert', async () => {
+      restrictToSite();
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Org-wide Group' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a sibling-site group for a site-restricted caller before insert', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: SITE_ID_2 }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Sibling Group', siteId: SITE_ID_2 })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
     it('should create a static group for org-scoped user', async () => {
       const created = makeGroup();
       vi.mocked(db.insert).mockReturnValueOnce({

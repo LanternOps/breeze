@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql, asc, inArray } from 'drizzle-orm';
+import { and, eq, sql, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { getPagination, ensureOrgAccess } from './helpers';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -12,6 +12,11 @@ import { writeRouteAudit } from '../../services/auditEvents';
 export const groupsRoutes = new Hono();
 
 groupsRoutes.use('*', authMiddleware);
+
+function groupSiteAllowed(group: { siteId: string | null }, perms: UserPermissions | undefined): boolean {
+  if (!perms?.allowedSiteIds) return true;
+  return typeof group.siteId === 'string' && canAccessSite(perms, group.siteId);
+}
 
 // GET /devices/groups - List device groups
 groupsRoutes.get(
@@ -22,6 +27,7 @@ groupsRoutes.get(
     const auth = c.get('auth');
     const { orgId, page = '1', limit = '50' } = c.req.query();
     const pagination = getPagination({ page, limit });
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
     if (!orgId) {
       return c.json({ error: 'orgId query parameter required' }, 400);
@@ -32,33 +38,31 @@ groupsRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
 
+    if (perms?.allowedSiteIds && perms.allowedSiteIds.length === 0) {
+      return c.json({ data: [], pagination: { page: pagination.page, limit: pagination.limit, total: 0 } });
+    }
+    const conditions: SQL[] = [eq(deviceGroups.orgId, orgId)];
+    if (perms?.allowedSiteIds) conditions.push(inArray(deviceGroups.siteId, perms.allowedSiteIds));
+    const whereCondition = and(...conditions);
+
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(deviceGroups)
-      .where(eq(deviceGroups.orgId, orgId));
+      .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
     const groups = await db
       .select()
       .from(deviceGroups)
-      .where(eq(deviceGroups.orgId, orgId))
+      .where(whereCondition)
       .orderBy(asc(deviceGroups.name))
       .limit(pagination.limit)
       .offset(pagination.offset);
 
-    // Site-scope filter: when the caller has an allowedSiteIds restriction,
-    // hide groups whose siteId is outside the allowlist. Groups with no
-    // siteId are org-wide and remain visible (existing site-restricted users
-    // can already enumerate the org). NOTE: this filters in-memory rather
-    // than at the DB layer to avoid an extra `inArray` query when no
-    // restriction is set; the page size cap (50) keeps the work bounded.
-    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
-    const filteredGroups = userPerms?.allowedSiteIds
-      ? groups.filter(g => !g.siteId || userPerms.allowedSiteIds!.includes(g.siteId))
-      : groups;
-
+    // Site-restricted callers are narrowed in SQL so denied and org-wide groups
+    // do not affect either the page contents or total count.
     return c.json({
-      data: filteredGroups,
+      data: groups,
       pagination: {
         page: pagination.page,
         limit: pagination.limit,
@@ -78,10 +82,15 @@ groupsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const data = c.req.valid('json');
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
     const hasAccess = await ensureOrgAccess(data.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    if (perms?.allowedSiteIds && (!data.siteId || !canAccessSite(perms, data.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     // Verify site belongs to org if provided
@@ -117,6 +126,9 @@ groupsRoutes.post(
 
       if (!parent) {
         return c.json({ error: 'Parent group not found or belongs to different organization' }, 400);
+      }
+      if (!groupSiteAllowed(parent, perms)) {
+        return c.json({ error: 'Access to parent group site denied' }, 403);
       }
     }
 
@@ -155,6 +167,7 @@ groupsRoutes.patch(
     const auth = c.get('auth');
     const groupId = c.req.param('id')!;
     const data = c.req.valid('json');
+    const perms = c.get('permissions') as UserPermissions | undefined;
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -170,9 +183,18 @@ groupsRoutes.patch(
       return c.json({ error: 'Group not found' }, 404);
     }
 
+    if (!groupSiteAllowed(group, perms)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     const hasAccess = await ensureOrgAccess(group.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (data.siteId !== undefined && perms?.allowedSiteIds
+      && (data.siteId === null || !canAccessSite(perms, data.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (data.siteId) {
@@ -210,6 +232,9 @@ groupsRoutes.patch(
 
       if (!parent) {
         return c.json({ error: 'Parent group not found or belongs to different organization' }, 400);
+      }
+      if (!groupSiteAllowed(parent, perms)) {
+        return c.json({ error: 'Access to parent group site denied' }, 403);
       }
     }
 
@@ -250,6 +275,10 @@ groupsRoutes.delete(
 
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
+    }
+
+    if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     const hasAccess = await ensureOrgAccess(group.orgId, auth);
@@ -304,6 +333,10 @@ groupsRoutes.post(
       return c.json({ error: 'Group not found' }, 404);
     }
 
+    if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     const hasAccess = await ensureOrgAccess(group.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
@@ -322,21 +355,17 @@ groupsRoutes.post(
         )
       );
 
-    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
-    const siteAllowed = userPerms?.allowedSiteIds
-      ? validDevices.filter(d => typeof d.siteId === 'string' && userPerms.allowedSiteIds!.includes(d.siteId))
-      : validDevices;
-    const validDeviceIds = siteAllowed.map(d => d.id);
-
-    if (validDeviceIds.length === 0) {
-      // If the caller had site restrictions AND every requested device fell
-      // outside the allowlist, this is a 403, not a 400. Otherwise (no
-      // matching org devices at all) keep the 400 behavior.
-      if (userPerms?.allowedSiteIds && validDevices.length > 0) {
-        return c.json({ error: 'Access to these device sites denied' }, 403);
-      }
+    const uniqueDeviceIds = Array.from(new Set(deviceIds));
+    if (validDevices.length !== uniqueDeviceIds.length) {
       return c.json({ error: 'No valid devices found' }, 400);
     }
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    const siteDenied = validDevices.some((device) =>
+      (group.siteId !== null && device.siteId !== group.siteId)
+      || !groupSiteAllowed({ siteId: device.siteId }, userPerms)
+    );
+    if (siteDenied) return c.json({ error: 'Access to these device sites denied' }, 403);
+    const validDeviceIds = validDevices.map(d => d.id);
 
     // Insert memberships (ignore duplicates)
     await db
@@ -395,30 +424,37 @@ groupsRoutes.delete(
       return c.json({ error: 'Group not found' }, 404);
     }
 
+    if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     const hasAccess = await ensureOrgAccess(group.orgId, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Site-scope: a site-restricted caller may only remove devices whose
-    // site is in their allowlist. If every requested device is out of
-    // scope, deny outright; otherwise silently filter.
     let targetDeviceIds = deviceIds;
-    const userPerms = c.get('permissions') as { allowedSiteIds?: string[] } | undefined;
-    if (userPerms?.allowedSiteIds) {
-      const inScopeDevices = await db
-        .select({ id: devices.id })
+    const userPerms = c.get('permissions') as UserPermissions | undefined;
+    if (userPerms?.allowedSiteIds || group.siteId !== null) {
+      const uniqueDeviceIds = Array.from(new Set(deviceIds));
+      const targetDevices = await db
+        .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
         .from(devices)
         .where(
           and(
-            inArray(devices.id, deviceIds),
-            inArray(devices.siteId, userPerms.allowedSiteIds)
+            inArray(devices.id, uniqueDeviceIds),
+            eq(devices.orgId, group.orgId),
           )
         );
-      targetDeviceIds = inScopeDevices.map(d => d.id);
-      if (targetDeviceIds.length === 0) {
+      const siteDenied = targetDevices.length !== uniqueDeviceIds.length
+        || targetDevices.some((device) =>
+          (group.siteId !== null && device.siteId !== group.siteId)
+          || !groupSiteAllowed({ siteId: device.siteId }, userPerms)
+        );
+      if (siteDenied) {
         return c.json({ error: 'Access to these device sites denied' }, 403);
       }
+      targetDeviceIds = uniqueDeviceIds;
     }
 
     await db

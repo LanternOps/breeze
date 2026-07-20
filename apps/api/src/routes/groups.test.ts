@@ -117,12 +117,12 @@ describe('group routes', () => {
   //   4. select existing memberships (terminal promise on .where)
   //   5. getDeviceCountForGroup -> select count (terminal promise on .where)
   // We drive these by chaining db.select mock return values in order.
-  const mockGroupSelect = () =>
+  const mockGroupSelect = (siteId: string | null = null) =>
     ({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([
-            { id: GROUP_ID, orgId: ORG, name: 'Static Group', type: 'static' }
+            { id: GROUP_ID, orgId: ORG, siteId, name: 'Static Group', type: 'static' }
           ])
         })
       })
@@ -277,11 +277,9 @@ describe('group routes', () => {
       const insertSpy = vi.mocked(db.insert);
       vi.mocked(db.select)
         // 1. group lookup
-        .mockReturnValueOnce(mockGroupSelect())
-        // 2. device {id, orgId} lookup — device belongs to the right org
-        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_Y, orgId: ORG }]))
-        // 3. canAccessDeviceSite per-device lookup — site-y, NOT allowed
-        .mockReturnValueOnce(mockSiteSelect(SITE_Y));
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
+        // 2. device lookup — device belongs to the right org but wrong site
+        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_Y, orgId: ORG, siteId: SITE_Y }]));
 
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {
         method: 'POST',
@@ -299,16 +297,12 @@ describe('group routes', () => {
       const insertSpy = vi.mocked(db.insert);
       vi.mocked(db.select)
         // 1. group lookup
-        .mockReturnValueOnce(mockGroupSelect())
-        // 2. device {id, orgId} lookup — both devices belong to the right org
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
+        // 2. device lookup — both devices belong to the right org
         .mockReturnValueOnce(mockWhereResolves([
-          { id: DEVICE_IN_SITE_X, orgId: ORG },
-          { id: DEVICE_IN_SITE_Y, orgId: ORG }
-        ]))
-        // 3. canAccessDeviceSite for device-x — site-x, allowed
-        .mockReturnValueOnce(mockSiteSelect(SITE_X))
-        // 4. canAccessDeviceSite for device-y — site-y, NOT allowed
-        .mockReturnValueOnce(mockSiteSelect(SITE_Y));
+          { id: DEVICE_IN_SITE_X, orgId: ORG, siteId: SITE_X },
+          { id: DEVICE_IN_SITE_Y, orgId: ORG, siteId: SITE_Y }
+        ]));
 
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {
         method: 'POST',
@@ -326,14 +320,12 @@ describe('group routes', () => {
       setAuth([SITE_X]);
       vi.mocked(db.select)
         // 1. group lookup
-        .mockReturnValueOnce(mockGroupSelect())
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
         // 2. device lookup
-        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_X, orgId: ORG }]))
-        // 3. canAccessDeviceSite per-device lookup — site-x, allowed
-        .mockReturnValueOnce(mockSiteSelect(SITE_X))
-        // 4. existing memberships lookup — none
+        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_X, orgId: ORG, siteId: SITE_X }]))
+        // 3. existing memberships lookup — none
         .mockReturnValueOnce(mockWhereResolves([]))
-        // 5. getDeviceCountForGroup
+        // 4. getDeviceCountForGroup
         .mockReturnValueOnce(mockWhereResolves([{ count: 1 }]));
 
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {
@@ -347,14 +339,29 @@ describe('group routes', () => {
       expect(body.data.added).toBe(1);
     });
 
+    it('rejects adding a device from another site even when the caller can access both sites', async () => {
+      setAuth([SITE_X, SITE_Y]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
+        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_Y, orgId: ORG, siteId: SITE_Y }]))
+        .mockReturnValueOnce(mockSiteSelect(SITE_Y));
+
+      const res = await app.request(`/groups/${GROUP_ID}/devices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_IN_SITE_Y] })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('fails closed (403) for a confined user when a device has no site', async () => {
       setAuth([SITE_X]);
       const insertSpy = vi.mocked(db.insert);
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockGroupSelect())
-        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_Y, orgId: ORG }]))
-        // canAccessDeviceSite: device row missing siteId -> []
-        .mockReturnValueOnce(mockSiteSelect(null));
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
+        .mockReturnValueOnce(mockWhereResolves([{ id: DEVICE_IN_SITE_Y, orgId: ORG, siteId: null }]));
 
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {
         method: 'POST',
@@ -426,10 +433,9 @@ describe('group routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.data.map((group: any) => group.id)).toEqual([GROUP_ID, GROUP_SITE_X]);
-      expect(body.data.find((group: any) => group.id === GROUP_ID).deviceIds).toEqual([DEVICE_IN_SITE_X]);
+      expect(body.data.map((group: any) => group.id)).toEqual([GROUP_SITE_X]);
       expect(body.data.find((group: any) => group.id === GROUP_SITE_X).deviceIds).toEqual([DEVICE_IN_SITE_X]);
-      expect(body.total).toBe(2);
+      expect(body.total).toBe(1);
     });
 
     it('does not narrow group rows or memberships for an unrestricted user', async () => {
@@ -470,7 +476,7 @@ describe('group routes', () => {
     it('narrows memberships to devices in the allowed site', async () => {
       setAuth([SITE_X]);
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockGroupSelect())
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
         .mockReturnValueOnce(mockJoinedOrderedRows([
           {
             deviceId: DEVICE_IN_SITE_X,
@@ -549,7 +555,7 @@ describe('group routes', () => {
     it('rejects (403) when a confined user requests an out-of-scope explicit deviceId', async () => {
       setAuth([SITE_X]);
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockGroupSelect())
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
         .mockReturnValueOnce(mockWhereResolvesOrLimits([{ count: 0 }], [{ siteId: SITE_Y }]))
         .mockReturnValueOnce(mockJoinedPagedRows([]));
 
@@ -563,7 +569,7 @@ describe('group routes', () => {
     it('narrows log entries to devices in the allowed site', async () => {
       setAuth([SITE_X]);
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockGroupSelect())
+        .mockReturnValueOnce(mockGroupSelect(SITE_X))
         .mockReturnValueOnce(mockJoinedWhereRows([{ count: 1 }]))
         .mockReturnValueOnce(mockJoinedPagedRows([
           {

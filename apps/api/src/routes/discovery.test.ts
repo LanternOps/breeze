@@ -6,6 +6,8 @@ import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
+import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 
 vi.mock('../services', () => ({}));
@@ -90,7 +92,11 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id', orgId: 'discoveryProfiles.orgId', siteId: 'discoveryProfiles.siteId' },
-  discoveryJobs: { id: 'discoveryJobs.id' },
+  discoveryJobs: {
+    id: 'discoveryJobs.id',
+    orgId: 'discoveryJobs.orgId',
+    siteId: 'discoveryJobs.siteId',
+  },
   discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId', siteId: 'discoveredAssets.siteId' },
   networkTopology: { orgId: 'orgId' },
   topologyLayout: {
@@ -953,6 +959,13 @@ describe('discovery routes', () => {
 
   describe('POST /discovery/profiles', () => {
     it('should create a discovery profile with schedule configuration', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+          }),
+        }),
+      } as any);
       const res = await app.request('/discovery/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -974,6 +987,13 @@ describe('discovery routes', () => {
     });
 
     it('encrypts and masks SNMP profile secrets', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+          }),
+        }),
+      } as any);
       const insertValues = vi.fn(() => ({
         returning: vi.fn(() => Promise.resolve([{
           id: 'profile-001',
@@ -1016,6 +1036,29 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.snmpCommunities).toEqual(['********']);
       expect(body.snmpCredentials.authPassphrase).toBe('********');
+    });
+
+    it('rejects a profile site that does not belong to the resolved organization', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Foreign Site',
+          siteId: '00000000-0000-0000-0000-000000000099',
+          subnets: ['10.0.2.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('should validate schedule details', async () => {
@@ -1128,6 +1171,11 @@ describe('discovery routes', () => {
     it('scopes the bulk approve to the supplied orgId for a multi-org partner', async () => {
       usePartnerAuth();
 
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_A, siteId: 'site-1' }]),
+        }),
+      } as any);
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -1257,6 +1305,174 @@ describe('discovery routes', () => {
           }),
         } as any);
     }
+
+    it('omits profiles outside the caller site allowlist', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const now = new Date('2026-07-20T00:00:00.000Z');
+      const profile = (id: string, siteId: string | null) => ({
+        profile: {
+          id,
+          orgId: ORG,
+          siteId,
+          name: id,
+          description: null,
+          enabled: true,
+          subnets: ['10.0.0.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+          deepScan: false,
+          resolveHostnames: true,
+          alertSettings: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        lastRunAt: null,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              profile('profile-in', SITE_IN),
+              profile('profile-out', SITE_OUT),
+              profile('profile-null', null),
+            ]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((entry: any) => entry.id)).toEqual(['profile-in']);
+    });
+
+    it('denies scanning a profile outside the caller site before job creation', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '00000000-0000-0000-0000-000000000099',
+              orgId: ORG,
+              siteId: SITE_OUT,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ profileId: '00000000-0000-0000-0000-000000000099' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createDiscoveryJobIfIdle).not.toHaveBeenCalled();
+      expect(enqueueDiscoveryScan).not.toHaveBeenCalled();
+    });
+
+    it('rejects a mixed-site bulk approve atomically before any update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const allowedAssetId = '00000000-0000-0000-0000-0000000000a1';
+      const deniedAssetId = '00000000-0000-0000-0000-0000000000a2';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: allowedAssetId, orgId: ORG, siteId: SITE_IN },
+            { id: deniedAssetId, orgId: ORG, siteId: SITE_OUT },
+          ]),
+        }),
+      } as any);
+      const res = await app.request('/discovery/assets/bulk-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetIds: [allowedAssetId, deniedAssetId] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for a null-site asset metadata update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, siteId: null }]),
+          }),
+        }),
+      } as any);
+      const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ label: 'denied' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denies cancelling a job outside the caller site before any update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const jobId = '00000000-0000-0000-0000-0000000000b1';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: jobId,
+              orgId: ORG,
+              siteId: SITE_OUT,
+              status: 'scheduled',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${jobId}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('omits sibling-site and null-site assets from an authorized job detail', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const jobId = '00000000-0000-0000-0000-0000000000b2';
+      const now = new Date('2026-07-20T00:00:00.000Z');
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: jobId, orgId: ORG, siteId: SITE_IN, status: 'completed',
+                createdAt: now, scheduledAt: null, startedAt: null, completedAt: now,
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'asset-in', orgId: ORG, siteId: SITE_IN },
+              { id: 'asset-out', orgId: ORG, siteId: SITE_OUT },
+              { id: 'asset-null', orgId: ORG, siteId: null },
+            ]),
+          }),
+        } as any);
+
+      const res = await app.request(`/discovery/jobs/${jobId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.assets.map((asset: any) => asset.id)).toEqual(['asset-in']);
+    });
 
     describe('POST /assets/:id/link', () => {
       it('rejects when the asset is in a site outside the caller allowlist', async () => {

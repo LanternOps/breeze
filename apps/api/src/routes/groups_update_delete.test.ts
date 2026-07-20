@@ -154,10 +154,44 @@ describe('groups routes', () => {
     app.route('/groups', groupRoutes);
   });
 
+  function restrictToSite() {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', { allowedSiteIds: [SITE_ID] });
+      return next();
+    });
+  }
+
   // ----------------------------------------------------------------
   // PATCH /:id - Update group
   // ----------------------------------------------------------------
   describe('PATCH /groups/:id', () => {
+    it('rejects mutating an org-wide group for a site-restricted caller', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({ siteId: null })])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Denied' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
     it('should update a group name', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -180,7 +214,6 @@ describe('groups routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 2 }])
         })
       } as any);
-
       const res = await app.request(`/groups/${GROUP_ID}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -282,6 +315,23 @@ describe('groups routes', () => {
   // DELETE /:id - Delete group
   // ----------------------------------------------------------------
   describe('DELETE /groups/:id', () => {
+    it('rejects deleting an org-wide group for a site-restricted caller', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({ siteId: null })])
+          })
+        })
+      } as any);
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
     it('should delete a group', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({

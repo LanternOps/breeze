@@ -163,6 +163,89 @@ function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelec
   };
 }
 
+/**
+ * Site scope is enforced in the application layer; tenant RLS only scopes by
+ * organization. A restricted caller must therefore have an explicit,
+ * allowlisted site on every record. Missing/null site attribution fails closed.
+ */
+function canAccessRecordSite(
+  permissions: UserPermissions | undefined,
+  siteId: string | null | undefined,
+): boolean {
+  if (!permissions?.allowedSiteIds) return true;
+  return typeof siteId === 'string' && canAccessSite(permissions, siteId);
+}
+
+async function authorizeRequestedSite(
+  orgId: string,
+  siteId: string,
+  permissions: UserPermissions | undefined,
+) {
+  if (!canAccessRecordSite(permissions, siteId)) {
+    return { ok: false, error: 'Access to this site denied', status: 403 } as const;
+  }
+
+  const [site] = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1);
+  if (!site) return { ok: false, error: 'Site not found', status: 404 } as const;
+  return { ok: true } as const;
+}
+
+async function authorizeAssetSet(
+  orgId: string | null,
+  assetIds: string[],
+  permissions: UserPermissions | undefined,
+) {
+  const uniqueAssetIds = Array.from(new Set(assetIds));
+  const conditions: SQL[] = [inArray(discoveredAssets.id, uniqueAssetIds)];
+  if (orgId) conditions.push(eq(discoveredAssets.orgId, orgId));
+
+  const assets = await db
+    .select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId,
+    })
+    .from(discoveredAssets)
+    .where(and(...conditions));
+
+  if (assets.length !== uniqueAssetIds.length) {
+    return { ok: false, error: 'One or more assets not found', status: 404 } as const;
+  }
+  if (assets.some((asset) => !canAccessRecordSite(permissions, asset.siteId))) {
+    return { ok: false, error: 'Access to this site denied', status: 403 } as const;
+  }
+  return { ok: true, assets } as const;
+}
+
+async function loadAuthorizedAsset(
+  assetId: string,
+  orgId: string | null,
+  permissions: UserPermissions | undefined,
+) {
+  const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+  if (orgId) conditions.push(eq(discoveredAssets.orgId, orgId));
+
+  const [asset] = await db
+    .select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
+      siteId: discoveredAssets.siteId,
+    })
+    .from(discoveredAssets)
+    .where(and(...conditions))
+    .limit(1);
+
+  if (!asset) return { ok: false, error: 'Asset not found', status: 404 } as const;
+  if (!canAccessRecordSite(permissions, asset.siteId)) {
+    return { ok: false, error: 'Access to this site denied', status: 403 } as const;
+  }
+  return { ok: true, asset } as const;
+}
+
 // --- Zod Schemas ---
 
 const listProfilesSchema = z.object({
@@ -366,11 +449,18 @@ discoveryRoutes.get(
   zValidator('query', listProfilesSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const where = orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined;
+    const conditions: SQL[] = [];
+    if (orgResult.orgId) conditions.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      if (permissions.allowedSiteIds.length === 0) return c.json({ data: [] });
+      conditions.push(inArray(discoveryProfiles.siteId, permissions.allowedSiteIds));
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
     const results = await db.select({
       profile: discoveryProfiles,
       lastRunAt: sql<string | null>`(
@@ -384,7 +474,7 @@ discoveryRoutes.get(
       .orderBy(desc(discoveryProfiles.createdAt));
 
     return c.json({
-      data: results.map((row) => {
+      data: results.filter((row) => canAccessRecordSite(permissions, row.profile.siteId)).map((row) => {
         const p = row.profile;
         return {
           id: p.id,
@@ -416,9 +506,18 @@ discoveryRoutes.post(
   zValidator('json', createProfileSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
     const orgResult = resolveOrgId(auth, body.orgId, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const siteAuthorization = await authorizeRequestedSite(
+      orgResult.orgId!,
+      body.siteId,
+      permissions,
+    );
+    if (!siteAuthorization.ok) {
+      return c.json({ error: siteAuthorization.error }, siteAuthorization.status);
+    }
 
     const [profile] = await db.insert(discoveryProfiles).values({
       orgId: orgResult.orgId!,
@@ -458,6 +557,7 @@ discoveryRoutes.get(
   requireDiscoveryRead,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -468,6 +568,9 @@ discoveryRoutes.get(
     const [profile] = await db.select().from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!profile) return c.json({ error: 'Profile not found' }, 404);
+    if (!canAccessRecordSite(permissions, profile.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     return c.json(serializeDiscoveryProfile(profile));
   }
@@ -481,6 +584,7 @@ discoveryRoutes.patch(
   zValidator('json', updateProfileSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const profileId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
@@ -495,11 +599,15 @@ discoveryRoutes.patch(
 
     const [existing] = await db.select({
       id: discoveryProfiles.id,
+      siteId: discoveryProfiles.siteId,
       snmpCommunities: discoveryProfiles.snmpCommunities,
       snmpCredentials: discoveryProfiles.snmpCredentials,
     }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
+    if (!canAccessRecordSite(permissions, existing.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
     if (updates.name !== undefined) setValues.name = updates.name;
@@ -550,6 +658,7 @@ discoveryRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const profileId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -560,10 +669,14 @@ discoveryRoutes.delete(
     const [existing] = await db.select({
       id: discoveryProfiles.id,
       orgId: discoveryProfiles.orgId,
+      siteId: discoveryProfiles.siteId,
       name: discoveryProfiles.name
     }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
+    if (!canAccessRecordSite(permissions, existing.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     // Delete related jobs and profile atomically
     await db.transaction(async (tx) => {
@@ -593,6 +706,7 @@ discoveryRoutes.post(
   zValidator('json', scanSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const body = c.req.valid('json');
     const orgResult = resolveOrgId(auth, body.orgId ?? c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -603,6 +717,9 @@ discoveryRoutes.post(
     const [profile] = await db.select().from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!profile) return c.json({ error: 'Profile not found' }, 404);
+    if (!canAccessRecordSite(permissions, profile.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const requestedAgentValidation = await validateRequestedDiscoveryAgent(body.agentId, {
       orgId: profile.orgId,
@@ -673,16 +790,24 @@ discoveryRoutes.get(
   zValidator('query', listJobsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const where = orgResult.orgId ? eq(discoveryJobs.orgId, orgResult.orgId) : undefined;
+    const jobConditions: SQL[] = [];
+    if (orgResult.orgId) jobConditions.push(eq(discoveryJobs.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      if (permissions.allowedSiteIds.length === 0) return c.json({ data: [] });
+      jobConditions.push(inArray(discoveryJobs.siteId, permissions.allowedSiteIds));
+    }
+    const where = jobConditions.length > 0 ? and(...jobConditions) : undefined;
 
     const results = await db
       .select({
         id: discoveryJobs.id,
         orgId: discoveryJobs.orgId,
+        siteId: discoveryJobs.siteId,
         profileId: discoveryJobs.profileId,
         profileName: discoveryProfiles.name,
         agentId: discoveryJobs.agentId,
@@ -704,6 +829,7 @@ discoveryRoutes.get(
     type JobRow = {
       id: string;
       orgId: string;
+      siteId: string;
       profileId: string | null;
       profileName: string | null;
       agentId: string | null;
@@ -718,7 +844,7 @@ discoveryRoutes.get(
       createdAt: string;
     };
 
-    const jobRows: JobRow[] = results.map((j) => ({
+    const jobRows: JobRow[] = results.filter((job) => canAccessRecordSite(permissions, job.siteId)).map((j) => ({
       ...j,
       status: j.status as string,
       createdAt: j.createdAt.toISOString(),
@@ -730,11 +856,15 @@ discoveryRoutes.get(
     // Build synthetic "pending" rows for the next scheduled run of each active profile
     const profileWhere: SQL[] = [eq(discoveryProfiles.enabled, true)];
     if (orgResult.orgId) profileWhere.push(eq(discoveryProfiles.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      profileWhere.push(inArray(discoveryProfiles.siteId, permissions.allowedSiteIds));
+    }
 
     const activeProfiles = await db
       .select({
         id: discoveryProfiles.id,
         orgId: discoveryProfiles.orgId,
+        siteId: discoveryProfiles.siteId,
         name: discoveryProfiles.name,
         schedule: discoveryProfiles.schedule
       })
@@ -751,7 +881,7 @@ discoveryRoutes.get(
     const now = new Date();
     const pendingRows: typeof jobRows = [];
 
-    for (const profile of activeProfiles) {
+    for (const profile of activeProfiles.filter((entry) => canAccessRecordSite(permissions, entry.siteId))) {
       if (activeProfileIds.has(profile.id)) continue;
 
       const sched = profile.schedule as { type?: string; cron?: string; intervalMinutes?: number; timezone?: string } | null;
@@ -773,6 +903,7 @@ discoveryRoutes.get(
         pendingRows.push({
           id: `next-${profile.id}`,
           orgId: profile.orgId,
+          siteId: profile.siteId,
           profileId: profile.id,
           profileName: profile.name,
           agentId: null,
@@ -800,6 +931,7 @@ discoveryRoutes.get(
   requireDiscoveryRead,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -810,9 +942,19 @@ discoveryRoutes.get(
     const [job] = await db.select().from(discoveryJobs)
       .where(and(...conditions)).limit(1);
     if (!job) return c.json({ error: 'Job not found' }, 404);
+    if (!canAccessRecordSite(permissions, job.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
-    const assets = await db.select().from(discoveredAssets)
-      .where(eq(discoveredAssets.lastJobId, jobId));
+    const assets = (await db.select().from(discoveredAssets)
+      .where(and(
+        eq(discoveredAssets.lastJobId, jobId),
+        eq(discoveredAssets.orgId, job.orgId),
+        eq(discoveredAssets.siteId, job.siteId),
+      )))
+      .filter((asset) => asset.orgId === job.orgId
+        && asset.siteId === job.siteId
+        && canAccessRecordSite(permissions, asset.siteId));
 
     return c.json({
       ...job,
@@ -833,6 +975,7 @@ discoveryRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const jobId = c.req.param('id')!;
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
@@ -843,6 +986,9 @@ discoveryRoutes.post(
     const [job] = await db.select().from(discoveryJobs)
       .where(and(...conditions)).limit(1);
     if (!job) return c.json({ error: 'Job not found' }, 404);
+    if (!canAccessRecordSite(permissions, job.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
 
     const cancelableStatuses = ['scheduled', 'running'];
     if (!cancelableStatuses.includes(job.status)) {
@@ -1044,7 +1190,7 @@ discoveryRoutes.get(
     if (!row) return c.json({ error: 'Asset not found' }, 404);
 
     // Site-scope is an app-layer-only authz axis; RLS does not defend it.
-    if (perms?.allowedSiteIds && typeof row.asset.siteId === 'string' && !canAccessSite(perms, row.asset.siteId)) {
+    if (!canAccessRecordSite(perms, row.asset.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
@@ -1099,9 +1245,13 @@ discoveryRoutes.post(
   zValidator('json', bulkApproveSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const { assetIds } = c.req.valid('json');
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const authorization = await authorizeAssetSet(orgResult.orgId, assetIds, permissions);
+    if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
@@ -1129,9 +1279,13 @@ discoveryRoutes.post(
   zValidator('json', bulkDismissSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const { assetIds } = c.req.valid('json');
     const orgResult = resolveOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    const authorization = await authorizeAssetSet(orgResult.orgId, assetIds, permissions);
+    if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
 
     const conditions: SQL[] = [inArray(discoveredAssets.id, assetIds)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
@@ -1159,10 +1313,16 @@ discoveryRoutes.patch(
   zValidator('json', updateAssetSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const assetId = c.req.param('id')!;
     const updates = c.req.valid('json');
     const orgResult = await resolveOrgIdForAsset(auth, assetId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (permissions?.allowedSiteIds) {
+      const authorization = await loadAuthorizedAsset(assetId, orgResult.orgId, permissions);
+      if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
+    }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
@@ -1248,25 +1408,17 @@ discoveryRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!canAccessRecordSite(perms, existing.siteId) || !canAccessRecordSite(perms, targetDevice.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
     if (targetDevice.orgId !== existing.orgId) {
       return c.json({ error: 'Device does not belong to the same organization as this asset' }, 403);
     }
 
     if (targetDevice.siteId !== existing.siteId) {
       return c.json({ error: 'Device does not belong to the same site as this asset' }, 403);
-    }
-
-    // Site-scope is an app-layer-only authz axis; RLS does not defend it. A
-    // site-restricted caller must be able to reach BOTH the asset's site and
-    // the target device's site (whichever are set).
-    const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds) {
-      if (typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
-        return c.json({ error: 'Access to this site denied' }, 403);
-      }
-      if (typeof targetDevice.siteId === 'string' && !canAccessSite(perms, targetDevice.siteId)) {
-        return c.json({ error: 'Access to this site denied' }, 403);
-      }
     }
 
     const [updated] = await db.update(discoveredAssets)
@@ -1326,7 +1478,7 @@ discoveryRoutes.delete(
 
     // Site-scope is an app-layer-only authz axis; RLS does not defend it.
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds && typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+    if (!canAccessRecordSite(perms, existing.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
@@ -1377,9 +1529,15 @@ discoveryRoutes.patch(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (permissions?.allowedSiteIds) {
+      const authorization = await loadAuthorizedAsset(id, orgResult.orgId, permissions);
+      if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
+    }
 
     const conditions: SQL[] = [eq(discoveredAssets.id, id)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
@@ -1407,9 +1565,15 @@ discoveryRoutes.patch(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const id = c.req.param('id')!;
     const orgResult = await resolveOrgIdForAsset(auth, id);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+
+    if (permissions?.allowedSiteIds) {
+      const authorization = await loadAuthorizedAsset(id, orgResult.orgId, permissions);
+      if (!authorization.ok) return c.json({ error: authorization.error }, authorization.status);
+    }
 
     const conditions: SQL[] = [eq(discoveredAssets.id, id)];
     if (orgResult.orgId) conditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
@@ -1455,7 +1619,7 @@ discoveryRoutes.delete(
 
     // Site-scope is an app-layer-only authz axis; RLS does not defend it.
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds && typeof existing.siteId === 'string' && !canAccessSite(perms, existing.siteId)) {
+    if (!canAccessRecordSite(perms, existing.siteId)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
@@ -1507,46 +1671,76 @@ discoveryRoutes.get(
   zValidator('query', topologyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const orgResult = resolveOrgId(auth, query.orgId);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const orgFilter = orgResult.orgId ? eq(discoveredAssets.orgId, orgResult.orgId) : undefined;
+    const assetConditions: SQL[] = [];
+    if (orgResult.orgId) assetConditions.push(eq(discoveredAssets.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      if (permissions.allowedSiteIds.length === 0) {
+        return c.json({ nodes: [], subnets: [], layout: [], edges: [] });
+      }
+      assetConditions.push(inArray(discoveredAssets.siteId, permissions.allowedSiteIds));
+    }
+    const orgFilter = assetConditions.length > 0 ? and(...assetConditions) : undefined;
 
-    const assets = await db.select().from(discoveredAssets).where(orgFilter);
+    const assets = (await db.select().from(discoveredAssets).where(orgFilter))
+      .filter((asset) => canAccessRecordSite(permissions, asset.siteId));
 
-    const edges = orgResult.orgId
-      ? await db.select().from(networkTopology).where(eq(networkTopology.orgId, orgResult.orgId))
-      : await db.select().from(networkTopology);
+    const edgeConditions: SQL[] = [];
+    if (orgResult.orgId) edgeConditions.push(eq(networkTopology.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      edgeConditions.push(inArray(networkTopology.siteId, permissions.allowedSiteIds));
+    }
+    const edges = (edgeConditions.length > 0
+      ? await db.select().from(networkTopology).where(and(...edgeConditions))
+      : await db.select().from(networkTopology))
+      .filter((edge) => canAccessRecordSite(permissions, edge.siteId));
 
     // The honest topology view groups assets by the subnet they actually belong
     // to. We surface the discovery-profile CIDRs so the client can group by the
     // correct mask (e.g. a /23 or /16) instead of guessing a /24 from the IP.
     const profileRows = await db
-      .select({ subnets: discoveryProfiles.subnets })
+      .select({ subnets: discoveryProfiles.subnets, siteId: discoveryProfiles.siteId })
       .from(discoveryProfiles)
-      .where(orgResult.orgId ? eq(discoveryProfiles.orgId, orgResult.orgId) : undefined);
+      .where(and(
+        ...(orgResult.orgId ? [eq(discoveryProfiles.orgId, orgResult.orgId)] : []),
+        ...(permissions?.allowedSiteIds
+          ? [inArray(discoveryProfiles.siteId, permissions.allowedSiteIds)]
+          : []),
+      ));
     const subnets = Array.from(
       new Set(
-        profileRows.flatMap((p) =>
+        profileRows.filter((profile) => canAccessRecordSite(permissions, profile.siteId)).flatMap((p) =>
           (p.subnets ?? []).map((s) => s.trim()).filter((s) => s.length > 0)
         )
       )
     );
 
     // Saved Cytoscape node positions (#1728). Org-scoped, mirroring the edges query.
-    const layoutRows = orgResult.orgId
-      ? await db.select().from(topologyLayout).where(eq(topologyLayout.orgId, orgResult.orgId))
-      : await db.select().from(topologyLayout);
+    const layoutConditions: SQL[] = [];
+    if (orgResult.orgId) layoutConditions.push(eq(topologyLayout.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      layoutConditions.push(inArray(topologyLayout.siteId, permissions.allowedSiteIds));
+    }
+    const layoutRows = (layoutConditions.length > 0
+      ? await db.select().from(topologyLayout).where(and(...layoutConditions))
+      : await db.select().from(topologyLayout))
+      .filter((entry) => canAccessRecordSite(permissions, entry.siteId));
 
     // Hand-mapped placeholder nodes (#1728 phase 4). Org-scoped like the rest;
     // never touched by scan reconciliation. Surfaced alongside discovered nodes.
-    const manualNodes = orgResult.orgId
-      ? await db
-          .select()
-          .from(topologyManualNodes)
-          .where(eq(topologyManualNodes.orgId, orgResult.orgId))
-      : await db.select().from(topologyManualNodes);
+    const manualNodeConditions: SQL[] = [];
+    if (orgResult.orgId) manualNodeConditions.push(eq(topologyManualNodes.orgId, orgResult.orgId));
+    if (permissions?.allowedSiteIds) {
+      manualNodeConditions.push(inArray(topologyManualNodes.siteId, permissions.allowedSiteIds));
+    }
+    const manualNodes = (manualNodeConditions.length > 0
+      ? await db.select().from(topologyManualNodes).where(and(...manualNodeConditions))
+      : await db.select().from(topologyManualNodes))
+      .filter((node) => canAccessRecordSite(permissions, node.siteId));
 
     const nodes = [
       ...assets.map((a) => ({

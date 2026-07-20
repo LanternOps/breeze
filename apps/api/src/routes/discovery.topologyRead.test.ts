@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { discoveryRoutes } from './discovery';
 import { db } from '../db';
-import { networkTopology, topologyManualNodes } from '../db/schema';
+import {
+  discoveryProfiles,
+  discoveredAssets,
+  networkTopology,
+  topologyLayout,
+  topologyManualNodes,
+} from '../db/schema';
 
 vi.mock('../services', () => ({}));
 
@@ -50,7 +56,10 @@ vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id', orgId: 'discoveryProfiles.orgId', siteId: 'discoveryProfiles.siteId' },
   discoveryJobs: { id: 'discoveryJobs.id' },
   discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId', siteId: 'discoveredAssets.siteId' },
-  networkTopology: { orgId: 'networkTopology.orgId' },
+  networkTopology: {
+    orgId: 'networkTopology.orgId',
+    siteId: 'networkTopology.siteId',
+  },
   topologyLayout: {
     orgId: 'topologyLayout.orgId',
     siteId: 'topologyLayout.siteId',
@@ -88,6 +97,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
+    const restrict = c.req.header('x-restrict-site');
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
@@ -95,7 +105,7 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       canAccessOrg: (orgId: string) => orgId === '00000000-0000-0000-0000-000000000000',
     });
-    c.set('permissions', undefined);
+    c.set('permissions', restrict ? { allowedSiteIds: [restrict] } : undefined);
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -246,5 +256,66 @@ describe('GET /discovery/topology — manual nodes + edge provenance (#1728 phas
     expect(body.nodes).toContainEqual(
       expect.objectContaining({ id: 'asset-a', kind: 'discovered' }),
     );
+  });
+
+  it('omits denied and null-site topology records deterministically', async () => {
+    const siteIn = '00000000-0000-0000-0000-000000000001';
+    const siteOut = '00000000-0000-0000-0000-000000000002';
+    const assets = [
+      { id: 'asset-in', siteId: siteIn, assetType: 'switch', label: 'in', isOnline: true, approvalStatus: 'approved' },
+      { id: 'asset-out', siteId: siteOut, assetType: 'switch', label: 'out', isOnline: true, approvalStatus: 'approved' },
+      { id: 'asset-null', siteId: null, assetType: 'switch', label: 'null', isOnline: true, approvalStatus: 'approved' },
+    ];
+    const manualNodes = [
+      { id: 'manual-in', siteId: siteIn, role: 'router', label: 'manual in' },
+      { id: 'manual-out', siteId: siteOut, role: 'router', label: 'manual out' },
+      { id: 'manual-null', siteId: null, role: 'router', label: 'manual null' },
+    ];
+    const edges = [
+      { id: 'edge-in', siteId: siteIn, sourceId: 'asset-in', targetId: 'manual-in', connectionType: 'manual', lastVerifiedAt: null },
+      { id: 'edge-out', siteId: siteOut, sourceId: 'asset-out', targetId: 'manual-out', connectionType: 'manual', lastVerifiedAt: null },
+      { id: 'edge-null', siteId: null, sourceId: 'asset-null', targetId: 'manual-null', connectionType: 'manual', lastVerifiedAt: null },
+    ];
+    const layouts = [
+      { nodeType: 'discovered_asset', nodeId: 'asset-in', siteId: siteIn, x: 1, y: 1, pinned: true },
+      { nodeType: 'discovered_asset', nodeId: 'asset-out', siteId: siteOut, x: 2, y: 2, pinned: true },
+      { nodeType: 'discovered_asset', nodeId: 'asset-null', siteId: null, x: 3, y: 3, pinned: true },
+    ];
+
+    vi.mocked(db.select).mockImplementation(((...args: any[]) => {
+      if (args.length > 0) {
+        return {
+          from: vi.fn((table: any) => ({
+            where: vi.fn(() => Promise.resolve(table === discoveryProfiles ? [
+              { subnets: ['10.0.1.0/24'], siteId: siteIn },
+              { subnets: ['10.0.2.0/24'], siteId: siteOut },
+              { subnets: ['10.0.3.0/24'], siteId: null },
+            ] : [])),
+          })),
+        } as any;
+      }
+      return {
+        from: vi.fn((table: any) => ({
+          where: vi.fn(() => Promise.resolve(
+            table === discoveredAssets ? assets
+              : table === networkTopology ? edges
+                : table === topologyLayout ? layouts
+                  : table === topologyManualNodes ? manualNodes
+                    : [],
+          )),
+        })),
+      } as any;
+    }) as any);
+
+    const res = await app.request('/discovery/topology', {
+      headers: { Authorization: 'Bearer token', 'x-restrict-site': siteIn },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.nodes.map((node: any) => node.id)).toEqual(['asset-in', 'manual-in']);
+    expect(body.edges.map((edge: any) => edge.id)).toEqual(['edge-in']);
+    expect(body.layout.map((entry: any) => entry.nodeId)).toEqual(['asset-in']);
+    expect(body.subnets).toEqual(['10.0.1.0/24']);
   });
 });

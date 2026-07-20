@@ -76,6 +76,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
     orgId: 'orgId',
+    siteId: 'siteId',
     hostname: 'hostname',
     displayName: 'displayName',
     status: 'status',
@@ -110,7 +111,8 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { validateFilter } from '../services/filterEngine';
+import { evaluateFilterWithPreview, validateFilter } from '../services/filterEngine';
+import { pinDeviceToGroup } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -150,10 +152,78 @@ describe('groups routes', () => {
     app.route('/groups', groupRoutes);
   });
 
+  function restrictToSite() {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', { allowedSiteIds: [SITE_ID] });
+      return next();
+    });
+  }
+
   // ----------------------------------------------------------------
   // POST /:id/preview - Preview dynamic group
   // ----------------------------------------------------------------
   describe('POST /groups/:id/preview', () => {
+    it('constrains preview to the persisted group site', async () => {
+      restrictToSite();
+      const filter = {
+        operator: 'AND' as const,
+        conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }]
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({
+              siteId: SITE_ID,
+              type: 'dynamic',
+              filterConditions: filter
+            })])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}/preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(evaluateFilterWithPreview).toHaveBeenCalledWith(filter, {
+        orgId: ORG_ID,
+        allowedSiteIds: [SITE_ID],
+        previewLimit: 10
+      });
+    });
+
+    it('rejects previewing a sibling-site dynamic group', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({
+              siteId: DEVICE_ID_2,
+              type: 'dynamic',
+              filterConditions: { operator: 'AND', conditions: [] }
+            })])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}/preview`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(evaluateFilterWithPreview).not.toHaveBeenCalled();
+    });
     it('should preview devices matching dynamic group filter', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -223,6 +293,31 @@ describe('groups routes', () => {
   // POST /:id/devices/:deviceId/pin - Pin device
   // ----------------------------------------------------------------
   describe('POST /groups/:id/devices/:deviceId/pin', () => {
+    it('rejects pinning a device outside the persisted group site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeGroup({ siteId: SITE_ID, type: 'dynamic' })])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, siteId: DEVICE_ID_2 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}/devices/${DEVICE_ID}/pin`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(pinDeviceToGroup).not.toHaveBeenCalled();
+    });
     it('should pin a device in a dynamic group', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
