@@ -67,7 +67,7 @@
     "fast-xml-parser": "^5.9.3",
     "firebase-admin": "^13.7.0",
     "google-auth-library": "^10.6.2",
-    "hono": "^4.12.30",
+    "hono": "^4.12.31",
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
     "js-yaml": "^4.3.0",

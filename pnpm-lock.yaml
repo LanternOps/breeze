@@ -118,13 +118,13 @@ importers:
         version: 5.0.1
       '@hono/node-server':
         specifier: ^2.0.10
-        version: 2.0.10(hono@4.12.30)
+        version: 2.0.10(hono@4.12.31)
       '@hono/node-ws':
         specifier: ^1.3.1
-        version: 1.3.1(@hono/node-server@2.0.10(hono@4.12.30))(hono@4.12.30)
+        version: 1.3.1(@hono/node-server@2.0.10(hono@4.12.31))(hono@4.12.31)
       '@hono/zod-validator':
         specifier: ^0.9.0
-        version: 0.9.0(hono@4.12.30)(zod@4.4.3)
+        version: 0.9.0(hono@4.12.31)(zod@4.4.3)
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -165,8 +165,8 @@ importers:
         specifier: ^10.6.2
         version: 10.6.2
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
@@ -448,10 +448,10 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.0.10
-        version: 2.0.10(hono@4.12.30)
+        version: 2.0.10(hono@4.12.31)
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -488,10 +488,10 @@ importers:
         version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.0.10
-        version: 2.0.10(hono@4.12.30)
+        version: 2.0.10(hono@4.12.31)
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -1108,8 +1108,8 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -1161,8 +1161,8 @@ importers:
         specifier: ^7.7.1
         version: 7.7.1
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -1179,8 +1179,8 @@ importers:
         specifier: workspace:*
         version: link:../extension-web-sdk
       hono:
-        specifier: ^4.12.30
-        version: 4.12.30
+        specifier: ^4.12.31
+        version: 4.12.31
     devDependencies:
       happy-dom:
         specifier: ^20.11.0
@@ -8004,10 +8004,6 @@ packages:
   hoist-non-react-statics@3.3.2:
     resolution: {integrity: sha512-/gGivxi8JPKWNm/W0jSmzcMPpfpPLc3dY/6GxhX2hQ9iGj3aDfklV4ET7NjKpSinLpJ5vafa9iiGIEZg10SfBw==}
 
-  hono@4.12.30:
-    resolution: {integrity: sha512-emn+JoJjrN9YTpRDS5it/UI2SO9BAE37T6I3d963RxcZ81G9A4pr2SZTEiiaiKbzx+NKRg5BZ89fCL7gCJCUog==}
-    engines: {node: '>=16.9.0'}
-
   hono@4.12.31:
     resolution: {integrity: sha512-zJIHFrl6bq3RDd2YusFNCDlM8qUprxKswyi/OPzPyzKDdyBXDqWx8bZlZ7R+saTdSTatUmb3O7K4SspGPaEOQg==}
     engines: {node: '>=16.9.0'}
@@ -14045,22 +14041,22 @@ snapshots:
     dependencies:
       hono: 4.12.31
 
-  '@hono/node-server@2.0.10(hono@4.12.30)':
+  '@hono/node-server@2.0.10(hono@4.12.31)':
     dependencies:
-      hono: 4.12.30
+      hono: 4.12.31
 
-  '@hono/node-ws@1.3.1(@hono/node-server@2.0.10(hono@4.12.30))(hono@4.12.30)':
+  '@hono/node-ws@1.3.1(@hono/node-server@2.0.10(hono@4.12.31))(hono@4.12.31)':
     dependencies:
-      '@hono/node-server': 2.0.10(hono@4.12.30)
-      hono: 4.12.30
+      '@hono/node-server': 2.0.10(hono@4.12.31)
+      hono: 4.12.31
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.9.0(hono@4.12.30)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.0(hono@4.12.31)(zod@4.4.3)':
     dependencies:
-      hono: 4.12.30
+      hono: 4.12.31
       zod: 4.4.3
 
   '@hookform/resolvers@5.4.0(react-hook-form@7.81.0(react@19.2.7))':
@@ -15227,7 +15223,9 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.0': {}
 
@@ -19820,8 +19818,6 @@ snapshots:
   hoist-non-react-statics@3.3.2:
     dependencies:
       react-is: 16.13.1
-
-  hono@4.12.30: {}
 
   hono@4.12.31: {}
 
