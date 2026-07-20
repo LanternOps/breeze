@@ -16,7 +16,7 @@
     "stage:runtime-extension-fixture": "tsx fixtures/runtime-extension/stage.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
+    "@anthropic-ai/sdk": "^0.112.3",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
