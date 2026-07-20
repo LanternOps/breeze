@@ -326,8 +326,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/office-js':
-        specifier: ^1.0.599
-        version: 1.0.599
+        specifier: ^1.0.600
+        version: 1.0.600
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
@@ -640,8 +640,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/office-js':
-        specifier: ^1.0.599
-        version: 1.0.599
+        specifier: ^1.0.600
+        version: 1.0.600
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
@@ -771,8 +771,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/office-js':
-        specifier: ^1.0.599
-        version: 1.0.599
+        specifier: ^1.0.600
+        version: 1.0.600
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
@@ -1059,8 +1059,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/office-js':
-        specifier: ^1.0.599
-        version: 1.0.599
+        specifier: ^1.0.600
+        version: 1.0.600
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
@@ -1227,8 +1227,8 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@types/office-js':
-        specifier: ^1.0.599
-        version: 1.0.599
+        specifier: ^1.0.600
+        version: 1.0.600
       '@types/react':
         specifier: ^19.2.17
         version: 19.2.17
@@ -5599,8 +5599,8 @@ packages:
   '@types/nodemailer@8.0.1':
     resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
 
-  '@types/office-js@1.0.599':
-    resolution: {integrity: sha512-wipSNDGbnEVOGzzzbdsvVi9rULAmbBrTCUA+BtxbmPbCaFSywzehI5akEg+KZSt81pA97kx8MHMm+CNgGplytQ==}
+  '@types/office-js@1.0.600':
+    resolution: {integrity: sha512-pO06DdZZqxxUlLS5hvYYG+D0QXWABPXQDSWJMgvA7yB4gI2hKF/Ym5XjgExpolAHqH6jxOoseaZilOLAa2RfDQ==}
 
   '@types/oidc-provider@9.5.0':
     resolution: {integrity: sha512-eEzCRVTSqIHD9Bo/qRJ4XQWQ5Z/zBcG+Z2cGJluRsSuWx1RJihqRyPxhIEpMXTwPzHYRTQkVp7hwisQOwzzSAg==}
@@ -16904,7 +16904,7 @@ snapshots:
     dependencies:
       '@types/node': 25.9.3
 
-  '@types/office-js@1.0.599': {}
+  '@types/office-js@1.0.600': {}
 
   '@types/oidc-provider@9.5.0':
     dependencies:
