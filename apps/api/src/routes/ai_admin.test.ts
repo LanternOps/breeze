@@ -36,6 +36,12 @@ vi.mock('../db/schema', () => ({
     approvedAt: 'aiToolExecutions.approvedAt',
     errorMessage: 'aiToolExecutions.errorMessage',
     completedAt: 'aiToolExecutions.completedAt',
+    intentId: 'aiToolExecutions.intentId',
+  },
+  actionIntents: {
+    id: 'actionIntents.id',
+    result: 'actionIntents.result',
+    executedAt: 'actionIntents.executedAt',
   },
   auditLogs: {
     id: 'auditLogs.id',
@@ -381,6 +387,68 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    it('selects intentId and tempPasswordState for the executions list', async () => {
+      // Generic chainable query-builder mock: every chain method (including
+      // leftJoin, added for the actionIntents join) returns the same
+      // thenable object, so it resolves to `result` regardless of which
+      // method is last in the real query's chain.
+      const makeChainMock = (result: unknown[]) => {
+        const chain: any = {};
+        chain.from = vi.fn(() => chain);
+        chain.innerJoin = vi.fn(() => chain);
+        chain.leftJoin = vi.fn(() => chain);
+        chain.where = vi.fn(() => chain);
+        chain.groupBy = vi.fn(() => chain);
+        chain.orderBy = vi.fn(() => chain);
+        chain.limit = vi.fn(() => chain);
+        chain.then = (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject);
+        return chain;
+      };
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeChainMock([{ status: 'completed', count: 1 }]))
+        .mockReturnValueOnce(
+          makeChainMock([
+            { toolName: 'reset_password', count: 1, avgDurationMs: 10, completedCount: 1 },
+          ])
+        )
+        .mockReturnValueOnce(makeChainMock([]))
+        .mockReturnValueOnce(
+          makeChainMock([
+            {
+              id: 'exec-1',
+              sessionId: SESSION_ID,
+              toolName: 'reset_password',
+              status: 'completed',
+              toolInput: {},
+              approvedBy: null,
+              approvedAt: null,
+              durationMs: 100,
+              errorMessage: null,
+              createdAt: new Date(),
+              completedAt: new Date(),
+              intentId: 'intent-1',
+              tempPasswordState: 'available',
+            },
+          ])
+        );
+
+      const res = await app.request(`/ai/admin/tool-executions?orgId=${ORG_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.executions[0].intentId).toBe('intent-1');
+      expect(body.executions[0].tempPasswordState).toBe('available');
+
+      const selectCalls = vi.mocked(db.select).mock.calls;
+      const execFields = selectCalls[selectCalls.length - 1]![0] as Record<string, unknown>;
+      expect(execFields).toHaveProperty('intentId');
+      expect(execFields).toHaveProperty('tempPasswordState');
     });
   });
 
