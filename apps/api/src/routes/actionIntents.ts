@@ -106,10 +106,7 @@ actionIntentsRoutes.post(
         intentId: intent.id,
         error: err,
       });
-      return c.json(
-        { error: 'Failed to decrypt secret — check APP_ENCRYPTION_KEY configuration' },
-        500,
-      );
+      return c.json({ error: 'decrypt_failed' }, 500);
     }
     if (!temporaryPassword) {
       return c.json({ error: 'Secret material is empty' }, 500);

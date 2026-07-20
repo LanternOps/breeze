@@ -41,6 +41,7 @@ import {
   burnTemporaryPassword,
   hasSealedTemporaryPassword,
   sealActionResultSecrets,
+  TEMP_PASSWORD_ENC_KEY,
   unsealTemporaryPassword,
 } from './resultSecrets';
 
@@ -101,6 +102,19 @@ describe('sealActionResultSecrets', () => {
     const noPw = { success: true, action: 'm365.user.reset_password', userId: 'u' };
     expect(sealActionResultSecrets(noPw)).toBe(noPw);
   });
+
+  it('drops the plaintext and marks sealing failed when encryptSecret falls back to non-v3', () => {
+    encryptSecretMock.mockReturnValueOnce('enc:v1:xxx');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sealed = sealActionResultSecrets(RESET_RESULT);
+    errSpy.mockRestore();
+    expect(sealed).not.toHaveProperty(TEMP_PASSWORD_ENC_KEY);
+    expect(sealed).not.toHaveProperty('temporaryPassword');
+    expect(sealed.temporaryPasswordSealFailed).toBe(true);
+    expect(JSON.stringify(sealed)).not.toContain('Tmp-Pass-1234!');
+    // Non-secret fields still pass through.
+    expect(sealed.userId).toBe('target-user-1');
+  });
 });
 
 describe('hasSealedTemporaryPassword', () => {
@@ -133,6 +147,13 @@ describe('unsealTemporaryPassword', () => {
 
   it('propagates decrypt failures (tampered ciphertext) instead of swallowing them', () => {
     expect(() => unsealTemporaryPassword({ temporaryPasswordEnc: 'enc:v3:wrong-aad:x' })).toThrow();
+  });
+
+  it('refuses to decrypt a non-v3 sealed value instead of calling decryptSecret', () => {
+    expect(() =>
+      unsealTemporaryPassword({ temporaryPasswordEnc: 'enc:v1:whatever' }),
+    ).toThrow();
+    expect(decryptSecretMock).not.toHaveBeenCalled();
   });
 });
 
