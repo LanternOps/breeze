@@ -30,12 +30,13 @@ import { describe, expect, it } from 'vitest';
  * image builds and asserts every member has a corresponding
  * `COPY packages/<name>/package.json` line before the `RUN pnpm install`.
  *
- * devDependencies are included only for images that actually install them: an
- * image whose install runs with `--prod` legitimately does not need dev-only
- * manifests, while the dev images (`RUN pnpm install`, no flags) very much do
- * — `@breeze/extension-cli` is a devDependency of `apps/api` and its absence is
- * exactly what breaks `docker/Dockerfile.api.dev`. The install mode is read off
- * the real `RUN pnpm install ...` flags in each file rather than assumed.
+ * What counts as missing depends on the install mode, which is read off the real
+ * `RUN pnpm install ...` flags in each file rather than assumed — see the
+ * FailureMode doc below. In short: an unpinned install (no `--frozen-lockfile`)
+ * hard-fails on any unresolvable manifest including devDependencies, while a
+ * `--frozen-lockfile` install resolves from the lockfile and only degrades
+ * silently, so there it is a finding only for runtime-closure packages whose
+ * source the image also compiles.
  */
 
 // apps/api/src/config -> repo root is 4 levels up.
@@ -180,6 +181,15 @@ function parseStages(content: string): Stage[] {
   return stages;
 }
 
+/**
+ * `--frozen-lockfile` resolves importers from `pnpm-lock.yaml` instead of from
+ * the manifests on disk, which changes the failure mode entirely — see the
+ * FailureMode doc below.
+ */
+function isLockfilePinned(command: string): boolean {
+  return /--frozen-lockfile\b/.test(command);
+}
+
 /** True when the install pulls devDependencies (i.e. it is not a `--prod` install). */
 function installsDevDependencies(command: string): boolean {
   return !/--prod\b|--production\b|NODE_ENV=production/.test(command);
@@ -244,10 +254,46 @@ function resolveWorkspaceClosure(roots: WorkspacePackage[], includeDev: boolean)
   return required;
 }
 
+/**
+ * The two ways a missing manifest breaks an image. They are NOT the same check,
+ * and collapsing them produces false failures in one direction and misses the
+ * v0.98.0 bug in the other.
+ *
+ * `unpinned` — the install has no `--frozen-lockfile` (the dev images:
+ *   `RUN pnpm install`). pnpm must resolve every `workspace:*` spec from the
+ *   manifests actually on disk, so a missing one is an immediate, loud build
+ *   failure:
+ *     ERR_PNPM_WORKSPACE_PKG_NOT_FOUND  In apps/api: "@breeze/extension-cli@workspace:*"
+ *     is in the dependencies but no package named "@breeze/extension-cli" is
+ *     present in the workspace
+ *   Every manifest pnpm has to resolve must be present — including root
+ *   devDependencies, since a bare `pnpm install` installs those too. This is
+ *   what breaks `docker/Dockerfile.api.dev` (verified by a real `docker build`).
+ *
+ * `pinned` — the install runs `--frozen-lockfile` (every production image).
+ *   Importers come from `pnpm-lock.yaml`, so a missing manifest is NOT fatal:
+ *   `apps/api/Dockerfile` builds green today without `packages/extension-cli`.
+ *   pnpm simply installs nothing for that package. That is harmless right up
+ *   until the image *also* copies the package's source in and compiles it — the
+ *   v0.98.0 shape, where `apps/web` bundled `packages/extension-web-sdk` with no
+ *   node_modules of its own and Rolldown died on `resolve import "zod"`. So for
+ *   pinned installs a missing manifest is a finding only when the source is
+ *   copied, and only for packages in the *runtime* closure: a root
+ *   devDependency is never in the built bundle, which is precisely why
+ *   `@breeze/extension-cli` is a non-issue for the production API images.
+ *
+ * Note the two checks below leave no hole: if a pinned image omits both the
+ * manifest and the source of a package it genuinely needs, the manifest check
+ * stays quiet but the source-copy check fires.
+ */
+type FailureMode = 'unpinned' | 'pinned';
+
 interface Analysis {
   dockerfile: string;
   roots: WorkspacePackage[];
-  includeDev: boolean;
+  mode: FailureMode;
+  installCommand: string;
+  /** Closure the manifest check is evaluated against, per the mode. */
   required: Set<string>;
   /** COPY sources available to the install (same stage, before the RUN). */
   installSources: string[];
@@ -271,11 +317,17 @@ function analyze(dockerfile: string): Analysis | null {
   );
   if (roots.length === 0) return null;
 
-  const includeDev = installsDevDependencies(installStage.installCommand!);
+  const installCommand = installStage.installCommand!;
+  const mode: FailureMode = isLockfilePinned(installCommand) ? 'pinned' : 'unpinned';
+  // Pinned installs only care about what ends up in the built bundle, so root
+  // devDependencies are out. Unpinned installs must resolve everything they
+  // install, which includes devDependencies unless the install is `--prod`.
+  const includeDev = mode === 'unpinned' && installsDevDependencies(installCommand);
   return {
     dockerfile,
     roots,
-    includeDev,
+    mode,
+    installCommand,
     required: resolveWorkspaceClosure(roots, includeDev),
     installSources,
     allSources: stages.flatMap((s) => s.copies.filter((c) => !c.fromStage).flatMap((c) => c.sources)),
@@ -315,19 +367,52 @@ describe('Dockerfile workspace-manifest copy scope', () => {
   it.each(COVERED)('%s copies every transitive workspace manifest it installs', (dockerfile) => {
     const analysis = ANALYSES.get(dockerfile)!;
     const missing = [...analysis.required]
-      .filter((name) => !coversManifest(WORKSPACE_PACKAGES.get(name)!.dir, analysis.installSources))
+      .filter((name) => {
+        const dir = WORKSPACE_PACKAGES.get(name)!.dir;
+        if (coversManifest(dir, analysis.installSources)) return false;
+        // Pinned installs survive a missing manifest — unless the image also
+        // compiles the package's source (v0.98.0). See the FailureMode doc.
+        return analysis.mode === 'unpinned' || coversSource(dir, analysis.allSources);
+      })
       .sort();
+
+    const consequence =
+      analysis.mode === 'unpinned'
+        ? 'pnpm resolves `workspace:*` from disk here (the install is not `--frozen-lockfile`), so the ' +
+          'build fails outright with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND'
+        : 'the install is `--frozen-lockfile`, so pnpm silently installs nothing for it while a later ' +
+          'stage still copies and compiles its source — the v0.98.0 failure mode, an unresolved-import ' +
+          'error at bundle time rather than a missing-package one';
 
     expect(
       missing,
-      `${dockerfile} builds ${analysis.roots.map((r) => r.name).join(', ')} and installs ` +
-        `${analysis.includeDev ? 'dependencies + devDependencies' : 'dependencies only (--prod)'}, ` +
-        `but never copies the manifest for: ${missing.join(', ')}. Add ` +
+      `${dockerfile} builds ${analysis.roots.map((r) => r.name).join(', ')} but never copies the ` +
+        `manifest for: ${missing.join(', ')}. ${consequence}. Add ` +
         missing
           .map((n) => `\`COPY ${WORKSPACE_PACKAGES.get(n)!.dir}/package.json ./${WORKSPACE_PACKAGES.get(n)!.dir}/\``)
           .join(' and ') +
         ' before the `RUN pnpm install`.',
     ).toEqual([]);
+  });
+
+  it('classifies both install modes, so neither branch is vacuous', () => {
+    const modes = COVERED.map((f) => `${f}: ${ANALYSES.get(f)!.mode}`).sort();
+    // Pinned images are only checked for the silent-degradation shape and
+    // unpinned ones only for the hard-failure shape. If a regex change ever
+    // collapsed everything into one bucket the guard would keep passing while
+    // covering half of what it claims to, so pin the classification itself.
+    expect(modes).toEqual([
+      'apps/api/Dockerfile: pinned',
+      'apps/m365-graph-actions-executor/Dockerfile: pinned',
+      'apps/m365-graph-read-executor/Dockerfile: pinned',
+      'apps/portal/Dockerfile: pinned',
+      'apps/web/Dockerfile: pinned',
+      'docker/Dockerfile.api.dev: unpinned',
+      'docker/Dockerfile.api: pinned',
+      'docker/Dockerfile.portal.dev: unpinned',
+      'docker/Dockerfile.web.dev: unpinned',
+      'docker/Dockerfile.web: pinned',
+    ]);
   });
 
   it.each(COVERED)('%s copies the source of every workspace package it installs', (dockerfile) => {
