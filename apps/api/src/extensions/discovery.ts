@@ -16,8 +16,9 @@ const MANIFEST_FILENAME = 'breeze-extension.json';
  * Repo-root extensions/ dir. Mirrors resolveMigrationsDir() in autoMigrate.ts:
  * ESM dev resolves relative to this file (src/extensions/ → ../../../../extensions
  * = <repo>/extensions); the CJS Docker bundle falls back to cwd. Overridable via
- * BREEZE_EXTENSIONS_DIR (used by the prod image, where extensions are copied
- * next to the bundle).
+ * BREEZE_EXTENSIONS_DIR (the prod image points it at an empty mount directory
+ * where deployments place extensions.yaml and, for the deprecated legacy path,
+ * source extension directories).
  */
 export function resolveExtensionsRoot(): string {
   if (process.env.BREEZE_EXTENSIONS_DIR) {
@@ -30,6 +31,27 @@ export function resolveExtensionsRoot(): string {
   } catch {
     return path.join(process.cwd(), 'extensions');
   }
+}
+
+/**
+ * Names of directories under `root` that carry a legacy source-extension
+ * manifest. Deliberately does NOT parse the manifests: this scan feeds the
+ * flag-off deprecation warning in the loader, and a broken manifest on a
+ * disabled legacy path must not be able to fail the boot.
+ */
+export function listSourceExtensionCandidates(root: string = resolveExtensionsRoot()): string[] {
+  if (!existsSync(root)) return [];
+  const candidates: string[] = [];
+  for (const entry of readdirSync(root)) {
+    const dir = path.join(root, entry);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    if (existsSync(path.join(dir, MANIFEST_FILENAME))) candidates.push(entry);
+  }
+  return candidates.sort((a, b) => a.localeCompare(b));
 }
 
 export function discoverExtensions(root: string = resolveExtensionsRoot()): DiscoveredExtension[] {

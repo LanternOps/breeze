@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- Source-directory ("build-time") extension loading. Stock API images no longer install, build, or bake in `extensions/*` sources, and `extensions/*` is no longer a pnpm workspace glob. For one compatibility window, source extensions still load when `BREEZE_LEGACY_SOURCE_EXTENSIONS=true` is set (each emits a structured deprecation warning); an extension name may not be delivered as a source directory and a signed runtime artifact simultaneously — the boot fails instead of letting one silently shadow the other. Signed runtime bundles declared in `extensions.yaml` are the supported path. Earliest removal and its gate are recorded in `docs/extensions/build-time-transition.md`.
+
 ### Security
 - Microsoft 365 ticket mailbox consent now verifies the Microsoft tenant and consenting administrator identity and binds verified tenant ownership to the Breeze partner. Existing active connections, plus disabled rows that retain legacy tenant or cursor state, require consent again after upgrade; clean disabled rows remain disabled.
 
