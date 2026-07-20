@@ -16,6 +16,8 @@ import {
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
   listCustomerEmailDomains, createCustomerEmailDomain, updateCustomerEmailDomain, deleteCustomerEmailDomain,
 } from '../services/ticketConfigService';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const ticketConfigRoutes = new Hono();
 
@@ -28,6 +30,14 @@ const idParam = z.object({ id: z.string().guid() });
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
+const partnerGlobalDeniedMessage = 'Full partner organization access is required to manage partner-wide ticket configuration';
+
+const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+  }
+  return next();
+};
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketConfigServiceError) {
@@ -49,9 +59,14 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
 
 // Middleware version of the admin check — runs after writePerm (which populates
 // c.get('permissions')) and gates mutating routes so a non-admin gets a clear
-// admin-403 rather than a generic permission-denied message.
+// admin-403 rather than a generic permission-denied message. Full-partner
+// capability is checked first so wildcard/platform-admin status cannot bypass
+// selected/none organization access.
 const adminMiddleware = async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext;
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+  }
   const perms = c.get('permissions') as UserPermissions | undefined;
   const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);
   if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role' }, 403);
@@ -59,7 +74,7 @@ const adminMiddleware = async (c: Context, next: Next) => {
 };
 
 // GET / — full partner ticketing config (statuses + priority settings).
-ticketConfigRoutes.get('/', scopes, readPerm, async (c) => {
+ticketConfigRoutes.get('/', scopes, readPerm, requirePartnerGlobalAccess, async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   const data = await getTicketConfig(partnerId);
@@ -99,6 +114,18 @@ ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, writePerm, adminMi
     const { id } = c.req.valid('param');
     const { orgId } = c.req.valid('json');
     const row = await convertEmailInbound(partnerId, id, orgId, { userId: auth.user.id, name: auth.user.name });
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_email_inbound.convert',
+      resourceType: 'ticket_email_inbound',
+      resourceId: id,
+      details: {
+        partnerId,
+        orgId,
+        ticketId: row.ticketId,
+        changedFields: ['parseStatus', 'ticketId']
+      }
+    });
     return c.json({ data: row });
   } catch (err) {
     return handleServiceError(c, err);
@@ -113,6 +140,13 @@ ticketConfigRoutes.patch('/email-inbound/:id/dismiss', scopes, writePerm, adminM
   try {
     const { id } = c.req.valid('param');
     const row = await dismissEmailInbound(partnerId, id);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_email_inbound.dismiss',
+      resourceType: 'ticket_email_inbound',
+      resourceId: id,
+      details: { partnerId, changedFields: ['parseStatus'] }
+    });
     return c.json({ data: row });
   } catch (err) {
     return handleServiceError(c, err);
@@ -135,7 +169,16 @@ ticketConfigRoutes.post('/inbound-domains', scopes, writePerm, adminMiddleware, 
   if (partnerId instanceof Response) return partnerId;
   const auth = c.get('auth') as AuthContext;
   try {
-    const row = await createCustomerEmailDomain(partnerId, c.req.valid('json'), { userId: auth.user.id });
+    const data = c.req.valid('json');
+    const row = await createCustomerEmailDomain(partnerId, data, { userId: auth.user.id });
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_customer_email_domain.create',
+      resourceType: 'ticket_customer_email_domain',
+      resourceId: row.id,
+      resourceName: row.domain,
+      details: { partnerId, orgId: data.orgId, changedFields: Object.keys(data) }
+    });
     return c.json({ data: row });
   } catch (err) {
     return handleServiceError(c, err);
@@ -147,7 +190,17 @@ ticketConfigRoutes.patch('/inbound-domains/:id', scopes, writePerm, adminMiddlew
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
-    const row = await updateCustomerEmailDomain(partnerId, c.req.valid('param').id, c.req.valid('json'));
+    const { id } = c.req.valid('param');
+    const data = c.req.valid('json');
+    const row = await updateCustomerEmailDomain(partnerId, id, data);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_customer_email_domain.update',
+      resourceType: 'ticket_customer_email_domain',
+      resourceId: id,
+      resourceName: row.domain,
+      details: { partnerId, changedFields: Object.keys(data) }
+    });
     return c.json({ data: row });
   } catch (err) {
     return handleServiceError(c, err);
@@ -159,7 +212,15 @@ ticketConfigRoutes.delete('/inbound-domains/:id', scopes, writePerm, adminMiddle
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
-    await deleteCustomerEmailDomain(partnerId, c.req.valid('param').id);
+    const { id } = c.req.valid('param');
+    await deleteCustomerEmailDomain(partnerId, id);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_customer_email_domain.delete',
+      resourceType: 'ticket_customer_email_domain',
+      resourceId: id,
+      details: { partnerId, changedFields: ['deleted'] }
+    });
     return c.json({ data: { ok: true } });
   } catch (err) {
     return handleServiceError(c, err);
@@ -172,6 +233,14 @@ ticketConfigRoutes.post('/statuses/reorder', scopes, writePerm, adminMiddleware,
   try {
     const { ids } = c.req.valid('json');
     const result = await reorderTicketStatuses(partnerId, ids);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_status.reorder',
+      resourceType: 'ticket_status',
+      resourceId: partnerId,
+      resourceName: 'Ticket status order',
+      details: { partnerId, statusIds: ids, changedFields: ['sortOrder'] }
+    });
     return c.json({ data: result });
   } catch (err) {
     return handleServiceError(c, err);
@@ -182,7 +251,16 @@ ticketConfigRoutes.post('/statuses', scopes, writePerm, adminMiddleware, zValida
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
-    const row = await createTicketStatus(partnerId, c.req.valid('json'));
+    const data = c.req.valid('json');
+    const row = await createTicketStatus(partnerId, data);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_status.create',
+      resourceType: 'ticket_status',
+      resourceId: row.id,
+      resourceName: row.name,
+      details: { partnerId, changedFields: Object.keys(data) }
+    });
     return c.json({ data: row }, 201);
   } catch (err) {
     return handleServiceError(c, err);
@@ -194,7 +272,16 @@ ticketConfigRoutes.patch('/statuses/:id', scopes, writePerm, adminMiddleware, zV
   if (partnerId instanceof Response) return partnerId;
   try {
     const { id } = c.req.valid('param');
-    const row = await updateTicketStatus(partnerId, id, c.req.valid('json'));
+    const data = c.req.valid('json');
+    const row = await updateTicketStatus(partnerId, id, data);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_status.update',
+      resourceType: 'ticket_status',
+      resourceId: id,
+      resourceName: row.name,
+      details: { partnerId, changedFields: Object.keys(data) }
+    });
     return c.json({ data: row });
   } catch (err) {
     return handleServiceError(c, err);
@@ -205,7 +292,16 @@ ticketConfigRoutes.put('/priorities', scopes, writePerm, adminMiddleware, zValid
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {
-    const priorities = await upsertPrioritySettings(partnerId, c.req.valid('json'));
+    const data = c.req.valid('json');
+    const priorities = await upsertPrioritySettings(partnerId, data);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_priority_settings.update',
+      resourceType: 'ticket_priority_settings',
+      resourceId: partnerId,
+      resourceName: 'Ticket priority settings',
+      details: { partnerId, changedFields: Object.keys(data) }
+    });
     return c.json({ data: { priorities } });
   } catch (err) {
     return handleServiceError(c, err);

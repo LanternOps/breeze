@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
+const { serviceMocks, authRef, permsRef, writeRouteAuditMock } = vi.hoisted(() => ({
   serviceMocks: {
     getTicketConfig: vi.fn(),
     createTicketStatus: vi.fn(),
@@ -20,6 +20,7 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
       scope: 'partner' as string,
       user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
       partnerId: 'p-1' as string | null,
+      partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
       orgId: null as string | null,
       accessibleOrgIds: null as string[] | null,
       orgCondition: () => undefined,
@@ -27,6 +28,7 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
     },
   },
   permsRef: { current: { permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'read' }] } },
+  writeRouteAuditMock: vi.fn(),
 }));
 
 vi.mock('../services/ticketConfigService', async () => {
@@ -52,6 +54,10 @@ vi.mock('../middleware/auth', () => ({
   },
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: writeRouteAuditMock,
+}));
+
 import { ticketConfigRoutes } from './ticketConfig';
 import { TicketConfigServiceError } from '../services/ticketConfigService';
 
@@ -60,10 +66,64 @@ const STATUS_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 
 beforeEach(() => {
   Object.values(serviceMocks).forEach((m) => m.mockReset());
+  writeRouteAuditMock.mockReset();
   authRef.current.scope = 'partner';
   authRef.current.partnerId = 'p-1';
+  authRef.current.partnerOrgAccess = 'all';
   authRef.current.user.isPlatformAdmin = false;
   permsRef.current = { permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'read' }] };
+});
+
+const GLOBAL_ROUTE_CASES: Array<[string, string, unknown?]> = [
+  ['GET', '/'],
+  ['GET', '/email-inbound'],
+  ['POST', '/email-inbound/00000000-0000-0000-0000-000000000001/convert', { orgId: '00000000-0000-0000-0000-0000000000aa' }],
+  ['PATCH', '/email-inbound/00000000-0000-0000-0000-000000000001/dismiss'],
+  ['GET', '/inbound-domains'],
+  ['POST', '/inbound-domains', { domain: 'acme.com', orgId: 'aaaaaaaa-1111-4222-8333-444455556666' }],
+  ['PATCH', '/inbound-domains/bbbbbbbb-1111-4222-8333-444455556666', { isActive: false }],
+  ['DELETE', '/inbound-domains/bbbbbbbb-1111-4222-8333-444455556666'],
+  ['POST', '/statuses', { name: 'Triage', coreStatus: 'open' }],
+  ['PATCH', `/statuses/${STATUS_ID}`, { name: 'Updated' }],
+  ['POST', '/statuses/reorder', { ids: [STATUS_ID] }],
+  ['PUT', '/priorities', { priorities: { high: { label: 'High' } } }],
+];
+
+describe('partner-global authorization', () => {
+  it.each(
+    (['selected', 'none'] as const).flatMap((partnerOrgAccess) =>
+      GLOBAL_ROUTE_CASES.map(([method, path, body]) => [partnerOrgAccess, method, path, body] as const)
+    )
+  )('rejects %s-org wildcard/platform admin before %s %s service or audit work', async (partnerOrgAccess, method, path, body) => {
+    authRef.current.partnerOrgAccess = partnerOrgAccess;
+    authRef.current.user.isPlatformAdmin = true;
+    permsRef.current = ADMIN_PERMS;
+
+    const res = await ticketConfigRoutes.request(path, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(403);
+    for (const serviceMock of Object.values(serviceMocks)) {
+      expect(serviceMock).not.toHaveBeenCalled();
+    }
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('allows system scope with an explicit partner context', async () => {
+    authRef.current.scope = 'system';
+    authRef.current.partnerOrgAccess = null;
+    authRef.current.user.isPlatformAdmin = true;
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.getTicketConfig.mockResolvedValue({ statuses: [], priorities: {} });
+
+    const res = await ticketConfigRoutes.request('/');
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.getTicketConfig).toHaveBeenCalledWith('p-1');
+  });
 });
 
 describe('auth', () => {
@@ -113,6 +173,17 @@ describe('POST /statuses', () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ data: { id: 's-9', name: 'Triage' } });
     expect(serviceMocks.createTicketStatus).toHaveBeenCalledWith('p-1', expect.objectContaining({ name: 'Triage', coreStatus: 'open' }));
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null,
+      action: 'ticket_status.create',
+      resourceType: 'ticket_status',
+      resourceId: 's-9',
+      resourceName: 'Triage',
+      details: expect.objectContaining({
+        partnerId: 'p-1',
+        changedFields: expect.arrayContaining(['name', 'coreStatus']),
+      }),
+    }));
   });
 
   it('201 for a platform admin even without wildcard permission', async () => {
@@ -124,6 +195,23 @@ describe('POST /statuses', () => {
 });
 
 describe('PATCH /statuses/:id', () => {
+  it('audits a successful status update with changed fields', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.updateTicketStatus.mockResolvedValue({ id: STATUS_ID, name: 'Waiting' });
+    const res = await ticketConfigRoutes.request(`/statuses/${STATUS_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Waiting' }),
+    });
+    expect(res.status).toBe(200);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_status.update',
+      resourceId: STATUS_ID,
+      resourceName: 'Waiting',
+      details: { partnerId: 'p-1', changedFields: ['name'] },
+    }));
+  });
+
   it('maps a TicketConfigServiceError to its status', async () => {
     permsRef.current = ADMIN_PERMS;
     const { TicketConfigServiceError } = await vi.importActual<typeof import('../services/ticketConfigService')>('../services/ticketConfigService');
@@ -169,6 +257,11 @@ describe('POST /statuses/reorder', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { updated: 1 } });
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_status.reorder',
+      resourceId: 'p-1',
+      details: { partnerId: 'p-1', statusIds: [STATUS_ID], changedFields: ['sortOrder'] },
+    }));
   });
 });
 
@@ -184,6 +277,11 @@ describe('PUT /priorities', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { priorities: { high: { label: 'High', responseSlaMinutes: 30, resolutionSlaMinutes: 90 } } } });
     expect(serviceMocks.upsertPrioritySettings).toHaveBeenCalledWith('p-1', expect.objectContaining({ priorities: expect.any(Object) }));
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_priority_settings.update',
+      resourceId: 'p-1',
+      details: { partnerId: 'p-1', changedFields: ['priorities'] },
+    }));
   });
 
   it('403 for a non-admin', async () => {
@@ -244,6 +342,17 @@ describe('POST /ticket-config/email-inbound/:id/convert', () => {
     });
     expect(res.status).toBe(200);
     expect(serviceMocks.convertEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID, ORG_ID, { userId: 'u-1', name: 'Tess Tech' });
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_email_inbound.convert',
+      resourceId: INBOUND_ID,
+      details: {
+        partnerId: 'p-1',
+        orgId: ORG_ID,
+        ticketId: 't-9',
+        changedFields: ['parseStatus', 'ticketId'],
+      },
+    }));
+    expect(JSON.stringify(writeRouteAuditMock.mock.calls[0]?.[1])).not.toContain('mail body');
   });
   it('surfaces ORG_NOT_ACCESSIBLE as 400 with code', async () => {
     permsRef.current = ADMIN_PERMS;
@@ -272,6 +381,11 @@ describe('PATCH /ticket-config/email-inbound/:id/dismiss', () => {
     const res = await ticketConfigRoutes.request(`/email-inbound/${INBOUND_ID}/dismiss`, { method: 'PATCH' });
     expect(res.status).toBe(200);
     expect(serviceMocks.dismissEmailInbound).toHaveBeenCalledWith('p-1', INBOUND_ID);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_email_inbound.dismiss',
+      resourceId: INBOUND_ID,
+      details: { partnerId: 'p-1', changedFields: ['parseStatus'] },
+    }));
   });
   it('surfaces INBOUND_ROW_ALREADY_RESOLVED as 409', async () => {
     permsRef.current = ADMIN_PERMS;
@@ -326,6 +440,16 @@ describe('inbound-domains routes (Phase 5)', () => {
       expect.objectContaining({ domain: 'acme.com', orgId: ORG_ID }),
       { userId: 'u-1' },
     );
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_customer_email_domain.create',
+      resourceId: MAP_ID,
+      resourceName: 'acme.com',
+      details: expect.objectContaining({
+        partnerId: 'p-1',
+        orgId: ORG_ID,
+        changedFields: expect.arrayContaining(['domain', 'orgId']),
+      }),
+    }));
   });
 
   it('POST 400 for a freemail domain (validator rejects before the service)', async () => {
@@ -366,12 +490,34 @@ describe('inbound-domains routes (Phase 5)', () => {
     expect(res.status).toBe(404);
   });
 
+  it('PATCH 200 audits mapping identifiers and changed fields', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.updateCustomerEmailDomain.mockResolvedValue({ id: MAP_ID, domain: 'acme.com', orgId: ORG_ID, isActive: false });
+    const res = await ticketConfigRoutes.request(`/inbound-domains/${MAP_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
+    });
+    expect(res.status).toBe(200);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_customer_email_domain.update',
+      resourceId: MAP_ID,
+      resourceName: 'acme.com',
+      details: { partnerId: 'p-1', changedFields: ['isActive'] },
+    }));
+  });
+
   it('DELETE 200 for an admin', async () => {
     permsRef.current = ADMIN_PERMS;
     serviceMocks.deleteCustomerEmailDomain.mockResolvedValue(undefined);
     const res = await ticketConfigRoutes.request(`/inbound-domains/${MAP_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(serviceMocks.deleteCustomerEmailDomain).toHaveBeenCalledWith('p-1', MAP_ID);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_customer_email_domain.delete',
+      resourceId: MAP_ID,
+      details: { partnerId: 'p-1', changedFields: ['deleted'] },
+    }));
   });
 
   it('DELETE maps a not-found mapping to 404', async () => {
