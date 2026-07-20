@@ -329,6 +329,7 @@ dataRoutes.get(
   zValidator('query', dataQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
@@ -350,7 +351,15 @@ dataRoutes.get(
     }
 
     if (query.siteId) {
+      if (perms?.allowedSiteIds && !canAccessSite(perms, query.siteId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
       conditions.push(eq(devices.siteId, query.siteId));
+    } else if (perms?.allowedSiteIds) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: { overview: {}, byOsType: [], agentVersions: [], issues: [] } });
+      }
+      conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
