@@ -32,7 +32,7 @@ describe('createGraphActionsExecutorClient', () => {
     });
     const result = await client.executeWriteAction(req());
     expect(result).toEqual({ success: true, action: 'm365.user.disable', userId: USER });
-    const call = fetchImpl.mock.calls[0];
+    const call = fetchImpl.mock.calls[0]!;
     expect(call[0]).toBe('https://actions.internal/v1/execute-action');
     expect(call[1].headers.authorization).toMatch(/^Bearer /);
   });

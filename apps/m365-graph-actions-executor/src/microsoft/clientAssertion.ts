@@ -33,6 +33,11 @@ export async function createClientAssertion(input: {
     if (!Number.isFinite(issuedAt)) throw new ClientAssertionError();
 
     const certificate = new X509Certificate(input.certificatePem);
+    // `x5t` is the Microsoft-identity-platform-mandated SHA-1 X.509 certificate
+    // thumbprint (RFC 7515 §4.1.7): an IDENTIFIER Azure AD uses to match the
+    // registered certificate, not a security primitive. The assertion itself is
+    // signed with RS256 below. SHA-1 is required here and cannot be substituted.
+    // codeql[js/weak-cryptographic-algorithm]
     const x5t = createHash('sha1').update(certificate.raw).digest('base64url');
     const privateKey = await importPKCS8(input.privateKeyPem, 'RS256');
 

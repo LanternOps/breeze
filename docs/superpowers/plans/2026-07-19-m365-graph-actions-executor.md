@@ -103,7 +103,7 @@ describe('m365WriteActionSchema', () => {
   });
 
   it("rejects a userIdentifier containing quotes/backslashes", () => {
-    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.disable', userIdentifier: "a'b@c.com", reason: 'x' }).success)
+    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.disable', userIdentifier: "a'b@example.com", reason: 'x' }).success)
       .toBe(false);
   });
 });
