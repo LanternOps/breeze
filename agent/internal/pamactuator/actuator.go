@@ -87,6 +87,16 @@ type Request struct {
 	SubjectUsername string
 }
 
+// ReasonNoConsentWindow is returned when the helper looked at the consent
+// desktop and found no UAC prompt at all.
+//
+// This string is load-bearing beyond logging: the PAM fail-closed gate treats
+// it as PROOF that no denied prompt can still be on screen (see
+// sessionbroker.PamDismissOutcome.Cleared). Renaming the literal without
+// updating that check fails closed into a permanent PAM lockout, so producers
+// and consumers both reference this constant rather than repeating the string.
+const ReasonNoConsentWindow = "no_consent_window"
+
 // Result reports what the actuator did. Returned to the server so the
 // approval flow can mark the elevation_requests row as satisfied or
 // retry/escalate (Q4: log + audit row + return server response).

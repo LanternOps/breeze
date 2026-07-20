@@ -17,6 +17,7 @@ import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -92,7 +93,7 @@ registerTool({
 
       return JSON.stringify({ playbooks, count: playbooks.length });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeThrownToolError('playbooks', err);
       console.error(`[AI] list_playbooks failed:`, err);
       return JSON.stringify({ error: `list_playbooks failed: ${message}` });
     }
@@ -234,7 +235,7 @@ registerTool({
         message: 'Execution created. Execute each step sequentially and update status/step results as work progresses.',
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeThrownToolError('playbooks', err);
       console.error(`[AI] execute_playbook failed:`, err);
       return JSON.stringify({ error: `execute_playbook failed: ${message}` });
     }
@@ -311,7 +312,7 @@ registerTool({
 
       return JSON.stringify({ executions, count: executions.length });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeThrownToolError('playbooks', err);
       console.error(`[AI] get_playbook_history failed:`, err);
       return JSON.stringify({ error: `get_playbook_history failed: ${message}` });
     }

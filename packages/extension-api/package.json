@@ -15,6 +15,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^25.9.3",
     "drizzle-orm": "0.45.2",
     "hono": "^4.12.30",
     "typescript": "^5.7.2",

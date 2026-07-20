@@ -14,6 +14,7 @@ import {
   searchFleetLogs,
 } from './logSearch';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -152,7 +153,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           })),
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Search failed';
+        const message = sanitizeThrownToolError('event-logs', error);
         console.error('[ai:search_logs]', message, error);
         return JSON.stringify({ error: message });
       }
@@ -268,7 +269,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
             : undefined,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Trend analysis failed';
+        const message = sanitizeThrownToolError('event-logs', error);
         console.error('[ai:get_log_trends]', message, error);
         return JSON.stringify({ error: message });
       }
@@ -349,7 +350,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           },
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Correlation detection failed';
+        const message = sanitizeThrownToolError('event-logs', error);
         console.error('[ai:detect_log_correlations]', message, error);
         return JSON.stringify({ error: message });
       }

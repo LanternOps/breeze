@@ -9,8 +9,19 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
-import { executeTool } from '../services/aiTools';
+import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
+import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
+import {
+  isHeadlessGoogleTool,
+  executeGoogleToolHeadless,
+  GoogleConnectionUnavailableError,
+} from '../services/googleToolsHeadless';
+import {
+  isHeadlessM365Tool,
+  executeM365ToolHeadless,
+  M365ConnectionUnavailableError,
+} from '../services/m365ToolsHeadless';
 
 /**
  * Durable release worker (spec
@@ -185,7 +196,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     intentId,
     'approved',
     'executing',
-    { executedAt: null },
+    { executedAt: null, executionStartedAt: new Date() },
     { requireNotExpired: true },
   );
   if (!claimed) {
@@ -240,24 +251,58 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
   const { auth } = revalidation;
 
-  // Step 3: execute through the existing dispatch (guardrails, device
-  // gates, and whatever per-tool audit/ledger writes the handler itself
-  // makes) with the rebuilt context. Escape any inherited DB context first,
-  // then open the SAME org-scoped context a live request would run this
-  // call under (mirrors services/aiAgentSdkTools.ts's makeHandler /
-  // sessionHandler) so the tool handler's own `auth.orgCondition`-filtered
-  // reads see exactly the rebuilt actor's tenant scope — never a system-wide
-  // view, and never the short-lived system context the revalidation reads
-  // above used.
+  // Phase-1 deferral: the headless worker still cannot run session-aware M365
+  // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
+  // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
+  // Tier-3 tools (m365_disable_user, m365_reset_password) ARE ALSO
+  // headless-executable as of Phase 2 via the control-plane
+  // customer-graph-actions executor (executeM365ToolHeadless) — so gate the
+  // session_required fail on "not a headless Google tool AND not a headless
+  // M365 tool". See docs/superpowers/specs/
+  // 2026-07-19-action-intents-phase2-google-headless-design.md.
+  if (
+    !isHeadlessGoogleTool(intent.actionName)
+    && !isHeadlessM365Tool(intent.actionName)
+    && requiresLiveSession(intent.actionName)
+  ) {
+    await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
+    return;
+  }
+
+  // Step 3: execute with the rebuilt context. Escape any inherited DB context,
+  // then open the SAME org-scoped context a live request would use, bounded by
+  // the same per-tool timeout. Headless Google tools resolve their per-tenant
+  // OAuth connection by intent.orgId (fresh + re-authorized at execution);
+  // headless M365 tools resolve their customer-graph-actions connection the
+  // same way via the control-plane write-action service; everything else runs
+  // through executeTool.
+  const invoke = isHeadlessGoogleTool(intent.actionName)
+    ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
+    : isHeadlessM365Tool(intent.actionName)
+    ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
+    : () => executeTool(intent.actionName, intent.arguments, auth);
+
   let rawResult: string;
   try {
-    rawResult = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), () =>
-        executeTool(intent.actionName, intent.arguments, auth),
+    rawResult = await withToolTimeout(
+      runOutsideDbContext(() =>
+        withDbAccessContext(dbAccessContextFromAuth(auth), invoke),
       ),
+      getToolTimeout(intent.actionName),
+      intent.actionName,
     );
   } catch (err) {
-    console.error(`[IntentReleaseWorker] executeTool threw for intent ${intent.id}:`, err);
+    if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
+      // The org's Google/M365 connection is missing/rotated/inactive (or the
+      // M365 write-action ladder refused for a connection-level reason:
+      // disabled/rate-limited/executor-down) at release time — no API call
+      // was made. Fail closed with a distinct, categorized code.
+      await failIntent(intent, 'connection_unavailable', {
+        details: { actionName: intent.actionName },
+      });
+      return;
+    }
+    console.error(`[IntentReleaseWorker] tool execution threw for intent ${intent.id}:`, err);
     await failIntent(intent, 'execution_error', {
       details: { error: err instanceof Error ? err.message : String(err) },
       executed: true,
@@ -297,8 +342,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   });
 
   if (!completed) {
-    // Lost the executing -> completed CAS AFTER executeTool already ran and
-    // had its real-world side effect (e.g. the stale-executing reaper beat
+    // Lost the executing -> completed CAS AFTER the tool already ran (via
+    // executeTool or executeGoogleToolHeadless) and had its real-world side
+    // effect (e.g. the stale-executing reaper beat
     // us to failed:execution_lost on an extremely slow tool call, or a
     // duplicate delivery raced this one to the terminal state first). The
     // side effect already happened and cannot be undone; there is nothing

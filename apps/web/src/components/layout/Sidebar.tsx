@@ -51,6 +51,7 @@ import {
   Ban,
   Boxes,
   Bug,
+  Puzzle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -62,6 +63,7 @@ import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
 import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
+import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
 
 interface SidebarProps {
@@ -300,6 +302,17 @@ export const navSections: NavSection[] = [
   },
 ];
 
+// Deliberately NOT part of `navSections`: that array is a static module-level
+// const (asserted structurally by Sidebar.nav.test.tsx — exact core section
+// order/i18n parity), but the runtime-extension "Extensions" section depends
+// on an async registry fetch (`useExtensionNavigation`) that can only run
+// inside the component. It is built and appended to the render output below
+// (see `extensionsSection`), always AFTER the static sections, so a registry
+// failure or an empty enabled-navigation list hides only this addition —
+// every core section/test stays untouched. `sectionForHref`/`activeHref`
+// below are extended to include it so the active-page highlight and
+// auto-expand behavior work for extension pages too.
+
 // ---------------------------------------------------------------------------
 // Helpers: localStorage for sidebar mode & section collapse state
 // ---------------------------------------------------------------------------
@@ -389,6 +402,22 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
+
+  // Runtime-extension navigation (see the comment above `navSections`).
+  // `useExtensionNavigation` never throws — an empty list here (registry
+  // failure, no enabled extension contributes navigation, or none enabled at
+  // all) simply omits the whole section below.
+  const extensionNavLinks = useExtensionNavigation();
+  const extensionsSection: NavSection | null =
+    extensionNavLinks.length > 0
+      ? {
+          id: 'extensions',
+          label: 'Extensions',
+          labelKey: 'nav.sectionExtensions',
+          icon: Puzzle,
+          items: extensionNavLinks.map((link) => ({ name: link.name, href: link.href, icon: Puzzle })),
+        }
+      : null;
 
   // --- Responsive breakpoints -----------------------------------------------
   // Track whether viewport is below lg (1024px) or md (768px) to override mode
@@ -488,11 +517,14 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
   const isNarrow = effectiveMode !== 'open';
 
-  // Find the best matching active href
+  // Find the best matching active href. Includes the runtime-extension items
+  // (not part of the static `allNavItems`) so an extension's own page/nav
+  // link highlights correctly while it's active.
   const resolvedPath = pathAliases[currentPath] ?? currentPath;
   const activeHref = useMemo(() => {
     let best: string | null = null;
-    for (const item of allNavItems) {
+    const candidates = extensionsSection ? [...allNavItems, ...extensionsSection.items] : allNavItems;
+    for (const item of candidates) {
       const matches = item.href === '/'
         ? resolvedPath === '/'
         : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
@@ -501,10 +533,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       }
     }
     return best;
-  }, [resolvedPath]);
+  }, [resolvedPath, extensionsSection]);
 
-  // Auto-expand: the section containing the active page should be expanded
-  const activeSectionId = activeHref ? sectionForHref(activeHref) : null;
+  // Auto-expand: the section containing the active page should be expanded.
+  // Falls back to the extensions section (not covered by the static
+  // `sectionForHref`) when the active href belongs to it.
+  const activeSectionId = activeHref
+    ? (sectionForHref(activeHref)
+        ?? (extensionsSection && extensionsSection.items.some((item) => item.href === activeHref)
+          ? extensionsSection.id
+          : null))
+    : null;
 
   // --- Expanded sections state (with auto-expand for active page) ----------
   // Start empty to match server render; hydrate from localStorage in effect
@@ -533,9 +572,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     for (const section of navSections) {
       next[section.id] = section.id === activeSectionId;
     }
+    if (extensionsSection) {
+      next[extensionsSection.id] = extensionsSection.id === activeSectionId;
+    }
     setExpandedSections(next);
     saveExpandedSections(next);
-  }, [activeSectionId]);
+  }, [activeSectionId, extensionsSection]);
 
   // --- Sidebar mode cycling ------------------------------------------------
   const cycleMode = () => {
@@ -735,6 +777,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       <nav ref={navScrollRef} data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
+        {extensionsSection && renderCollapsibleSection(extensionsSection)}
       </nav>
 
       {showLabels && (
@@ -789,6 +832,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <nav className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
           {topLevelNav.map((item) => renderNavItem(item, true))}
           {navSections.map((section) => renderCollapsibleSection(section, true))}
+          {extensionsSection && renderCollapsibleSection(extensionsSection, true)}
         </nav>
       </aside>
     </>

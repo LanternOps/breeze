@@ -230,8 +230,14 @@ const (
 
 // CommandResult represents the result of a command execution
 type CommandResult struct {
-	Status     string `json:"status"` // completed, failed, timeout
-	ExitCode   int    `json:"exitCode,omitempty"`
+	Status string `json:"status"` // completed, failed, timeout
+	// ExitCode is deliberately NOT omitempty (matching websocket.CommandResult):
+	// the server persists `result.exitCode ?? null`, so omitting the zero value
+	// would store NULL exit_code for every successful (exit-0) run (#2474).
+	// Failure paths that never spawn a process must set a synthetic nonzero
+	// exit code (NewErrorResult uses 1) so `exit_code = 0` always means "a
+	// process ran and exited cleanly".
+	ExitCode   int    `json:"exitCode"`
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
 	Error      string `json:"error,omitempty"`

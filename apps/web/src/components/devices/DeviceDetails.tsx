@@ -72,8 +72,12 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { Puzzle } from "lucide-react";
+import ExtensionSlotHost, {
+  useExtensionSlotDescriptors,
+} from "../extensions/ExtensionSlotHost";
 
-type Tab =
+type CoreTab =
   | "overview"
   | "details"
   | "hardware"
@@ -102,6 +106,21 @@ type Tab =
   | "backup"
   | "linked-profiles"
   | "tickets";
+
+/**
+ * Extension-contributed `device.detail.tabs` tab id:
+ * `ext:<extensionName>:<contributionId>` (contributionId is
+ * ExtensionSlotDescriptor.key without the extension-name prefix duplicated —
+ * see `ExtensionSlotDescriptor.key`, which this literally embeds via
+ * `` `ext:${descriptor.key}` ``). Existence is NOT tracked in this closed
+ * union — the registry (via `useExtensionSlotDescriptors`) is the source of
+ * truth. An `ext:...` id with no matching enabled descriptor (extension
+ * disabled/withdrawn after the hash was set) simply renders nothing, same
+ * no-oracle posture as ExtensionPageHost.
+ */
+type ExtTab = `ext:${string}`;
+
+type Tab = CoreTab | ExtTab;
 
 type DeviceDetailsProps = {
   device: Device;
@@ -150,7 +169,7 @@ function formatLastSeen(dateString: string, timezone?: string): string {
   );
 }
 
-const VALID_TABS: Tab[] = [
+const VALID_TABS: CoreTab[] = [
   "overview",
   "details",
   "hardware",
@@ -181,11 +200,24 @@ const VALID_TABS: Tab[] = [
   "tickets",
 ];
 
+// Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
+// `extensionName` (packages/extension-sdk NAME_RE: `[a-z][a-z0-9-]{1,31}`)
+// plus `:` plus `contributionId` (an `identifier`, or the `slot:element`
+// fallback key — both draw only from `[a-z0-9._:-]`). Hash-safe: none of
+// these characters are touched by `location.hash` normalization, and none
+// collide with the `/` this module's own hash format uses as a separator
+// (see `anomalyIdFromHash`'s sibling `<tab>/<rest>` shape).
+const EXT_TAB_RE = /^ext:[a-z][a-z0-9-]{1,31}:[a-z0-9._:-]+$/;
+
 // Pure hash parsers (leading `#` already stripped by useHashState) so they are
-// SSR-safe — the hash is adopted post-mount by the hook (#2421).
-function tabFromHash(hash: string): Tab | undefined {
+// SSR-safe — the hash is adopted post-mount by the hook (#2421). Exported for
+// direct unit-testing of the hash round-trip without mounting the (heavy)
+// full component.
+export function tabFromHash(hash: string): Tab | undefined {
   const seg = hash.split("/")[0] ?? "";
-  return VALID_TABS.includes(seg as Tab) ? (seg as Tab) : undefined;
+  if (VALID_TABS.includes(seg as CoreTab)) return seg as CoreTab;
+  if (EXT_TAB_RE.test(seg)) return seg as ExtTab;
+  return undefined;
 }
 
 function anomalyIdFromHash(hash: string): string | undefined {
@@ -200,6 +232,10 @@ export default function DeviceDetails({
   onAction,
 }: DeviceDetailsProps) {
   const { t } = useTranslation("devices");
+  // Enabled `device.detail.tabs` contributions, deterministically ordered.
+  // Never throws — a registry failure or zero enabled contributions simply
+  // appends no extension tabs (see useExtensionSlotDescriptors).
+  const extensionTabDescriptors = useExtensionSlotDescriptors("device.detail.tabs", 1);
   const [activeTab, setActiveTab] = useHashState<Tab>("overview", tabFromHash);
   const [focusedAnomalyId, setFocusedAnomalyId] = useHashState<
     string | undefined
@@ -422,6 +458,16 @@ export default function DeviceDetails({
       icon: <Database className="h-4 w-4" />,
       title: t("deviceDetails.backupStatusJobsSnapshotsAndVerification"),
     },
+    // --- Runtime extensions (device.detail.tabs@1) ---
+    // Appended last, after every core tab; `extensionTabDescriptors` is
+    // already deterministically ordered (order -> extension name ->
+    // contribution id), so this preserves that order here too.
+    ...extensionTabDescriptors.map((descriptor, index) => ({
+      id: `ext:${descriptor.key}` as ExtTab,
+      label: descriptor.label ?? descriptor.extensionName,
+      icon: <Puzzle className="h-4 w-4" />,
+      separator: index === 0,
+    })),
   ];
 
   return (
@@ -741,6 +787,24 @@ export default function DeviceDetails({
           deviceId={device.id}
           deviceStatus={device.status}
           timezone={effectiveTimezone}
+        />
+      )}
+
+      {activeTab.startsWith("ext:") && (
+        // Scoped to exactly the active extension's descriptor — never
+        // mounts every enabled device.detail.tabs contribution at once.
+        // CONTEXT: only the documented DeviceDetailTabContextV1 shape (no
+        // full `device` object, no orgName/siteName, nothing else).
+        <ExtensionSlotHost
+          slot="device.detail.tabs"
+          contractVersion={1}
+          descriptorKey={activeTab.slice("ext:".length)}
+          context={{
+            contractVersion: 1,
+            deviceId: device.id,
+            organizationId: device.orgId,
+            siteId: device.siteId,
+          }}
         />
       )}
     </div>

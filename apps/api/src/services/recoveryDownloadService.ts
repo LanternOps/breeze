@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 import { posix as pathPosix, resolve as resolvePath } from 'node:path';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { coerceS3EndpointUrl } from '@breeze/shared';
 import { recoveryTokens } from '../db/schema';
 import {
   asRecord,
@@ -46,10 +47,17 @@ function buildS3Client(config: {
   secretAccessKey?: string;
   sessionToken?: string;
 }) {
+  // These configs may have been persisted before endpoint validation existed
+  // (validateS3Details in routes/backup/schemas.ts), so a scheme-less
+  // endpoint here would otherwise reach the SDK and fail opaquely inside
+  // @smithy/core's endpoint resolver instead of pointing at the actual
+  // problem (Sentry BREEZE-P). See coerceS3EndpointUrl for the two distinct
+  // failure modes a scheme-less value produces.
+  const endpoint = coerceS3EndpointUrl(config.endpoint);
   return new S3Client({
     region: config.region,
-    endpoint: config.endpoint,
-    forcePathStyle: Boolean(config.endpoint),
+    endpoint,
+    forcePathStyle: Boolean(endpoint),
     credentials:
       config.accessKeyId && config.secretAccessKey
         ? {

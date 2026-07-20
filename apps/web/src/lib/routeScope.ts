@@ -67,6 +67,10 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/backup(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/c2c(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/dr(\/.*)?$/, kind: 'org-required' },
+  // Runtime extension pages: ExtensionPageContextV1.organizationId is a
+  // required non-empty field, and ExtensionPageHost wraps its content in
+  // OrgRequiredGate — same shape as backup/c2c/dr above.
+  { pattern: /^\/extensions(\/.*)?$/, kind: 'org-required' },
 
   // --- fleet-state (org-or-all) ---
   // NOTE: /patches is intentionally org-or-all, NOT catalog. It honours the org

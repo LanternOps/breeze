@@ -16,6 +16,7 @@ import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import { sanitizePageContext } from './aiInputSanitizer';
+import { looksLikeInternalErrorDetail } from './aiToolErrors';
 
 // Current model id so the Claude Agent SDK can price it natively. A stale id makes the
 // SDK report total_cost_usd: 0 → $0.00 cost tracking (issue #1326). Successor to the
@@ -758,8 +759,16 @@ const SAFE_ERROR_PATTERNS = [
 export function sanitizeErrorForClient(err: unknown): string {
   if (err instanceof Error) {
     const msg = err.message;
-    // Only allow messages that match known safe patterns
-    if (SAFE_ERROR_PATTERNS.some(pattern => pattern.test(msg))) {
+    // Only allow messages that match known safe patterns AND do not look like
+    // driver/runtime output (#2603). Without the second check the allowlist is
+    // too loose: `/permission/i` admits `permission denied for table devices`
+    // and `/invalid input/i` admits `invalid input syntax for type uuid: "abc"`,
+    // both of which disclose schema. looksLikeInternalErrorDetail is the single
+    // authority for "is this internal detail".
+    if (
+      !looksLikeInternalErrorDetail(msg) &&
+      SAFE_ERROR_PATTERNS.some(pattern => pattern.test(msg))
+    ) {
       // Double-check: strip any file paths or stack traces that might have slipped in
       const cleaned = msg.replace(/\s+at\s+\S+/g, '').replace(/[A-Za-z]:\\[^\s]+/g, '').replace(/\/[^\s]*\/[^\s]*/g, '').trim();
       return cleaned || 'An internal error occurred. Please try again.';

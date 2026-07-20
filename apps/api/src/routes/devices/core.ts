@@ -1202,6 +1202,14 @@ coreRoutes.post(
         tokenIssuedAt: new Date(),
         previousTokenHash: null,
         previousTokenExpiresAt: null,
+        // Issue #2621 — this is the incident-response revocation path, so it must
+        // also kill any staged (pending) rotation. A staged credential minted
+        // before the revocation would otherwise keep authenticating for the rest
+        // of its window, and could be promoted over this admin-issued token.
+        pendingTokenHash: null,
+        pendingWatchdogTokenHash: null,
+        pendingHelperTokenHash: null,
+        pendingTokenExpiresAt: null,
         updatedAt: new Date()
       })
       .where(eq(devices.id, deviceId))

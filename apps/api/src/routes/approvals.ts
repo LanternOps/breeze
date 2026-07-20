@@ -14,7 +14,6 @@ import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentStatus
 import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
-import { transitionIntent } from '../services/actionIntents/intentService';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
@@ -320,14 +319,38 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     if (existing.intentId) {
       const intentId = existing.intentId;
       try {
-        const wonIntent = await transitionIntent(intentId, 'pending_approval', 'rejected', {
-          decidedAt: new Date(),
-          decidedByUserId: userId,
-        });
-        if (wonIntent) {
-          const [linkedIntent] = await runOutsideDbContext(() =>
-            withSystemDbAccessContext(async () => {
-              await db
+        // Atomic reject fan-in: the intent CAS (pending_approval -> rejected)
+        // and the sibling-approval expiry commit in ONE system-scoped
+        // transaction (a rejection has no intent_approved outbox row — mirror
+        // only what a reject writes). Collapsing them means a swallowed
+        // sibling-expiry failure can no longer leave the intent rejected while
+        // a sibling approver's row stays live to approve the flagged action.
+        // System scope: action_intents is org-scoped and the sibling
+        // approval_requests rows belong to OTHER approvers, invisible to this
+        // user's request context. The CAS RETURNING carries the intent
+        // metadata for the metrics event; a lost race (zero rows) is a clean
+        // no-op.
+        const rejected = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db.transaction(async (tx) => {
+              const cas = await tx
+                .update(actionIntents)
+                .set({ status: 'rejected', decidedAt: new Date(), decidedByUserId: userId })
+                .where(
+                  and(
+                    eq(actionIntents.id, intentId),
+                    eq(actionIntents.status, 'pending_approval'),
+                  ),
+                )
+                .returning({
+                  orgId: actionIntents.orgId,
+                  actionName: actionIntents.actionName,
+                  argumentDigest: actionIntents.argumentDigest,
+                  source: actionIntents.source,
+                });
+              if (cas.length === 0) return null;
+
+              await tx
                 .update(approvalRequests)
                 .set({ status: 'expired', decidedAt: new Date() })
                 .where(
@@ -337,30 +360,22 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                     ne(approvalRequests.id, existing.id),
                   ),
                 );
-              return db
-                .select({
-                  orgId: actionIntents.orgId,
-                  actionName: actionIntents.actionName,
-                  argumentDigest: actionIntents.argumentDigest,
-                  source: actionIntents.source,
-                })
-                .from(actionIntents)
-                .where(eq(actionIntents.id, intentId))
-                .limit(1);
+
+              return cas[0] ?? null;
             }),
-          );
-          if (linkedIntent) {
-            recordActionIntentEvent({
-              orgId: linkedIntent.orgId,
-              intentId,
-              actionName: linkedIntent.actionName,
-              argumentDigest: linkedIntent.argumentDigest,
-              source: linkedIntent.source,
-              outcome: 'rejected',
-              actorId: userId,
-              details: { reportedSuspicious: true, approvalRequestId: existing.id },
-            });
-          }
+          ),
+        );
+        if (rejected) {
+          recordActionIntentEvent({
+            orgId: rejected.orgId,
+            intentId,
+            actionName: rejected.actionName,
+            argumentDigest: rejected.argumentDigest,
+            source: rejected.source,
+            outcome: 'rejected',
+            actorId: userId,
+            details: { reportedSuspicious: true, approvalRequestId: existing.id },
+          });
         }
       } catch (err) {
         console.error('[approvals] report-suspicious: failed to reject linked action intent:', err);
@@ -749,65 +764,85 @@ async function decideHandler(
   }
 
   // Action intents (spec §4 / §3.4): mirror the decision onto the linked
-  // action_intents row. First-wins CAS via transitionIntent — a lost race
-  // (another approver, the reaper, or a retry already decided the intent)
-  // is a clean no-op; this row's own decision already committed above, so
-  // the user's decide call still succeeds either way.
+  // action_intents row. First-wins inline CAS — a lost race (another approver,
+  // the reaper, or a retry already decided the intent) is a clean no-op; this
+  // row's own decision already committed above, so the user's decide call still
+  // succeeds either way.
   if (updated?.intentId && linkedIntent) {
     const intentId = updated.intentId;
     const intentTargetStatus: ActionIntentStatus = status === 'approved' ? 'approved' : 'rejected';
     const soleOperatorApproval = status === 'approved' && linkedIntent.requestedByUserId === userId;
 
+    // Atomic intent fan-in: the intent CAS + sibling expiry + (approve-only)
+    // intent_approved outbox insert commit in ONE system-scoped transaction, so
+    // an `approved` intent can never exist without its intent_approved outbox
+    // row (which is exactly what the release worker consumes to run the
+    // action). Before this was one transaction, a swallowed fan-in failure left
+    // the intent approved with no outbox row → the worker never released it.
+    // MUST run in system scope: approval_requests is Shape-6 (user-id-scoped),
+    // so the sibling rows belong to OTHER approvers and are invisible to this
+    // approver's request context — a context-scoped UPDATE would silently
+    // match zero rows.
     let wonIntent = false;
     try {
-      wonIntent = await transitionIntent(intentId, 'pending_approval', intentTargetStatus, {
-        decidedAt: new Date(),
-        decidedByUserId: userId,
-        decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-        decidedVia: assurance.decidedVia,
-      });
+      wonIntent = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.transaction(async (tx) => {
+            // First-wins CAS, inline (was transitionIntent). A lost race
+            // (another approver, the reaper, or a retry already decided the
+            // intent) affects zero rows → clean no-op: do NOT expire siblings
+            // or write the outbox.
+            const cas = await tx
+              .update(actionIntents)
+              .set({
+                status: intentTargetStatus,
+                decidedAt: new Date(),
+                decidedByUserId: userId,
+                decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                decidedVia: assurance.decidedVia,
+              })
+              .where(
+                and(
+                  eq(actionIntents.id, intentId),
+                  eq(actionIntents.status, 'pending_approval'),
+                ),
+              )
+              .returning({ id: actionIntents.id });
+            if (cas.length === 0) return false;
+
+            await tx
+              .update(approvalRequests)
+              .set({ status: 'expired', decidedAt: new Date() })
+              .where(
+                and(
+                  eq(approvalRequests.intentId, intentId),
+                  eq(approvalRequests.status, 'pending'),
+                  ne(approvalRequests.id, updated.id),
+                ),
+              );
+
+            if (status === 'approved') {
+              await tx.insert(intentOutbox).values({
+                intentId,
+                eventType: 'intent_approved',
+                // Ids only, no argument content (spec §3.2).
+                payload: { intentId, orgId: linkedIntent!.orgId },
+              });
+            }
+            return true;
+          }),
+        ),
+      );
     } catch (err) {
-      console.error('[approvals] Failed to transition linked action intent:', err);
+      // The approver's own approval row already committed above; a failure of
+      // the intent mirror now rolls back ALL of {CAS, sibling expiry, outbox}
+      // together (no partial state) and leaves the intent pending_approval for
+      // re-decide / the expiry reaper. It must not fail the user's decide call.
+      console.error('[approvals] Failed atomic intent fan-in (CAS / sibling expiry / outbox):', err);
+      wonIntent = false;
     }
 
     if (wonIntent) {
-      // Best-effort, same posture as the elevation mirror above: the intent
-      // transition itself already committed (that's what "won" means), so a
-      // failure here — expiring sibling approval rows and/or writing the
-      // intent_approved outbox row — must not fail the user's decide call.
-      // MUST run in system scope: approval_requests is Shape-6
-      // (user-id-scoped), so sibling rows belong to OTHER approvers and are
-      // invisible to this approver's request context.
-      try {
-        await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db.transaction(async (tx) => {
-              await tx
-                .update(approvalRequests)
-                .set({ status: 'expired', decidedAt: new Date() })
-                .where(
-                  and(
-                    eq(approvalRequests.intentId, intentId),
-                    eq(approvalRequests.status, 'pending'),
-                    ne(approvalRequests.id, updated.id),
-                  ),
-                );
-
-              if (status === 'approved') {
-                await tx.insert(intentOutbox).values({
-                  intentId,
-                  eventType: 'intent_approved',
-                  // Ids only, no argument content (spec §3.2).
-                  payload: { intentId, orgId: linkedIntent!.orgId },
-                });
-              }
-            }),
-          ),
-        );
-      } catch (err) {
-        console.error('[approvals] Failed post-decide intent fan-in (sibling expiry / outbox):', err);
-      }
-
       recordActionIntentEvent({
         orgId: linkedIntent.orgId,
         intentId,

@@ -10,6 +10,12 @@ vi.mock('../../stores/uiStore', () => ({
   useUiStore: vi.fn(() => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() })),
 }));
 
+// Unrelated to this suite's version-staleness assertions — stub out so the
+// module doesn't need a real (subscribable) auth store or registry fetch.
+vi.mock('../extensions/useExtensionNavigation', () => ({
+  useExtensionNavigation: () => [],
+}));
+
 import { VersionSpan } from './Sidebar';
 
 describe('VersionSpan', () => {

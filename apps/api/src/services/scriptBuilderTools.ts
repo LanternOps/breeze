@@ -14,6 +14,7 @@ import type { AiToolTier } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -113,7 +114,7 @@ function makeExistingHandler(
       return { content: [{ type: 'text' as const, text: compactResult }] };
     } catch (err) {
       captureException(err);
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+      const errorMsg = sanitizeThrownToolError(toolName, err);
       const durationMs = Date.now() - startTime;
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: errorMsg }));
 

@@ -12,7 +12,9 @@ import {
   db,
   hasDbAccessContext,
   classifyContextlessExecuteVerb,
+  runOutsideDbContext,
   __resetContextlessWriteGuardForTests,
+  __runInDbContextForTests as runInDbContextForTests,
 } from './index';
 
 // The builder guard fires at CALL time (not on getter access). Query builders
@@ -170,4 +172,51 @@ describe('contextless-write guard on proxiedDb (#1375/#1379)', () => {
       expect(classifyContextlessExecuteVerb({})).toBeNull();
     });
   });
+
+  // These exercise the REAL guard against the REAL wrapper composition — no
+  // hand-mocked context helpers. Route-level suites (agentWs.test.ts) mock
+  // `../db` wholesale, so they can only prove that two stubs were entered;
+  // they cannot prove the guard actually goes quiet. That gap is what let an
+  // inverted-nesting regression survive review, so it is pinned here instead.
+  describe('wrapper composition around a device_commands-style write', () => {
+    it('DOES fire when runOutsideDbContext is nested INSIDE a system context', () => {
+      // The inversion. runOutsideDbContext exits BOTH ALS stores, so the
+      // freshly-established system context is discarded and the write lands on
+      // the bare pool contextless — exactly the #1375 bug, with an orphaned
+      // open transaction pinning a pooled connection on top (#1105).
+      runOutsideDbContextInsideSystemContextShape(() => {
+        callBuilder(() => db.update({} as never));
+      });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT fire when the write runs inside an active context', () => {
+      // The correct shape: whatever exits the ambient context does so FIRST,
+      // and the context the write actually runs in is still active when the
+      // builder is called.
+      withActiveDbContextShape(() => {
+        callBuilder(() => db.update({} as never));
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(captureMessage).not.toHaveBeenCalled();
+    });
+  });
 });
+
+// Minimal stand-ins for the two nesting orders, driving the real
+// dbContextStorage via the real exported helpers. We cannot open a real
+// transaction without a database, so these assert the property the guard
+// itself keys on: whether a context is active at the moment the write builder
+// is called.
+function runOutsideDbContextInsideSystemContextShape(fn: () => void): void {
+  runInDbContextForTests(() => {
+    runOutsideDbContext(fn);
+  });
+}
+
+function withActiveDbContextShape(fn: () => void): void {
+  runInDbContextForTests(fn);
+}

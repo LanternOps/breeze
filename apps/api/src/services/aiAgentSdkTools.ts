@@ -15,9 +15,11 @@ import { eq } from 'drizzle-orm';
 import { executeTool } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
+import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -216,48 +218,7 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const TOOL_EXECUTION_TIMEOUT_MS = 60_000; // 60s default safety timeout
 const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
-
-/**
- * Per-tool timeout overrides for tools that legitimately need more (or less) time.
- * Tools not listed here use TOOL_EXECUTION_TIMEOUT_MS (60s).
- */
-const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
-  // Command execution — waits for agent round-trip
-  execute_command: 120_000,
-  run_script: 120_000,
-  // Disk operations — can scan large filesystems
-  analyze_disk_usage: 90_000,
-  disk_cleanup: 90_000,
-  // Security scans — multi-step agent operations
-  security_scan: 120_000,
-  apply_cis_remediation: 120_000,
-  // Patching — downloads + installs
-  manage_patches: 180_000,
-  // Network discovery — port scanning is slow
-  network_discovery: 120_000,
-  // Desktop / vision — WebRTC setup + capture
-  take_screenshot: 30_000,
-  analyze_screen: 30_000,
-  computer_control: 30_000,
-  // Report generation — aggregates across many devices
-  generate_report: 90_000,
-};
-
-function getToolTimeout(toolName: string): number {
-  return TOOL_TIMEOUT_OVERRIDES[toolName] ?? TOOL_EXECUTION_TIMEOUT_MS;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Tool execution timed out after ${ms}ms: ${label}`)), ms);
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
-  });
-}
 
 /**
  * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
@@ -274,7 +235,7 @@ async function safePostToolUse(
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
-    await withTimeout(
+    await withToolTimeout(
       onPostToolUse(toolName, args, output, isError, durationMs),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
@@ -320,8 +281,10 @@ function makeHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Unknown error';
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        // The guardrail path also touches the DB (approval records, rate limits),
+        // so `reason` can be a raw driver message — sanitize before embedding it
+        // in a string that is streamed to the chat (#2603).
+        const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
@@ -342,7 +305,7 @@ function makeHandler(
         orgId: auth.orgId ?? null,
         accessibleOrgIds: auth.accessibleOrgIds ?? null,
       };
-      const result = await withTimeout(
+      const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
         toolTimeout,
         toolName,
@@ -415,9 +378,12 @@ function makeHandler(
       await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      // A thrown error here is an internal fault — its message is very often a
+      // raw Drizzle/postgres.js string carrying the full query and column list.
+      // sanitizeThrownToolError logs it server-side and returns a safe generic
+      // string for the stream (#2603).
+      const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {
@@ -478,8 +444,10 @@ function makeSessionAwareHandler(
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : 'Unknown error';
-        console.error(`[AI-SDK] PreToolUse threw for ${toolName}: ${reason}`);
+        // The guardrail path also touches the DB (approval records, rate limits),
+        // so `reason` can be a raw driver message — sanitize before embedding it
+        // in a string that is streamed to the chat (#2603).
+        const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
@@ -499,7 +467,7 @@ function makeSessionAwareHandler(
         orgId: auth.orgId ?? null,
         accessibleOrgIds: auth.accessibleOrgIds ?? null,
       };
-      const result = await withTimeout(
+      const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
         toolTimeout,
         toolName,
@@ -519,9 +487,12 @@ function makeSessionAwareHandler(
       await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Tool execution failed';
       const durationMs = Date.now() - startTime;
-      console.error(`[AI-SDK] Tool ${toolName} failed in ${durationMs}ms: ${message}`);
+      // A thrown error here is an internal fault — its message is very often a
+      // raw Drizzle/postgres.js string carrying the full query and column list.
+      // sanitizeThrownToolError logs it server-side and returns a safe generic
+      // string for the stream (#2603).
+      const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
       return {

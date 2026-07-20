@@ -189,6 +189,42 @@ describe('renderQuotePdf', () => {
     expect(pageCount).toBeGreaterThan(1);
   });
 
+  it('never strands a section label + column header on a page without its first row', async () => {
+    // Regression: the section label used to be drawn at the call site behind a
+    // FLAT 52pt "minimum first row" reservation. When the first row was a tall
+    // spec list (a 17-bullet laptop), the label + column header fit that guess and
+    // were drawn at the foot of the page, then the row-level break moved the row
+    // to the next page — leaving the label and header orphaned (seen live on
+    // Q-2026-0006). Sweeping the filler count walks the section label across the
+    // page boundary, so this catches the orphan without brittle height tuning.
+    const TALL_SPEC = Array.from({ length: 17 }, (_, i) => `Specification bullet number ${i + 1} for this configured machine`).join('\n');
+    for (const fillerCount of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+      const filler = Array.from({ length: fillerCount }, (_, i) => ({
+        id: `f${i}`, blockId: 'b1', name: `FillerItem${i}`,
+        description: 'A reasonably descriptive line so rows take realistic height.',
+        quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
+      }));
+      const buf = await renderQuotePdf(
+        { id: 'q1', quoteNumber: 'Q-ORPHAN', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
+        [
+          { id: 'b1', blockType: 'line_items', sortOrder: 0, content: { label: 'DesktopSection' } },
+          { id: 'b2', blockType: 'line_items', sortOrder: 1, content: { label: 'LaptopSection' } },
+        ],
+        [
+          ...filler,
+          { id: 'tall', blockId: 'b2', name: 'FourteenInchLaptop', description: TALL_SPEC, quantity: '1', unitPrice: '1224', lineTotal: '1224.00', recurrence: 'one_time' },
+        ],
+        async () => null,
+        { partnerName: 'Acme MSP' },
+      );
+      // Whichever page carries the label must also carry its first row's title.
+      const pages = extractPdfTextByStream(buf);
+      const labelPage = pages.find((p) => p.includes('LaptopSection'));
+      expect(labelPage, `no page contained the label (fillerCount=${fillerCount})`).toBeDefined();
+      expect(labelPage, `label orphaned from its first row (fillerCount=${fillerCount})`).toContain('FourteenInchLaptop');
+    }
+  });
+
   it('a single-page quote stays single-page after the footer pass (no blank trailing page)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-6', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },

@@ -13,7 +13,9 @@ import { seed } from './seed';
 
 const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
 // IMPORTANT: MIGRATION_TABLE is a hardcoded constant — never accept user input.
-const MIGRATION_TABLE = 'breeze_migrations';
+// Exported so the extension migrator writes namespaced rows into the SAME
+// ledger (`<extension>/<file>`) through the same table name, never a copy.
+export const MIGRATION_TABLE = 'breeze_migrations';
 
 export interface PlannedMigration {
   ledgerName: string;
@@ -366,8 +368,12 @@ async function loadApplied(client: postgres.Sql): Promise<Map<string, string>> {
   return new Map(rows.map((row) => [row.filename, row.checksum]));
 }
 
-/** Record a migration as applied. */
-async function recordMigration(
+/**
+ * Record a migration as applied. Exported so the extension migrator inserts its
+ * namespaced ledger row (`<extension>/<file>`) through the exact same statement
+ * and table as the core boot loop — no duplicated INSERT logic.
+ */
+export async function recordMigration(
   sql: postgres.Sql | postgres.TransactionSql,
   filename: string,
   checksum: string,

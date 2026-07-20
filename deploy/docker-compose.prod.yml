@@ -147,6 +147,19 @@ services:
       M365_GRAPH_READ_EXECUTOR_AUDIENCE: ${M365_GRAPH_READ_EXECUTOR_AUDIENCE:-m365-graph-read-executor}
       M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ${M365_GRAPH_READ_EXECUTOR_SIGNING_KID:-}
       M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_read_executor_signing_private_jwk
+      # Optional customer Graph-actions (write) executor. Same isolation model
+      # as the Graph-read executor above: intentionally not part of this
+      # generic Compose stack — deploy it separately with a workload identity,
+      # private ingress, and controlled HTTPS egress. Disabled by default.
+      M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
+      M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
+      M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
+      M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION:-}
+      M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF: ${M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF:-}
+      M365_GRAPH_ACTIONS_EXECUTOR_URL: ${M365_GRAPH_ACTIONS_EXECUTOR_URL:-}
+      M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: ${M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE:-m365-graph-actions-executor}
+      M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID:-}
+      M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_actions_executor_signing_private_jwk
       APP_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
@@ -205,6 +218,8 @@ services:
       - redis_password
       - source: m365_graph_read_executor_signing_private_jwk
         target: m365_graph_read_executor_signing_private_jwk
+      - source: m365_graph_actions_executor_signing_private_jwk
+        target: m365_graph_actions_executor_signing_private_jwk
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -392,3 +407,5 @@ secrets:
   # the source JWK must already have numeric owner 1001:1001 and mode 0400.
   m365_graph_read_executor_signing_private_jwk:
     file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+  m365_graph_actions_executor_signing_private_jwk:
+    file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

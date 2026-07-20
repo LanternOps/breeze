@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { SUPPORTED_EXTENSION_CAPABILITIES, parseExtensionManifestV1 } from './manifest';
+import {
+  RESERVED_ROUTE_NAMESPACES,
+  SUPPORTED_EXTENSION_CAPABILITIES,
+  parseExtensionManifestV1,
+  safeParseExtensionManifestV1,
+} from './manifest';
 
 const valid = {
   apiVersion: 'breeze.extensions/v1',
@@ -180,12 +185,38 @@ describe('parseExtensionManifestV1', () => {
   it('preserves reserved namespaces, default-deny public routes, and tenancy prefix checks', () => {
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'devices' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'ext' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'extensions' })).toThrow();
+    // #2634 — auth-sensitive core mounts that shipped unreserved.
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'service-principals' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'partner-service-principals' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'partner-api' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/*'] })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/agent/hook'] })).toThrow();
     expect(() => parseExtensionManifestV1({
       ...valid,
       tenancy: { ...valid.tenancy, orgCascadeDeleteTables: ['other_items'] },
     })).toThrow(/demo_/);
+  });
+
+  // safeParse is the non-throwing entry point the conformance testkit
+  // validates through (packages/extension-testkit/src/manifest.ts). It shares
+  // manifestSchemaV1 with parseExtensionManifestV1, so the namespace
+  // reservation must gate it too — otherwise a second validation surface
+  // could accept what the first rejects.
+  it.each([
+    'devices',
+    'extensions',
+    'service-principals',
+    'partner-service-principals',
+    'partner-api',
+    'billing',
+    'support',
+    'ticket-forms',
+    'ticket-response-templates',
+  ])('safeParse rejects reserved routeNamespace %s', (routeNamespace) => {
+    expect(RESERVED_ROUTE_NAMESPACES.has(routeNamespace)).toBe(true);
+    const result = safeParseExtensionManifestV1({ ...valid, routeNamespace });
+    expect(result.success).toBe(false);
   });
 
   it.each([

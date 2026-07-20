@@ -9,6 +9,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'scripts/recover-stuck-agents': 'scripts/recover-stuck-agents.ts',
+    'scripts/breezectl': 'scripts/breezectl.ts',
   },
   format: ['cjs'],
   // @breeze/api is a deployed application, not a consumed library: package.json

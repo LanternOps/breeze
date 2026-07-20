@@ -1,12 +1,20 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ConnectDesktopButton from './ConnectDesktopButton';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast, _resetToastQueueForTests } from '../shared/Toast';
+import { getViewerDownloadInfo } from '@/lib/viewerDownload';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+}));
+
+// Platform detection reads navigator, which jsdom fixes to the host machine —
+// stub it so the per-OS download card is exercised deterministically.
+vi.mock('@/lib/viewerDownload', () => ({
+  getViewerDownloadInfo: vi.fn(),
+  getAllViewerDownloads: vi.fn(() => []),
 }));
 
 vi.mock('../shared/Toast', async () => {
@@ -215,5 +223,101 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
     expect(btn).toBeDisabled();
     expect(btn).toHaveAttribute('title', 'Device is offline');
     expect(screen.queryByText(/connection failed/i)).toBeNull();
+  });
+});
+
+describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
+  const downloadMock = vi.mocked(getViewerDownloadInfo);
+
+  /** Drive the button all the way to the "viewer didn't open" fallback card. */
+  async function reachFallbackCard() {
+    // Device lookup → no partner launcher, so the built-in WebRTC path runs.
+    fetchMock.mockImplementation((path: string) => {
+      if (path.startsWith('/devices/')) {
+        return Promise.resolve(jsonRes({ desktopAccess: null, hasRemoteAccessLauncher: false }));
+      }
+      if (path.includes('/desktop-connect-code')) {
+        return Promise.resolve(jsonRes({ code: 'code-1' }));
+      }
+      if (path === '/remote/sessions') {
+        return Promise.resolve(jsonRes({ id: 'sess-1' }));
+      }
+      // The session poll: never leaves 'pending', which is exactly what happens
+      // when the OS has no breeze:// handler registered and the deep link is a
+      // silent no-op — the #2614 symptom.
+      return Promise.resolve(jsonRes({ status: 'pending' }));
+    });
+
+    render(<ConnectDesktopButton deviceId="dev-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    // 5 polls × 1.5s before the card appears. Driven by explicit timer advance
+    // rather than findByText: the queries poll on real timers, which never tick
+    // while fake timers are installed.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    expect(screen.getByText(/viewer didn't open/i)).toBeInTheDocument();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+    downloadMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('tells Linux users to chmod +x and run the AppImage once', async () => {
+    downloadMock.mockReturnValue({
+      os: 'linux',
+      label: 'Linux',
+      url: 'https://example.test/breeze-viewer-linux.AppImage',
+      filename: 'breeze-viewer-linux.AppImage',
+    });
+
+    await reachFallbackCard();
+
+    // Without this hint the download looks like it did nothing: the browser
+    // strips the executable bit, and the AppImage has to be run once before it
+    // registers breeze:// — until then this same card returns every attempt.
+    expect(screen.getByText(/chmod \+x/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /download for linux/i })).toBeInTheDocument();
+  });
+
+  it('omits the Linux first-run hint on other platforms', async () => {
+    downloadMock.mockReturnValue({
+      os: 'macos',
+      label: 'macOS',
+      url: 'https://example.test/breeze-viewer-macos.dmg',
+      filename: 'breeze-viewer-macos.dmg',
+    });
+
+    await reachFallbackCard();
+
+    expect(screen.getByRole('link', { name: /download for macos/i })).toBeInTheDocument();
+    expect(screen.queryByText(/chmod \+x/i)).toBeNull();
+  });
+
+  it('renders the restored fallback copy, not the humanized key placeholders', async () => {
+    // Regression guard for the i18n extraction that replaced real English with
+    // machine-humanized key names ("Title" / "Viewer Description"), which is
+    // what the reporter actually saw on screen.
+    downloadMock.mockReturnValue({
+      os: 'linux',
+      label: 'Linux',
+      url: 'https://example.test/breeze-viewer-linux.AppImage',
+      filename: 'breeze-viewer-linux.AppImage',
+    });
+
+    await reachFallbackCard();
+
+    expect(screen.getByText(/if the viewer opened, you can dismiss this/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Viewer Description$/)).toBeNull();
+    expect(screen.queryByText(/^Title$/)).toBeNull();
   });
 });

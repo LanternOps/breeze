@@ -20,9 +20,11 @@ import {
   isIntentBackedExecution,
   searchSessions,
   listM365Connections,
-  resolveDefaultModel
+  resolveDefaultModel,
+  sanitizeErrorForClient,
 } from '../services/aiAgent';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
@@ -166,7 +168,9 @@ aiRoutes.post(
       if (message === 'Invalid M365 connection') return c.json({ error: message }, 400);
       if (message === 'Invalid device') return c.json({ error: message }, 400);
       if (message === 'Access denied to this organization') return c.json({ error: message }, 403);
-      return c.json({ error: message }, 500);
+      // Anything past the four exact-match branches above is an unexpected fault
+      // whose message may be raw driver text (#2603) — genericize it.
+      return c.json({ error: sanitizeThrownToolError('create_ai_session', err) }, 500);
     }
   }
 );
@@ -585,10 +589,15 @@ aiRoutes.post(
             if (event.type === 'done') break;
           }
         } catch (err) {
+          // Never stream a raw error to the browser (#2603). Uses the stream
+          // sanitizer (not the tool one) so user-actionable conditions — rate
+          // limit, budget, approval timeout — survive, while driver text does
+          // not. sanitizeErrorForClient is now detector-gated.
           console.error('[AI/OpenAI] Stream error:', err);
+          const message = sanitizeErrorForClient(err);
           await stream.writeSSE({
             event: 'error',
-            data: JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' }),
+            data: JSON.stringify({ type: 'error', message }),
           });
         } finally {
           openaiSession.eventBus.unsubscribe(subscriptionId);
@@ -670,12 +679,15 @@ aiRoutes.post(
           if (event.type === 'done') break;
         }
       } catch (err) {
+        // Never stream a raw error to the browser (#2603). See the OpenAI
+        // branch above for why this uses the stream sanitizer.
         console.error('[AI] Stream error:', err);
+        const message = sanitizeErrorForClient(err);
         await stream.writeSSE({
           event: 'error',
           data: JSON.stringify({
             type: 'error',
-            message: err instanceof Error ? err.message : 'Stream failed',
+            message,
           }),
         });
       } finally {

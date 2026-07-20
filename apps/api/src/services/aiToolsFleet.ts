@@ -66,6 +66,7 @@ import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } fro
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { siteScopeRequestAllowed } from './reportGenerationService';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -213,7 +214,10 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
       if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
       if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      // Fail closed: anything else may embed the query/column list (#2603).
+      return JSON.stringify({
+        error: sanitizeThrownToolError(`fleet:${toolName}`, err, { action: input.action }),
+      });
     }
   };
 }

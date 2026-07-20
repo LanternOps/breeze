@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { backupSnapshotFiles, backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -63,16 +63,23 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
   });
 }
 
+// Cancels a not-yet-delivered restore dispatch. Runs outside the caller's
+// tenant transaction (device_commands has no RLS and the dispatcher may have
+// committed the row after that transaction began), but under an explicit
+// system context so the DELETE is not a contextless bare-pool write (#1375) —
+// same shape as the agent result paths in agentWs.ts and agents/commands.ts.
 async function removeQueuedRestoreDispatch(commandId: string | null | undefined): Promise<boolean> {
   if (!commandId) return false;
   const deleted = await runOutsideDbContext(async () =>
-    db
-      .delete(deviceCommands)
-      .where(and(
-        eq(deviceCommands.id, commandId),
-        eq(deviceCommands.status, 'pending'),
-      ))
-      .returning({ id: deviceCommands.id })
+    withSystemDbAccessContext(async () =>
+      db
+        .delete(deviceCommands)
+        .where(and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.status, 'pending'),
+        ))
+        .returning({ id: deviceCommands.id })
+    )
   );
   return deleted.length > 0;
 }

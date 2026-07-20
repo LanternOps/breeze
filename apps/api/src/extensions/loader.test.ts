@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('../services/aiTools', () => {
@@ -127,13 +128,25 @@ function scaffoldCjsRuntimeExtension(root: string) {
 describe('mountExtensions', () => {
   let root: string;
   beforeEach(async () => {
-    root = mkdtempSync(join(process.cwd(), 'ext-rt-'));
+    // tmpdir(), not process.cwd(): cleanup only runs in afterEach, so a run
+    // killed mid-suite orphans this directory. Under cwd that means an
+    // untracked `ext-rt-*` left in apps/api — not gitignored, so a later
+    // `git add .` would commit fixture scaffolding. Every other mkdtempSync in
+    // the API suite already roots at tmpdir(); this was the lone exception.
+    root = mkdtempSync(join(tmpdir(), 'breeze-ext-rt-'));
     __resetSkipPrefixesForTests();
     vi.clearAllMocks();
+    // The legacy source-directory path is deprecated and flag-gated; these
+    // suites exercise the compatibility window, so opt in by default. The
+    // "compatibility window" describe below covers the flag-off behavior.
+    vi.stubEnv('BREEZE_LEGACY_SOURCE_EXTENSIONS', 'true');
     const { aiTools } = await import('../services/aiTools');
     aiTools.clear();
   });
-  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
 
   it('stages and activates legacy route and AI contributions under the stable namespace', async () => {
     scaffoldRuntimeExtension(root, { routeNamespace: 'legacy-alias' });
@@ -291,6 +304,174 @@ describe('mountExtensions', () => {
     vi.unstubAllEnvs();
   });
 
+  describe('compatibility window (BREEZE_LEGACY_SOURCE_EXTENSIONS)', () => {
+    it('does NOT load a present source extension when the flag is unset, warning once per candidate', async () => {
+      vi.unstubAllEnvs(); // genuinely unset, not merely !== 'true'
+      scaffoldRuntimeExtension(root);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+      const app = new Hono();
+      mountExtensionGateway(app, registry, async () => true);
+
+      await loadSourceExtensions(registry, root);
+
+      expect(registry.get('demo')).toBeUndefined();
+      expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
+      const skipWarnings = warn.mock.calls.filter(
+        (call) => String(call[0]).includes('legacy_source_extension_skipped'),
+      );
+      expect(skipWarnings).toHaveLength(1);
+      expect(String(skipWarnings[0]![0])).toContain('"demo"');
+      expect(String(skipWarnings[0]![0])).toContain('BREEZE_LEGACY_SOURCE_EXTENSIONS');
+      warn.mockRestore();
+    });
+
+    it('does not load when the flag is explicitly false', async () => {
+      vi.stubEnv('BREEZE_LEGACY_SOURCE_EXTENSIONS', 'false');
+      scaffoldRuntimeExtension(root);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+      await loadSourceExtensions(registry, root);
+      expect(registry.get('demo')).toBeUndefined();
+      warn.mockRestore();
+    });
+
+    // A broken manifest on the DISABLED legacy path must not be able to fail
+    // the boot — the flag-off scan may not parse manifests.
+    it('skips (never throws on) an unparseable manifest when the flag is off', async () => {
+      vi.unstubAllEnvs();
+      const dir = join(root, 'broken');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'breeze-extension.json'), '{ not json');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      await expect(loadSourceExtensions(registry, root)).resolves.toBeUndefined();
+
+      const skipWarnings = warn.mock.calls.filter(
+        (call) => String(call[0]).includes('legacy_source_extension_skipped'),
+      );
+      expect(skipWarnings).toHaveLength(1);
+      expect(String(skipWarnings[0]![0])).toContain('"broken"');
+      warn.mockRestore();
+    });
+
+    it('emits exactly one structured deprecation warning per loaded extension when the flag is on', async () => {
+      scaffoldRuntimeExtension(root);
+      scaffoldCjsRuntimeExtension(root);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      await loadSourceExtensions(registry, root);
+
+      expect(registry.get('demo')).toBeDefined();
+      expect(registry.get('cjs-demo')).toBeDefined();
+      const deprecations = warn.mock.calls.filter(
+        (call) => String(call[0]).includes('legacy_source_extension_loaded'),
+      );
+      expect(deprecations).toHaveLength(2);
+      const messages = deprecations.map((call) => String(call[0]));
+      expect(messages.some((m) => m.includes('"demo"'))).toBe(true);
+      expect(messages.some((m) => m.includes('"cjs-demo"'))).toBe(true);
+      for (const message of messages) expect(message).toContain('DEPRECATION');
+      warn.mockRestore();
+    });
+
+    // Same-name simultaneity gate: registry.activate() REPLACES a same-name
+    // snapshot, so without this check a signed runtime artifact staged after
+    // the source extension would silently shadow it (and a failed optional
+    // artifact would withdraw the source extension's live routes). Fail the
+    // boot instead — the operator must pick one delivery path per name.
+    it('refuses to load a source extension whose name is also declared in extensions.yaml', async () => {
+      scaffoldRuntimeExtension(root);
+      writeFileSync(
+        join(root, 'extensions.yaml'),
+        'extensions:\n  - name: demo\n    uri: file:./demo.tar\n    version: 1.0.0\n    publisher: acme\n',
+      );
+      const registry = new ExtensionContributionRegistry();
+
+      await expect(loadSourceExtensions(registry, root)).rejects.toThrow(
+        /"demo".*(source directory).*(runtime artifact|extensions\.yaml)/s,
+      );
+      expect(registry.get('demo')).toBeUndefined();
+    });
+
+    it('loads normally alongside an extensions.yaml declaring only OTHER names', async () => {
+      scaffoldRuntimeExtension(root);
+      writeFileSync(
+        join(root, 'extensions.yaml'),
+        'extensions:\n  - name: other\n    uri: file:./other.tar\n    version: 1.0.0\n    publisher: acme\n',
+      );
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+      await loadSourceExtensions(registry, root);
+      expect(registry.get('demo')).toBeDefined();
+      warn.mockRestore();
+    });
+
+    // Coexistence: a runtime artifact's tables (migrated on a prior boot)
+    // exist BEFORE reconcileExtensions publishes their tenancy on this boot.
+    // The loader's repo-wide sweep would misread them as unaccounted and
+    // abort a healthy boot — it must defer to the reconciler's own
+    // post-publish sweep whenever extensions.yaml declares runtime artifacts.
+    it('defers the repo-wide sweep to the reconciler when extensions.yaml declares runtime artifacts', async () => {
+      scaffoldRuntimeExtension(root);
+      writeFileSync(
+        join(root, 'extensions.yaml'),
+        'extensions:\n  - name: other\n    uri: file:./other.tar\n    version: 1.0.0\n    publisher: acme\n',
+      );
+      const { db } = await import('../db');
+      // A tenant-scoped table owned by the runtime extension, visible in the
+      // catalog. Without the deferral the loader's second (repo-wide) query
+      // reads this as unaccounted and throws.
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          table_name: 'other_docs',
+          relkind: 'r',
+          rls_enabled: true,
+          rls_forced: true,
+          policy_count: 1,
+          tenant_column_count: 1,
+          tenant_fk_count: 1,
+        },
+      ]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      await expect(loadSourceExtensions(registry, root)).resolves.toBeUndefined();
+
+      expect(registry.get('demo')).toBeDefined();
+      // Only the per-extension prefix scan ran; the repo-wide sweep is the
+      // reconciler's job on this boot shape.
+      expect(db.execute).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('still runs the repo-wide sweep itself when NO runtime artifacts are declared', async () => {
+      scaffoldRuntimeExtension(root);
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      await loadSourceExtensions(registry, root);
+
+      // Per-extension scan + repo-wide sweep, exactly as before the window.
+      expect(db.execute).toHaveBeenCalledTimes(2);
+      warn.mockRestore();
+    });
+
+    // Fail closed: if the deployment config exists but cannot be read, the
+    // collision gate cannot prove the absence of a same-name artifact.
+    it('fails the boot when extensions.yaml is present but unparseable', async () => {
+      scaffoldRuntimeExtension(root);
+      writeFileSync(join(root, 'extensions.yaml'), 'extensions: [ {{ nope');
+      const registry = new ExtensionContributionRegistry();
+      await expect(loadSourceExtensions(registry, root)).rejects.toThrow(/not valid YAML/);
+      expect(registry.get('demo')).toBeUndefined();
+    });
+  });
+
   it('respects BREEZE_EXTENSIONS_ENABLED=false', async () => {
     scaffoldRuntimeExtension(root);
     vi.stubEnv('BREEZE_EXTENSIONS_ENABLED', 'false');
@@ -298,6 +479,23 @@ describe('mountExtensions', () => {
     await mountExtensions(app, root);
     expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
     vi.unstubAllEnvs();
+  });
+
+  it('throws immediately when a source-dir extension calls ctx.registerJob', async () => {
+    scaffoldRuntimeExtension(root, {}, `import { Hono } from 'hono';
+     const ext = {
+       register(ctx) {
+         const app = new Hono();
+         app.get('/health', (c) => c.json({ ok: true }));
+         ctx.mountRoute(app);
+         ctx.registerJob({ name: 'sweep', cron: '0 * * * *', handler: async () => {} });
+       },
+     };
+     export default ext;`);
+    const app = new Hono();
+    await expect(mountExtensions(app, root)).rejects.toThrow(
+      /source-dir extensions cannot register jobs/,
+    );
   });
 
   it('throws on AI tool name collision', async () => {

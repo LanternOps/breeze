@@ -3,13 +3,36 @@ import { discoverExtensions } from './discovery';
 
 let cache: ExtensionTenancyDeclaration[] | null = null;
 
+/**
+ * Tenancy declarations published by the runtime reconciler for SIGNED bundle
+ * extensions (which are NOT on disk under `discoverExtensions()`). The reconciler
+ * publishes an extension's declarations the moment its migrations succeed —
+ * BEFORE staging/activation — so the cascade / device-move lists survive even if
+ * the extension's code later fails validation or is disabled. Already-migrated
+ * tenant tables must keep getting purged on org/device delete regardless of
+ * whether the contribution code is live.
+ */
+const runtimeTenancy: ExtensionTenancyDeclaration[] = [];
+
 export function getExtensionTenancy(): ExtensionTenancyDeclaration[] {
   if (cache === null) cache = discoverExtensions().map((e) => e.manifest.tenancy);
-  return cache;
+  return [...cache, ...runtimeTenancy];
+}
+
+/**
+ * Register a signed-bundle extension's tenancy declaration so the cascade/denorm
+ * helpers include its tables. Idempotent per declaration object; safe to call
+ * again for the same extension (the RLS helpers dedupe by table name).
+ */
+export function registerRuntimeExtensionTenancy(
+  declaration: ExtensionTenancyDeclaration,
+): void {
+  runtimeTenancy.push(declaration);
 }
 
 export function resetExtensionTenancyCacheForTests(): void {
   cache = null;
+  runtimeTenancy.length = 0;
 }
 
 /** Alphabetised union with 'organizations' pinned last (contract-test invariant). */

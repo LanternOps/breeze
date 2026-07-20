@@ -23,6 +23,11 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../stores/uiStore', () => ({
   useUiStore: () => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() }),
 }));
+// Unrelated to this suite's RBAC assertions — stub out so the module doesn't
+// need a real (subscribable) auth store or registry fetch.
+vi.mock('../extensions/useExtensionNavigation', () => ({
+  useExtensionNavigation: () => [],
+}));
 // Partner scope so partnerScopeOnly items aren't hidden by scope — the
 // permission gate is what we're exercising here.
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));

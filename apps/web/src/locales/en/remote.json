@@ -28,33 +28,34 @@
     "downloadFor": "Download for {{platform}}",
     "errors": {
       "connectionFailed": "Connection failed",
-      "createDesktopCode": "Failed to create desktop code",
+      "createDesktopCode": "Failed to create desktop connect code",
       "createDesktopSession": "Failed to create desktop session",
-      "createVncTunnel": "Failed to create vnc tunnel",
-      "deviceChanged": "Failed to device changed",
+      "createVncTunnel": "Failed to create VNC tunnel",
+      "deviceChanged": "Remote launch failed: device record changed. Please refresh and try again.",
       "http": "Remote launch failed (HTTP {{status}})",
-      "invalidDesktopCode": "Failed to invalid desktop code",
-      "issueVncCode": "Failed to issue vnc code",
-      "securityCheckToast": "Failed to security check toast",
-      "securityPolicy": "Failed to security policy",
-      "server": "Failed to server",
-      "vncTunnelFailed": "Failed to vnc tunnel failed"
+      "invalidDesktopCode": "Invalid desktop connect code response",
+      "issueVncCode": "Failed to issue VNC connect code",
+      "securityCheckToast": "Remote launch unavailable: security check failed. Please contact your administrator.",
+      "securityPolicy": "Remote launch blocked by security policy",
+      "server": "Remote launch failed: server error. Please contact your administrator.",
+      "vncTunnelFailed": "VNC tunnel failed to open"
     },
     "fallback": {
-      "title": "Title",
-      "viewerDescription": "Viewer Description",
-      "vncDescription": "Vnc Description"
+      "linuxFirstRun": "On Linux, make the download executable (chmod +x) and run it once. That registers the viewer, so sessions open automatically from then on.",
+      "title": "Viewer didn't open?",
+      "viewerDescription": "If the viewer opened, you can dismiss this. Otherwise, download it below.",
+      "vncDescription": "Open the VNC session in your browser instead."
     },
     "launcherSkip": {
-      "configError": "Config Error",
-      "emptyUrlTemplate": "Empty Url Template",
+      "configError": "Could not resolve the partner-configured remote tool (config error). Falling back to built-in remote desktop.",
+      "emptyUrlTemplate": "The partner-configured remote tool has no URL template set. Falling back to built-in remote desktop.",
       "missingIdentifier": "This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in Device Settings → Custom Fields.",
       "providerDisabled": "The partner-configured remote tool for this device is currently disabled. Falling back to built-in remote desktop."
     },
     "launching": "Launching...",
     "launchingViewer": "Launching viewer...",
-    "openInBrowser": "Open In Browser",
-    "policyDisabled": "Policy Disabled",
+    "openInBrowser": "Open in Browser",
+    "policyDisabled": "Remote desktop is disabled by policy",
     "policyDisabledNamed": "Remote desktop is disabled by policy \"{{name}}\"",
     "unavailable": {
       "default": "Desktop is unavailable on this device",
@@ -76,21 +77,21 @@
     "errors": {
       "connectionFailed": "Connection failed",
       "createTunnel": "Failed to create tunnel",
-      "createVncTunnel": "Failed to create vnc tunnel",
-      "issueConnectCode": "Failed to issue connect code",
-      "tunnelFailed": "Failed to tunnel failed"
+      "createVncTunnel": "Failed to create VNC tunnel",
+      "issueConnectCode": "Failed to issue VNC connect code",
+      "tunnelFailed": "Tunnel failed to open"
     },
     "fallback": {
-      "description": "Description",
-      "title": "Title"
+      "description": "Open the VNC session in your browser instead.",
+      "title": "Viewer didn't open?"
     },
     "launching": "Launching...",
-    "openInBrowser": "Open In Browser",
-    "policyDisabled": "Policy Disabled",
-    "policyDisabledNamed": "Policy Disabled Named",
-    "unavailable": "Unavailable",
-    "vncDesktop": "Vnc Desktop",
-    "vncRemote": "Vnc Remote"
+    "openInBrowser": "Open in Browser",
+    "policyDisabled": "VNC relay is disabled by policy",
+    "policyDisabledNamed": "VNC relay is disabled by policy \"{{name}}\"",
+    "unavailable": "VNC Unavailable",
+    "vncDesktop": "VNC Desktop",
+    "vncRemote": "VNC Remote"
   },
   "deleteConfirmDialog": {
     "deletePermanently": "Delete Permanently",

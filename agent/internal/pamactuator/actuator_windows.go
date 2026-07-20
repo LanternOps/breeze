@@ -94,7 +94,7 @@ func (a *windowsActuator) Trigger(ctx context.Context, req Request) Result {
 	if hwnd == 0 {
 		return Result{
 			Success:       false,
-			Reason:        "no_consent_window",
+			Reason:        ReasonNoConsentWindow,
 			DetailMessage: "consent.exe did not appear within the timeout window",
 		}
 	}
@@ -199,7 +199,7 @@ func (a *windowsActuator) Dismiss(ctx context.Context) Result {
 		}
 		return Result{
 			Success:       false,
-			Reason:        "no_consent_window",
+			Reason:        ReasonNoConsentWindow,
 			DetailMessage: "consent.exe did not appear within the timeout window",
 		}
 	}

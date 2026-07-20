@@ -807,7 +807,12 @@ export default function BackupTab({
       setTestStatus(
         response.ok && data.status === "success" ? "success" : "failed",
       );
-    } catch {
+    } catch (err) {
+      // Bind and log: this catch also swallows network faults, JSON parse
+      // failures, and any bug in the handler body above. Collapsing all of
+      // those into a generic string with the error object discarded leaves no
+      // way to tell "storage rejected us" from "our own code threw".
+      console.error("[BackupTab] Connection test failed:", err);
       setTestStatus("failed");
       setTestMessage(
         i18n.t(

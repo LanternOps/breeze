@@ -249,9 +249,10 @@ async function renderLineTable(
   taxRate = 0,
   showTax = false,
   showSubtotal = false,
+  label = '',
 ): Promise<number> {
   const c = columnsFor(doc, showTax);
-  let y = ensureSpace(doc, startY, 60);
+  let y = startY;
 
   // Pre-load product images (DB I/O): a per-line uploaded image wins, else the
   // catalog item's image. A failed load degrades to "no thumbnail" — never
@@ -307,24 +308,43 @@ async function renderLineTable(
     return rowY;
   };
 
-  y = drawTableHeader(y);
-
-  const descX = c.colDescX;
-  for (const l of lines) {
+  // Measure each fragment at the SAME font/size it is drawn with. The blurb is
+  // rendered at 8.5pt but used to be measured while the font was still 10pt,
+  // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
+  // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
+  const measureRow = (l: QuoteLine) => {
     // Title falls back to description for legacy lines that predate the name/description split.
     const title = (l.name ?? l.description ?? '').trim() || '—';
     const blurb = l.name ? (l.description ?? '').trim() : '';
-    // Measure each fragment at the SAME font/size it is drawn with. The blurb is
-    // rendered at 8.5pt but used to be measured while the font was still 10pt,
-    // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
-    // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
     doc.font('Helvetica-Bold').fontSize(10);
     const titleHeight = doc.heightOfString(title, { width: descW });
     doc.font('Helvetica').fontSize(8.5);
     const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
-    const descHeight = titleHeight + blurbHeight;
     const img = imageByLine.get(l.id);
-    const rowHeight = Math.max(descHeight, img ? THUMB : 12);
+    return { title, blurb, titleHeight, img, rowHeight: Math.max(titleHeight + blurbHeight, img ? THUMB : 12) };
+  };
+
+  // Keep the section label, the column header and the FIRST row together as one
+  // unit. Reserving a flat minimum row (the old 52pt at the call site) breaks
+  // whenever the first row is a tall spec list: the label + header fit the guess,
+  // got drawn at the foot of the page, then the row-level break moved the row to
+  // the next page and stranded them. Reserve the first row's real measured height
+  // instead, capped to a page so a taller-than-a-page row can't force a blank one.
+  const labelHeight = label ? (doc.font('Helvetica-Bold').fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
+  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+  const firstLine = lines[0];
+  const firstRowHeight = firstLine ? measureRow(firstLine).rowHeight + 6 : 0;
+  y = ensureSpace(doc, y, Math.min(labelHeight + 24 + firstRowHeight, usable));
+  if (label) {
+    doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
+    y = doc.y + 6;
+  }
+
+  y = drawTableHeader(y);
+
+  const descX = c.colDescX;
+  for (const l of lines) {
+    const { title, blurb, titleHeight, img, rowHeight } = measureRow(l);
     // Keep the whole row together: if it won't fit in the remaining page, break to
     // a fresh page (re-drawing the column header) rather than letting a long
     // description overflow into the footer band. (Old reserve was a flat 30/52pt,
@@ -723,18 +743,12 @@ export async function renderQuotePdf(
         // Section label above the table (parity with the web document), e.g.
         // "Recurring services" / "One-time".
         const label = String((b.content as { label?: string }).label ?? '').trim();
-        // Keep the section label glued to its table header + first row: reserve
-        // space for label + column header + a minimum first row up front. Without
-        // this, a label near the page bottom fit its own 36pt reservation but
-        // renderLineTable then broke, stranding the label (and later the column
-        // header) alone at the foot of the page.
-        y = ensureSpace(doc, y, (label ? 24 : 0) + 24 + 52);
-        if (label) {
-          doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
-          y = doc.y + 6;
-        }
+        // The label is drawn by renderLineTable so it shares one keep-together
+        // reservation with the column header and the first row, sized to that
+        // row's real height. Reserving a flat minimum here instead stranded the
+        // label + header at the foot of a page whenever the first row was tall.
         const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal);
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal, label);
       }
     } else if (b.blockType === 'contract') {
       // contractRenderData[b.id] is pre-fetched by the route (Task 14's

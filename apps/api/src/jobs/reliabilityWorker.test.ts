@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors, workerOptionsCalls } = vi.hoisted(() => ({
+const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors, workerOptionsCalls, dbCtx } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   addBulkMock: vi.fn(),
@@ -11,6 +11,9 @@ const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, where
   groupByMock: vi.fn(),
   workerProcessors: [] as Array<(job: { data: unknown }) => Promise<unknown>>,
   workerOptionsCalls: [] as Array<{ concurrency?: number }>,
+  // Tracks simulated withSystemDbAccessContext nesting so tests can assert
+  // WHERE an enqueue ran relative to the held context (#1105, BREEZE-K).
+  dbCtx: { depth: 0 },
 }));
 
 vi.mock('bullmq', () => ({
@@ -39,7 +42,14 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../db', () => ({
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    dbCtx.depth++;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth--;
+    }
+  }),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   // #1105 tripwire used by createInstrumentedQueue (the queue factory this
   // worker now constructs through). No-op here — no held context under test.
@@ -89,6 +99,7 @@ describe('enqueueDeviceReliabilityComputation', () => {
     groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
     workerProcessors.length = 0;
     workerOptionsCalls.length = 0;
+    dbCtx.depth = 0;
     await shutdownReliabilityWorker();
   });
 
@@ -165,5 +176,25 @@ describe('enqueueDeviceReliabilityComputation', () => {
         }),
       }),
     ]);
+  });
+
+  it('fans out scan-orgs enqueues OUTSIDE the held system DB context, read inside it (#1105, BREEZE-K)', async () => {
+    createReliabilityWorker();
+
+    let depthAtRead = -1;
+    groupByMock.mockImplementation(async () => {
+      depthAtRead = dbCtx.depth;
+      return [{ orgId: 'org-1' }];
+    });
+    const depthAtEnqueue: number[] = [];
+    addBulkMock.mockImplementation(async () => {
+      depthAtEnqueue.push(dbCtx.depth);
+      return [];
+    });
+
+    await workerProcessors[0]!({ data: { type: 'scan-orgs' } });
+
+    expect(depthAtRead).toBe(1);
+    expect(depthAtEnqueue).toEqual([0]);
   });
 });

@@ -33,6 +33,11 @@ vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event
 vi.mock('./OrgRemoteAccessSettings', () => ({ default: () => <div data-testid="remote-access" /> }));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
 vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
+vi.mock('../extensions/ExtensionSlotHost', () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="extension-slot-host-stub" data-props={JSON.stringify(props)} />
+  ),
+}));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
@@ -356,6 +361,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     expect(await screen.findByTestId('pax8-org-tab')).toBeInTheDocument();
+  });
+
+  it('renders the Extensions tab with ONLY the documented organization context — no full org object leak', async () => {
+    window.location.hash = '#extensions';
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^extensions$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+
+    const stub = screen.getByTestId('extension-slot-host-stub');
+    const props = JSON.parse(stub.dataset.props!);
+    expect(props.slot).toBe('organization.settings.sections');
+    expect(props.contractVersion).toBe(1);
+    // EXACT documented shape — no name/slug/status/settings/etc. leak through.
+    expect(props.context).toEqual({ contractVersion: 1, organizationId: 'org-1' });
+    expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
   it('offers the compact section select for narrow viewports', async () => {

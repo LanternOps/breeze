@@ -2461,6 +2461,8 @@
       "billingDescription": "Tax and billing address",
       "pax8": "Pax8",
       "pax8Description": "Subscriptions and ordering",
+      "extensions": "Extensions",
+      "extensionsDescription": "Third-party extension sections",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
       "brandingDescription": "Portal theme and visuals",

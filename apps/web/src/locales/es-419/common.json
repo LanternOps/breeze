@@ -61,7 +61,8 @@
     "sectionOperations": "Operaciones",
     "sectionBackup": "Respaldo",
     "sectionReporting": "Informes",
-    "sectionSettings": "Configuración"
+    "sectionSettings": "Configuración",
+    "sectionExtensions": "Extensiones"
   },
   "documentTitles": {
     "dashboard": "Panel",

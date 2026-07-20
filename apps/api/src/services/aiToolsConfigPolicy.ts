@@ -5,6 +5,7 @@ import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import { sanitizeThrownToolError } from './aiToolErrors';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -65,9 +66,10 @@ function safeHandler(
     try {
       return await fn(input, auth);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal error';
-      console.error(`[config-policy:${toolName}]`, message, err);
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      // Fail closed: `message` may be a raw driver string (#2603).
+      return JSON.stringify({
+        error: sanitizeThrownToolError(`config-policy:${toolName}`, err),
+      });
     }
   };
 }

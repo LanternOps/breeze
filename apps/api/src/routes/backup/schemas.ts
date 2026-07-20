@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { deriveS3RegionFromEndpoint } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -26,21 +26,49 @@ const queryBoolean = z.preprocess((value) => {
 export function validateS3Details(details: Record<string, unknown>): {
   error: string | null;
   region: string | null;
+  endpoint: string | undefined;
 } {
   const bucket = typeof details.bucket === 'string' ? details.bucket.trim() : '';
   if (!bucket) {
-    return { error: 'S3 bucket is required', region: null };
+    return { error: 'S3 bucket is required', region: null, endpoint: undefined };
   }
   const explicitRegion = typeof details.region === 'string' ? details.region.trim() : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
+
+  // Reject an endpoint the AWS SDK can't parse *before* it's persisted —
+  // otherwise it survives into a stored config and only surfaces later as an
+  // opaque `TypeError: Invalid URL` from deep inside @smithy/core's endpoint
+  // resolver the first time something calls S3 with it (Sentry BREEZE-P).
+  //
+  // The coerced value is RETURNED so callers persist the normalized form.
+  // Storing the raw string instead would leave every consumer responsible for
+  // re-coercing it, and the Go agent (agent/internal/backup/providers/s3.go)
+  // does NOT — it passes providerConfig.endpoint to the AWS Go SDK verbatim.
+  // A scheme-less endpoint would then pass this API's own connectivity test
+  // while every real backup run kept failing on the device: a green test that
+  // lies. Normalize once, here, at the boundary.
+  let normalizedEndpoint: string | undefined;
+  if (endpoint !== undefined) {
+    try {
+      normalizedEndpoint = coerceS3EndpointUrl(endpoint);
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'S3 endpoint is not a valid URL',
+        region: null,
+        endpoint: undefined,
+      };
+    }
+  }
+
   const region = explicitRegion || deriveS3RegionFromEndpoint(endpoint);
   if (!region) {
     return {
       error: 'S3 region is required (set it explicitly or use an endpoint that includes it, e.g. s3.us-west-004.backblazeb2.com)',
       region: null,
+      endpoint: normalizedEndpoint,
     };
   }
-  return { error: null, region };
+  return { error: null, region, endpoint: normalizedEndpoint };
 }
 
 export const configSchema = z.object({

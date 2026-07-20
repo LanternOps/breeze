@@ -207,6 +207,7 @@ vi.mock('../modules/mcpInvites', () => ({
 }));
 
 import { __loadMcpBootstrapForTests, mcpServerRoutes } from './mcpServer';
+import { GENERIC_TOOL_ERROR_MESSAGE } from '../services/aiToolErrors';
 
 function setTestApiKey(overrides: Record<string, unknown> = {}) {
   testState.apiKey = {
@@ -778,7 +779,14 @@ describe('MCP transport integration', () => {
     const body = await res.json();
     expect(body.result.isError).toBe(true);
     expect(JSON.stringify(body)).not.toContain('raw-secret');
-    expect(JSON.stringify(body)).toContain('[REDACTED]');
+    // #2603: thrown tool errors are now genericized entirely rather than
+    // secret-redacted in place, so the client sees no fragment of the original
+    // message (strictly stronger than the old [REDACTED] behaviour). The full,
+    // secret-redacted detail is still asserted on the audit event below.
+    expect(body.result.content[0].text).toBe(
+      JSON.stringify({ error: GENERIC_TOOL_ERROR_MESSAGE }),
+    );
+    expect(JSON.stringify(body)).not.toContain('boom with token');
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

@@ -81,7 +81,7 @@ describe('matchAgentTokenHash', () => {
       tokenHash: sha('brz_current'),
     });
 
-    expect(result).toEqual({ tokenRotationRequired: false });
+    expect(result).toEqual({ tokenRotationRequired: false, pendingTokenPresented: false });
   });
 
   it('matches the previous token hash only while the grace window is active', () => {
@@ -93,7 +93,7 @@ describe('matchAgentTokenHash', () => {
       now: new Date('2026-03-31T18:00:00Z'),
     });
 
-    expect(result).toEqual({ tokenRotationRequired: true });
+    expect(result).toEqual({ tokenRotationRequired: true, pendingTokenPresented: false });
   });
 
   it('rejects the previous token once the grace window expires', () => {
@@ -102,6 +102,53 @@ describe('matchAgentTokenHash', () => {
       previousTokenHash: sha('brz_previous'),
       previousTokenExpiresAt: new Date('2026-03-31T17:59:00Z'),
       tokenHash: sha('brz_previous'),
+      now: new Date('2026-03-31T18:00:00Z'),
+    });
+
+    expect(result).toBeNull();
+  });
+
+  // Issue #2621 — the staged credential of an unconfirmed rotation must
+  // authenticate. This is what keeps an agent alive if it crashes after writing
+  // the new credentials to disk but before confirming them.
+  it('accepts a live pending token and flags it as such', () => {
+    const result = matchAgentTokenHash({
+      agentTokenHash: sha('brz_current'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      pendingTokenHash: sha('brz_pending'),
+      pendingTokenExpiresAt: new Date('2026-03-31T19:00:00Z'),
+      tokenHash: sha('brz_pending'),
+      now: new Date('2026-03-31T18:00:00Z'),
+    });
+
+    expect(result).toEqual({ tokenRotationRequired: false, pendingTokenPresented: true });
+  });
+
+  // The current credential stays fully valid for the whole pending window —
+  // that is the property that makes a failed/abandoned rotation harmless.
+  it('still accepts the current token while a rotation is staged', () => {
+    const result = matchAgentTokenHash({
+      agentTokenHash: sha('brz_current'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      pendingTokenHash: sha('brz_pending'),
+      pendingTokenExpiresAt: new Date('2026-03-31T19:00:00Z'),
+      tokenHash: sha('brz_current'),
+      now: new Date('2026-03-31T18:00:00Z'),
+    });
+
+    expect(result).toEqual({ tokenRotationRequired: false, pendingTokenPresented: false });
+  });
+
+  it('rejects a pending token once the staging window expires', () => {
+    const result = matchAgentTokenHash({
+      agentTokenHash: sha('brz_current'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      pendingTokenHash: sha('brz_pending'),
+      pendingTokenExpiresAt: new Date('2026-03-31T17:59:00Z'),
+      tokenHash: sha('brz_pending'),
       now: new Date('2026-03-31T18:00:00Z'),
     });
 
@@ -121,7 +168,7 @@ describe('matchRoleScopedAgentTokenHash', () => {
       tokenHash: sha('brz_agent'),
     });
 
-    expect(result).toEqual({ role: 'agent', tokenRotationRequired: false });
+    expect(result).toEqual({ role: 'agent', tokenRotationRequired: false, pendingTokenPresented: false });
   });
 
   it('returns watchdog role for watchdog-scoped tokens', () => {
@@ -135,7 +182,7 @@ describe('matchRoleScopedAgentTokenHash', () => {
       tokenHash: sha('brz_watchdog'),
     });
 
-    expect(result).toEqual({ role: 'watchdog', tokenRotationRequired: false });
+    expect(result).toEqual({ role: 'watchdog', tokenRotationRequired: false, pendingTokenPresented: false });
   });
 });
 

@@ -6,6 +6,7 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -13,6 +14,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/packages/extension-web-sdk/node_modules ./packages/extension-web-sdk/node_modules
 COPY . .
 ARG PUBLIC_API_URL=""
 ARG PUBLIC_APP_VERSION="0.1.0"

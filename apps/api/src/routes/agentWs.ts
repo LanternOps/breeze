@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { eq, and, inArray, notInArray, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
 import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
@@ -885,6 +886,9 @@ export async function validateAgentToken(agentId: string, token: string): Promis
         watchdogTokenHash: devices.watchdogTokenHash,
         previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
         previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
+        pendingTokenHash: devices.pendingTokenHash,
+        pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
+        pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
@@ -926,6 +930,13 @@ export async function validateAgentToken(agentId: string, token: string): Promis
     watchdogTokenHash: device.watchdogTokenHash,
     previousWatchdogTokenHash: device.previousWatchdogTokenHash,
     previousWatchdogTokenExpiresAt: device.previousWatchdogTokenExpiresAt,
+    // Issue #2621 — an agent that persisted a staged rotation and restarted
+    // before confirming reconnects with the staged token. The WS path must
+    // accept it, or the control channel dies in exactly the crash window the
+    // two-phase design exists to make survivable.
+    pendingTokenHash: device.pendingTokenHash,
+    pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
+    pendingTokenExpiresAt: device.pendingTokenExpiresAt,
     tokenHash,
   });
   if (!match || match.role !== 'agent') {
@@ -1586,8 +1597,23 @@ async function processCommandResult(
 
     if (resolvedDeviceId) {
       // Query device_commands OUTSIDE the current transaction context.
-      // device_commands has no RLS; querying via the pool (auto-commit)
-      // guarantees visibility of recently committed rows.
+      // device_commands has no RLS; leaving the held org-scoped transaction
+      // guarantees visibility of rows committed by the dispatcher after this
+      // transaction began.
+      //
+      // The READ deliberately stays on the bare pool while the write below
+      // takes an explicit system context. Only insert/update/delete are
+      // instrumented by the contextless-write guard
+      // (CONTEXTLESS_WRITE_GUARD_METHODS, db/index.ts), and a bare-pool read of
+      // an RLS-free table returns exactly the rows a system-context read would
+      // — so wrapping it would buy no #1375 coverage while costing a full
+      // BEGIN + set_config×6 + COMMIT round-trip per command result on the
+      // hottest agent path, against a connection pool we are actively trying to
+      // relieve (#1105). Contrast isAgentDeviceStillAuthorized below, which
+      // reads `devices` — that table DOES have RLS, so its read genuinely needs
+      // the system context. If device_commands ever gains an RLS policy, this
+      // read becomes a silent 0-row no-op and MUST move into
+      // withSystemDbAccessContext — same caveat as services/commandDispatch.ts.
       const did = resolvedDeviceId;
       const [row] = await runOutsideDbContext(() =>
         db
@@ -1665,24 +1691,42 @@ async function processCommandResult(
       validationError,
     } = normalizeCriticalResultIfNeeded(command.type, result);
 
-    // Update outside transaction for same visibility reasons as the lookup.
+    // Update outside transaction for same visibility reasons as the lookup, and
+    // under an explicit system context so the compare-and-set is not a
+    // contextless bare-pool write (#1375). device_commands is intentionally
+    // system-scoped (no RLS), so this changes nothing about what the write can
+    // touch — it just makes the guard's invariant ("device_commands writes run
+    // under an explicit system context", db/index.ts) actually true here.
+    //
+    // dbWriteExpectingRows (#1379 A2): the SELECT above matched this exact
+    // predicate and returned a row, so a 0-row result here is only *benign*
+    // when another writer (the REST twin in routes/agents/commands.ts, or a
+    // second socket) drove the command terminal in the intervening window.
+    // Every other cause — a contextless/denied write, a future RLS policy on
+    // device_commands, a misrouted connection — is a defect that would
+    // otherwise vanish into the console.warn below. Non-throwing, so the stale
+    // -result early-return keeps its existing behaviour.
     const updatedCommands = await runOutsideDbContext(() =>
-      db
-        .update(deviceCommands)
-        .set({
-            status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
-            completedAt: new Date(),
-            result: buildStoredCommandResult(command.type, normalizedResult, stdout)
-        })
-        .where(
-          and(
-            eq(deviceCommands.id, result.commandId),
-            eq(deviceCommands.deviceId, resolvedDeviceId!),
-            eq(deviceCommands.targetRole, 'agent'),
-            inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
-          )
+      withSystemDbAccessContext(() =>
+        dbWriteExpectingRows('device_commands.ws_result_terminal_cas', () =>
+          db
+            .update(deviceCommands)
+            .set({
+                status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
+                completedAt: new Date(),
+                result: buildStoredCommandResult(command.type, normalizedResult, stdout)
+            })
+            .where(
+              and(
+                eq(deviceCommands.id, result.commandId),
+                eq(deviceCommands.deviceId, resolvedDeviceId!),
+                eq(deviceCommands.targetRole, 'agent'),
+                inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+              )
+            )
+            .returning({ id: deviceCommands.id })
         )
-        .returning({ id: deviceCommands.id })
+      )
     );
 
     if (updatedCommands.length === 0) {

@@ -1,0 +1,25 @@
+{
+  "name": "@breeze/extension-testkit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@breeze/extension-sdk": "workspace:*",
+    "@breeze/extension-web-sdk": "workspace:*",
+    "hono": "^4.12.30"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.11.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}

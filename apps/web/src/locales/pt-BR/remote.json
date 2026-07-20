@@ -28,33 +28,34 @@
     "downloadFor": "Baixar para {{platform}}",
     "errors": {
       "connectionFailed": "Falha na conexão",
-      "createDesktopCode": "Falha ao criar o código da área de trabalho",
+      "createDesktopCode": "Não foi possível criar o código de conexão da área de trabalho",
       "createDesktopSession": "Falha ao criar a sessão da área de trabalho",
-      "createVncTunnel": "Falha ao criar o túnel VNC",
-      "deviceChanged": "O dispositivo foi alterado durante a conexão",
+      "createVncTunnel": "Não foi possível criar o túnel VNC",
+      "deviceChanged": "Falha no início remoto: o registro do dispositivo mudou. Atualize e tente novamente.",
       "http": "Falha ao iniciar o acesso remoto (HTTP {{status}})",
-      "invalidDesktopCode": "Código da área de trabalho inválido",
-      "issueVncCode": "Falha ao emitir o código VNC",
-      "securityCheckToast": "Falha na verificação de segurança",
-      "securityPolicy": "A política de segurança bloqueou a conexão",
-      "server": "Erro no servidor remoto",
-      "vncTunnelFailed": "Falha no túnel VNC"
+      "invalidDesktopCode": "Resposta inválida do código de conexão da área de trabalho",
+      "issueVncCode": "Não foi possível emitir o código de conexão VNC",
+      "securityCheckToast": "Início remoto indisponível: a verificação de segurança falhou. Fale com seu administrador.",
+      "securityPolicy": "Início remoto bloqueado pela política de segurança",
+      "server": "Falha no início remoto: erro do servidor. Fale com seu administrador.",
+      "vncTunnelFailed": "O túnel VNC não pôde ser aberto"
     },
     "fallback": {
-      "title": "Título",
-      "viewerDescription": "Descrição do visualizador",
-      "vncDescription": "Descrição do VNC"
+      "linuxFirstRun": "No Linux, torne o arquivo baixado executável (chmod +x) e execute-o uma vez. Isso registra o visualizador, e as sessões passam a abrir automaticamente.",
+      "title": "O visualizador não abriu?",
+      "viewerDescription": "Se o visualizador abriu, você pode dispensar este aviso. Caso contrário, baixe-o abaixo.",
+      "vncDescription": "Abra a sessão VNC no seu navegador."
     },
     "launcherSkip": {
-      "configError": "Erro de configuração",
-      "emptyUrlTemplate": "O modelo de URL está vazio",
+      "configError": "Não foi possível resolver a ferramenta remota configurada pelo parceiro (erro de configuração). Voltando para a área de trabalho remota integrada.",
+      "emptyUrlTemplate": "A ferramenta remota configurada pelo parceiro não tem um modelo de URL definido. Voltando para a área de trabalho remota integrada.",
       "missingIdentifier": "Este dispositivo não possui o identificador individual exigido pela ferramenta remota configurada pelo parceiro (por exemplo, o ID do RustDesk). Usando a área de trabalho remota integrada. Defina o identificador em Configurações do Dispositivo → Campos Personalizados.",
       "providerDisabled": "A ferramenta remota configurada pelo parceiro está desativada para este dispositivo. Usando a área de trabalho remota integrada."
     },
     "launching": "Iniciando...",
     "launchingViewer": "Abrindo visualizador...",
     "openInBrowser": "Abrir no navegador",
-    "policyDisabled": "Desativado pela política",
+    "policyDisabled": "A área de trabalho remota está desativada pela política",
     "policyDisabledNamed": "A área de trabalho remota foi desativada pela política \"{{name}}\"",
     "unavailable": {
       "default": "A área de trabalho não está disponível neste dispositivo",
@@ -76,21 +77,21 @@
     "errors": {
       "connectionFailed": "Falha na conexão",
       "createTunnel": "Falha ao criar o túnel",
-      "createVncTunnel": "Falha ao criar o túnel VNC",
-      "issueConnectCode": "Falha ao emitir o código de conexão",
-      "tunnelFailed": "Falha no túnel"
+      "createVncTunnel": "Não foi possível criar o túnel VNC",
+      "issueConnectCode": "Não foi possível emitir o código de conexão VNC",
+      "tunnelFailed": "O túnel não pôde ser aberto"
     },
     "fallback": {
-      "description": "Descrição",
-      "title": "Título"
+      "description": "Abra a sessão VNC no seu navegador.",
+      "title": "O visualizador não abriu?"
     },
     "launching": "Iniciando...",
     "openInBrowser": "Abrir no navegador",
-    "policyDisabled": "Desativado pela política",
-    "policyDisabledNamed": "Desativado por uma política específica",
-    "unavailable": "Indisponível",
+    "policyDisabled": "O relay VNC está desativado pela política",
+    "policyDisabledNamed": "O relay VNC está desativado pela política \"{{name}}\"",
+    "unavailable": "VNC indisponível",
     "vncDesktop": "Área de trabalho VNC",
-    "vncRemote": "Acesso remoto VNC"
+    "vncRemote": "VNC remoto"
   },
   "deleteConfirmDialog": {
     "deletePermanently": "Excluir permanentemente",

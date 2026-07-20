@@ -15,6 +15,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -140,7 +141,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           count: results.length,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
+        const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:search_agent_logs]', message, err);
         return JSON.stringify({ error: `Search failed: ${message}` });
       }
@@ -227,7 +228,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           message: `Log level will be set to ${level} for ${durationMinutes} minutes`,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
+        const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:set_agent_log_level]', message, err);
         return JSON.stringify({ error: `Failed to set log level: ${message}` });
       }
@@ -362,7 +363,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
             : 'Profiles captured but the command id was unavailable; look up the latest capture_pprof command for this device in the command history.',
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Internal error';
+        const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:capture_agent_pprof]', message, err);
         return JSON.stringify({ error: `Profile capture failed: ${message}` });
       }

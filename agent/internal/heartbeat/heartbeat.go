@@ -116,11 +116,14 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands               []Command              `json:"commands"`
-	ConfigUpdate           map[string]any         `json:"configUpdate,omitempty"`
-	UpgradeTo              string                 `json:"upgradeTo,omitempty"`
-	RenewCert              bool                   `json:"renewCert,omitempty"`
-	RotateToken            bool                   `json:"rotateToken,omitempty"`
+	Commands     []Command      `json:"commands"`
+	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
+	UpgradeTo    string         `json:"upgradeTo,omitempty"`
+	RenewCert    bool           `json:"renewCert,omitempty"`
+	RotateToken  bool           `json:"rotateToken,omitempty"`
+	// Issue #2621 — the server sees this agent authenticating with the STAGED
+	// credentials of an unconfirmed rotation. Finish phase two.
+	ConfirmTokenRotation   bool                   `json:"confirmTokenRotation,omitempty"`
 	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
 	UacInterceptionEnabled *bool                  `json:"uacInterceptionEnabled,omitempty"`
 	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
@@ -232,9 +235,18 @@ type Heartbeat struct {
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
 	pamActuateMu sync.Mutex
 	// pamDismissalUncertain is protected by pamActuateMu. It keeps later PAM
-	// input fail-closed after a broker failure until the helper's correlated
-	// response proves the old dismissal command has stopped.
+	// input fail-closed after a broker failure until a helper response PROVES
+	// no denied consent prompt is still on screen. A response that merely
+	// arrives, or a helper that dies, never clears it (issue #2610).
 	pamDismissalUncertain bool
+	// pamRecoveryDelay / pamRecoveryMaxAttempts bound the gate-recovery probe
+	// loop; pamGateProofTimeout bounds the wait for the helper's late dismissal
+	// proof; pamGateStuckReassertInterval paces the "PAM still disabled" alarm.
+	// Zero means the defaults in pam_flow.go; tests shrink them.
+	pamRecoveryDelay             time.Duration
+	pamRecoveryMaxAttempts       int
+	pamGateProofTimeout          time.Duration
+	pamGateStuckReassertInterval time.Duration
 	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners         sync.Map // desktop session ID -> helper session ID
 
@@ -276,9 +288,12 @@ type Heartbeat struct {
 	inFlightSeq      atomic.Uint64
 
 	// Guard against concurrent cert renewals from successive heartbeats
-	certRenewing      atomic.Bool
-	tokenRotating     atomic.Bool
-	upgradeInProgress atomic.Bool
+	certRenewing  atomic.Bool
+	tokenRotating atomic.Bool
+	// Issue #2621 — a staged credential rotation is sitting on disk unconfirmed.
+	// Drives the per-tick retry so recovery does not depend on a process restart.
+	pendingRotationOnDisk atomic.Bool
+	upgradeInProgress     atomic.Bool
 
 	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
 	// Suspends auto-update until the rotation conflict is resolved (server
@@ -964,6 +979,15 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 
 func (h *Heartbeat) Start() {
+	// Issue #2621 — before the first heartbeat, finish any credential rotation
+	// that was interrupted between the durable disk write and the server
+	// confirmation. This runs first on purpose: if the agent was offline long
+	// enough for its old credentials to fall out of the previous-token grace
+	// window, the staged credentials are the ONLY ones the server still accepts,
+	// and reconciling here is what gets the agent back on a current credential
+	// instead of 401-looping.
+	go h.reconcilePendingRotation()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -1068,6 +1092,16 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			// Issue #2621 — retry an unfinished credential rotation on every tick
+			// while one is outstanding. This runs BEFORE the auth-dead skip on
+			// purpose: if the server already promoted but the confirmation
+			// response was lost, the agent is heartbeating with a credential that
+			// is about to stop working, and the staged token on disk is the way
+			// out. Waiting for a process restart to reconcile would leave the
+			// device dark until someone restarted the service.
+			if h.pendingRotationOnDisk.Load() {
+				go h.reconcilePendingRotation()
+			}
 			if h.authMon != nil && h.authMon.ShouldSkip() {
 				log.Debug("skipping heartbeat tick, auth-dead",
 					"backoff", h.authMon.BackoffDuration())
@@ -3416,6 +3450,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		go h.handleTokenRotation()
 	}
 
+	// Issue #2621 — the server is telling us we are running on staged
+	// credentials it never promoted (we confirmed late, or crashed before
+	// confirming). Finish phase two so the rotation stops depending on the
+	// pending window staying open.
+	if response.ConfirmTokenRotation {
+		go h.reconcilePendingRotation()
+	}
+
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
@@ -3617,33 +3659,187 @@ func (h *Heartbeat) handleTokenRotation() {
 		return
 	}
 
-	h.mu.Lock()
-	h.secureToken.Replace(rotateResp.AuthToken)
-	h.config.AuthToken = rotateResp.AuthToken
-	h.config.WatchdogAuthToken = rotateResp.WatchdogAuthToken
-	h.config.HelperAuthToken = rotateResp.HelperAuthToken
-	saveErr := config.Save(h.config)
-	h.config.AuthToken = ""
-	h.config.WatchdogAuthToken = ""
-	h.config.HelperAuthToken = ""
-	h.mu.Unlock()
+	// Issue #2621 — PERSIST BEFORE COMMIT.
+	//
+	// The old sequence swapped credentials in memory and only then tried to save,
+	// treating a save failure as a log line. Because the server had already
+	// committed the new hashes, that log line was the last warning before the
+	// device was stranded: the next restart loaded stale credentials and every
+	// request 401'd once the grace window closed.
+	//
+	// Now the server has merely STAGED these credentials — the agent's existing
+	// ones are still current server-side. So a failure anywhere below is
+	// recoverable: we abort, keep using credentials we know are both durable and
+	// valid, and the staged set expires harmlessly.
+	if err := config.StagePendingCredentials(
+		rotateResp.AuthToken,
+		rotateResp.WatchdogAuthToken,
+		rotateResp.HelperAuthToken,
+	); err != nil {
+		// Deliberately NOT swapping the in-memory credentials here. Continuing on
+		// unpersisted credentials is exactly the divergence that caused #2621.
+		log.Error("agent token rotation aborted — new credentials could not be durably persisted; continuing on the existing durable credentials",
+			"error", err.Error())
+		return
+	}
+	h.pendingRotationOnDisk.Store(true)
 
-	if saveErr != nil {
-		log.Error("agent token rotated in memory but failed to persist new token", "error", saveErr.Error())
-	} else {
-		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+	// A pre-#2621 server has ALREADY committed these hashes as current — its
+	// response carries no confirmationRequired and it has no confirm endpoint.
+	// Treating that as a two-phase rotation would be fatal: the confirm would
+	// 404, we would never promote locally, and the agent would sit on a
+	// credential the server has already demoted — permanently stranded once the
+	// grace window closed. So against an old server, promote immediately; the
+	// durable write above already happened, which is still strictly better
+	// ordering than the code this replaces.
+	if !rotateResp.ConfirmationRequired {
+		log.Info("server committed the rotation without a confirmation phase (pre-#2621 server); promoting locally")
+		h.applyRotatedCredentials(rotateResp.AuthToken, rotateResp.WatchdogAuthToken, rotateResp.HelperAuthToken)
+		return
 	}
 
+	// The staged set is on disk and verified by readback. Only now is it safe to
+	// ask the server to promote it, authenticating WITH the new token — that is
+	// the proof of durable possession the server requires.
+	if !h.confirmTokenRotation(rotateResp.AuthToken) {
+		// Confirmation failed. Both credential sets are on disk and both are
+		// accepted by the server while the staged set lives, so the agent keeps
+		// working either way. Startup reconciliation and the heartbeat
+		// confirmTokenRotation flag will retry the promotion.
+		log.Warn("rotation credentials persisted but confirmation failed; will retry — agent remains authenticated on its current credentials")
+		return
+	}
+
+	h.applyRotatedCredentials(rotateResp.AuthToken, rotateResp.WatchdogAuthToken, rotateResp.HelperAuthToken)
+	log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+}
+
+// confirmTokenRotation runs phase two: it tells the server the staged
+// credentials are durably held, which promotes them to current. Returns true
+// only on a confirmed promotion.
+//
+// A failure here is safe by construction — the server keeps the agent's
+// previous credentials current until it succeeds — so the caller can simply
+// retry later rather than unwinding anything.
+func (h *Heartbeat) confirmTokenRotation(newAuthToken string) bool {
+	confirmClient := api.NewClient(h.serverURL(), newAuthToken, h.config.AgentID)
+	resp, err := confirmClient.ConfirmTokenRotation()
+	if err != nil {
+		if errors.Is(err, api.ErrPendingRotationExpired) {
+			// The staged set can never be promoted now. Drop it so startup
+			// reconciliation doesn't retry forever; the durable current
+			// credentials are untouched and still valid.
+			log.Warn("pending token rotation can no longer be promoted (expired or revoked); discarding staged credentials")
+			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
+				log.Error("failed to clear unusable staged credentials", "error", clearErr.Error())
+			} else {
+				h.pendingRotationOnDisk.Store(false)
+			}
+			return false
+		}
+		log.Error("agent token rotation confirmation failed", "error", err.Error())
+		return false
+	}
+
+	return resp.Confirmed
+}
+
+// applyRotatedCredentials collapses a confirmed rotation into the agent's
+// durable current credentials and refreshes every in-memory consumer.
+//
+// Called only after the server has confirmed the promotion, so writing these as
+// current can no longer diverge from the server's view.
+func (h *Heartbeat) applyRotatedCredentials(authToken, watchdogAuthToken, helperAuthToken string) {
+	if err := config.PromotePendingCredentials(authToken, watchdogAuthToken, helperAuthToken); err != nil {
+		// The server has promoted, and the tokens remain on disk under their
+		// pending_* keys, which startup reconciliation reads back. The agent is
+		// not stranded, but this file is now in a shape that needs attention.
+		log.Error("rotation confirmed by server but promoting staged credentials on disk failed; staged copy is still on disk and the per-tick retry will recover it",
+			"error", err.Error())
+		// Leave pendingRotationOnDisk set so the retry keeps trying; the server
+		// has already promoted, so the reconcile will take the alreadyCurrent
+		// path and finish the local write.
+	} else {
+		h.pendingRotationOnDisk.Store(false)
+	}
+
+	h.mu.Lock()
+	h.secureToken.Replace(authToken)
+	// Keep the in-memory config in step with disk. SaveTo rebuilds secrets.yaml
+	// from this struct, so leaving these stale would let an unrelated save (the
+	// cert-renewal path calls config.Save) write PRE-rotation watchdog/helper
+	// tokens back over the promoted ones. AuthToken stays cleared — secureToken
+	// is the authority for it and the struct copy is zeroed after startup.
+	h.config.WatchdogAuthToken = watchdogAuthToken
+	h.config.HelperAuthToken = helperAuthToken
+	h.mu.Unlock()
+
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
-	h.sendWatchdogTokenUpdate(rotateResp.WatchdogAuthToken)
+	h.sendWatchdogTokenUpdate(watchdogAuthToken)
 
 	// Retain and push the rotated helper token to any connected assist sessions.
-	h.setHelperToken(rotateResp.HelperAuthToken)
-	h.sendHelperTokenUpdate(rotateResp.HelperAuthToken)
+	h.setHelperToken(helperAuthToken)
+	h.sendHelperTokenUpdate(helperAuthToken)
 
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()
 	}
+}
+
+// reconcilePendingRotation recovers a rotation that was interrupted between the
+// durable disk write and the server confirmation — the crash window the
+// two-phase design is built to survive.
+//
+// Both credential sets are on disk at that point and the server accepts either
+// while the staged set is live, so the agent is never locked out; this just
+// finishes the handshake. Safe to call on every startup: it is a no-op when
+// there is nothing staged.
+func (h *Heartbeat) reconcilePendingRotation() {
+	// Share the rotation mutex with handleTokenRotation: a startup reconcile, a
+	// heartbeat-triggered reconcile and a fresh rotation can all fire at once,
+	// and two concurrent confirms would race the server's compare-and-swap.
+	if !h.tokenRotating.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.tokenRotating.Store(false)
+
+	persisted, err := config.ReadPersistedCredentials()
+	if err != nil {
+		log.Warn("could not read persisted credentials for rotation reconciliation", "error", err.Error())
+		return
+	}
+
+	if persisted.PendingAuthToken == "" {
+		h.pendingRotationOnDisk.Store(false)
+		return
+	}
+	if persisted.PendingWatchdogAuthToken == "" || persisted.PendingHelperAuthToken == "" {
+		// An incomplete staged set can never be promoted — the server only ever
+		// stages all three together. Drop it rather than confirm a partial set.
+		log.Warn("discarding incomplete staged credential set")
+		if clearErr := config.ClearPendingCredentials(); clearErr != nil {
+			log.Error("failed to clear incomplete staged credentials", "error", clearErr.Error())
+		} else {
+			h.pendingRotationOnDisk.Store(false)
+		}
+		return
+	}
+
+	// Keep the per-tick retry armed until this rotation actually resolves.
+	h.pendingRotationOnDisk.Store(true)
+
+	log.Info("found an unconfirmed credential rotation on disk; resuming confirmation")
+
+	if !h.confirmTokenRotation(persisted.PendingAuthToken) {
+		return
+	}
+
+	h.applyRotatedCredentials(
+		persisted.PendingAuthToken,
+		persisted.PendingWatchdogAuthToken,
+		persisted.PendingHelperAuthToken,
+	)
+	log.Info("resumed credential rotation confirmed and promoted")
 }
 
 // sendWatchdogStateSync sends a state_sync IPC message to the watchdog
@@ -3812,13 +4008,45 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	return nil
 }
 
+// toWSCommandResult maps an internal tools.CommandResult onto the WebSocket
+// wire result, carrying stdout, stderr and the exit code through to the
+// server (#2474). The stdout->Result reparse is load-bearing: server handlers
+// for discovery, backup, snmp and monitor read the structured `result` field,
+// not stdout. Result is set ONLY when stdout parses as JSON — raw text rides
+// exclusively in Stdout. Duplicating it into Result would double the payload
+// and, for stdout near the executor's 1MB cap, trip the server's 1MB refine
+// on `result` and get the whole command_result rejected.
+func toWSCommandResult(commandID string, result tools.CommandResult) websocket.CommandResult {
+	wsResult := websocket.CommandResult{
+		CommandID: commandID,
+		Status:    result.Status,
+		ExitCode:  result.ExitCode,
+		Stdout:    result.Stdout,
+		Stderr:    result.Stderr,
+	}
+
+	if result.Error != "" {
+		wsResult.Error = result.Error
+	} else if result.Stdout != "" {
+		var jsonResult any
+		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
+			wsResult.Result = jsonResult
+		}
+	}
+
+	return wsResult
+}
+
 // HandleCommand processes a command from WebSocket and returns a result
 func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResult {
 	if !h.accepting.Load() {
 		return websocket.CommandResult{
 			CommandID: wsCmd.ID,
 			Status:    "failed",
-			Error:     "agent is shutting down",
+			// Synthetic exit code: no process ran. ExitCode is not omitempty,
+			// so leaving it zero would persist a false "exited 0".
+			ExitCode: 1,
+			Error:    "agent is shutting down",
 		}
 	}
 
@@ -3830,24 +4058,14 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	result := h.executeCommandViaPool(cmd)
 
-	wsResult := websocket.CommandResult{
-		CommandID: cmd.ID,
-		Status:    result.Status,
-	}
-
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
-		var jsonResult any
-		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
-			wsResult.Result = jsonResult
-		} else {
-			wsResult.Result = result.Stdout
-		}
-	}
+	wsResult := toWSCommandResult(cmd.ID, result)
 
 	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
-		go h.submitCommandResult(cmd.ID, result)
+		go func() {
+			if err := h.submitCommandResult(cmd.ID, result); err != nil {
+				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
+			}
+		}()
 	}
 
 	return wsResult
@@ -3864,7 +4082,9 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	}) {
 		return tools.CommandResult{
 			Status: "failed",
-			Error:  "command rejected, worker pool full",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode: 1,
+			Error:    "command rejected, worker pool full",
 		}
 	}
 
@@ -3896,13 +4116,15 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 			watchdog.Reset(warnAfter)
 		case <-h.stopChan:
 			return tools.CommandResult{
-				Status: "failed",
-				Error:  "agent is shutting down",
+				Status:   "failed",
+				ExitCode: 1, // synthetic: no exit code observed (shutdown)
+				Error:    "agent is shutting down",
 			}
 		case <-h.pool.Context().Done():
 			return tools.CommandResult{
-				Status: "failed",
-				Error:  "command execution interrupted during shutdown",
+				Status:   "failed",
+				ExitCode: 1, // synthetic: no exit code observed (shutdown)
+				Error:    "command execution interrupted during shutdown",
 			}
 		}
 	}

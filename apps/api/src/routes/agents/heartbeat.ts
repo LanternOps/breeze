@@ -11,6 +11,7 @@ import {
   onedriveDeviceState,
 } from '../../db/schema';
 import type { BatteryStatus } from '@breeze/shared';
+import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
 import type { PolicyProbeConfigUpdate } from './schemas';
@@ -935,8 +936,51 @@ if (latestHelper) {
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
+
+  // Issue #2621 — a staged rotation is still outstanding. Don't ask for another
+  // one (that would churn the staged set and re-open the divergence window);
+  // ask the agent to finish the one it has. This is also the recovery path for
+  // an agent that persisted the new credentials and then crashed before
+  // confirming: it reconnects on the staged token and gets told to confirm.
+  let pendingRotationLive =
+    !!device.pendingTokenHash &&
+    !!device.pendingTokenExpiresAt &&
+    device.pendingTokenExpiresAt > new Date();
+
+  // Issue #2621 — IMPLICIT PROMOTION. The agent is authenticating with the
+  // staged credential, which is the same proof of durable possession that
+  // /rotate-token/confirm requires, so promote it here too.
+  //
+  // This is what keeps PRE-#2621 agents alive. An old agent overwrites its own
+  // token file on rotation and never calls confirm; without this it would run on
+  // the pending hash until the staging window closed and then be locked out
+  // permanently, with no way to self-heal (rotateToken is suppressed while a
+  // rotation is staged, and after expiry it can no longer authenticate at all).
+  // It also backstops a current agent whose confirm response was lost in flight.
+  if (pendingRotationLive && c.get('agentPendingTokenPresented') === true && device.agentTokenHash) {
+    try {
+      const promoted = await promotePendingAgentCredentials({
+        deviceId: device.id,
+        pendingTokenHash: device.pendingTokenHash!,
+        expectedAgentTokenHash: device.agentTokenHash,
+        pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
+        pendingHelperTokenHash: device.pendingHelperTokenHash,
+        watchdogTokenHash: device.watchdogTokenHash,
+        helperTokenHash: device.helperTokenHash,
+      });
+      if (promoted) {
+        pendingRotationLive = false;
+      }
+    } catch (err) {
+      // Best-effort: the staged credential still authenticates for the rest of
+      // its window, and confirm/the next heartbeat will retry the promotion.
+      console.error('[heartbeat] implicit pending-rotation promotion failed:', err);
+    }
+  }
+
   const rotateToken =
     !authenticatedWithPreviousToken &&
+    !pendingRotationLive &&
     (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
 
   let manageRemoteManagement = false;
@@ -966,6 +1010,11 @@ if (latestHelper) {
       watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
       renewCert: renewCert || undefined,
       rotateToken: rotateToken || undefined,
+      // Issue #2621 — set when the caller authenticated with the STAGED
+      // credential, i.e. it demonstrably holds the new token but never
+      // confirmed. Tells the agent to call /rotate-token/confirm and finish.
+      confirmTokenRotation:
+        (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
       helperEnabled: helperSettings?.enabled ?? false,
       helperSettings: helperSettings ?? undefined,
       // Opt-in default: a null pamSettings (resolver error, logged above) sends

@@ -127,6 +127,20 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
 }
 
+// refusePamActuation builds the fail-closed refusal and logs it at the block
+// site. The remote actuate path folds this into a success-shaped CommandResult
+// and logs nothing agent-side, so without this a PAM-disabled device would
+// leave no local trace of the refusals it is issuing (#2610).
+func refusePamActuation(requestID, why string) pamactuator.Result {
+	log.Warn("pam: actuation REFUSED — PAM is fail-closed",
+		"elevationRequestId", requestID, "why", why)
+	return pamactuator.Result{
+		Success:       false,
+		Reason:        "dismissal_uncertain",
+		DetailMessage: "previous PAM consent dismissal has not reported completion",
+	}
+}
+
 // actuateElevation runs the dormant-admin promote → consent.exe type →
 // guaranteed-demote pipeline and returns the actuator result. Called by the
 // remote actuate_elevation command handler, and (Task 5) by the local
@@ -136,14 +150,23 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	// concurrent denyConsent (or a second actuateElevation): two goroutines
 	// driving SendInput/SetThreadDesktop against the same live consent.exe
 	// would corrupt input injection. See Heartbeat.pamActuateMu.
+	// Fast path: check the gate under a short lock first. A recovery probe can
+	// hold pamActuateMu across a full pamDismissTimeout (10s) IPC round-trip,
+	// and sync.Mutex.Lock is not ctx-aware, so without this a worker could be
+	// pinned for that long only to be told "dismissal_uncertain" anyway.
+	h.pamActuateMu.Lock()
+	gated := h.pamDismissalUncertain
+	h.pamActuateMu.Unlock()
+	if gated {
+		return refusePamActuation(requestID, "dismissal of a denied consent prompt was never proven")
+	}
+
 	h.pamActuateMu.Lock()
 	defer h.pamActuateMu.Unlock()
+	// Re-check under the real critical section: the gate may have been engaged
+	// between the fast path and here.
 	if h.pamDismissalUncertain {
-		return pamactuator.Result{
-			Success:       false,
-			Reason:        "dismissal_uncertain",
-			DetailMessage: "previous PAM consent dismissal has not reported completion",
-		}
+		return refusePamActuation(requestID, "dismissal gate engaged concurrently")
 	}
 
 	manager := newElevationAccountManager()

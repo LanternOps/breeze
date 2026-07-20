@@ -75,6 +75,14 @@ COPY --from=builder --chown=hono:nodejs /app/packages ./packages
 
 # Copy migration files for auto-migrate on startup
 COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migrations
+# Runtime-extension mount point: deployments deliver extensions as SIGNED
+# bundles by mounting extensions.yaml (+ artifacts) here. Created empty and
+# owned by the runtime user; without a mount both the reconciler and the
+# (deprecated, flag-gated) legacy source loader treat it as a clean no-op.
+# Without this ENV the CJS bundle would fall back to a cwd-derived path that
+# does not exist in this image's layout, silently ignoring any mount.
+RUN mkdir -p /app/extensions && chown hono:nodejs /app/extensions
+ENV BREEZE_EXTENSIONS_DIR=/app/extensions
 # Run the API from its workspace path so module resolution uses apps/api/node_modules first.
 WORKDIR /app/apps/api
 

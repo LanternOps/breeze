@@ -16,6 +16,7 @@ import {
   Monitor,
   Paintbrush,
   PackageOpen,
+  Puzzle,
   ScrollText,
   Shield,
   Ticket
@@ -40,10 +41,12 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import Pax8OrgTab from '../organizations/Pax8OrgTab';
+import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
 type TabKey =
   | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8';
+  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
+  | 'extensions';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
 // SettingsSectionNav). Hashes are the section keys (already kebab-case).
@@ -55,6 +58,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
       { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
       { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
+      { key: 'extensions', hash: 'extensions', label: 'orgSettingsPage.nav.extensions', description: 'orgSettingsPage.nav.extensionsDescription', icon: Puzzle },
     ],
   },
   {
@@ -564,6 +568,16 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return effectiveOrgId ? (
           <div data-testid="org-tab-pax8">
             <Pax8OrgTab orgId={effectiveOrgId} />
+          </div>
+        ) : null;
+      case 'extensions':
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-extensions">
+            <ExtensionSlotHost
+              slot="organization.settings.sections"
+              contractVersion={1}
+              context={{ contractVersion: 1, organizationId: effectiveOrgId }}
+            />
           </div>
         ) : null;
       case 'general':

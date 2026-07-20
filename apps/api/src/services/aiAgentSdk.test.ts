@@ -612,7 +612,7 @@ describe('createSessionPreToolUse', () => {
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
       expect(result).toEqual({ allowed: true });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
@@ -638,7 +638,7 @@ describe('createSessionPreToolUse', () => {
         allowed: false,
         error: 'This action is already being completed by the approval worker; it will not run twice.',
       });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
       // still happens, but no inline execution: the "mark as executing"
       // update never fires.

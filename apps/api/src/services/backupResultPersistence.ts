@@ -643,16 +643,43 @@ export async function applyBackupCommandResultToJob(params: {
             retainUntil: protection.immutableUntil,
           });
         } catch (err) {
-          console.warn(
-            `[BackupPersistence] Provider immutability unavailable for snapshot ${snapshot.id}; falling back to application enforcement:`,
-            err instanceof Error ? err.message : err
+          // COMPLIANCE EVENT — never let this pass quietly. The operator asked
+          // for provider-enforced WORM (S3 Object Lock, i.e. immutability the
+          // storage provider guarantees and nobody can revoke); we failed to
+          // apply it and are recording the weaker application-level
+          // enforcement, which any admin with DB access can undo. The row is
+          // still written so the DB reflects REALITY rather than claiming a
+          // provider lock that does not exist — but a silent downgrade of a
+          // compliance control is not acceptable, so this escalates to Sentry
+          // at error level rather than a console.warn nobody reads.
+          //
+          // Note this is reachable from an ordinary config mistake: a
+          // malformed stored endpoint now throws out of
+          // checkBackupProviderCapabilities -> buildS3StorageClient ->
+          // coerceS3EndpointUrl, so a typo in the endpoint field would
+          // otherwise silently cost every snapshot its WORM guarantee.
+          const reason = err instanceof Error
+            ? err.message
+            : 'Provider-enforced immutability unavailable';
+          console.error(
+            `[BackupPersistence] WORM DOWNGRADE for snapshot ${snapshot.id}: provider-enforced immutability was requested but could not be applied; recording application-level enforcement instead:`,
+            reason
+          );
+          captureException(
+            err instanceof Error ? err : new Error(reason),
+            undefined,
+            {
+              worm_downgrade: 'true',
+              snapshot_id: snapshot.id,
+              config_id: String(updatedJob.configId ?? 'unknown'),
+              requested_enforcement: 'provider',
+              recorded_enforcement: 'application',
+            }
           );
           protectionUpdate = {
             ...protectionUpdate,
             immutabilityEnforcement: 'application',
-            immutabilityFallbackReason: err instanceof Error
-              ? err.message
-              : 'Provider-enforced immutability unavailable',
+            immutabilityFallbackReason: reason,
           };
         }
       }

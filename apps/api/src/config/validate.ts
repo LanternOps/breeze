@@ -1,6 +1,7 @@
 import { isIP } from 'net';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
+import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { decodePartnerApiCursorSigningKey, isRecognizedSelfHostSignal } from './env';
 
 // ---------------------------------------------------------------------------
@@ -1530,6 +1531,11 @@ export function validateConfig(): AppConfig {
   // The Graph-read descriptor stays out of AppConfig/public config. Parse it
   // lazily, but fail boot closed when the new-consent rollout is enabled.
   validateM365CustomerGraphReadRuntimeConfigAtBoot(env);
+
+  // Same fail-closed contract for the Graph write-action executor descriptor
+  // (customer-graph-actions): parsed lazily, but validated eagerly at boot
+  // when the write-action tools rollout is enabled.
+  validateM365CustomerGraphActionsRuntimeConfigAtBoot(env);
 
   _config = result.data;
 

@@ -13,9 +13,19 @@ FROM base AS deps
 WORKDIR /app
 
 # Copy workspace configuration
+#
+# EVERY workspace package in apps/web's dependency graph must be listed here.
+# Stage 3 copies all of packages/ as SOURCE (see `COPY packages ./packages`), so
+# a package missing from this list still gets compiled — but with no node_modules
+# of its own, which fails at bundle time with an unresolved bare import rather
+# than a missing-package error. CI's `Build Web` job does a full workspace
+# install and cannot catch this; only the Docker build has this narrow scope.
+# (v0.98.0 shipped without a web image this way: @breeze/extension-web-sdk was
+# absent here, so its `zod` never installed and Rolldown failed to resolve it.)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline

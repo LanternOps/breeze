@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Monitor, AlertTriangle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
@@ -13,6 +14,8 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
   const [params, setParams] = useState<ConnectionParams | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Why URL-scheme registration failed, if it did — surfaced on the idle card.
+  const [schemeError, setSchemeError] = useState<string | null>(null);
   const lastDeepLinkRef = useRef<{ key: string; at: number } | null>(null);
 
   // Detect window role on mount
@@ -24,6 +27,17 @@ export default function App() {
       // fallback: main
     }
   }, []);
+
+  // Only the anchor window reports registration; session windows never show it.
+  useEffect(() => {
+    if (windowLabel !== 'main') return;
+    invoke<string | null>('get_scheme_registration_error')
+      .then((err) => setSchemeError(err ?? null))
+      .catch(() => {
+        // Command unavailable (older shell) — say nothing rather than invent a
+        // failure. Registration may well have succeeded.
+      });
+  }, [windowLabel]);
 
   // ── Session window: deep link polling + events ─────────────────────
   const applyDeepLink = useCallback((url: string) => {
@@ -89,9 +103,42 @@ export default function App() {
     setError(msg);
   }, []);
 
-  // ── Main window: hidden, render nothing ─────────────────────────────
+  // ── Main window: idle card ──────────────────────────────────────────
+  // Normally hidden (it is just the process anchor), but Rust shows it when the
+  // viewer is launched by hand with no deep link. On Linux that is the required
+  // first run — the AppImage has to be executed once to register itself as the
+  // `breeze://` handler — so this window is the only confirmation the user gets
+  // that the viewer launched at all.
+  //
+  // It reports what registration actually did rather than assuming success: a
+  // card claiming "ready" while `breeze://` stays unclaimed would send the user
+  // straight back into the download loop, now with the UI vouching for it.
   if (windowLabel === 'main') {
-    return null;
+    if (schemeError) {
+      return (
+        <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
+          <AlertTriangle className="h-8 w-8 text-amber-400" />
+          <h1 className="text-base font-semibold text-white">Breeze links aren't registered</h1>
+          <p className="text-sm leading-relaxed text-gray-400">
+            Remote sessions won't open automatically on this machine.
+          </p>
+          <p className="max-w-full break-words text-xs text-gray-500">{schemeError}</p>
+        </div>
+      );
+    }
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
+        <Monitor className="h-8 w-8 text-accent-soft" />
+        <h1 className="text-base font-semibold text-white">Breeze Viewer is ready</h1>
+        <p className="text-sm leading-relaxed text-gray-400">
+          Remote sessions open automatically when you choose{' '}
+          <span className="font-medium text-gray-200">Connect Desktop</span> in the Breeze console.
+        </p>
+        <p className="text-xs text-gray-500">
+          You can close this window — Breeze reopens the viewer when a session starts.
+        </p>
+      </div>
+    );
   }
 
   // ── Session window: viewer ─────────────────────────────────────────

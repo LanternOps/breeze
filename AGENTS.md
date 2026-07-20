@@ -320,11 +320,23 @@ Production hosts pull from `/opt/breeze` and use mutable image tags driven by `B
 ssh root@<host> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
-  docker compose pull api web && \
-  docker compose up -d binaries-init api web"
+  docker compose pull api web portal && \
+  docker compose up -d binaries-init api web portal"
 ```
 
 Then verify health with `curl -sf https://<host-or-domain>/health` (200 = healthy).
+
+**The service list is hand-maintained and WILL go stale — always assert version parity after deploying.** Services are named explicitly (not a bare `docker compose pull && up -d`) because the billing service builds from a local image with no registry to pull from, and a bare `up -d` would needlessly bounce the reverse proxy, redis and the tunnel. The cost is that a newly added first-party service is silently never rolled — the customer portal (a separate container serving `/portal/*`, which customers reach from quote and invite emails) stayed several versions behind for weeks while `/health` reported the new version. Watchtower is not a backstop: it is label-gated and no service carries the label.
+
+`/health` is served by the API and cannot detect this, so enumerate what is actually running:
+
+```bash
+ssh root@<host> "cd /opt/breeze && set -a && . ./.env && set +a && \
+  docker ps -a --format '{{.Names}}\t{{.Image}}' | grep 'ghcr.io/lanternops/breeze/' | \
+  while IFS=\$'\t' read -r n i; do t=\${i##*:}; \
+    [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
+# every line must be OK; any SKEW means that service was never rolled.
+```
 
 **Required env vars added by v0.65+ — production hosts without these refuse to start:**
 

@@ -65,11 +65,18 @@ export function getReliabilityQueue(): Queue<ReliabilityJobData> {
 }
 
 async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
-  const orgRows = await db
-    .select({ orgId: devices.orgId })
-    .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned'`)
-    .groupBy(devices.orgId);
+  // #1105 (BREEZE-K): read the org list in its own short-lived context so the
+  // fan-out enqueue below runs AFTER the transaction closes — addBulk is a
+  // Redis round-trip that must not run while a pooled Postgres connection sits
+  // idle-in-transaction. Mirrors metricAnomalies.ts; the worker handler
+  // deliberately does not wrap this job type.
+  const orgRows = await runWithSystemDbAccess(async () =>
+    db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(sql`${devices.status} <> 'decommissioned'`)
+      .groupBy(devices.orgId)
+  );
 
   if (orgRows.length === 0) {
     return { queued: 0 };
@@ -113,14 +120,16 @@ export function createReliabilityWorker(): Worker<ReliabilityJobData> {
   return new Worker<ReliabilityJobData>(
     RELIABILITY_QUEUE,
     async (job: Job<ReliabilityJobData>) => {
+      const data = job.data;
+      if (data.type === 'scan-orgs') {
+        // Manages its own context: DB read inside, enqueue outside (#1105).
+        return processScanOrgs(data);
+      }
       return runWithSystemDbAccess(async () => {
-        if (job.data.type === 'scan-orgs') {
-          return processScanOrgs(job.data);
+        if (data.type === 'compute-org') {
+          return processComputeOrg(data);
         }
-        if (job.data.type === 'compute-org') {
-          return processComputeOrg(job.data);
-        }
-        return processComputeDevice(job.data);
+        return processComputeDevice(data);
       });
     },
     {

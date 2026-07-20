@@ -1231,6 +1231,16 @@ jobs:
         working-directory: apps/viewer/src-tauri
         run: cargo check --locked --all-targets
 
+      # `cargo check` compiles #[cfg(test)] code but never runs it, so until
+      # this step existed every Rust unit test in the viewer was documentation.
+      # The suite is pure functions — no display server, no Tauri runtime, ~0s.
+      # apps/helper/src-tauri has 53 more tests in the same position; they pass
+      # on macOS but are unverified on this runner, so wiring them up is left to
+      # its own PR rather than gating unrelated work on the outcome.
+      - name: Test viewer
+        working-directory: apps/viewer/src-tauri
+        run: cargo test --locked --lib
+
   # ─── Rust Check (Windows) ─────────────────────────────────────────────
   # The ubuntu rust-check can't compile [target.'cfg(windows)'] deps (the
   # `windows` crate family) — historically only the release build verified
