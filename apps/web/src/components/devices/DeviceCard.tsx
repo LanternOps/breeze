@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import {
+  actionGateHint,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -196,6 +197,11 @@ export default function DeviceCard({
   const online = device.status === "online";
   const liveSessionTitle = notOnlineTitle(device.status, t);
   const queuedCommandTitle = notQueueableTitle(device.status, t);
+  // `title` alone is unreachable on touch and for AT (a disabled button leaves
+  // the tab order), so the reason is also rendered as visible text below the
+  // menu and referenced by aria-describedby. Pattern: QuoteActions (#1975).
+  const gateHint = actionGateHint(device.status, t);
+  const gateHintId = `device-${device.id}-action-gate-hint`;
 
   return (
     <div
@@ -244,6 +250,7 @@ export default function DeviceCard({
                 }}
                 disabled={!online}
                 title={liveSessionTitle}
+                aria-describedby={!online ? gateHintId : undefined}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <Terminal className="h-4 w-4" />
@@ -258,6 +265,7 @@ export default function DeviceCard({
                 }}
                 disabled={!commandQueueable}
                 title={queuedCommandTitle}
+                aria-describedby={!commandQueueable ? gateHintId : undefined}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <FileCode className="h-4 w-4" />
@@ -272,6 +280,7 @@ export default function DeviceCard({
                 }}
                 disabled={!commandQueueable}
                 title={queuedCommandTitle}
+                aria-describedby={!commandQueueable ? gateHintId : undefined}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <RotateCcw className="h-4 w-4" />
@@ -316,6 +325,20 @@ export default function DeviceCard({
                   <Trash2 className="h-4 w-4" />
                   {t("deviceCard.decommission")}{" "}
                 </button>
+              )}
+              {gateHint && (
+                // Visible so the reason survives touch (no hover) and does not
+                // depend on focusing a disabled button, which is impossible.
+                <>
+                  <hr className="my-1" />
+                  <p
+                    id={gateHintId}
+                    data-testid={`device-${device.id}-action-gate-hint`}
+                    className="px-4 py-2 text-xs text-muted-foreground"
+                  >
+                    {gateHint}
+                  </p>
+                </>
               )}
             </div>
           )}

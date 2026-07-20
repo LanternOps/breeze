@@ -128,9 +128,9 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -158,6 +158,18 @@ vi.mock('./DeviceList', () => ({
           onClick={() => onSelect?.(d)}
         >
           select {d.id}
+        </button>
+      ))}
+      {/* Drives DevicesPage.handleDeviceAction for ONE device — the row-menu /
+          grid-card path, as opposed to the bulk buttons above. */}
+      {devices.map(d => (
+        <button
+          key={`row-reboot-${d.id}`}
+          type="button"
+          data-testid={`row-reboot-${d.id}`}
+          onClick={() => onAction?.('reboot', d)}
+        >
+          row reboot {d.id}
         </button>
       ))}
       {onShowDecommissioned && (
@@ -1055,6 +1067,48 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     const [, deviceIds] = vi.mocked(executeScript).mock.calls[0];
     // Offline device still gets the script — it runs on reconnect.
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
+  });
+
+  // #2630: loosening the row-menu/grid Reboot gate means these commands now fire
+  // at devices with no connected agent. A 201 there means "a row was inserted",
+  // NOT "the machine rebooted" — there is no dispatch step, and staleCommandReaper
+  // flips it to failed ~30min later with nothing notifying the user. A flat
+  // "sent" toast would therefore be a false success, which is strictly worse than
+  // the over-strict gate it replaced. The copy must name the queue.
+  describe('single-device command toast tells the truth about delivery (#2630)', () => {
+    async function rebootDeviceWithStatus(status: string) {
+      const { sendDeviceCommand } = await import('../../services/deviceActions');
+      const { showToast } = await import('../shared/Toast');
+      vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [{ ...rawDevice(DEV_1, 'host-alpha'), status }],
+      } as never);
+
+      render(<DevicesPage />);
+      fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
+
+      await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
+      return vi.mocked(showToast).mock.calls.map(c => c[0]);
+    }
+
+    it('online device: reports the command as sent, naming the device', async () => {
+      const toasts = await rebootDeviceWithStatus('online');
+      const success = toasts.find(c => c.type === 'success');
+      expect(success?.message).toMatch(/sent to host-alpha/i);
+      expect(success?.message).not.toMatch(/queued/i);
+    });
+
+    it.each(['offline', 'maintenance', 'quarantined', 'updating', 'pending'])(
+      '%s device: says QUEUED and names the reconnect condition, never a bare success',
+      async (status) => {
+        const toasts = await rebootDeviceWithStatus(status);
+        const success = toasts.find(c => c.type === 'success');
+        expect(success?.message).toMatch(/queued/i);
+        expect(success?.message).toMatch(/host-alpha/);
+        expect(success?.message).toMatch(/reconnect/i);
+      },
+    );
   });
 
   // Every non-decommissioned status is queueable, so ALL of them must survive the

@@ -48,12 +48,22 @@ import "../../lib/i18n";
 // doomed request, it REMOVES working functionality. The only status that can
 // never service a queued command is `decommissioned` (agent-less by definition).
 //
-// The `!online` gates BELOW on the queued commands — run-script (:261, :418),
-// refresh (:296, :520), reboot (:306, :474), reboot_safe_mode (:326, :484),
-// shutdown (:494), and the Power dropdown trigger (:459) — are therefore
-// stricter than the API requires. They are left in place pending a maintainer
-// decision (PR #2457) rather than changed silently. The `!online` gates on
-// Connect Desktop and Remote Tools are correct — those are live sessions.
+// The `!online` gates BELOW on the queued commands — run-script, refresh,
+// reboot, reboot_safe_mode, shutdown, and the Power dropdown trigger — are
+// therefore stricter than the API requires.
+//
+// STATUS (PR #2630): the maintainer decision issue #2486 asked for has now been
+// made, and it went the loosening way — the DeviceList row menu and the grid
+// card both moved to `isCommandQueueable`. This action bar was deliberately NOT
+// included in that PR to keep it reviewable, so it is now the ONLY surface still
+// gating queued commands on `!online`: an offline device shows Reboot enabled in
+// the list and grid, and disabled here. Aligning it is tracked as follow-up work
+// — when you do, use `isCommandQueueable`/`notQueueableTitle` from
+// bulkActionGating.ts rather than re-deriving the rule a fourth time, and drop
+// the private `unavailableTitle` switch below in favour of `notOnlineTitle`.
+//
+// The `!online` gates on Connect Desktop and Remote Tools are correct — those
+// are live sessions.
 // Do not copy the queued-command gates to new surfaces, and do not "fix" a
 // missing gate by adding one; gate queued commands on `decommissioned`
 // (see DeviceList.tsx). Wake (Wake-on-LAN) targets offline devices by design

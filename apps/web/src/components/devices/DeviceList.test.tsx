@@ -1223,6 +1223,41 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 
+  // Guards the other direction for the live-session gate: without this, setting
+  // Remote Terminal to permanently disabled passes the whole suite, because the
+  // only other assertion about it covers non-online statuses.
+  it('keeps Remote Terminal enabled and dispatching for an online device', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    const btn = screen.getByRole('button', { name: /remote terminal/i });
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
+    expect(onAction).toHaveBeenCalledWith('terminal', baseDevice);
+  });
+
+  // #2630 a11y: the disabled reason must be reachable without hover — see the
+  // matching suite in DeviceCard.gating.test.tsx for the rationale.
+  it('exposes the gate reason as visible text tied to the disabled action', () => {
+    render(<DeviceList devices={[{ ...baseDevice, status: 'offline' }]} />);
+    openRowMenu();
+
+    const el = screen.getByTestId(`device-${baseDevice.id}-action-gate-hint`);
+    expect(el).toHaveTextContent('Device is offline');
+    expect(screen.getByRole('button', { name: /remote terminal/i }))
+      .toHaveAttribute('aria-describedby', el.id);
+    // Reboot is enabled on offline, so it must NOT claim a disabled reason.
+    expect(screen.getByRole('button', { name: /^reboot$/i }))
+      .not.toHaveAttribute('aria-describedby');
+  });
+
+  it('renders no gate hint for an online device', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    openRowMenu();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-gate-hint`)).toBeNull();
+  });
+
   // Wake (Wake-on-LAN) is the deliberate exception — it exists precisely to
   // target an offline device. Guards against a future "gate every row-menu
   // action" sweep killing the one action that's only useful when offline.

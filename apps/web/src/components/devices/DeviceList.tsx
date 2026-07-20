@@ -38,6 +38,7 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // premise got copied three times (DeviceActions -> row menu -> bulk bar). The
 // verified API contract lives next to it — read that before changing this.
 import {
+  actionGateHint,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -333,11 +334,15 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
 //   → gate on `status === 'decommissioned'` (an agent-less machine that can
 //     never claim the command).
 //
-// Reboot carried the stricter `!== 'online'` gate until #2630. It is a queued
+// Reboot carried the stricter `!== 'online'` gate until PR #2630. It is a queued
 // command like Run Script, so it now uses `isCommandQueueable` too: rebooting an
-// offline box on reconnect is a working feature, and the grid card (DeviceCard)
-// had already been gated that way — leaving the two disagreeing meant the same
-// device flipped enabled/disabled just by switching grid/list view. See #2486.
+// offline box on reconnect is a working feature. Before that PR the grid card had
+// NO gate at all, so the same offline device showed Reboot enabled in grid view
+// and disabled here. Issue #2486 flagged the equivalent split between this row
+// menu and the bulk bar; PR #2630 is the decision it asked for.
+//
+// NOT yet aligned: DeviceActions.tsx (device detail page) still gates Reboot on
+// `!== 'online'`, so the detail page remains stricter than this menu.
 //
 // The tooltip helpers live in bulkActionGating.ts beside `isCommandQueueable`,
 // so the row menu and the grid card render the same reason for the same status.
@@ -2282,6 +2287,11 @@ export default function DeviceList({
                                       device.status,
                                       t,
                                     )}
+                                    aria-describedby={
+                                      device.status !== "online"
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
                                     onClick={() => {
                                       onAction?.("terminal", device);
                                       setRowMenuOpenId(null);
@@ -2301,6 +2311,11 @@ export default function DeviceList({
                                       device.status,
                                       t,
                                     )}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
                                     onClick={() => {
                                       onAction?.("run-script", device);
                                       setRowMenuOpenId(null);
@@ -2313,8 +2328,8 @@ export default function DeviceList({
                                   {/* Reboot is ALSO a queued command, so it is
                                       gated like Run Script: the API refuses only
                                       decommissioned, and an offline box reboots
-                                      on reconnect. Loosened in #2630 to match
-                                      the grid card (see #2486). */}
+                                      on reconnect. Loosened in PR #2630, which is
+                                      the policy decision issue #2486 asked for. */}
                                   <button
                                     type="button"
                                     disabled={!isCommandQueueable(device.status)}
@@ -2322,6 +2337,11 @@ export default function DeviceList({
                                       device.status,
                                       t,
                                     )}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
                                     onClick={() => {
                                       onAction?.("reboot", device);
                                       setRowMenuOpenId(null);
@@ -2383,6 +2403,22 @@ export default function DeviceList({
                                       <Trash2 className="h-4 w-4" />
                                       {t("deviceList.decommission")}{" "}
                                     </button>
+                                  )}
+                                  {actionGateHint(device.status, t) && (
+                                    /* Visible reason: `title` never renders on
+                                       touch, and a disabled button cannot be
+                                       focused, so AT has no other way to reach
+                                       it. Pattern: QuoteActions (#1975). */
+                                    <>
+                                      <hr className="my-1" />
+                                      <p
+                                        id={`device-${device.id}-action-gate-hint`}
+                                        data-testid={`device-${device.id}-action-gate-hint`}
+                                        className="px-4 py-2 text-xs text-muted-foreground"
+                                      >
+                                        {actionGateHint(device.status, t)}
+                                      </p>
+                                    </>
                                   )}
                                 </div>,
                                 document.body,

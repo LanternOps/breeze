@@ -76,9 +76,11 @@ describe('DeviceCard action gating (#2488)', () => {
     expect(onAction).not.toHaveBeenCalledWith('terminal', expect.anything());
   });
 
-  // #2630: the card used to hardcode "Device is not online" for every disabled
-  // live-session action, so a quarantined or maintenance device got a tooltip
-  // that named the wrong reason. It now shares DeviceList's per-status map.
+  // PR #2630: the first cut of this gate (earlier commit in this PR) reused a
+  // blanket "deviceActions.unavailable.notOnline" for Remote Terminal — the one
+  // live-session action on this card — so a quarantined or maintenance device got
+  // a tooltip naming the wrong reason. It now uses the shared per-status map in
+  // bulkActionGating.ts, so this asserts the wiring, not just the strings.
   it.each([
     ['offline', 'Device is offline'],
     ['maintenance', 'Device is in maintenance mode'],
@@ -87,10 +89,31 @@ describe('DeviceCard action gating (#2488)', () => {
     ['updating', 'Device is updating'],
     ['pending', 'Device is pending enrollment'],
   ] as const)(
-    'Remote Terminal on a %s device names the actual status in its tooltip',
+    'Remote Terminal on a %s device is disabled and names the actual status',
     (status, expectedTitle) => {
       openCardMenu(status);
+      // `disabled` and `title` come from independent expressions, so asserting
+      // the tooltip alone does NOT imply the gate — narrowing the gate to just
+      // offline+decommissioned left this suite green until this line existed.
+      expect(terminalBtn()).toBeDisabled();
       expect(terminalBtn()).toHaveAttribute('title', expectedTitle);
+    },
+  );
+
+  // The mirror of the above for QUEUED commands: these must stay ENABLED on
+  // every non-decommissioned status. Disabling them is a capability removal
+  // (the command would have run on reconnect), which is the regression #2426
+  // and #2465 were both about — and it is invisible to a tooltip-only test.
+  it.each(['offline', 'maintenance', 'quarantined', 'updating', 'pending'] as const)(
+    'Run Script and Reboot stay enabled on a %s device',
+    (status) => {
+      const { onAction } = openCardMenu(status);
+
+      expect(runScriptBtn()).toBeEnabled();
+      expect(rebootBtn()).toBeEnabled();
+
+      fireEvent.click(rebootBtn());
+      expect(onAction).toHaveBeenCalledWith('reboot', expect.objectContaining({ status }));
     },
   );
 
@@ -112,5 +135,51 @@ describe('DeviceCard action gating (#2488)', () => {
     fireEvent.click(rebootBtn());
     fireEvent.click(terminalBtn());
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+// #2630: a `title` never renders on touch, and a `disabled` button is removed
+// from the tab order — so for a keyboard or screen-reader user the reason was
+// literally unreachable. The reason is therefore also visible text, wired to the
+// disabled control via aria-describedby (pattern: QuoteActions, #1975).
+describe('DeviceCard disabled-action reason is reachable without hover (#2630)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+  });
+
+  const hint = () => screen.queryByTestId(`device-${baseDevice.id}-action-gate-hint`);
+
+  it('online device: no gate, so no hint and no description on any action', () => {
+    openCardMenu('online');
+    expect(hint()).toBeNull();
+    expect(terminalBtn()).not.toHaveAttribute('aria-describedby');
+    expect(runScriptBtn()).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('offline device: hint names the reason AND scopes it to the live session only', () => {
+    openCardMenu('offline');
+
+    const el = hint();
+    expect(el).not.toBeNull();
+    expect(el).toHaveTextContent('Device is offline');
+    // Must not read as though everything is blocked — Run Script and Reboot are
+    // still enabled here, and saying otherwise would teach the false premise.
+    expect(el).toHaveTextContent(/Remote Terminal needs a connected agent/i);
+
+    expect(terminalBtn()).toHaveAttribute('aria-describedby', el!.id);
+    expect(runScriptBtn()).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('decommissioned device: hint covers all commands and every disabled action points at it', () => {
+    openCardMenu('decommissioned');
+
+    const el = hint();
+    expect(el).toHaveTextContent('Device is decommissioned');
+    expect(el).toHaveTextContent(/no agent to run commands/i);
+
+    for (const btn of [terminalBtn(), runScriptBtn(), rebootBtn()]) {
+      expect(btn).toHaveAttribute('aria-describedby', el!.id);
+    }
   });
 });

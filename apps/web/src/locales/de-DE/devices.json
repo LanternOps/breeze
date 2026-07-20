@@ -152,6 +152,10 @@
       "pending": "Geräteregistrierung steht aus",
       "notOnline": "Gerät ist nicht online"
     },
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — Remote-Terminal benötigt einen verbundenen Agenten. Eingereihte Befehle werden bei erneuter Verbindung ausgeführt.",
+      "allCommands": "{{reason}} — es hat keinen Agenten, der Befehle ausführen kann."
+    },
     "confirm": {
       "reboot": {
         "title": "Gerät neu starten",
@@ -1724,7 +1728,7 @@
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",
     "toasts": {
-      "actionFailed": "Aktion fehlgeschlagen",
+      "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
@@ -1738,7 +1742,8 @@
       "bulkWakeAllFailed": "Aufwecken aller Geräte fehlgeschlagen",
       "bulkWakeSent": "Aufweckbefehle gesendet",
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
-      "commandSent": "Befehl gesendet",
+      "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
+      "commandSent": "{{action}} an {{hostname}} gesendet",
       "decommissionCancelled": "Stilllegung abgesagt",
       "decommissionFailed": "Außerbetriebnahme fehlgeschlagen",
       "decommissioned": "Außer Dienst gestellt",

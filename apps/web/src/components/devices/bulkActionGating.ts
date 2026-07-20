@@ -1,5 +1,8 @@
 /**
- * Device-status gating policy for the DeviceList bulk-action bar (#2465).
+ * Device-status gating policy shared by every device-action surface — the
+ * bulk-action bar (#2465), the DeviceList row menu (#2426) and the grid card
+ * (#2488). Owns both the action classification sets and the disabled-state
+ * tooltip/hint strings.
  *
  * ## What the API actually rejects (verified, #2465)
  *
@@ -35,23 +38,26 @@
  * existing test stays green — because a gate's only failure mode is doing nothing.
  */
 
-// Type-only — erased at compile time, so this module still has zero runtime
-// imports and cannot participate in an import cycle. See isCommandQueueable.
+// Type-only — erased at compile time, so this module still has zero RUNTIME
+// imports and cannot participate in a runtime import cycle. (The type-level
+// cycle with DeviceList is fine: `import type` is erased.) Keep every import in
+// this module type-only. See isCommandQueueable.
 import type { useTranslation } from 'react-i18next';
 import type { DeviceStatus } from './DeviceList';
 
 /**
  * Can this device still accept a QUEUED agent command?
  *
- * The single source of truth for that question — used by the DeviceList row menu
- * AND the bulk bar. Keeping one named predicate is the point: the false "must be
- * online" premise spread precisely because the check was re-derived by hand in
- * each new surface (DeviceActions → row menu → bulk bar).
+ * The single source of truth for that question — used by the DeviceList row menu,
+ * the grid card (DeviceCard) AND the bulk bar (DevicesPage). Keeping one named
+ * predicate is the point: the false "must be online" premise spread precisely
+ * because the check was re-derived by hand in each new surface (DeviceActions →
+ * row menu → bulk bar).
  *
- * Takes a plain `string` rather than `DeviceStatus` so this module needs no
- * runtime import — DeviceList imports it, not the other way round, so there is
- * no cycle. (The `import type` lines below are erased at compile time and do not
- * reintroduce one; keep any new import in this module type-only.)
+ * Takes a plain `string` rather than `DeviceStatus` so callers holding an
+ * unvalidated status can call it without a cast. (Historically this also kept the
+ * module import-free; the type-only imports above preserve that property
+ * regardless.)
  */
 export function isCommandQueueable(status: string): boolean {
   return status !== 'decommissioned';
@@ -133,10 +139,12 @@ export const notOnlineTitleKeys: Record<Exclude<DeviceStatus, 'online'>, string>
  * connected agent. Says only why the device isn't online; it does NOT assert
  * which category the action is.
  *
- * Lives here beside `isCommandQueueable` so every surface (row menu, grid card)
- * renders the same reason. Previously local to DeviceList, which is why the
- * grid card shipped a hardcoded "Device is not online" for quarantined and
- * maintenance devices.
+ * Lives here beside `isCommandQueueable` so the row menu and the grid card render
+ * the same reason; it was local to DeviceList until #2630.
+ *
+ * NOTE: DeviceActions.tsx (the device detail page) still carries an equivalent
+ * private `unavailableTitle` switch — a third copy, not yet consolidated, and not
+ * exhaustiveness-checked the way `notOnlineTitleKeys` is.
  */
 export function notOnlineTitle(
   status: DeviceStatus,
@@ -150,14 +158,51 @@ export function notOnlineTitle(
 /**
  * Tooltip for anything gated on `isCommandQueueable` — i.e. QUEUED commands
  * (Run Script, Reboot), which the API refuses only for decommissioned devices.
- * Always the decommissioned reason, because that is the only status that
- * disables them.
+ *
+ * Derived from `status` rather than hardcoding the decommissioned string. Today
+ * those are the same thing, but hardcoding it would escape the exhaustive
+ * `notOnlineTitleKeys` guard above: add a second non-queueable status and this
+ * would confidently tell users a quarantined device is "decommissioned", with
+ * nothing failing the build.
  */
 export function notQueueableTitle(
   status: DeviceStatus,
   t: DeviceTranslation,
 ): string | undefined {
+  // Delegates rather than indexing the map directly: `isCommandQueueable` takes
+  // a plain `string`, so it does NOT narrow `DeviceStatus` and leaves 'online'
+  // in the index type. notOnlineTitle already narrows correctly.
+  return isCommandQueueable(status) ? undefined : notOnlineTitle(status, t);
+}
+
+/**
+ * The one-line reason shown BELOW an open action menu when any item in it is
+ * gated (#2630).
+ *
+ * Why a visible line and not just the `title`: a `title` never renders on touch,
+ * and a `disabled` button is removed from the tab order, so a keyboard or
+ * screen-reader user cannot focus it to hear the reason. The disabled item is
+ * wired to this text via `aria-describedby`. Same pattern as the billing
+ * actions (QuoteActions/InvoiceActions), which are test-pinned under #1975.
+ *
+ * One line is always enough: `notOnlineTitle` is defined for EVERY non-online
+ * status, and the only status that also blocks queued commands
+ * (`decommissioned`) maps to the same string — so the set of distinct reasons in
+ * a menu never exceeds one. The suffix names what is actually unavailable, so an
+ * offline device doesn't read as though everything is blocked when only the live
+ * session is.
+ */
+export function actionGateHint(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  const reason = notOnlineTitle(status, t);
+  if (!reason) return undefined;
+  // Namespace-qualified: this module has no useTranslation() of its own, so the
+  // i18n key-usage guard (src/lib/i18n/keyUsage.test.ts) would otherwise resolve
+  // these against `common` and fail. The `t` handed in is already bound to
+  // `devices`; the explicit prefix is redundant at runtime and required statically.
   return isCommandQueueable(status)
-    ? undefined
-    : t(/* i18n-dynamic */ notOnlineTitleKeys.decommissioned);
+    ? t('devices:deviceActions.gateHint.liveSessionOnly', { reason })
+    : t('devices:deviceActions.gateHint.allCommands', { reason });
 }
