@@ -306,7 +306,7 @@ describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
   it('renders the restored fallback copy, not the humanized key placeholders', async () => {
     // Regression guard for the i18n extraction that replaced real English with
     // machine-humanized key names ("Title" / "Viewer Description"), which is
-    // what the #2614 reporter actually saw on screen.
+    // what the reporter actually saw on screen.
     downloadMock.mockReturnValue({
       os: 'linux',
       label: 'Linux',
