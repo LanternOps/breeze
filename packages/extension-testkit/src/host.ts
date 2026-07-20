@@ -41,7 +41,10 @@ function errorMessage(error: unknown): string {
 export async function probeStockHost(options: StockHostProbeOptions): Promise<HostProbeResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const cookie = options.auth.cookie;
-  const base = options.baseUrl.replace(/\/+$/, '');
+  // Trim trailing slashes without a regex: /\/+$/ backtracks polynomially
+  // on adversarial input (CodeQL js/polynomial-redos).
+  let base = options.baseUrl;
+  while (base.endsWith('/')) base = base.slice(0, -1);
   const authedInit: RequestInit = { headers: { cookie } };
   const member = options.assetMember ?? 'index.html';
 
