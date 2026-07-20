@@ -59,7 +59,7 @@ describe('UsersPage — handleEditSubmit role-change contract', () => {
     seedUsersAndRoles();
   });
 
-  it('POSTs /users/:id/role with the new roleId when the role is changed', async () => {
+  it('partner admin role edits skip global identity PATCH and POST the authorized role endpoint', async () => {
     render(<UsersPage />);
     await screen.findByText('Trevor');
 
@@ -81,9 +81,14 @@ describe('UsersPage — handleEditSubmit role-change contract', () => {
       expect((opts as RequestInit).method).toBe('POST');
       expect((opts as RequestInit).body).toBe(JSON.stringify({ roleId: ROLE_TECH.id }));
     });
+
+    const identityPatchCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) => url === `/users/${TREVOR.id}` && (opts as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(identityPatchCalls).toHaveLength(0);
   });
 
-  it('does NOT POST /users/:id/role when the role is unchanged (name-only edit)', async () => {
+  it('does not call either mutation endpoint when the role is unchanged', async () => {
     render(<UsersPage />);
     await screen.findByText('Trevor');
 
@@ -93,18 +98,16 @@ describe('UsersPage — handleEditSubmit role-change contract', () => {
     // Leave role at its existing value (Partner Admin, defaultValue matches).
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
 
-    await waitFor(() => {
-      // PATCH /users/:id is expected (name still sent).
-      const patchCalls = fetchMock.mock.calls.filter(
-        (c) => typeof c[0] === 'string' && (c[0] as string) === `/users/${TREVOR.id}`,
-      );
-      expect(patchCalls.length).toBe(1);
-    });
+    await waitFor(() => expect(screen.queryByLabelText(/^Role$/)).not.toBeInTheDocument());
 
     const roleCalls = fetchMock.mock.calls.filter(
       (c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/role'),
     );
     expect(roleCalls.length).toBe(0);
+    const identityPatchCalls = fetchMock.mock.calls.filter(
+      ([url, opts]) => url === `/users/${TREVOR.id}` && (opts as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(identityPatchCalls).toHaveLength(0);
   });
 });
 

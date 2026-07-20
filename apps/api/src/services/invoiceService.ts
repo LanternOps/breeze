@@ -322,6 +322,28 @@ export type CustomerInvoiceLine = {
   lineTotal: string;
 };
 
+type InvoiceRow = typeof invoices.$inferSelect;
+
+export type CustomerInvoiceHeader = Pick<InvoiceRow,
+  | 'id'
+  | 'invoiceNumber'
+  | 'status'
+  | 'currencyCode'
+  | 'issueDate'
+  | 'dueDate'
+  | 'subtotal'
+  | 'taxRate'
+  | 'taxTotal'
+  | 'total'
+  | 'amountPaid'
+  | 'balance'
+  | 'depositDue'
+  | 'billToName'
+  | 'notes'
+  | 'sellerSnapshot'
+  | 'termsAndConditions'
+>;
+
 type CustomerInvoiceLineSource = {
   name?: string | null;
   description?: string | null;
@@ -342,6 +364,29 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
   };
 }
 
+/** Explicit portal serialization boundary: never spread an invoices row here. */
+export function toCustomerInvoiceHeader(invoice: InvoiceRow): CustomerInvoiceHeader {
+  return {
+    id: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    status: invoice.status,
+    currencyCode: invoice.currencyCode,
+    issueDate: invoice.issueDate,
+    dueDate: invoice.dueDate,
+    subtotal: invoice.subtotal,
+    taxRate: invoice.taxRate,
+    taxTotal: invoice.taxTotal,
+    total: invoice.total,
+    amountPaid: invoice.amountPaid,
+    balance: invoice.balance,
+    depositDue: invoice.depositDue,
+    billToName: invoice.billToName,
+    notes: invoice.notes,
+    sellerSnapshot: invoice.sellerSnapshot,
+    termsAndConditions: invoice.termsAndConditions,
+  };
+}
+
 export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
   const inv = await getOwnedInvoiceOr404(invoiceId); // RLS scopes; portal context supplies org access
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
@@ -355,7 +400,7 @@ export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
     lineTotal: invoiceLines.lineTotal,
   }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
   const lines = rows.map(toCustomerInvoiceLine);
-  return { invoice: inv, lines };
+  return { invoice: toCustomerInvoiceHeader(inv), lines };
 }
 
 export async function listInvoices(query: { orgId?: string; status?: string; limit: number; cursor?: string }, actor: InvoiceActor) {

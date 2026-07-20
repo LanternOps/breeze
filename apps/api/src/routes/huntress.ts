@@ -681,12 +681,12 @@ huntressRoutes.post(
 
 huntressRoutes.get(
   '/status',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    const partnerResult = requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const requestedOrg = query.orgId ?? requestedOrgId(c);

@@ -187,6 +187,45 @@ describe('huntress routes', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  describe('GET /status partner-wide authority', () => {
+    it.each(['selected', 'none'] as const)(
+      'rejects partner org access %s before partner-global reads',
+      async (orgAccess) => {
+        authState.scope = 'partner';
+        authState.orgId = null;
+        authState.partnerOrgAccess = orgAccess;
+
+        const res = await app.request('/huntress/status');
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows a full-partner caller to read status', async () => {
+      authState.scope = 'partner';
+      authState.orgId = null;
+      authState.partnerOrgAccess = 'all';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => []),
+          })),
+        })),
+      } as any);
+
+      const res = await app.request('/huntress/status');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        integration: null,
+        coverage: { totalAgents: 0 },
+        incidents: { open: 0 },
+      });
+      expect(db.select).toHaveBeenCalledOnce();
+    });
+  });
+
   it('rejects integration upsert when permission check fails', async () => {
     permissionGate.deny = true;
     const res = await app.request('/huntress/integration', {

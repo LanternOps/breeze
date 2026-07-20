@@ -33,6 +33,8 @@ const requirePartnerWideApprovalAccess = async (c: Context, next: Next) => {
 approvalsRoutes.get(
   '/approvals',
   requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  requirePartnerWideApprovalAccess,
   zValidator('query', listApprovalsSchema),
   async (c) => {
     const auth = c.get('auth');
