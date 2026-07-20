@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 
 import { db } from '../../db';
 import { auditLogs } from '../../db/schema';
-import { requireScope } from '../../middleware/auth';
+import { requirePermission, requireScope } from '../../middleware/auth';
 import { recommendationsQuerySchema, recommendationActionSchema } from './schemas';
 import {
   getPagination,
@@ -67,6 +67,7 @@ recommendationsRoutes.get(
 recommendationsRoutes.post(
   '/recommendations/:id/complete',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'write'),
   zValidator('param', recommendationActionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -104,6 +105,7 @@ recommendationsRoutes.post(
 recommendationsRoutes.post(
   '/recommendations/:id/dismiss',
   requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'write'),
   zValidator('param', recommendationActionSchema),
   async (c) => {
     const auth = c.get('auth');
