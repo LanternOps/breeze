@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('../services/aiTools', () => {
@@ -127,7 +128,12 @@ function scaffoldCjsRuntimeExtension(root: string) {
 describe('mountExtensions', () => {
   let root: string;
   beforeEach(async () => {
-    root = mkdtempSync(join(process.cwd(), 'ext-rt-'));
+    // tmpdir(), not process.cwd(): cleanup only runs in afterEach, so a run
+    // killed mid-suite orphans this directory. Under cwd that means an
+    // untracked `ext-rt-*` left in apps/api — not gitignored, so a later
+    // `git add .` would commit fixture scaffolding. Every other mkdtempSync in
+    // the API suite already roots at tmpdir(); this was the lone exception.
+    root = mkdtempSync(join(tmpdir(), 'breeze-ext-rt-'));
     __resetSkipPrefixesForTests();
     vi.clearAllMocks();
     const { aiTools } = await import('../services/aiTools');
