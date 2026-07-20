@@ -20,7 +20,16 @@
     "progressLabel": "Time remaining before auto-rejection",
     "showParameters": "Show parameters",
     "approve": "Approve",
-    "reject": "Reject"
+    "reject": "Reject",
+    "approveVerify": "Verify & Approve",
+    "verifying": "Waiting for verification…",
+    "deny": "Deny",
+    "verificationFailed": "Verification failed. Try again.",
+    "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
+    "registerDevice": "Register this device",
+    "decideFailed": "Failed to submit the decision",
+    "approvedToast": "Action approved",
+    "deniedToast": "Action denied"
   },
   "aiChatInput": {
     "waiting": "Waiting for response...",

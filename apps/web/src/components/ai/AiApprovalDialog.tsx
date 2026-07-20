@@ -1,7 +1,17 @@
 import { useState, useEffect } from "react";
-import { ShieldAlert, Check, X, Clock, Monitor, Hourglass } from "lucide-react";
+import {
+  ShieldAlert,
+  Check,
+  X,
+  Clock,
+  Monitor,
+  Hourglass,
+  Fingerprint,
+} from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
+import { decideIntentApproval } from "@/lib/intentApprovals";
+import { navigateTo } from "@/lib/navigation";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -32,14 +42,21 @@ interface AiApprovalDialogProps {
   onApprove: () => void;
   onReject: () => void;
   /**
-   * True for Tier-3 durable action-intents (spec §6.1). Intent-backed
-   * executions are decided via the /approvals surface (mobile push or the
-   * Approvals queue) — a four-eyes model where the requester is usually NOT
-   * an eligible approver of their own intent. This card must NEVER offer a
-   * self-approve button for one (whole-branch review CRITICAL-3: the
-   * sessions-approve route silently no-op'd for these before this fix).
+   * True for Tier-3 durable action-intents (spec §6.1), decided on
+   * action_intents via the approvals decide API — never via the legacy
+   * sessions-approve endpoint (whole-branch review CRITICAL-3). When the
+   * requester is NOT an eligible approver (multi-approver org), this card
+   * shows a waiting state only. When the server fanned the approval row out
+   * to the requester (sole-operator branch), selfApprovalRequestId is set
+   * and the card offers an inline L3 self-approve: WebAuthn ceremony
+   * (Touch ID / Windows Hello) + proof POST — satisfying, not bypassing,
+   * the decide handler's assurance-level >= 3 gate.
    */
   intentBacked?: boolean;
+  /** The viewer's own fanned-out approval row (sole-operator case). */
+  selfApprovalRequestId?: string;
+  /** Called after a successful inline decide so the parent clears pendingApproval. */
+  onIntentDecided?: () => void;
 }
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -152,9 +169,40 @@ export default function AiApprovalDialog({
   onApprove,
   onReject,
   intentBacked,
+  selfApprovalRequestId,
+  onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
   const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
+  const [intentDecideState, setIntentDecideState] = useState<
+    "idle" | "deciding" | "needs_device"
+  >("idle");
+  const [intentError, setIntentError] = useState<string | null>(null);
+
+  const canSelfDecide = Boolean(intentBacked && selfApprovalRequestId);
+
+  const handleIntentDecision = async (decision: "approve" | "deny") => {
+    if (!selfApprovalRequestId || intentDecideState === "deciding") return;
+    setIntentDecideState("deciding");
+    setIntentError(null);
+    try {
+      const outcome = await decideIntentApproval(selfApprovalRequestId, decision);
+      if (outcome === "needs_device") {
+        setIntentDecideState("needs_device");
+        return;
+      }
+      onIntentDecided?.();
+    } catch (err) {
+      // Cancelled/failed ceremony or a server rejection (the latter already
+      // toasted by runAction) — surface inline and let the user retry.
+      setIntentError(
+        err instanceof Error && err.message
+          ? err.message
+          : t("aiApprovalDialog.verificationFailed"),
+      );
+      setIntentDecideState("idle");
+    }
+  };
 
   // Intent-backed executions are decided durably via the /approvals surface,
   // not this card (see the prop doc above) — there is nothing here to
@@ -243,7 +291,7 @@ export default function AiApprovalDialog({
         {description}
       </p>
 
-      {intentBacked && (
+      {intentBacked && !canSelfDecide && (
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           {t("aiApprovalDialog.pendingApproverDescription")}
         </p>
@@ -262,10 +310,7 @@ export default function AiApprovalDialog({
         </details>
       )}
 
-      {/* Intent-backed executions never show a self-approve button here — the
-          four-eyes model means the requester is usually not an eligible
-          approver of their own action intent (whole-branch review
-          CRITICAL-3). Deciding happens on the /approvals surface instead. */}
+      {/* Legacy (non-intent) Tier-2 path — unchanged. */}
       {!intentBacked && (
         <div className="mt-3 flex gap-2">
           <button
@@ -283,6 +328,56 @@ export default function AiApprovalDialog({
           >
             <X className="h-3.5 w-3.5" />
             {t("aiApprovalDialog.reject")}
+          </button>
+        </div>
+      )}
+
+      {/* Sole-operator inline self-approve: the server fanned the approval
+          row out to the requester, so deciding it here is legitimate — the
+          approve path attaches a WebAuthn L3 proof (Touch ID / Windows
+          Hello), which is exactly what the decide handler's self-approve
+          gate requires. Multi-approver intents never get these buttons
+          (selfApprovalRequestId is undefined — four-eyes preserved). */}
+      {canSelfDecide && intentDecideState !== "needs_device" && (
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            disabled={intentDecideState === "deciding"}
+            onClick={() => handleIntentDecision("approve")}
+            className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
+          >
+            <Fingerprint className="h-3.5 w-3.5" />
+            {intentDecideState === "deciding"
+              ? t("aiApprovalDialog.verifying")
+              : t("aiApprovalDialog.approveVerify")}
+          </button>
+          <button
+            type="button"
+            disabled={intentDecideState === "deciding"}
+            onClick={() => handleIntentDecision("deny")}
+            className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("aiApprovalDialog.deny")}
+          </button>
+        </div>
+      )}
+
+      {canSelfDecide && intentError && (
+        <p role="alert" className="mt-2 text-xs text-red-500">
+          {intentError}
+        </p>
+      )}
+
+      {canSelfDecide && intentDecideState === "needs_device" && (
+        <div className="mt-3 rounded-md bg-gray-100/60 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/60 dark:text-gray-300">
+          {t("aiApprovalDialog.noApproverDevice")}{" "}
+          <button
+            type="button"
+            onClick={() => navigateTo("/settings/profile")}
+            className="font-medium text-blue-500 underline hover:text-blue-400"
+          >
+            {t("aiApprovalDialog.registerDevice")}
           </button>
         </div>
       )}

@@ -1,7 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import AiApprovalDialog from './AiApprovalDialog';
+
+const decideIntentApproval = vi.fn();
+vi.mock('@/lib/intentApprovals', () => ({
+  decideIntentApproval: (...args: unknown[]) => decideIntentApproval(...args),
+}));
 
 // CRITICAL-3 (whole-branch review): the web chat "Approve" button was a
 // silent no-op for Tier-3 durable intents — the sessions-approve route only
@@ -42,5 +47,97 @@ describe('AiApprovalDialog', () => {
     render(<AiApprovalDialog {...baseProps} intentBacked />);
 
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+  });
+});
+
+describe('intent-backed self-approve (sole operator)', () => {
+  const selfProps = {
+    toolName: 'file_operations',
+    description: 'Read a file',
+    input: {},
+    onApprove: vi.fn(),
+    onReject: vi.fn(),
+  };
+
+  it('renders Approve/Deny when selfApprovalRequestId is present', () => {
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /deny/i })).toBeInTheDocument();
+  });
+
+  it('keeps the buttonless waiting state without selfApprovalRequestId', () => {
+    render(<AiApprovalDialog {...selfProps} intentBacked />);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+  });
+
+  it('approve → decideIntentApproval(approve) → onIntentDecided', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'approve');
+  });
+
+  it('needs_device → shows the register-device CTA instead of buttons', async () => {
+    decideIntentApproval.mockResolvedValue('needs_device');
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByText(/register/i)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+  });
+
+  it('ceremony failure → inline error, buttons stay', async () => {
+    decideIntentApproval.mockRejectedValue(
+      new DOMException('cancelled', 'NotAllowedError'),
+    );
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+  });
+
+  it('deny → decideIntentApproval(deny) → onIntentDecided', async () => {
+    decideIntentApproval.mockResolvedValue('decided');
+    const onIntentDecided = vi.fn();
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /deny/i }));
+    await waitFor(() => expect(onIntentDecided).toHaveBeenCalled());
+    expect(decideIntentApproval).toHaveBeenCalledWith('ap-1', 'deny');
   });
 });

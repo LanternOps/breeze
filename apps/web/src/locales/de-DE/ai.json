@@ -20,7 +20,16 @@
     "progressLabel": "Verbleibende Zeit bis zur automatischen Ablehnung",
     "showParameters": "Parameter anzeigen",
     "approve": "Genehmigen",
-    "reject": "Ablehnen"
+    "reject": "Ablehnen",
+    "approveVerify": "Bestätigen & genehmigen",
+    "verifying": "Warte auf Verifizierung…",
+    "deny": "Ablehnen",
+    "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
+    "noApproverDevice": "Zum Genehmigen der eigenen Anfrage ist Touch ID / Windows Hello erforderlich.",
+    "registerDevice": "Dieses Gerät registrieren",
+    "decideFailed": "Entscheidung konnte nicht übermittelt werden",
+    "approvedToast": "Aktion genehmigt",
+    "deniedToast": "Aktion abgelehnt"
   },
   "aiChatInput": {
     "waiting": "Antwort wird erwartet…",

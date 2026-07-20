@@ -1,5 +1,6 @@
 import { fetchWithAuth } from '../stores/auth';
 import { getApprovalAssertion } from '../stores/authenticator';
+import { i18n } from './i18n';
 import { runAction } from './runAction';
 
 export type IntentDecisionOutcome = 'decided' | 'needs_device';
@@ -30,17 +31,10 @@ function isNoApproverDeviceError(err: unknown): boolean {
  * than retrying. Throws on a cancelled/failed ceremony and on server
  * rejection (runAction has already toasted the latter).
  *
- * Toast copy is plain English, not i18next: this is a non-component lib
- * helper (no `useTranslation` hook to draw from), the shared `i18n` singleton
- * (`./i18n`) exports a named `i18n` — not the default import the original
- * sketch assumed — and the `aiApprovalDialog.decideFailed` /
- * `.approvedToast` / `.deniedToast` keys it would need don't exist in
- * locales/en/ai.json yet. `apps/web/src/lib/i18n/keyUsage.test.ts` statically
- * flags any `t(...)` or `i18n.t(...)` call site whose literal key is missing
- * from the en catalog, repo-wide — so referencing not-yet-created keys here
- * would redden that unrelated contract test. Task 5 owns "+ i18n" for the
- * approval dialog; once it adds those keys, swap these literals for calls
- * through its `useTranslation('ai')` `t`.
+ * Toast copy comes from the shared `i18n` singleton (`./i18n`, a named
+ * export) rather than a `useTranslation` hook — this is a non-component lib
+ * helper. The `ai:` namespace prefix routes `i18n.t` to the aiApprovalDialog
+ * keys added by Task 5 (`decideFailed` / `approvedToast` / `deniedToast`).
  */
 export async function decideIntentApproval(
   approvalRequestId: string,
@@ -66,8 +60,11 @@ export async function decideIntentApproval(
         method: 'POST',
         body: JSON.stringify(body),
       }),
-    errorFallback: 'Failed to submit the decision',
-    successMessage: decision === 'approve' ? 'Action approved' : 'Action denied',
+    errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
+    successMessage:
+      decision === 'approve'
+        ? i18n.t('ai:aiApprovalDialog.approvedToast')
+        : i18n.t('ai:aiApprovalDialog.deniedToast'),
   });
 
   return 'decided';

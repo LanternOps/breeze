@@ -20,7 +20,16 @@
     "progressLabel": "Temps restant avant l’auto-rejet",
     "showParameters": "Paramètres de présentation",
     "approve": "Approuver",
-    "reject": "Rejeter"
+    "reject": "Rejeter",
+    "approveVerify": "Vérifier et approuver",
+    "verifying": "En attente de vérification…",
+    "deny": "Refuser",
+    "verificationFailed": "Échec de la vérification. Veuillez réessayer.",
+    "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
+    "registerDevice": "Enregistrer cet appareil",
+    "decideFailed": "Échec de l’envoi de la décision",
+    "approvedToast": "Action approuvée",
+    "deniedToast": "Action refusée"
   },
   "aiChatInput": {
     "waiting": "En attente de réponse...",
