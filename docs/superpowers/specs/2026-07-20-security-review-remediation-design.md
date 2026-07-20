@@ -28,4 +28,3 @@ Resolve all 29 retained findings in `internal/security-review-2026-07-20.md` aga
 ## Testing strategy
 
 Each domain follows red-green TDD in adjacent Vitest files. Security assertions cover unauthenticated/insufficient-scope access, selected/none partner access, denied-site access, cross-contact portal access, no-side-effect denial, and happy paths. New RLS shapes use the real-database contract tests. Final verification runs API typecheck, all affected Vitest files in bounded `vitest run` mode, RLS/drift checks when local services permit them, and a whole-branch independent review.
-

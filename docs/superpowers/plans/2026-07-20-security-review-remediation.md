@@ -240,4 +240,3 @@
 - [ ] Generate a merge-base-to-HEAD review package and request one independent whole-branch security/code review.
 - [ ] Fix all Critical/Important review findings in one coordinated pass and rerun their covering tests.
 - [ ] Verify every finding number maps to a passing regression or explicit invariant before completion.
-
