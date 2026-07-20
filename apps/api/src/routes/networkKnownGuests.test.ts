@@ -30,6 +30,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
+      partnerOrgAccess: 'all',
       orgId: null,
       user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
       accessibleOrgIds: [],
@@ -55,6 +56,7 @@ describe('networkKnownGuests routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
         orgId: null,
         user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
         accessibleOrgIds: [],
@@ -65,6 +67,42 @@ describe('networkKnownGuests routes', () => {
     app = new Hono();
     app.route('/partner/known-guests', networkKnownGuestsRoutes);
   });
+
+  it.each([
+    ['selected', 'GET', '/partner/known-guests', undefined],
+    ['none', 'POST', '/partner/known-guests', {
+      macAddress: 'aa:bb:cc:dd:ee:ff',
+      label: 'Denied device',
+    }],
+    ['selected', 'DELETE', '/partner/known-guests/guest-1', undefined],
+  ] as const)(
+    'denies partner orgAccess=%s before shared known-guest work for %s',
+    async (partnerOrgAccess, method, path, body) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess,
+          orgId: null,
+          user: { id: 'user-123', email: 'partner@example.com' },
+          accessibleOrgIds: [],
+          canAccessOrg: () => false,
+        });
+        return next();
+      });
+
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    },
+  );
 
   describe('GET /partner/known-guests', () => {
     it('returns 403 when no partnerId on auth context', async () => {
