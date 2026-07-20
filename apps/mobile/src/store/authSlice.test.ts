@@ -121,11 +121,29 @@ describe('approver registration status', () => {
     expect(makeStore().getState().auth.approverRegistration).toBe('idle');
   });
 
-  it('clears on logout — the next user must not inherit the previous banner', () => {
+  it('clears on the synchronous logout reducer', () => {
     const store = makeStore();
     store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
 
     store.dispatch(logout());
+
+    expect(store.getState().auth.approverRegistration).toBe('idle');
+    expect(store.getState().auth.approverRegistrationReason).toBeNull();
+  });
+
+  // The Sign Out button and the device_blocked listener both dispatch
+  // logoutAsync, NOT the sync logout reducer — so these are the paths that
+  // actually run in production. The root-level withLogoutReset in resettable.ts
+  // would also blank the slice, but that safety net lives in another module:
+  // asserting it here keeps the guarantee true of authSlice on its own.
+  it.each([
+    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id')],
+    ['rejected', () => logoutAsync.rejected(null, 'req-id')],
+  ])('clears on logoutAsync.%s — the next user must not inherit the banner', (_name, action) => {
+    const store = makeStore();
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    store.dispatch(action() as never);
 
     expect(store.getState().auth.approverRegistration).toBe('idle');
     expect(store.getState().auth.approverRegistrationReason).toBeNull();

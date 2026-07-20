@@ -211,6 +211,8 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        state.approverRegistration = 'idle';
+        state.approverRegistrationReason = null;
       })
       .addCase(logoutAsync.rejected, (state) => {
         state.user = null;
@@ -218,6 +220,8 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        state.approverRegistration = 'idle';
+        state.approverRegistrationReason = null;
       });
   },
 });
