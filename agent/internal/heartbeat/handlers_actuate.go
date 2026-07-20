@@ -136,9 +136,33 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	// concurrent denyConsent (or a second actuateElevation): two goroutines
 	// driving SendInput/SetThreadDesktop against the same live consent.exe
 	// would corrupt input injection. See Heartbeat.pamActuateMu.
+	// Fast path: check the gate under a short lock first. A recovery probe can
+	// hold pamActuateMu across a full pamDismissTimeout (10s) IPC round-trip,
+	// and sync.Mutex.Lock is not ctx-aware, so without this a worker could be
+	// pinned for that long only to be told "dismissal_uncertain" anyway.
+	h.pamActuateMu.Lock()
+	gated := h.pamDismissalUncertain
+	h.pamActuateMu.Unlock()
+	if gated {
+		// Log at the block site: the remote actuate path folds this into a
+		// success-shaped CommandResult and logs nothing agent-side, so a
+		// PAM-disabled device would otherwise leave no local trace (#2610).
+		log.Warn("pam: actuation REFUSED — dismissal of a denied consent prompt was never proven; PAM is fail-closed",
+			"elevationRequestId", requestID)
+		return pamactuator.Result{
+			Success:       false,
+			Reason:        "dismissal_uncertain",
+			DetailMessage: "previous PAM consent dismissal has not reported completion",
+		}
+	}
+
 	h.pamActuateMu.Lock()
 	defer h.pamActuateMu.Unlock()
+	// Re-check under the real critical section: the gate may have been engaged
+	// between the fast path and here.
 	if h.pamDismissalUncertain {
+		log.Warn("pam: actuation REFUSED — dismissal gate engaged concurrently; PAM is fail-closed",
+			"elevationRequestId", requestID)
 		return pamactuator.Result{
 			Success:       false,
 			Reason:        "dismissal_uncertain",

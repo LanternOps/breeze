@@ -8,6 +8,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -30,6 +31,16 @@ const (
 	// helper doesn't spin forever. On exhaustion the gate stays CLOSED — the
 	// bound limits probing, never the fail-closed guarantee.
 	defaultPamRecoveryMaxAttempts = 8
+	// defaultPamGateProofTimeout bounds how long the gate waits for the helper's
+	// late dismissal proof before falling back to active recovery. Generous
+	// relative to pamDismissTimeout so a merely-slow helper still gets to answer
+	// for itself; a hung one no longer parks the waiter forever.
+	defaultPamGateProofTimeout = 60 * time.Second
+	// defaultPamGateStuckReassertInterval re-announces a permanently disabled
+	// PAM gate. #2610 asked for the terminal state to be loud AND durable: a
+	// single Error at exhaustion is invisible to anyone who starts reading logs
+	// later, and blocked actuations are otherwise silent.
+	defaultPamGateStuckReassertInterval = 15 * time.Minute
 	// defaultActuateTimeoutMs is the per-actuation consent.exe wait, matching
 	// the remote handler's fallback.
 	defaultActuateTimeoutMs = 8000
@@ -203,7 +214,17 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 		}
 	}()
 	if alreadyUncertain {
-		log.Warn("pam: deny enforcement skipped — previous dismissal completion remains uncertain",
+		// Deliberate, and NOT safe to "fix" by dismissing anyway: an unproven
+		// prior dismissal means the helper may still be injecting input at the
+		// consent desktop, and pamActuateMu cannot serialize against a
+		// helper-side goroutine we could not prove had stopped.
+		//
+		// The cost is real though: this denial is not enforced, so the prompt
+		// is left live for the user to answer themselves. The gate fail-closes
+		// ACTUATION while fail-opening ENFORCEMENT, and recovery widens that
+		// window (permanently, if recovery exhausts). Error, not Warn — an
+		// unenforced policy deny is not routine.
+		log.Error("pam: deny NOT ENFORCED — a previous dismissal was never proven, so consent.exe is left live for the user to answer",
 			"elevationRequestId", requestID, "reason", reason)
 		return
 	}
@@ -217,7 +238,7 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 	case res.Success:
 		log.Info("pam: denied elevation, dismissed consent prompt",
 			"elevationRequestId", requestID, "reason", reason, "dismiss_reason", res.Reason)
-	case res.Reason == "no_consent_window":
+	case res.Reason == pamactuator.ReasonNoConsentWindow:
 		// Prompt already gone (user closed it, self-timeout, or a prior dismiss) —
 		// the deny is satisfied, not a failure.
 		log.Info("pam: deny — consent prompt already closed",
@@ -248,11 +269,44 @@ func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession stri
 		}
 	}()
 
-	outcome, ok := <-quiesced
+	// The read MUST be bounded. quiesced is closed by the session's finish()
+	// path, which only runs on a correlated response or session teardown — so a
+	// helper that hangs while its IPC session stays CONNECTED (exactly what
+	// produces the ErrCommandTimeout that opens this gate) would otherwise park
+	// this goroutine for the process lifetime and never reach recovery. That
+	// was the permanent-lockout half of #2610 surviving its own fix.
+	//
+	// A nil channel lands here too: it is never ready, so it falls through to
+	// the timer and into recovery instead of blocking forever.
+	proofTimeout := h.pamGateProofTimeout
+	if proofTimeout <= 0 {
+		proofTimeout = defaultPamGateProofTimeout
+	}
+	timer := time.NewTimer(proofTimeout)
+	defer timer.Stop()
+
+	var (
+		outcome  sessionbroker.PamDismissOutcome
+		ok       bool
+		timedOut bool
+	)
+	select {
+	case outcome, ok = <-quiesced:
+	case <-timer.C:
+		timedOut = true
+	case <-h.stopChan:
+		log.Warn("pam: agent shutting down while dismissal proof outstanding; PAM remains fail-closed",
+			"elevationRequestId", requestID)
+		return
+	}
+
 	switch {
-	case ok && outcome.Cleared():
+	case !timedOut && ok && outcome.Cleared():
 		h.releasePamDismissalGate(requestID, "helper proved dismissal", 0)
 		return
+	case timedOut:
+		log.Error("pam: no dismissal proof within the proof window — helper may be hung; PAM stays fail-closed, attempting recovery",
+			"elevationRequestId", requestID, "proofTimeout", proofTimeout.String())
 	case !ok:
 		// Channel closed without an outcome. Treat exactly like an unproven
 		// helper death — never as an all-clear.
@@ -282,9 +336,18 @@ func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession stri
 //
 // Recovery does NOT time out into an open state — that would reintroduce the
 // stale-denied-window bug this gate exists to prevent. Instead it re-issues the
-// dismiss against a freshly located helper: a "no_consent_window" (or a clean
+// dismiss against a freshly located helper: a ReasonNoConsentWindow (or a clean
 // success) is real evidence that nothing is on screen for a later actuation to
 // type into. Anything short of that evidence leaves the gate closed.
+//
+// KNOWN TRADEOFF: the probe is not a read-only "is a prompt present?" query —
+// DismissPamConsent locates a consent window generically and presses Escape. So
+// during recovery an UNRELATED UAC prompt the user raises can be cancelled, and
+// its dismissal counts as proof. That still upholds the safety invariant
+// (Windows shows one UAC prompt at a time, so afterwards the desktop is clear
+// and there is nothing for an actuation to attach to), but it is a real user
+// visible cost, bounded by the attempt cap. A read-only presence probe would be
+// the better primitive and needs a new helper IPC verb.
 func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string) {
 	delay := h.pamRecoveryDelay
 	if delay <= 0 {
@@ -318,10 +381,42 @@ func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string) 
 	}
 
 	// Deliberate terminal state: fail-closed wins over availability. Logged at
-	// Error so a dead-PAM device is visible in the field instead of surfacing
-	// only as routine per-actuation "dismissal_uncertain" warnings.
+	// Error so a dead-PAM device is visible in the field.
 	log.Error("pam: PAM ACTUATION DISABLED until agent restart — recovery exhausted without proving the consent desktop is clear",
 		"elevationRequestId", requestID, "attempts", maxAttempts)
+	h.reassertStuckPamGate(requestID)
+}
+
+// reassertStuckPamGate keeps re-announcing a permanently disabled PAM gate.
+//
+// Without this the terminal state is logged exactly once: no later denyConsent
+// can re-enter recovery (it short-circuits on the closed gate), and blocked
+// actuations return no log of their own from the remote path. An operator who
+// starts reading logs after the fact would see a PAM-dead device with no
+// evidence. #2610 asked for the state to still be visible "N minutes later".
+func (h *Heartbeat) reassertStuckPamGate(requestID string) {
+	interval := h.pamGateStuckReassertInterval
+	if interval <= 0 {
+		interval = defaultPamGateStuckReassertInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.stopChan:
+			return
+		case <-ticker.C:
+			h.pamActuateMu.Lock()
+			stuck := h.pamDismissalUncertain
+			h.pamActuateMu.Unlock()
+			if !stuck {
+				// Something proved the desktop clear after all.
+				return
+			}
+			log.Error("pam: PAM ACTUATION STILL DISABLED — no proof the consent desktop is clear; restart the agent to re-enable PAM",
+				"elevationRequestId", requestID, "reassertIntervalSeconds", int(interval.Seconds()))
+		}
+	}
 }
 
 // probePamDismissalRecovery runs one re-dismissal against a freshly located

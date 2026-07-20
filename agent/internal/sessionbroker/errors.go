@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/pamactuator"
 )
 
 var (
@@ -39,23 +40,29 @@ type PamDismissOutcome struct {
 // Cleared reports whether the outcome proves no denied consent prompt can still
 // be on screen. This is the ONLY condition that may reopen PAM actuation.
 //
-// "no_consent_window" counts: the helper looked and found no prompt at all, so
-// there is nothing for a later actuation to type credentials into.
+// ReasonNoConsentWindow counts: the helper looked and found no prompt at all,
+// so there is nothing for a later actuation to type credentials into.
 func (o PamDismissOutcome) Cleared() bool {
 	if !o.Proven || o.Err != nil {
 		return false
 	}
-	return o.Result.Success || o.Result.Reason == "no_consent_window"
+	return o.Result.Success || o.Result.Reason == pamactuator.ReasonNoConsentWindow
 }
 
 // PamDismissUncertainError means a dismiss command may still be executing in
 // the target helper session.
 //
-// Quiesced always yields exactly one value and is then closed, so a reader can
-// never block on it forever. Read it as `outcome := <-err.Quiesced` and gate on
+// Quiesced yields at most one outcome and is then closed. Gate on
 // outcome.Cleared() — NOT on the mere fact that the channel produced something.
 // A proven-failed dismissal and a dead helper both deliver an outcome here, and
 // neither is safe to actuate after.
+//
+// IMPORTANT: "at most one". The outcome is produced when a correlated response
+// arrives or the session tears down, so a helper that hangs while its session
+// stays CONNECTED — precisely what raises the ErrCommandTimeout that creates
+// this error — may never produce one at all. Readers MUST bound the receive
+// (and must not assume a nil channel is impossible); blocking on it forever is
+// how the fail-closed gate turns into a permanent lockout.
 type PamDismissUncertainError struct {
 	Cause    error
 	Quiesced <-chan PamDismissOutcome
