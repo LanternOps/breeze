@@ -67,7 +67,7 @@ function mockBurnReturning(rows: Array<{ id: string }>) {
   // production code awaits through the chain.
   return {
     setMock,
-    getWhereMock: () => setMock.mock.results[0].value.where as ReturnType<typeof vi.fn>,
+    getWhereMock: () => setMock.mock.results[0]!.value.where as ReturnType<typeof vi.fn>,
   };
 }
 
@@ -146,7 +146,7 @@ describe('burnTemporaryPassword', () => {
 
     // .set({ result: ... }) removes both secret keys and OR-merges in the
     // revealed marker (never the expired marker) for a revealedByUserId call.
-    const setArg = setMock.mock.calls[0][0] as { result: { sql: string; vals: unknown[] } };
+    const setArg = setMock.mock.calls[0]![0] as { result: { sql: string; vals: unknown[] } };
     expect(setArg.result.sql).toBe(
       "(coalesce(?, '{}'::jsonb) - ?::text - ?::text) || ?",
     );
@@ -169,7 +169,7 @@ describe('burnTemporaryPassword', () => {
 
     // .where(and(eq(id, intentId), CAS predicate)) requires the id match AND
     // at least one of the two secret keys still present (?| bitmap operator).
-    const whereArg = whereMock.mock.calls[0][0] as {
+    const whereArg = whereMock.mock.calls[0]![0] as {
       op: string;
       args: [
         { op: string; args: [unknown, string] },
@@ -187,7 +187,7 @@ describe('burnTemporaryPassword', () => {
     const { setMock } = mockBurnReturning([]);
     await expect(burnTemporaryPassword('intent-1', { expired: true })).resolves.toBe(false);
 
-    const setArg = setMock.mock.calls[0][0] as { result: { vals: unknown[] } };
+    const setArg = setMock.mock.calls[0]![0] as { result: { vals: unknown[] } };
     const markerSql = setArg.result.vals[3] as { sql: string; vals: unknown[] };
     expect(markerSql.sql).toBe('jsonb_build_object(?::text, true)');
     expect(markerSql.vals).toEqual(['temporaryPasswordExpired']);
