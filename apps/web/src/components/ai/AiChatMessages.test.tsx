@@ -10,7 +10,17 @@ vi.mock('react-markdown', () => ({
 }));
 vi.mock('remark-gfm', () => ({ default: () => {} }));
 vi.mock('./AiToolCallCard', () => ({ default: () => null }));
-vi.mock('./AiApprovalDialog', () => ({ default: () => null }));
+
+// Records the props AiChatMessages forwards to the approval card. The real
+// dialog is heavy (WebAuthn + i18n), and what this file owns is the wiring:
+// that the self-approve id and the decided callback reach the card at all.
+const approvalDialog = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
+vi.mock('./AiApprovalDialog', () => ({
+  default: (props: Record<string, unknown>) => {
+    approvalDialog.props.push(props);
+    return null;
+  },
+}));
 vi.mock('./AiPlanReviewCard', () => ({ default: () => null }));
 vi.mock('./AiPlanProgressBar', () => ({ default: () => null }));
 
@@ -187,6 +197,35 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     flushRaf();
 
     expect(el.scrollTop).toBe(1000);
+  });
+
+  it('forwards selfApprovalRequestId and onIntentDecided to the approval card', () => {
+    approvalDialog.props.length = 0;
+    const onIntentDecided = vi.fn();
+
+    render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: '1', role: 'user', content: 'read that file' }] as never}
+        pendingApproval={{
+          executionId: 'e1',
+          toolName: 'file_operations',
+          input: {},
+          description: 'Read a file',
+          intentBacked: true,
+          selfApprovalRequestId: 'ap-1',
+        }}
+        onIntentDecided={onIntentDecided}
+      />,
+    );
+
+    const props = approvalDialog.props.at(-1)!;
+    // Without both of these the card can never render its inline
+    // Verify & Approve / Deny buttons (they are gated on the id).
+    expect(props.intentBacked).toBe(true);
+    expect(props.selfApprovalRequestId).toBe('ap-1');
+    (props.onIntentDecided as () => void)();
+    expect(onIntentDecided).toHaveBeenCalledTimes(1);
   });
 
   it('cancels the pending frame on unmount so it never scrolls a torn-down container', () => {

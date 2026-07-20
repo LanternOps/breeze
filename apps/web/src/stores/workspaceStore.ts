@@ -74,6 +74,13 @@ interface WorkspaceState {
   // Chat actions (tab-scoped)
   sendMessage: (tabId: string, content: string) => Promise<void>;
   approveExecution: (tabId: string, executionId: string, approved: boolean) => Promise<void>;
+  /**
+   * An inline intent decide (Touch ID self-approve) already POSTed to the
+   * approvals decide API and the SSE stream carries the actual outcome —
+   * this only drops the now-stale card. Never call it as a substitute for
+   * approveExecution: it talks to no endpoint.
+   */
+  clearPendingApproval: (tabId: string) => void;
   approvePlan: (tabId: string, approved: boolean) => Promise<void>;
   abortPlan: (tabId: string) => Promise<void>;
   pauseAi: (tabId: string, paused: boolean) => Promise<void>;
@@ -353,6 +360,10 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             console.error('[Workspace] Approval failed:', err);
             updateTab(tabId, { error: 'Failed to process approval' });
           }
+        },
+
+        clearPendingApproval: (tabId: string) => {
+          updateTab(tabId, { pendingApproval: null, hasApprovalPending: false });
         },
 
         approvePlan: async (tabId: string, approved: boolean) => {

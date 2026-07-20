@@ -61,6 +61,13 @@ interface AiState {
   loadSessions: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   approveExecution: (executionId: string, approved: boolean) => Promise<void>;
+  /**
+   * An inline intent decide (Touch ID self-approve) already POSTed to the
+   * approvals decide API and the SSE stream carries the actual outcome —
+   * this only drops the now-stale card. Never call it as a substitute for
+   * approveExecution: it talks to no endpoint.
+   */
+  clearPendingApproval: () => void;
   approvePlan: (approved: boolean) => Promise<void>;
   abortPlan: () => Promise<void>;
   pauseAi: (paused: boolean) => Promise<void>;
@@ -331,6 +338,8 @@ export const useAiStore = create<AiState>()(
       set({ error: 'Failed to process approval' });
     }
   },
+
+  clearPendingApproval: () => set({ pendingApproval: null }),
 
   approvePlan: async (approved: boolean) => {
     const { sessionId } = get();

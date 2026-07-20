@@ -43,6 +43,12 @@ interface PendingApproval {
   };
   /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
   intentBacked?: boolean;
+  /**
+   * The requester's own fanned-out approval row, set only when the server
+   * decided the requester is the sole eligible approver. Undefined in a
+   * multi-approver org — that absence is what preserves four-eyes.
+   */
+  selfApprovalRequestId?: string;
 }
 
 interface PendingPlan {
@@ -70,6 +76,8 @@ interface AiChatMessagesProps {
   onAbortPlan?: () => void;
   onPauseAi?: (paused: boolean) => void;
   onSendQuickAction?: (prompt: string) => void;
+  /** Inline intent decide succeeded — drop the card (the SSE stream carries the outcome). */
+  onIntentDecided?: () => void;
 }
 
 export default function AiChatMessages({
@@ -85,6 +93,7 @@ export default function AiChatMessages({
   onAbortPlan,
   onPauseAi,
   onSendQuickAction,
+  onIntentDecided,
 }: AiChatMessagesProps) {
   const { t } = useTranslation("ai");
   const quickActions = [
@@ -319,6 +328,8 @@ export default function AiChatMessages({
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
+          selfApprovalRequestId={pendingApproval.selfApprovalRequestId}
+          onIntentDecided={onIntentDecided}
         />
       )}
 
