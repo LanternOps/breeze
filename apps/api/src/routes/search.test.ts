@@ -41,6 +41,7 @@ vi.mock('../db/schema', () => ({
   alerts: {
     id: 'alerts.id',
     orgId: 'alerts.orgId',
+    deviceId: 'alerts.deviceId',
     title: 'alerts.title',
     message: 'alerts.message',
     severity: 'alerts.severity'
@@ -227,6 +228,47 @@ describe('search routes', () => {
   });
 
   describe('site-axis narrowing for device search', () => {
+    it('narrows device-bound alert search with the canonical device-site predicate', async () => {
+      vi.mocked(inArray).mockClear();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [
+          { resource: 'devices', action: 'read' },
+          { resource: 'scripts', action: 'read' },
+          { resource: 'alerts', action: 'read' },
+        ],
+        allowedSiteIds: ['site-abc'],
+        partnerId: null,
+        orgId: 'org-1',
+        roleId: 'role-1',
+        scope: 'organization',
+      } as any);
+
+      const alertWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: alertWhere,
+            leftJoin: vi.fn().mockReturnValue({ where: alertWhere }),
+          }),
+        } as never);
+
+      const res = await app.request('/search?q=site-b-alert');
+
+      expect(res.status).toBe(200);
+      expect(inArray).toHaveBeenCalledWith('devices.siteId', ['site-abc']);
+      expect(vi.mocked(inArray).mock.calls.filter(([column]) => column === 'devices.siteId')).toHaveLength(2);
+    });
+
     it('returns empty device results when site-restricted caller has empty allowedSiteIds (fail-closed)', async () => {
       // Override getUserPermissions to simulate a site-restricted caller with no in-scope sites.
       vi.mocked(getUserPermissions).mockResolvedValueOnce({
@@ -261,8 +303,10 @@ describe('search routes', () => {
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              })
             })
           })
         } as never);
@@ -308,7 +352,9 @@ describe('search routes', () => {
         } as never)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
           })
         } as never);
 
