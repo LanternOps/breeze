@@ -4,6 +4,7 @@ import { clientAiAdminRoutes } from './admin';
 import { clientAiSessionRoutes } from './sessions';
 import { clientAiConsentCallbackRoute } from './adminOrgs';
 import { clientAiTemplateRoutes } from './templates';
+import { clientAiExtRoutes } from './ext';
 
 /**
  * /client-ai — Breeze AI for Office namespace (spec §2).
@@ -20,6 +21,10 @@ clientAiRoutes.route('/sessions', clientAiSessionRoutes);
 
 // Client-facing (add-in) routes — clientAiAuthMiddleware inside.
 clientAiRoutes.route('/', clientAiTemplateRoutes);
+
+// Generic bridge from a validated end-user session into an extension's
+// manifest-declared client surfaces (default-deny; see ./ext.ts).
+clientAiRoutes.route('/ext', clientAiExtRoutes);
 
 // Public Entra admin-consent landing page (no auth — informational only).
 clientAiRoutes.route('/', clientAiConsentCallbackRoute);

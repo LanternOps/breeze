@@ -141,6 +141,38 @@ const aiToolSchema = z.object({
 
 const capabilitySchema = z.enum(SUPPORTED_EXTENSION_CAPABILITIES);
 
+/**
+ * An extension's opt-in for the end-user client proxy.
+ *
+ * The proxy is default-deny: absent (or empty) `clientSurfaces` means NO path
+ * of the extension is reachable by an end-user session, and a declared prefix
+ * opens exactly that sub-tree and nothing else. The schema hard-refuses the two
+ * namespaces that carry their own machine identities (`/agent`, `/helper`) so a
+ * manifest can never hand an end-user session a route intended for a device.
+ */
+const clientSurfaceSchema = z.object({
+  pathPrefix: z
+    .string()
+    .regex(/^\/[a-zA-Z0-9\-_./]*$/, {
+      message: 'clientSurfaces pathPrefix must be an absolute sub-path like "/client"',
+    })
+    .refine((path) => path !== '/' && path !== '/*', {
+      message: 'clientSurfaces may not blanket the whole namespace',
+    })
+    .refine((path) => !path.endsWith('/'), {
+      message: 'clientSurfaces pathPrefix must not end with "/"',
+    })
+    .refine((path) => !path.split('/').some((segment) => segment === '.' || segment === '..'), {
+      message: 'clientSurfaces pathPrefix may not contain "." or ".." path segments',
+    })
+    .refine((path) => path !== '/agent' && !path.startsWith('/agent/'), {
+      message: 'clientSurfaces may not expose /agent/ paths',
+    })
+    .refine((path) => path !== '/helper' && !path.startsWith('/helper/'), {
+      message: 'clientSurfaces may not expose /helper/ paths',
+    }),
+}).strict();
+
 const manifestSchemaV1 = z.object({
   apiVersion: z.literal('breeze.extensions/v1'),
   name: z.string().regex(NAME_RE).refine((name) => name !== 'plugins', {
@@ -180,6 +212,7 @@ const manifestSchemaV1 = z.object({
       }),
   ).optional(),
   agentRoutes: z.boolean().optional(),
+  clientSurfaces: z.array(clientSurfaceSchema).optional(),
   // TODO(runtime-platform): carry legacy helperRoutes forward as capability
   // 'server.helper-routes.v1' (see internal/plans/2026-07-18-workspace-finder-phase3-plan.md).
   jobs: z.array(jobSchema),
@@ -198,6 +231,9 @@ const manifestSchemaV1 = z.object({
   }
   if (!uniqueBy(manifest.aiTools, (tool) => tool.name)) {
     ctx.addIssue({ code: 'custom', path: ['aiTools'], message: 'AI tool names must be unique' });
+  }
+  if (manifest.clientSurfaces && !uniqueBy(manifest.clientSurfaces, (surface) => surface.pathPrefix)) {
+    ctx.addIssue({ code: 'custom', path: ['clientSurfaces'], message: 'clientSurfaces pathPrefix values must be unique' });
   }
   if (manifest.web && (
     !uniqueBy(manifest.web.pages, (page) => page.id)

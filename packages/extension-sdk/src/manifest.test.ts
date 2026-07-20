@@ -206,6 +206,49 @@ describe('parseExtensionManifestV1', () => {
     expect(parsed.publicRoutes).toEqual(['/health.json', '/.well-known/status']);
   });
 
+  describe('clientSurfaces', () => {
+    it('is optional and absent by default (default-deny)', () => {
+      expect(parseExtensionManifestV1(valid).clientSurfaces).toBeUndefined();
+    });
+
+    it('accepts declared client surface prefixes', () => {
+      const parsed = parseExtensionManifestV1({
+        ...valid,
+        clientSurfaces: [{ pathPrefix: '/client' }, { pathPrefix: '/client-tools' }],
+      });
+      expect(parsed.clientSurfaces).toEqual([
+        { pathPrefix: '/client' },
+        { pathPrefix: '/client-tools' },
+      ]);
+    });
+
+    it.each([
+      ['relative prefix', 'client'],
+      ['whole namespace', '/'],
+      ['wildcard', '/*'],
+      ['trailing slash', '/client/'],
+      ['agent surface', '/agent'],
+      ['agent sub-surface', '/agent/hook'],
+      ['helper surface', '/helper'],
+      ['helper sub-surface', '/helper/hook'],
+      ['parent traversal', '/client/../agent'],
+      ['dot segment', '/client/./x'],
+    ])('rejects %s', (_name, pathPrefix) => {
+      expect(() => parseExtensionManifestV1({ ...valid, clientSurfaces: [{ pathPrefix }] })).toThrow();
+    });
+
+    it('rejects duplicate prefixes and unknown keys', () => {
+      expect(() => parseExtensionManifestV1({
+        ...valid,
+        clientSurfaces: [{ pathPrefix: '/client' }, { pathPrefix: '/client' }],
+      })).toThrow();
+      expect(() => parseExtensionManifestV1({
+        ...valid,
+        clientSurfaces: [{ pathPrefix: '/client', unknown: true }],
+      })).toThrow();
+    });
+  });
+
   it('rejects unknown keys at every manifest level', () => {
     expect(() => parseExtensionManifestV1({ ...valid, unknown: true })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, server: { ...valid.server, unknown: true } })).toThrow();
