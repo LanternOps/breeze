@@ -53,13 +53,22 @@ const RESET_RESULT = {
 };
 
 function mockBurnReturning(rows: Array<{ id: string }>) {
-  updateMock.mockReturnValueOnce({
-    set: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue(rows),
-      }),
+  const setMock = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(rows),
     }),
   });
+  updateMock.mockReturnValueOnce({ set: setMock });
+  // Expose the `.set()`/`.where()` mocks so callers can assert on the exact
+  // arguments the CAS update/predicate were constructed with, not just the
+  // final resolved boolean. `getWhereMock` is a function (not a getter
+  // evaluated at destructure time) because `.set()` hasn't been called yet
+  // when `mockBurnReturning` returns — it's only populated after the
+  // production code awaits through the chain.
+  return {
+    setMock,
+    getWhereMock: () => setMock.mock.results[0].value.where as ReturnType<typeof vi.fn>,
+  };
 }
 
 beforeEach(() => {
@@ -128,15 +137,60 @@ describe('unsealTemporaryPassword', () => {
 });
 
 describe('burnTemporaryPassword', () => {
-  it('returns true when the CAS update burned a row', async () => {
-    mockBurnReturning([{ id: 'intent-1' }]);
+  it('returns true when the CAS update burned a row, and builds the revealed marker + removal + CAS predicate correctly', async () => {
+    const { setMock, getWhereMock } = mockBurnReturning([{ id: 'intent-1' }]);
     await expect(
       burnTemporaryPassword('intent-1', { revealedByUserId: 'user-1' }),
     ).resolves.toBe(true);
+    const whereMock = getWhereMock();
+
+    // .set({ result: ... }) removes both secret keys and OR-merges in the
+    // revealed marker (never the expired marker) for a revealedByUserId call.
+    const setArg = setMock.mock.calls[0][0] as { result: { sql: string; vals: unknown[] } };
+    expect(setArg.result.sql).toBe(
+      "(coalesce(?, '{}'::jsonb) - ?::text - ?::text) || ?",
+    );
+    const [resultCol, encKey, legacyKey, markerSql] = setArg.result.vals as [
+      unknown,
+      string,
+      string,
+      { sql: string; vals: unknown[] },
+    ];
+    expect(resultCol).toBe('action_intents.result');
+    expect(encKey).toBe('temporaryPasswordEnc');
+    expect(legacyKey).toBe('temporaryPassword');
+    // The revealed-branch marker embeds the revealed key and the calling
+    // user's id, and does NOT build the expired marker.
+    expect(markerSql.sql).toBe(
+      "jsonb_build_object(?::text, jsonb_build_object('revealedAt', to_jsonb(now()), 'revealedByUserId', ?::text))",
+    );
+    expect(markerSql.vals).toEqual(['temporaryPasswordRevealed', 'user-1']);
+    expect(markerSql.sql).not.toContain('temporaryPasswordExpired');
+
+    // .where(and(eq(id, intentId), CAS predicate)) requires the id match AND
+    // at least one of the two secret keys still present (?| bitmap operator).
+    const whereArg = whereMock.mock.calls[0][0] as {
+      op: string;
+      args: [
+        { op: string; args: [unknown, string] },
+        { sql: string; vals: unknown[] },
+      ];
+    };
+    expect(whereArg.op).toBe('and');
+    const [eqClause, casClause] = whereArg.args;
+    expect(eqClause).toEqual({ op: 'eq', args: ['action_intents.id', 'intent-1'] });
+    expect(casClause.sql).toBe('? ?| array[?::text, ?::text]');
+    expect(casClause.vals).toEqual(['action_intents.result', 'temporaryPasswordEnc', 'temporaryPassword']);
   });
 
-  it('returns false when the secret was already gone (lost the race)', async () => {
-    mockBurnReturning([]);
+  it('returns false when the secret was already gone (lost the race), and builds the expired marker (not revealed) for an expiry burn', async () => {
+    const { setMock } = mockBurnReturning([]);
     await expect(burnTemporaryPassword('intent-1', { expired: true })).resolves.toBe(false);
+
+    const setArg = setMock.mock.calls[0][0] as { result: { vals: unknown[] } };
+    const markerSql = setArg.result.vals[3] as { sql: string; vals: unknown[] };
+    expect(markerSql.sql).toBe('jsonb_build_object(?::text, true)');
+    expect(markerSql.vals).toEqual(['temporaryPasswordExpired']);
+    expect(markerSql.sql).not.toContain('temporaryPasswordRevealed');
   });
 });
