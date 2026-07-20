@@ -35,7 +35,7 @@ account for this: the builder stage runs a scoped
 `pnpm install --filter './extensions/*' --no-frozen-lockfile` before building
 extensions, so the committed lockfile stays extension-free.
 
-## Vendored SDK tarball overrides
+## Vendored SDK tarball overrides (local only — never committed)
 
 Until the `@breeze/extension-{sdk,web-sdk,cli,testkit}` packages are
 published to a registry (tracked in a follow-up ticket — see the issue
@@ -43,12 +43,38 @@ tracker), a cloned extension that consumes them ships its own vendored
 copies under `extensions/<name>/vendor/*.tgz` and depends on them via a
 `file:` specifier. Those tarballs' own transitive dependencies on
 `@breeze/extension-sdk` / `@breeze/extension-web-sdk` don't resolve against
-a registry either, so the root `package.json`'s `pnpm.overrides` carries
-static redirects for them (parent-scoped where a package name collides
-across extensions, e.g. `@breeze/extension-testkit@1.0.0>@breeze/extension-sdk`).
-These overrides are inert — pnpm never attempts to resolve them — on any
-clone with no `extensions/*` vendor tarball present, so they impose no cost
-on the base repo or on contributors who never clone an extension.
+a registry either, so a local dev clone needs static redirects for them.
+
+Those redirects are **local-only** — they must NOT be committed. Their
+paths reference `extensions/<name>/`, which is gitignored and therefore
+absent from every clean clone, so a committed redirect would break
+`pnpm install` for anyone who has not cloned that specific extension (and
+would leak the extension's name into the public repo). Add them to your own
+working copy of the root `package.json` and keep them out of commits:
+
+    // root package.json → "pnpm": { "overrides": { … } }, LOCAL ONLY
+    "@breeze/extension-testkit@1.0.0>@breeze/extension-sdk":
+      "file:extensions/<name>/vendor/breeze-extension-sdk-1.0.0.tgz",
+    "@breeze/extension-cli@1.0.0>@breeze/extension-sdk":
+      "file:extensions/<name>/vendor/breeze-extension-sdk-1.0.0.tgz",
+    "@breeze/extension-web-sdk":
+      "file:extensions/<name>/vendor/breeze-extension-web-sdk-1.0.0.tgz"
+
+Parent-scoped keys (`<parent>@<version>>@breeze/extension-sdk`) are needed
+where the same package name is pulled in by more than one dependent.
+`pnpm install` will also rewrite the `overrides:` block at the top of
+`pnpm-lock.yaml`; revert both files before staging anything
+(`git checkout package.json pnpm-lock.yaml`), the same rule the lockfile
+policy above applies to extension importers.
+
+**Dev container note:** `docker/Dockerfile.api.dev` `COPY`s the root
+`package.json` at *image build* time; it is not bind-mounted into the
+running dev container. If you add, remove, or edit an entry under
+`pnpm.overrides` (including these vendored-tarball redirects), rebuild the
+dev API image before restarting — `docker compose ... build api` (or
+`up -d --build`) — or the container's startup `pnpm install` will keep
+resolving against the stale, image-baked `package.json` and fail to find
+the overridden packages.
 
 For local dev environment variables and service overrides an extension
 needs when running against the dev stack (container env, secrets, extra
