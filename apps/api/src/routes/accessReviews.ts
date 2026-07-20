@@ -12,13 +12,13 @@ import {
   permissions,
   rolePermissions,
   partnerUsers,
-  organizationUsers,
-  organizations
+  organizationUsers
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 
 export const accessReviewRoutes = new Hono();
 
@@ -34,19 +34,7 @@ accessReviewRoutes.use('*', async (c, next) => {
     throw new HTTPException(403, { message: 'Partner context required' });
   }
 
-  if (!Array.isArray(auth.accessibleOrgIds)) {
-    await next();
-    return;
-  }
-  const accessibleOrgIds = auth.accessibleOrgIds;
-
-  const partnerOrgRows = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.partnerId, auth.partnerId));
-  const hasFullPartnerAccess = partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
-
-  if (!hasFullPartnerAccess) {
+  if (!canManagePartnerWidePolicies(auth)) {
     throw new HTTPException(403, { message: 'Full partner organization access required' });
   }
 
@@ -458,6 +446,13 @@ accessReviewRoutes.post(
 
     const revokedUserIds = revokedItems.map((item) => item.userId);
     const uniqueRevokedUserIds = [...new Set(revokedUserIds)];
+
+    // Recheck the authoritative capability immediately before escalating to a
+    // system DB context for partner-wide membership revocations. Never infer
+    // this from RLS-filtered organization rows (including an empty set).
+    if (scopeContext.scope === 'partner' && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: 'Full partner organization access required' }, 403);
+    }
 
     // Task 9: this is a MULTI-user mutation revoking OTHER users' access.
     // refresh_token_families is user-id-scoped under RLS (self OR system);

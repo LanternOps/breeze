@@ -57,6 +57,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
+      partnerOrgAccess: 'all',
       orgId: null,
       user: { id: 'user-123', email: 'test@example.com' }
     });
@@ -103,6 +104,7 @@ describe('access review routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' }
       });
@@ -111,6 +113,29 @@ describe('access review routes', () => {
     app = new Hono();
     app.route('/access-reviews', accessReviewRoutes);
   });
+
+  it.each(['selected', 'none'] as const)(
+    'rejects partner orgAccess=%s before partner-global review work',
+    async (partnerOrgAccess) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess,
+          orgId: null,
+          accessibleOrgIds: [],
+          user: { id: 'user-123', email: 'test@example.com' },
+        });
+        return next();
+      });
+
+      const res = await app.request('/access-reviews');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    },
+  );
 
   describe('GET /access-reviews', () => {
     it('should list access reviews for scope', async () => {
