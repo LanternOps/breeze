@@ -345,13 +345,14 @@ describe('createActionIntent — idempotency', () => {
     dbState.insertActionIntentsResults.push([]);
     const existing = makeIntentRow({ id: 'existing-intent', status: 'approved' });
     dbState.selectActionIntentsResults.push([existing]);
-    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing' }]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: REQUESTER_ID }]);
 
     const snapshot = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'fixed-key' }));
 
     expect(snapshot.id).toBe('existing-intent');
     expect(snapshot.status).toBe('approved');
     expect(snapshot.approvalRequestIds).toEqual(['approval-existing']);
+    expect(snapshot.requesterApprovalRequestId).toBe('approval-existing');
     // No new approver resolution or fan-out happened.
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
     expect(dbState.insertedOutboxValues).toHaveLength(0);
@@ -383,6 +384,7 @@ describe('createActionIntent — approver fan-out', () => {
 
     expect(snapshot.status).toBe('pending_approval');
     expect(snapshot.approvalRequestIds).toEqual(['approval-1', 'approval-2']);
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
     const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
     expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
     expect(inserted.every((r) => r.userId !== REQUESTER_ID)).toBe(true);
@@ -407,6 +409,7 @@ describe('createActionIntent — approver fan-out', () => {
 
     expect(snapshot.status).toBe('pending_approval');
     expect(snapshot.approvalRequestIds).toEqual(['approval-solo']);
+    expect(snapshot.requesterApprovalRequestId).toBe('approval-solo');
     const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
     expect(inserted).toHaveLength(1);
     expect(inserted[0]?.userId).toBe(REQUESTER_ID);
@@ -428,6 +431,7 @@ describe('createActionIntent — approver fan-out', () => {
     expect(snapshot.status).toBe('cancelled');
     expect(snapshot.errorCode).toBe('no_eligible_approvers');
     expect(snapshot.approvalRequestIds).toEqual([]);
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
     expect(dbState.updateActionIntentsSets[0]).toMatchObject({
       status: 'cancelled',
