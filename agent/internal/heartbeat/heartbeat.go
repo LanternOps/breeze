@@ -232,9 +232,14 @@ type Heartbeat struct {
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
 	pamActuateMu sync.Mutex
 	// pamDismissalUncertain is protected by pamActuateMu. It keeps later PAM
-	// input fail-closed after a broker failure until the helper's correlated
-	// response proves the old dismissal command has stopped.
+	// input fail-closed after a broker failure until a helper response PROVES
+	// no denied consent prompt is still on screen. A response that merely
+	// arrives, or a helper that dies, never clears it (issue #2610).
 	pamDismissalUncertain bool
+	// pamRecoveryDelay / pamRecoveryMaxAttempts bound the gate-recovery probe
+	// loop. Zero means the defaults in pam_flow.go; tests shrink them.
+	pamRecoveryDelay       time.Duration
+	pamRecoveryMaxAttempts int
 	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners         sync.Map // desktop session ID -> helper session ID
 

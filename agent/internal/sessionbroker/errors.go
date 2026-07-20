@@ -1,6 +1,10 @@
 package sessionbroker
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+)
 
 var (
 	ErrCommandTimeout     = errors.New("sessionbroker: command timed out")
@@ -14,13 +18,47 @@ var (
 	ErrBinaryHashMismatch = errors.New("sessionbroker: binary hash mismatch")
 )
 
+// PamDismissOutcome reports how an uncertain PAM consent dismissal ended.
+//
+// Proven is true only when the authenticated, correlated helper response
+// arrived, which proves the helper's dismissal work has finished. It does NOT
+// mean the consent prompt actually closed — read Result for that. Proven is
+// false when the helper session died first: the helper goroutine may still be
+// live, so the caller must stay fail-closed and re-establish proof rather than
+// assume the prompt is gone (issue #2610).
+type PamDismissOutcome struct {
+	Proven bool
+	Result ipc.PamDismissConsentResult
+	// Err is set when a correlated response arrived but could not be
+	// interpreted (helper-reported error or an undecodable payload). Proven is
+	// still true — the helper finished — but the prompt's fate is unknown, so
+	// this must be treated exactly as harshly as a reported failure.
+	Err error
+}
+
+// Cleared reports whether the outcome proves no denied consent prompt can still
+// be on screen. This is the ONLY condition that may reopen PAM actuation.
+//
+// "no_consent_window" counts: the helper looked and found no prompt at all, so
+// there is nothing for a later actuation to type credentials into.
+func (o PamDismissOutcome) Cleared() bool {
+	if !o.Proven || o.Err != nil {
+		return false
+	}
+	return o.Result.Success || o.Result.Reason == "no_consent_window"
+}
+
 // PamDismissUncertainError means a dismiss command may still be executing in
-// the target helper session. Quiesced closes only after the authenticated,
-// correlated helper response proves the command has finished. Callers that
-// serialize PAM input must remain fail-closed while it is open.
+// the target helper session.
+//
+// Quiesced always yields exactly one value and is then closed, so a reader can
+// never block on it forever. Read it as `outcome := <-err.Quiesced` and gate on
+// outcome.Cleared() — NOT on the mere fact that the channel produced something.
+// A proven-failed dismissal and a dead helper both deliver an outcome here, and
+// neither is safe to actuate after.
 type PamDismissUncertainError struct {
 	Cause    error
-	Quiesced <-chan struct{}
+	Quiesced <-chan PamDismissOutcome
 }
 
 func (e *PamDismissUncertainError) Error() string {

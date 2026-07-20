@@ -22,6 +22,14 @@ const (
 	// pamDismissTimeout gives the helper's eight-second dismissal attempt time
 	// to complete and return its correlated IPC result.
 	pamDismissTimeout = 10 * time.Second
+	// defaultPamRecoveryDelay spaces out gate-recovery re-dismissals. It is
+	// deliberately longer than pamDismissTimeout so a reconnecting helper has
+	// time to come back before the next probe.
+	defaultPamRecoveryDelay = 15 * time.Second
+	// defaultPamRecoveryMaxAttempts bounds recovery so a permanently broken
+	// helper doesn't spin forever. On exhaustion the gate stays CLOSED — the
+	// bound limits probing, never the fail-closed guarantee.
+	defaultPamRecoveryMaxAttempts = 8
 	// defaultActuateTimeoutMs is the per-actuation consent.exe wait, matching
 	// the remote handler's fallback.
 	defaultActuateTimeoutMs = 8000
@@ -88,7 +96,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		return
 	}
 	if outcome.Status == etwlua.ElevationDenied {
-		h.denyConsent(session, outcome.RequestID, "policy_denied") // policy hard-deny, no dialog
+		h.denyConsent(session, outcome.RequestID, "policy_denied", targetWinSession) // policy hard-deny, no dialog
 		return
 	}
 
@@ -113,7 +121,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// but fail closed if a new fall-through status is ever added upstream:
 		// never actuate on a status we don't recognize.
 		log.Warn("pam: unexpected status at verdict mapping; denying", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
-		h.denyConsent(session, outcome.RequestID, "unexpected_status")
+		h.denyConsent(session, outcome.RequestID, "unexpected_status", targetWinSession)
 		return
 	}
 
@@ -137,14 +145,16 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 			}
 		}()
 	case sessionbroker.PamActionDeny:
-		h.denyConsent(session, outcome.RequestID, dialog.Reason)
+		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
 	case sessionbroker.PamActionAwaitRemote:
 		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
 	}
 }
 
 // denyConsent cancels the live consent.exe prompt and logs the denial.
-func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reason string) {
+// targetWinSession is retained so gate recovery can re-locate a capable helper
+// after the original session dies mid-dismiss.
+func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reason, targetWinSession string) {
 	if session == nil {
 		log.Warn("pam: deny enforcement FAILED — no SYSTEM helper session; consent.exe may still be live",
 			"elevationRequestId", requestID, "reason", reason)
@@ -179,16 +189,17 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 		}
 		res, err = dismiss(session, requestID, pamDismissTimeout)
 		var uncertain *sessionbroker.PamDismissUncertainError
-		if errors.As(err, &uncertain) && uncertain.Quiesced != nil {
+		if errors.As(err, &uncertain) {
+			// Invariant: the broker always builds this error with a non-nil
+			// Quiesced (see Broker.DismissPamConsent). A nil channel would mean
+			// we can never learn the dismissal's fate, so engage the gate and
+			// go straight to recovery rather than falling through to a plain
+			// Warn that silently leaves actuation open (issue #2610).
 			h.pamDismissalUncertain = true
-			go func(quiesced <-chan struct{}) {
-				<-quiesced
-				h.pamActuateMu.Lock()
-				h.pamDismissalUncertain = false
-				h.pamActuateMu.Unlock()
-				log.Info("pam: uncertain dismissal quiesced; PAM actuation gate released",
-					"elevationRequestId", requestID)
-			}(uncertain.Quiesced)
+			log.Error("pam: dismissal completion unproven — PAM actuation gate ENGAGED (fail-closed)",
+				"elevationRequestId", requestID, "reason", reason,
+				"error", err.Error())
+			go h.awaitPamDismissalQuiescence(requestID, targetWinSession, uncertain.Quiesced)
 		}
 	}()
 	if alreadyUncertain {
@@ -216,6 +227,176 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 			"elevationRequestId", requestID, "reason", reason,
 			"dismiss_reason", res.Reason, "dismiss_message", res.DetailMessage)
 	}
+}
+
+// awaitPamDismissalQuiescence resolves the fail-closed PAM gate opened by
+// denyConsent. It releases the gate ONLY on proof that no denied consent prompt
+// can still be on screen; every other ending routes to bounded recovery.
+//
+// Why proof and not mere completion (issue #2610): pamactuator.Trigger locates
+// the live prompt generically, with no correlation to elevationRequestId. If a
+// previously DENIED consent.exe is still up when the gate reopens, the next
+// approved actuation types freshly-promoted admin credentials into that stale
+// window — silently reversing the deny.
+func (h *Heartbeat) awaitPamDismissalQuiescence(requestID, targetWinSession string, quiesced <-chan sessionbroker.PamDismissOutcome) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Never let a panic here leave the gate in an unattended state; the
+			// gate stays closed, which is the safe direction.
+			log.Error("pam: panic while resolving dismissal gate; PAM actuation remains fail-closed",
+				"elevationRequestId", requestID, "panic", r)
+		}
+	}()
+
+	outcome, ok := <-quiesced
+	switch {
+	case ok && outcome.Cleared():
+		h.releasePamDismissalGate(requestID, "helper proved dismissal", 0)
+		return
+	case !ok:
+		// Channel closed without an outcome. Treat exactly like an unproven
+		// helper death — never as an all-clear.
+		log.Error("pam: dismissal quiescence closed without an outcome; PAM stays fail-closed, attempting recovery",
+			"elevationRequestId", requestID)
+	case !outcome.Proven:
+		log.Error("pam: helper session died mid-dismiss — dismissal UNPROVEN, consent.exe may still be live; PAM stays fail-closed, attempting recovery",
+			"elevationRequestId", requestID)
+	default:
+		// Proven finished, but not proven clear: the helper reported a failure
+		// (consent_did_not_close / send_input_failed / desktop_open_failed) or
+		// its response could not be interpreted.
+		detail := ""
+		if outcome.Err != nil {
+			detail = outcome.Err.Error()
+		}
+		log.Error("pam: dismissal CONFIRMED FAILED — consent.exe likely still live; PAM stays fail-closed, attempting recovery",
+			"elevationRequestId", requestID, "dismiss_reason", outcome.Result.Reason,
+			"dismiss_message", outcome.Result.DetailMessage, "error", detail)
+	}
+
+	h.recoverPamDismissalGate(requestID, targetWinSession)
+}
+
+// recoverPamDismissalGate re-establishes proof after an unproven or failed
+// dismissal, so a dead helper cannot disable PAM for the agent's whole lifetime.
+//
+// Recovery does NOT time out into an open state — that would reintroduce the
+// stale-denied-window bug this gate exists to prevent. Instead it re-issues the
+// dismiss against a freshly located helper: a "no_consent_window" (or a clean
+// success) is real evidence that nothing is on screen for a later actuation to
+// type into. Anything short of that evidence leaves the gate closed.
+func (h *Heartbeat) recoverPamDismissalGate(requestID, targetWinSession string) {
+	delay := h.pamRecoveryDelay
+	if delay <= 0 {
+		delay = defaultPamRecoveryDelay
+	}
+	maxAttempts := h.pamRecoveryMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultPamRecoveryMaxAttempts
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-h.stopChan:
+			log.Warn("pam: dismissal gate recovery abandoned — agent shutting down",
+				"elevationRequestId", requestID, "attempt", attempt)
+			return
+		case <-time.After(delay):
+		}
+
+		outcome, probed := h.probePamDismissalRecovery(requestID, targetWinSession, attempt, delay)
+		if !probed {
+			continue
+		}
+		if outcome.Cleared() {
+			h.releasePamDismissalGate(requestID, "recovery re-verified no live consent window", attempt)
+			return
+		}
+		log.Warn("pam: dismissal gate recovery attempt did not prove a clear desktop; PAM remains fail-closed",
+			"elevationRequestId", requestID, "attempt", attempt, "maxAttempts", maxAttempts,
+			"dismiss_reason", outcome.Result.Reason)
+	}
+
+	// Deliberate terminal state: fail-closed wins over availability. Logged at
+	// Error so a dead-PAM device is visible in the field instead of surfacing
+	// only as routine per-actuation "dismissal_uncertain" warnings.
+	log.Error("pam: PAM ACTUATION DISABLED until agent restart — recovery exhausted without proving the consent desktop is clear",
+		"elevationRequestId", requestID, "attempts", maxAttempts)
+}
+
+// probePamDismissalRecovery runs one re-dismissal against a freshly located
+// helper. It reports (outcome, true) only when it learned something definite;
+// (zero, false) means "retry" (no helper yet, transport error, or still silent).
+//
+// Each probe uses its own IPC correlation ID. Reusing the original
+// elevationRequestId would collide with a pending registration that an earlier
+// uncertain probe left behind on a still-live session, and every later probe
+// would fail with ErrDuplicateCommand — leaving the gate stuck closed for the
+// wrong reason. The ID is pure IPC correlation (PamDismissConsentRequest
+// carries only a deadline), so a derived ID is safe.
+func (h *Heartbeat) probePamDismissalRecovery(requestID, targetWinSession string, attempt int, wait time.Duration) (sessionbroker.PamDismissOutcome, bool) {
+	find := h.pamFindSession
+	if find == nil {
+		if h.sessionBroker == nil {
+			return sessionbroker.PamDismissOutcome{}, false
+		}
+		find = h.sessionBroker.FindCapableSession
+	}
+	dismiss := h.pamDismissConsent
+	if dismiss == nil {
+		if h.sessionBroker == nil {
+			return sessionbroker.PamDismissOutcome{}, false
+		}
+		dismiss = h.sessionBroker.DismissPamConsent
+	}
+
+	session := find(ipc.ScopePam, targetWinSession)
+	if session == nil {
+		// Helper hasn't reconnected yet — nothing can be proven, and nothing
+		// can actuate either. Wait for the next attempt.
+		return sessionbroker.PamDismissOutcome{}, false
+	}
+
+	// Hold the same mutex as denyConsent/actuateElevation: a recovery probe
+	// drives the consent desktop exactly like a first-line dismissal does.
+	probeID := requestID + "-gate-recovery-" + strconv.Itoa(attempt)
+	h.pamActuateMu.Lock()
+	res, err := dismiss(session, probeID, pamDismissTimeout)
+	h.pamActuateMu.Unlock()
+
+	if err == nil {
+		return sessionbroker.PamDismissOutcome{Proven: true, Result: res}, true
+	}
+
+	var uncertain *sessionbroker.PamDismissUncertainError
+	if !errors.As(err, &uncertain) || uncertain.Quiesced == nil {
+		log.Warn("pam: dismissal gate recovery probe failed", "elevationRequestId", requestID, "error", err.Error())
+		return sessionbroker.PamDismissOutcome{}, false
+	}
+
+	// The probe itself came back uncertain. Give its quiescence a bounded read
+	// so one silent helper can't stall the recovery loop.
+	select {
+	case outcome, ok := <-uncertain.Quiesced:
+		if !ok {
+			return sessionbroker.PamDismissOutcome{}, false
+		}
+		return outcome, true
+	case <-time.After(wait):
+		return sessionbroker.PamDismissOutcome{}, false
+	case <-h.stopChan:
+		return sessionbroker.PamDismissOutcome{}, false
+	}
+}
+
+// releasePamDismissalGate reopens PAM actuation. Only ever called with proof
+// that no denied consent prompt remains on screen.
+func (h *Heartbeat) releasePamDismissalGate(requestID, why string, attempt int) {
+	h.pamActuateMu.Lock()
+	h.pamDismissalUncertain = false
+	h.pamActuateMu.Unlock()
+	log.Info("pam: dismissal proven clear; PAM actuation gate released",
+		"elevationRequestId", requestID, "why", why, "attempt", attempt)
 }
 
 // buildPamRequestDialog maps a detected ETW event onto the dialog payload.

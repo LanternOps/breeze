@@ -154,13 +154,24 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 
 // sendCommandWithQuiescence sends a command while retaining its response
 // registration after a timeout or transport error. The returned channel is
-// non-nil only when execution is uncertain and closes only after a valid,
-// correlated helper response proves the command has finished. A session close
-// does not prove a helper goroutine has stopped, so it deliberately leaves the
-// channel open.
-func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, <-chan struct{}, error) {
+// non-nil only when execution is uncertain.
+//
+// The channel always closes exactly once, and it carries the RESULT rather
+// than a bare completion signal:
+//
+//   - a correlated helper response arrived -> the envelope is sent, then the
+//     channel closes. The command is proven finished, and the envelope says
+//     whether it actually SUCCEEDED.
+//   - the session died first -> the channel closes with nothing sent.
+//     Execution is unproven: the helper goroutine may still be running.
+//
+// Callers MUST distinguish those two cases. "The channel closed" alone does not
+// mean the command succeeded, and it does not mean the helper stopped. Closing
+// on session death exists so callers can run a bounded recovery instead of
+// blocking forever — never so they can assume success (issue #2610).
+func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, <-chan *ipc.Envelope, error) {
 	ch := make(chan *ipc.Envelope, 1)
-	quiesced := make(chan struct{})
+	quiesced := make(chan *ipc.Envelope, 1)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -179,30 +190,35 @@ func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, tim
 	s.mu.Unlock()
 
 	var finishOnce sync.Once
-	finish := func(proven bool) {
+	// finish always closes quiesced so no caller can block forever on a helper
+	// that died mid-command. A non-nil resp is published first: that envelope is
+	// the proof of completion AND the record of the outcome. A nil resp closes
+	// the channel empty, which the caller must read as "unproven", not "done".
+	finish := func(resp *ipc.Envelope) {
 		finishOnce.Do(func() {
 			s.mu.Lock()
 			if current, ok := s.pending[id]; ok && current.ch == ch {
 				delete(s.pending, id)
 			}
 			s.mu.Unlock()
-			if proven {
-				close(quiesced)
+			if resp != nil {
+				quiesced <- resp
 			}
+			close(quiesced)
 		})
 	}
 	waitForLateResponse := func() {
 		go func() {
 			select {
 			case resp := <-ch:
-				finish(resp != nil)
+				finish(resp)
 			case <-done:
 				// Prefer a response already delivered concurrently with teardown.
 				select {
 				case resp := <-ch:
-					finish(resp != nil)
+					finish(resp)
 				default:
-					finish(false)
+					finish(nil)
 				}
 			}
 		}()
@@ -218,13 +234,13 @@ func (s *Session) sendCommandWithQuiescence(id, cmdType string, payload any, tim
 	select {
 	case resp, ok := <-ch:
 		if !ok || resp == nil {
-			finish(false)
+			finish(nil)
 			return nil, quiesced, fmt.Errorf("session closed while waiting for response")
 		}
-		finish(true)
+		finish(resp)
 		return resp, nil, nil
 	case <-done:
-		finish(false)
+		finish(nil)
 		return nil, quiesced, fmt.Errorf("session closed while waiting for response")
 	case <-timer.C:
 		waitForLateResponse()
