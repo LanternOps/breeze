@@ -38,7 +38,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
-    "astro": "^7.0.9",
+    "astro": "^7.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.34.0",

@@ -293,16 +293,16 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/docs:
     dependencies:
       '@astrojs/starlight':
         specifier: ^0.41.3
-        version: 0.41.3(@astrojs/markdown-remark@7.2.1)(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(typescript@5.9.3)
+        version: 0.41.3(@astrojs/markdown-remark@7.2.1)(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(typescript@5.9.3)
       astro:
-        specifier: ^7.0.9
-        version: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+        specifier: ^7.1.2
+        version: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
@@ -473,7 +473,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/m365-graph-read-executor:
     dependencies:
@@ -513,7 +513,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/mobile:
     dependencies:
@@ -619,7 +619,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/outlook-addin:
     dependencies:
@@ -677,7 +677,7 @@ importers:
     dependencies:
       '@astrojs/node':
         specifier: ^11.0.2
-        version: 11.0.2(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 11.0.2(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@astrojs/react':
         specifier: ^6.0.1
         version: 6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(jiti@2.7.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -688,8 +688,8 @@ importers:
         specifier: ^5.101.2
         version: 5.101.2(react@19.2.7)
       astro:
-        specifier: ^7.0.9
-        version: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+        specifier: ^7.1.2
+        version: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -726,7 +726,7 @@ importers:
         version: 0.5.11(tailwindcss@4.3.1)
       '@tailwindcss/vite':
         specifier: ^4.3.2
-        version: 4.3.2(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.3.2(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@testing-library/dom':
         specifier: ^10.4.1
         version: 10.4.1
@@ -750,7 +750,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/powerpoint-addin:
     dependencies:
@@ -869,7 +869,7 @@ importers:
     dependencies:
       '@astrojs/node':
         specifier: ^11.0.2
-        version: 11.0.2(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 11.0.2(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@astrojs/react':
         specifier: ^6.0.1
         version: 6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(jiti@2.7.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -890,7 +890,7 @@ importers:
         version: 1.7.0
       '@sentry/astro':
         specifier: ^10.62.0
-        version: 10.62.0(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(rollup@4.62.0)
+        version: 10.62.0(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(rollup@4.62.0)
       '@simplewebauthn/browser':
         specifier: ^13.3.0
         version: 13.3.0
@@ -922,8 +922,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       astro:
-        specifier: ^7.0.9
-        version: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+        specifier: ^7.1.2
+        version: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -996,7 +996,7 @@ importers:
         version: 0.5.20(tailwindcss@4.3.1)
       '@tailwindcss/vite':
         specifier: ^4.3.2
-        version: 4.3.2(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.3.2(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@testing-library/dom':
         specifier: ^10.4.1
         version: 10.4.1
@@ -1038,7 +1038,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   apps/word-addin:
     dependencies:
@@ -1115,7 +1115,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   packages/extension-cli:
     dependencies:
@@ -1146,7 +1146,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   packages/extension-sdk:
     dependencies:
@@ -1168,7 +1168,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   packages/extension-testkit:
     dependencies:
@@ -1190,7 +1190,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   packages/extension-web-sdk:
     dependencies:
@@ -1203,7 +1203,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   packages/office-addin-core:
     dependencies:
@@ -1271,7 +1271,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
 packages:
 
@@ -6037,8 +6037,8 @@ packages:
     peerDependencies:
       astro: ^4.0.0-beta || ^5.0.0-beta || ^3.3.0 || ^6.0.0-beta || ^7.0.0
 
-  astro@7.0.9:
-    resolution: {integrity: sha512-WB5pA4LLQnmqjBh6EIu0z8aUV4q2/AoThgSZq57Rsp+oqqvPu7OwZ5eF+W4ku20TUTxIhiJW8dccuGvJPiW2UA==}
+  astro@7.1.2:
+    resolution: {integrity: sha512-rn7bsh2n2/Wm/blS7QO6+aKstNfEOygX35cACGQJP8tM2uLRfeNTTEawrUR6NpVr27mOMGnl6CSWQ0CNb8iGZA==}
     engines: {node: '>=22.12.0', npm: '>=9.6.5', pnpm: '>=7.1.0'}
     hasBin: true
     peerDependencies:
@@ -6600,9 +6600,9 @@ packages:
     resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
     engines: {node: '>= 0.6'}
 
-  cookie@1.1.1:
-    resolution: {integrity: sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==}
-    engines: {node: '>=18'}
+  cookie@2.0.1:
+    resolution: {integrity: sha512-yuToqVvRrj6pfDXREyQAAv8SkAEk/8GS3jQRTiUMm66TVtBYmqQeoEjL2Lmq8Rpo6271vH76InTChTitEAm65w==}
+    engines: {node: '>=22'}
 
   cookies@0.9.1:
     resolution: {integrity: sha512-TG2hpqe4ELx54QER/S3HQ9SRVnQnGBtKUz5bLQWtYAQ+o6GpgMs6sYUvaiJjVxb+UXwhRhAEP3m7LbsIZ77Hmw==}
@@ -6970,6 +6970,9 @@ packages:
 
   devalue@5.8.1:
     resolution: {integrity: sha512-4CXDYRBGqN+57wVJkuXBYmpAVUSg3L6JAQa/DFqm238G73E1wuyc/JhGQJzN7vUf/CMphYau2zXbfWzDR5aTEw==}
+
+  devalue@5.8.2:
+    resolution: {integrity: sha512-DObPPAfdtFbXjxLqK8s2Xk9ZuWz5+ZoFEhC7J76es4GU/rEiXwHTmbImoCdyoCOcBH1UF3+Cz6Z2sYD4hyl5TA==}
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
@@ -9271,8 +9274,8 @@ packages:
   neoip@3.1.0:
     resolution: {integrity: sha512-KtkXRRp1XK2BzJpLF7PRHyndphWn/bU5XkQFUJtAdm6rdUenkJZwQDpxifG+Q/7PLpxhc+wdcZiE15L/cZhnXA==}
 
-  neotraverse@0.6.18:
-    resolution: {integrity: sha512-Z4SmBUweYa09+o6pG+eASabEpP6QkQ70yHj351pQoEXIs8uHbaU2DWVmzBANKgflPa47A50PtB2+NgRpQvr7vA==}
+  neotraverse@1.0.1:
+    resolution: {integrity: sha512-WmmLty1YWwJl9yZi77v2dVIV6X2kuYV8YYBI/G3LWGKdGHmHUvL1z7FW0iDvEvGAwNEoc5x1tOOOyDnf5jJw/w==}
     engines: {node: '>= 10'}
 
   nlcst-to-string@4.0.0:
@@ -9384,6 +9387,10 @@ packages:
 
   obug@2.1.3:
     resolution: {integrity: sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg==}
+    engines: {node: '>=12.20.0'}
+
+  obug@2.1.4:
+    resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
     engines: {node: '>=12.20.0'}
 
   ofetch@1.5.1:
@@ -11444,8 +11451,8 @@ packages:
       yaml:
         optional: true
 
-  vite@8.1.4:
-    resolution: {integrity: sha512-bTT9PsdWO+MQMNG9ZXIP/qM9wGh37DFxTV/sPq9cFpHr3w4jkgef032PkAL9jAqhk3Nz8NQw3O8n6/xFkqO4QQ==}
+  vite@8.1.5:
+    resolution: {integrity: sha512-7ULLwsCdYx/nRyrpiEwvqb5TFHrMVZyBt+rg/OAXT7rgj/z+DtTDyKFeLAdDkubDVDKD8jOsndmy7m55XcfUsw==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -12172,13 +12179,13 @@ snapshots:
       hast-util-from-html: 2.0.3
       satteri: 0.9.5
 
-  '@astrojs/mdx@7.0.2(@astrojs/markdown-satteri@0.3.3)(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
+  '@astrojs/mdx@7.0.2(@astrojs/markdown-satteri@0.3.3)(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@astrojs/internal-helpers': 0.10.1
       '@astrojs/markdown-remark': 7.2.1
       '@mdx-js/mdx': 3.1.1
       acorn: 8.17.0
-      astro: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      astro: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       es-module-lexer: 2.3.1
       estree-util-visit: 2.0.0
       hast-util-to-html: 9.0.5
@@ -12194,10 +12201,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@astrojs/node@11.0.2(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
+  '@astrojs/node@11.0.2(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@astrojs/internal-helpers': 0.10.1
-      astro: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      astro: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       send: 1.2.1
       server-destroy: 1.0.1
     transitivePeerDependencies:
@@ -12239,17 +12246,17 @@ snapshots:
       stream-replace-string: 2.0.0
       zod: 4.4.3
 
-  '@astrojs/starlight@0.41.3(@astrojs/markdown-remark@7.2.1)(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(typescript@5.9.3)':
+  '@astrojs/starlight@0.41.3(@astrojs/markdown-remark@7.2.1)(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(typescript@5.9.3)':
     dependencies:
       '@astrojs/markdown-satteri': 0.3.3
-      '@astrojs/mdx': 7.0.2(@astrojs/markdown-satteri@0.3.3)(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      '@astrojs/mdx': 7.0.2(@astrojs/markdown-satteri@0.3.3)(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@astrojs/sitemap': 3.7.3
       '@pagefind/default-ui': 1.5.2
       '@types/hast': 3.0.4
       '@types/js-yaml': 4.0.9
       '@types/mdast': 4.0.4
-      astro: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
-      astro-expressive-code: 0.44.0(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      astro: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      astro-expressive-code: 0.44.0(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       bcp-47: 2.1.1
       hast-util-from-html: 2.0.3
       hast-util-select: 6.0.4
@@ -15663,13 +15670,13 @@ snapshots:
       '@sentry-internal/browser-utils': 10.51.0
       '@sentry/core': 10.51.0
 
-  '@sentry/astro@10.62.0(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(rollup@4.62.0)':
+  '@sentry/astro@10.62.0(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))(rollup@4.62.0)':
     dependencies:
       '@sentry/browser': 10.62.0
       '@sentry/core': 10.62.0
       '@sentry/node': 10.62.0(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))
       '@sentry/vite-plugin': 5.3.0(rollup@4.62.0)
-      astro: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      astro: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
     transitivePeerDependencies:
       - '@opentelemetry/core'
       - '@opentelemetry/exporter-trace-otlp-http'
@@ -16287,12 +16294,12 @@ snapshots:
       tailwindcss: 4.3.2
       vite: 8.0.16(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@tailwindcss/vite@4.3.2(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
+  '@tailwindcss/vite@4.3.2(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@tailwindcss/node': 4.3.2
       '@tailwindcss/oxide': 4.3.2
       tailwindcss: 4.3.2
-      vite: 8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
   '@tanstack/query-core@5.101.2': {}
 
@@ -17119,7 +17126,7 @@ snapshots:
       obug: 2.1.3
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
 
   '@vitest/expect@4.1.10':
     dependencies:
@@ -17146,21 +17153,21 @@ snapshots:
     optionalDependencies:
       vite: 8.0.16(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@vitest/mocker@4.1.10(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@vitest/mocker@4.1.10(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
   '@vitest/pretty-format@4.1.10':
     dependencies:
@@ -17438,13 +17445,13 @@ snapshots:
 
   astring@1.9.0: {}
 
-  astro-expressive-code@0.44.0(astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
+  astro-expressive-code@0.44.0(astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
     dependencies:
-      astro: 7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      astro: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       rehype-expressive-code: 0.44.0
       url-extras: 0.1.0
 
-  astro@7.0.9(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
+  astro@7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
     dependencies:
       '@astrojs/compiler-rs': 0.3.1(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)
       '@astrojs/internal-helpers': 0.10.1
@@ -17460,8 +17467,8 @@ snapshots:
       ci-info: 4.4.0
       clsx: 2.1.1
       common-ancestor-path: 2.0.0
-      cookie: 1.1.1
-      devalue: 5.8.1
+      cookie: 2.0.1
+      devalue: 5.8.2
       diff: 8.0.4
       dset: 3.1.4
       es-module-lexer: 2.3.1
@@ -17477,8 +17484,8 @@ snapshots:
       magic-string: 0.30.21
       magicast: 0.5.3
       mrmime: 2.0.1
-      neotraverse: 0.6.18
-      obug: 2.1.3
+      neotraverse: 1.0.1
+      obug: 2.1.4
       p-limit: 7.3.0
       p-queue: 9.3.1
       package-manager-detector: 1.7.0
@@ -17494,8 +17501,8 @@ snapshots:
       ultrahtml: 1.7.0
       unifont: 0.7.4
       unstorage: 1.17.5(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(ioredis@5.11.1)
-      vite: 8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
-      vitefu: 1.1.3(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vitefu: 1.1.3(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       xxhash-wasm: 1.1.0
       yargs-parser: 22.0.0
       zod: 4.4.3
@@ -18134,7 +18141,7 @@ snapshots:
 
   cookie@0.7.2: {}
 
-  cookie@1.1.1: {}
+  cookie@2.0.1: {}
 
   cookies@0.9.1:
     dependencies:
@@ -18495,6 +18502,8 @@ snapshots:
   detect-node-es@1.1.0: {}
 
   devalue@5.8.1: {}
+
+  devalue@5.8.2: {}
 
   devlop@1.1.0:
     dependencies:
@@ -21467,7 +21476,7 @@ snapshots:
   neoip@3.1.0:
     optional: true
 
-  neotraverse@0.6.18: {}
+  neotraverse@1.0.1: {}
 
   nlcst-to-string@4.0.0:
     dependencies:
@@ -21551,6 +21560,8 @@ snapshots:
   object-inspect@1.13.4: {}
 
   obug@2.1.3: {}
+
+  obug@2.1.4: {}
 
   ofetch@1.5.1:
     dependencies:
@@ -23985,11 +23996,11 @@ snapshots:
       tsx: 4.23.1
       yaml: 2.9.0
 
-  vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
+  vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
     dependencies:
-      lightningcss: 1.32.0
+      lightningcss: 1.33.0
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -24001,11 +24012,11 @@ snapshots:
       tsx: 4.23.1
       yaml: 2.9.0
 
-  vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
+  vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0):
     dependencies:
-      lightningcss: 1.32.0
+      lightningcss: 1.33.0
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -24017,14 +24028,14 @@ snapshots:
       tsx: 4.23.1
       yaml: 2.9.0
 
-  vitefu@1.1.3(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
+  vitefu@1.1.3(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
     optionalDependencies:
-      vite: 8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
+  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -24041,7 +24052,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.4(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@25.9.3)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
@@ -24114,10 +24125,10 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
+  vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -24134,7 +24145,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
