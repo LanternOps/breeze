@@ -61,9 +61,38 @@ import {
   createClientAiExtRoutes,
   createClientSurfaceWrapper,
   isProxyable,
+  withProxiedAuth,
   CLIENT_AI_EXT_MOUNT_PREFIX,
 } from './ext';
-import { requirePartner, requireScope } from '../../middleware/auth';
+import { buildOrgAccessClosures, requirePartner, requireScope } from '../../middleware/auth';
+
+/** The same shape `synthesizeOrgAuthContext` emits, for direct wrapper tests. */
+function fixtureAuthContext(): AuthContext {
+  const accessibleOrgIds = [ORG_ID];
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
+  return {
+    user: {
+      id: CLIENT_USER_ID, email: 'end.user@example.test', name: 'End User', isPlatformAdmin: false,
+    },
+    token: {
+      sub: CLIENT_USER_ID,
+      email: 'end.user@example.test',
+      roleId: null,
+      orgId: ORG_ID,
+      partnerId: null,
+      scope: 'organization',
+      type: 'access',
+      mfa: false,
+    },
+    partnerId: null,
+    orgId: ORG_ID,
+    scope: 'organization',
+    accessibleOrgIds,
+    partnerOrgAccess: null,
+    orgCondition,
+    canAccessOrg,
+  } as AuthContext;
+}
 
 let capturedAuth: AuthContext | undefined;
 let capturedAuthorization: string | null | undefined;
@@ -152,8 +181,17 @@ function makeSnapshot(
     version: manifest.version,
     manifest,
     routeApp: {
+      // M-1: mirror `copyAndSealRouteApp.composeInto`
+      // (extensions/contributionRegistry.ts) exactly — `basePath` + per-route
+      // `.on()`, NOT `host.route()`. The two are behaviourally equivalent
+      // today, but only this shape exercises the composition core actually
+      // ships, so the wrapper's fence and `c.set('auth')` lift are proven
+      // against the real mounting mechanism.
       composeInto(host: Hono, mountPrefix: string) {
-        host.route(mountPrefix, extensionApp);
+        const mountedHost = host.basePath(mountPrefix);
+        for (const route of extensionApp.routes) {
+          mountedHost.on(route.method, route.path, route.handler);
+        }
       },
     },
     jobs: new Map(),
@@ -292,7 +330,14 @@ describe('client-ai extension client-surface proxy', () => {
     it.each([
       ['/AGENT/ping'],
       ['/Helper/ping'],
-    ])('404s for %s — the reserved-prefix backstop is case-insensitive', async (path) => {
+    // M-2: be honest about which layer this covers. `proxyablePrefixes`
+    // filters a reserved declaration out case-insensitively, so the request
+    // 404s at the "no proxyable surface" step and never reaches the
+    // `matchesReserved` backstop inside `isProxyable`. That backstop is not
+    // HTTP-reachable at all (prefix matching is segment-aware, so no
+    // *surviving* prefix can ever contain a reserved path), which is why it is
+    // covered directly in the `isProxyable (unit)` block below.
+    ])('404s for %s — a manifest declaring a reserved prefix yields no proxyable surface', async (path) => {
       const app = buildApp({
         // A prefix that would otherwise open the reserved namespace, as an
         // unvalidated manifest could carry.
@@ -346,11 +391,34 @@ describe('client-ai extension client-surface proxy', () => {
   describe('createClientSurfaceWrapper (unit)', () => {
     const mountPrefix = `${CLIENT_AI_EXT_MOUNT_PREFIX}/fixture-ext`;
 
-    it('404s a path outside the declared prefixes even when dispatch would not', async () => {
+    // M-2 follow-on: this MUST run with a context on the seam. Without one the
+    // wrapper's missing-context branch denies first and the assertion below
+    // holds even if the prefix fence is deleted — i.e. the test would not
+    // discriminate. Verified by mutation: removing the `isProxyable` call in
+    // `createClientSurfaceWrapper` fails this test (200 + `leaked`) and only
+    // this test.
+    it.each([
+      ['/agent/ping'],
+      ['/helper/ping'],
+      ['/dashboard/summary'],
+    ])('404s %s — outside the declared prefixes, even with a valid context on the seam', async (path) => {
       const wrapper = createClientSurfaceWrapper(makeSnapshot(optedIn), mountPrefix, ['/client']);
-      const res = await wrapper.fetch(new Request(`http://local.test${mountPrefix}/agent/ping`));
+      const res = await withProxiedAuth(
+        fixtureAuthContext(),
+        () => wrapper.fetch(new Request(`http://local.test${mountPrefix}${path}`)),
+      );
       expect(res.status).toBe(404);
       expect(await res.text()).not.toContain('leaked');
+    });
+
+    it('serves a path inside the declared prefixes with the seam context lifted', async () => {
+      const wrapper = createClientSurfaceWrapper(makeSnapshot(optedIn), mountPrefix, ['/client']);
+      const res = await withProxiedAuth(
+        fixtureAuthContext(),
+        () => wrapper.fetch(new Request(`http://local.test${mountPrefix}/client/echo`)),
+      );
+      expect(res.status).toBe(200);
+      expect(capturedAuth?.orgId).toBe(ORG_ID);
     });
 
     it('404s when no synthesized auth context is on the seam', async () => {

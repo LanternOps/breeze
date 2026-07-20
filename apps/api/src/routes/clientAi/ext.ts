@@ -65,8 +65,13 @@ import {
  *    before forwarding, so no caller credential is handed to extension code.
  *  - `Set-Cookie` is stripped off the downstream RESPONSE: extension code must
  *    not be able to write cookies on the core API origin for an end-user
- *    browser session. This is a denylist, not an allowlist — a full
- *    response-header allowlist is tracked as a follow-up ticket.
+ *    browser session. This is a denylist, not an allowlist, and no ticket
+ *    tracks tightening it — treat that as an accepted, recorded risk: an
+ *    extension can still set other origin-scoped response headers here
+ *    (`access-control-allow-*`, `content-security-policy`, `x-frame-options`,
+ *    `clear-site-data`). Extension code is first-party-reviewed and signed, so
+ *    this is a defence-in-depth gap rather than a trust boundary; converting
+ *    to an allowlist is the correct hardening if that ever stops being true.
  *  - Path fencing is applied to the resolved (normalized) request path, and
  *    re-applied inside the wrapper, so `/agent`, `/helper` and any admin path
  *    stay unreachable no matter how the caller crafts the URL.
@@ -128,6 +133,18 @@ export interface ClientAiExtRoutesOptions {
  * reads it exactly as it would any other identity: `c.get('auth')`.
  */
 const proxiedAuth = new AsyncLocalStorage<AuthContext>();
+
+/**
+ * Install a synthesized context on the seam for the duration of `fn`. This is
+ * the only writer of the seam; `dispatch` calls it on the real request path.
+ * It is exported so the wrapper's fences can be exercised WITH a context
+ * present — without it, a direct `wrapper.fetch()` is denied by the
+ * missing-context branch before the prefix fence is ever consulted, and the
+ * fence test cannot tell a working fence from a deleted one.
+ */
+export function withProxiedAuth<T>(auth: AuthContext, fn: () => T): T {
+  return proxiedAuth.run(auth, fn);
+}
 
 function matchesPrefix(relativePath: string, pathPrefix: string): boolean {
   return relativePath === pathPrefix || relativePath.startsWith(`${pathPrefix}/`);
@@ -351,7 +368,7 @@ export function createClientAiExtRoutes(options: ClientAiExtRoutesOptions): Hono
     }
 
     const request = stripCallerCredentials(c.req.raw);
-    const response = await proxiedAuth.run(
+    const response = await withProxiedAuth(
       synthesizeOrgAuthContext(session),
       () => wrapper.fetch(request, c.env, executionContext(c)),
     );

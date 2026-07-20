@@ -8,13 +8,13 @@ dist/
 .turbo/
 
 # Environment
+# Ignore the whole class of real env files (any suffix, any depth) and allow back
+# only the committed *.example templates. Enumerating individual suffixes has
+# repeatedly left real, secret-bearing env files untracked-but-not-ignored.
 .env
-.env.local
-.env.*.local
-.env.dev
-.env.test
-.env.prod
-.env.extension-dev
+.env.*
+!.env.example
+!.env.*.example
 
 # IDE
 .idea/
