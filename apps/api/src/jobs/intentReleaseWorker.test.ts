@@ -117,6 +117,18 @@ vi.mock('../services/m365ToolsHeadless', () => ({
     constructor(public readonly toolResult: string) { super('unavailable'); }
   },
 }));
+// resultSecrets.ts stays REAL; only the crypto primitive is stubbed so sealing
+// is deterministic and needs no APP_ENCRYPTION_KEY. The fake ciphertext
+// base64-encodes the plaintext rather than embedding it verbatim (matching
+// resultSecrets.test.ts's mock), so it never contains the plaintext as an
+// ASCII substring — required for this file's JSON.stringify non-containment
+// assertion to mean anything.
+vi.mock('../services/secretCrypto', () => ({
+  encryptSecret: vi.fn((v: string | null | undefined) =>
+    v == null ? null : `enc:v3:test:${Buffer.from(v).toString('base64')}`,
+  ),
+  decryptSecret: vi.fn(),
+}));
 // Partial mock: getToolTimeout is stubbed per-test, withToolTimeout stays the
 // REAL implementation so its setTimeout-based rejection genuinely fires.
 vi.mock('../services/toolTimeouts', async (importOriginal) => {
@@ -276,6 +288,43 @@ describe('releaseApprovedIntent', () => {
       expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
     );
     expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('m365 reset: temporaryPassword is sealed before the completed transition', async () => {
+    const intent = baseIntent({ actionName: 'm365_reset_password' });
+    primeThroughRevalidation(intent);
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(true);
+    m365HeadlessMock.executeM365ToolHeadless.mockResolvedValueOnce(
+      JSON.stringify({
+        success: true,
+        action: 'm365.user.reset_password',
+        userId: 'target-user-1',
+        temporaryPassword: 'Tmp-Pass-1234!',
+        forceChangeNextSignIn: true,
+      }),
+    );
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    const expectedEnc = `enc:v3:test:${Buffer.from('Tmp-Pass-1234!').toString('base64')}`;
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'completed',
+      expect.objectContaining({
+        result: expect.objectContaining({
+          temporaryPasswordEnc: expectedEnc,
+          userId: 'target-user-1',
+        }),
+      }),
+    );
+    const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as {
+      result: Record<string, unknown>;
+    };
+    expect(lastPatch.result).not.toHaveProperty('temporaryPassword');
+    expect(JSON.stringify(lastPatch.result)).not.toContain('Tmp-Pass-1234!');
   });
 
   it('returned tool error (JSON {error}) -> failed:tool_returned_error, not completed', async () => {
