@@ -399,6 +399,9 @@ const envSchema = z
 
     // -- Production-required -------------------------------------------------
     CORS_ALLOWED_ORIGINS: z.string().optional(),
+    // Optional allowlist of extension client-panel (add-in pane) origins for
+    // the web-module asset route ONLY; empty = no cross-origin access.
+    EXTENSION_CLIENT_PANEL_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
@@ -965,6 +968,15 @@ const envSchema = z
         });
       }
 
+      if ((data.EXTENSION_CLIENT_PANEL_ORIGINS ?? '').includes('*')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EXTENSION_CLIENT_PANEL_ORIGINS'],
+          message:
+            'EXTENSION_CLIENT_PANEL_ORIGINS must list specific origins (wildcard * is not allowed); wildcard entries are ignored at runtime.',
+        });
+      }
+
       const trustProxyHeaders = (data.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
       const validBoolValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
       if (!validBoolValues.has(trustProxyHeaders)) {
@@ -1427,6 +1439,7 @@ export function validateConfig(): AppConfig {
     MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,
     PARTNER_API_CURSOR_SIGNING_KEY: env.PARTNER_API_CURSOR_SIGNING_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
+    EXTENSION_CLIENT_PANEL_ORIGINS: env.EXTENSION_CLIENT_PANEL_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
     TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
     TRUSTED_PROXY_CIDRS: env.TRUSTED_PROXY_CIDRS,

@@ -278,6 +278,10 @@ import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
+import {
+  createExtensionPanelOriginResolver,
+  withExtensionPanelOrigins,
+} from './services/extensionPanelOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
@@ -347,6 +351,13 @@ const resolveCorsOrigin = createCorsOriginResolver({
   configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
   nodeEnv: process.env.NODE_ENV
 });
+// Extension client panels (add-in panes on their own origin) may `import()`
+// web-bundle modules from the digest-addressed asset route — and ONLY that
+// route. Allowlist via EXTENSION_CLIENT_PANEL_ORIGINS; empty = no grant.
+// See services/extensionPanelOrigins.ts.
+const resolveExtensionPanelOrigin = createExtensionPanelOriginResolver({
+  configuredOriginsRaw: process.env.EXTENSION_CLIENT_PANEL_ORIGINS,
+});
 
 // Global middleware
 app.use('*', requestPathLogger());
@@ -376,7 +387,7 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   cors({
-    origin: (origin) => resolveCorsOrigin(origin),
+    origin: withExtensionPanelOrigins(resolveCorsOrigin, resolveExtensionPanelOrigin),
     credentials: true,
     allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
