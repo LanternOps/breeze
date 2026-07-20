@@ -17,11 +17,11 @@ import type { ExtensionJobDefinition } from '@breeze/extension-sdk';
  * a `api.route('/<ns>', …)` or `app.route('/api/v1/<ns>', …)` mount is missing
  * here.
  *
- * The one case that still needs a human: `api.route('/', subRouter)`, where the
- * sub-router declares its own top-level segments in another file. The
- * derivation cannot see those, so they are reserved by hand and the number of
- * such mounts is pinned by a tripwire test. If that count changes, resolve the
- * new sub-router's paths and reserve them here.
+ * Two cases still need a human, because they declare their paths in another
+ * file: `api.route('/', subRouter)` (pinned by a tripwire test that asserts
+ * exactly which sub-routers are root-mounted), and `mountX(app)` helper
+ * mounts (not tripwired; none currently add a `/api/v1` segment). If either
+ * changes, resolve the new paths by hand and reserve them here.
  *
  * Entries with no matching mount (e.g. `s`, `oauth`, `settings`, `ext`) are
  * deliberate extra reservations and are allowed.

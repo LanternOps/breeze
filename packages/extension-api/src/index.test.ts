@@ -175,11 +175,17 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
   // than hand-maintained (#2635), so a core mount added without reserving it
   // fails this suite automatically.
   //
-  // KNOWN BLIND SPOT: `api.route('/', subRouter)` mounts a sub-router that
-  // declares its OWN top-level segments in another file, which this
-  // single-file derivation cannot see. Those namespaces are reserved by hand
-  // and pinned by the ROOT_MOUNT_COUNT tripwire below — if that count changes,
-  // resolve the new sub-router's paths manually and reserve them.
+  // KNOWN BLIND SPOTS — two mount styles declare their paths in another file,
+  // so this single-file derivation cannot see them:
+  //
+  //   1. `api.route('/', subRouter)` — the sub-router declares its OWN
+  //      top-level segments. Reserved by hand and pinned by the root-mount
+  //      tripwire below.
+  //   2. `mountX(app)` helper-function mounts — 2 today
+  //      (`mountInviteLandingRoutes`, `mountExtensionGateway`), neither of
+  //      which adds a `/api/v1/<ns>` top-level segment. NOT tripwired; a new
+  //      helper that mounts under /api/v1 would escape this test, so reserve
+  //      its namespace by hand.
   const API_INDEX = fileURLToPath(
     new URL('../../../apps/api/src/index.ts', import.meta.url),
   );
@@ -202,8 +208,9 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
   // Mounts placed directly on the outer app under the same prefix:
   // app.route('/api/v1/oauth', …) → oauth
   const OUTER_MOUNT_RE = /^\s*app\.route\(\s*['"`]\/api\/v1\/([a-z0-9-]+)/gm;
-  // api.route('/', subRouter) — see the blind-spot note above.
-  const ROOT_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/['"`]\s*,/gm;
+  // api.route('/', subRouter) — see the blind-spot note above. Captures the
+  // router identifier so the tripwire pins identity, not just a count.
+  const ROOT_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/['"`]\s*,\s*([A-Za-z0-9_]+)/gm;
 
   function deriveCoreNamespaces(): string[] {
     const namespaces = new Set<string>();
@@ -223,19 +230,33 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     expect(coreNamespaces).toContain('service-principals');
   });
 
-  it('pins the number of root-mounted sub-routers the derivation cannot see', () => {
-    // Tripwire for the blind spot documented above. These eight resolve to:
-    //   externalServices        → billing, support
-    //   invoices/assembly       → orgs, tickets
-    //   invoices/settings       → orgs, partner
-    //   tickets/ticketResponseTemplates → ticket-response-templates
-    //   tickets/forms           → ticket-forms
-    //   lifecycle (x2)          → admin, me
-    //   c2c/m365Auth callback   → c2c
-    // All are reserved. If this count changes, resolve the new sub-router's
-    // top-level segments by hand and add them to RESERVED_ROUTE_NAMESPACES.
-    const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].length;
-    expect(rootMounts).toBe(8);
+  it('pins which sub-routers are root-mounted where the derivation cannot see them', () => {
+    // Tripwire for the blind spot documented above. Pinning the identifiers
+    // rather than a count means swapping one root-mounted router for another
+    // still fails, instead of passing on an unchanged total.
+    //
+    // Resolved top-level segments (all reserved):
+    //   externalServicesRoutes        → billing, support
+    //   invoiceAssemblyRoutes         → orgs, tickets
+    //   invoiceSettingsRoutes         → orgs, partner
+    //   ticketResponseTemplateRoutes  → ticket-response-templates
+    //   ticketFormRoutes              → ticket-forms
+    //   lifecycleRoutes               → me
+    //   lifecycleAdminRoutes          → admin
+    //   m365CallbackRoute             → c2c
+    // If this list changes, open the new sub-router, resolve its top-level
+    // segments by hand, and add them to RESERVED_ROUTE_NAMESPACES.
+    const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].map((m) => m[1]).sort();
+    expect(rootMounts).toEqual([
+      'externalServicesRoutes',
+      'invoiceAssemblyRoutes',
+      'invoiceSettingsRoutes',
+      'lifecycleAdminRoutes',
+      'lifecycleRoutes',
+      'm365CallbackRoute',
+      'ticketFormRoutes',
+      'ticketResponseTemplateRoutes',
+    ]);
   });
 
   it.each([
@@ -243,8 +264,10 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'support',
     'ticket-forms',
     'ticket-response-templates',
-  ])('reserves root-mounted sub-router namespace %s', (namespace) => {
+  ])('reserves and rejects root-mounted sub-router namespace %s', (namespace) => {
     expect(RESERVED_ROUTE_NAMESPACES.has(namespace)).toBe(true);
+    expect(() => parseExtensionManifest({ ...validManifest, routeNamespace: namespace }))
+      .toThrow();
   });
 
   it('reserves every core /api/v1 route namespace', () => {
