@@ -35,6 +35,31 @@ account for this: the builder stage runs a scoped
 `pnpm install --filter './extensions/*' --no-frozen-lockfile` before building
 extensions, so the committed lockfile stays extension-free.
 
+## Vendored SDK tarball overrides
+
+Until the `@breeze/extension-{sdk,web-sdk,cli,testkit}` packages are
+published to a registry (tracked in a follow-up ticket — see the issue
+tracker), a cloned extension that consumes them ships its own vendored
+copies under `extensions/<name>/vendor/*.tgz` and depends on them via a
+`file:` specifier. Those tarballs' own transitive dependencies on
+`@breeze/extension-sdk` / `@breeze/extension-web-sdk` don't resolve against
+a registry either, so the root `package.json`'s `pnpm.overrides` carries
+static redirects for them (parent-scoped where a package name collides
+across extensions, e.g. `@breeze/extension-testkit@1.0.0>@breeze/extension-sdk`).
+These overrides are inert — pnpm never attempts to resolve them — on any
+clone with no `extensions/*` vendor tarball present, so they impose no cost
+on the base repo or on contributors who never clone an extension.
+
+For local dev environment variables and service overrides an extension
+needs when running against the dev stack (container env, secrets, extra
+mounts), the pattern is an untracked `docker-compose.*.override.yml` layered
+on top of `docker-compose.yml`, plus a gitignored `.env.*` file loaded via
+that override's `env_file:` key. Commit only a `.env.*.example` template
+with placeholder values — never a real secret, and never a real secret's
+value in the override YAML itself, even though the YAML file stays
+untracked (untracked files still sit in plaintext on disk and are easy to
+`git add -A` by accident).
+
 ## Seam v2: manifest flags and ExtensionContext
 
 ### `agentRoutes` manifest flag
