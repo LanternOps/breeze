@@ -47,19 +47,44 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 /**
+ * Outcome of an {@link ensureApproverDevice} attempt.
+ *
+ * `unsupported` is a normal resting state (simulator, no biometric hardware) and
+ * must NOT be surfaced as an error. `failed` means we tried and could not
+ * register — the user's approvals will silently stay at L1, so the UI is
+ * expected to tell them.
+ */
+export type ApproverRegistrationOutcome =
+  | { status: 'registered' }
+  | { status: 'already_registered' }
+  | { status: 'unsupported'; reason: 'no_hardware' }
+  | { status: 'failed'; reason: string };
+
+/**
  * Idempotent: ensure this phone has a registered approver key. Called after
  * auth lands (fresh login or restored session). FAILS OPEN — any error
  * (no hardware, offline) leaves the device unregistered; it provisions on a
  * later call. The biometric prompt is NOT triggered here (createKeys is
  * silent); the first approval signature is the first prompt and also activates
  * the device server-side.
+ *
+ * Fail-open is deliberate and unchanged: this never throws and never blocks
+ * login. What changed is that it no longer fails *silently* — it reports the
+ * outcome so the caller can surface it. The server currently requires a
+ * `currentPassword` step-up on this endpoint that the app does not send, so the
+ * common failure here is an HTTP 400, which used to be swallowed and left every
+ * approval from this phone stuck at L1 with no indication to the user.
  */
 export async function ensureApproverDevice(
   signer: HardwareSigner = getHardwareSigner(),
-): Promise<void> {
+): Promise<ApproverRegistrationOutcome> {
   try {
-    if (await SecureStore.getItemAsync(CRED_ID_KEY)) return;       // already registered
-    if (!(await signer.isAvailable())) return;                      // no hardware → skip
+    if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
+      return { status: 'already_registered' };
+    }
+    if (!(await signer.isAvailable())) {
+      return { status: 'unsupported', reason: 'no_hardware' };
+    }
     const { publicKey } = await signer.createKeys();                // silent, no biometric
     const res = await authedFetch('/api/v1/authenticator/devices', {
       method: 'POST',
@@ -70,11 +95,19 @@ export async function ensureApproverDevice(
         isPlatformBound: true,
       }),
     });
-    if (!res.ok) return;                                            // fail open, retry later
+    if (!res.ok) {
+      // Still fail open (we retry on a later call) — but say so.
+      return { status: 'failed', reason: `http_${res.status}` };
+    }
     const { device } = await res.json();
-    if (device?.id) await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
+    if (!device?.id) {
+      return { status: 'failed', reason: 'missing_device_id' };
+    }
+    await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
+    return { status: 'registered' };
   } catch {
     // fail open — never block login on approver provisioning
+    return { status: 'failed', reason: 'exception' };
   }
 }
 

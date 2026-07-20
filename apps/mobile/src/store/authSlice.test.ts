@@ -31,7 +31,7 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
-import authReducer, { logoutAsync } from './authSlice';
+import authReducer, { logoutAsync, logout, setApproverRegistration } from './authSlice';
 
 function makeStore() {
   return configureStore({ reducer: { auth: authReducer } });
@@ -95,5 +95,57 @@ describe('logoutAsync', () => {
     expect(result.payload).toBe('network down; Secure wipe failed: x');
     expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
     expect(store.getState().auth.token).toBeNull();
+  });
+});
+
+describe('approver registration status', () => {
+  it('records a failed registration so the UI can warn', () => {
+    const store = makeStore();
+
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    expect(store.getState().auth.approverRegistration).toBe('failed');
+    expect(store.getState().auth.approverRegistrationReason).toBe('http_400');
+  });
+
+  it('defaults the reason to null when omitted', () => {
+    const store = makeStore();
+
+    store.dispatch(setApproverRegistration({ status: 'registered' }));
+
+    expect(store.getState().auth.approverRegistration).toBe('registered');
+    expect(store.getState().auth.approverRegistrationReason).toBeNull();
+  });
+
+  it('starts idle so a fresh install shows no banner', () => {
+    expect(makeStore().getState().auth.approverRegistration).toBe('idle');
+  });
+
+  it('clears on the synchronous logout reducer', () => {
+    const store = makeStore();
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    store.dispatch(logout());
+
+    expect(store.getState().auth.approverRegistration).toBe('idle');
+    expect(store.getState().auth.approverRegistrationReason).toBeNull();
+  });
+
+  // The Sign Out button and the device_blocked listener both dispatch
+  // logoutAsync, NOT the sync logout reducer — so these are the paths that
+  // actually run in production. The root-level withLogoutReset in resettable.ts
+  // would also blank the slice, but that safety net lives in another module:
+  // asserting it here keeps the guarantee true of authSlice on its own.
+  it.each([
+    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id')],
+    ['rejected', () => logoutAsync.rejected(null, 'req-id')],
+  ])('clears on logoutAsync.%s — the next user must not inherit the banner', (_name, action) => {
+    const store = makeStore();
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    store.dispatch(action() as never);
+
+    expect(store.getState().auth.approverRegistration).toBe('idle');
+    expect(store.getState().auth.approverRegistrationReason).toBeNull();
   });
 });
