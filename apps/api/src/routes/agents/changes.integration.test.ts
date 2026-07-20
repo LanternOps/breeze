@@ -64,6 +64,10 @@ async function insertDevice(orgId: string, siteId: string): Promise<{ id: string
  * withDbAccessContext wrap agentAuthMiddleware applies in production. */
 async function submitChanges(orgId: string, agentId: string, changes: unknown[]) {
   const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', { orgId, agentId, role: 'agent' } as never);
+    await next();
+  });
   app.route('/agents', changesRoutes);
   return withDbAccessContext(agentRequestContext(orgId), async () =>
     app.request(`/agents/${agentId}/changes`, {
