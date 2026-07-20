@@ -38,7 +38,7 @@
     "react-native-paper": "^5.15.3",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.8.0",
-    "react-native-screens": "~4.26.1",
+    "react-native-screens": "~4.26.2",
     "react-native-svg": "~15.15.3",
     "react-native-worklets": "^0.10.2",
     "react-redux": "^9.3.0"
