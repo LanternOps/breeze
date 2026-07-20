@@ -37,6 +37,7 @@ export type ActionIntentOutcome =
   | 'expired'
   | 'cancelled'
   | 'executed'
+  | 'revealed'
   | 'self_approved_sole_operator'
   | 'digest_mismatch'
   | 'approver_unauthorized';
