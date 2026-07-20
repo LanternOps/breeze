@@ -4,9 +4,12 @@ import { gunzipSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceChangeLog } from '../../db/schema';
+import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitChangesSchema } from './schemas';
 
 export const changesRoutes = new Hono();
+
+changesRoutes.use('*', requireAgentRole);
 
 const MAX_CHANGES_BODY_BYTES = parseInt(process.env.CHANGE_INGEST_MAX_BODY_BYTES || String(5 * 1024 * 1024), 10);
 const MAX_CHANGES_GZIP_OUTPUT_BYTES = parseInt(process.env.CHANGE_INGEST_MAX_DECOMPRESSED_BYTES || String(10 * 1024 * 1024), 10);
