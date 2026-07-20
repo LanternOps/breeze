@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import type { AuthContext } from '../../middleware/auth';
@@ -100,6 +101,17 @@ function buildFixtureExtensionApp(): Hono {
   app.get('/client/partner-admin', requireScope('partner', 'system'), (c) => c.json({ leaked: true }));
   app.get('/client/needs-partner', requirePartner, (c) => c.json({ leaked: true }));
 
+  // Extension code that throws. The wrapper must RETHROW (as the gateway's
+  // wrappers do) so core's own onError — JSON error shape plus Sentry capture —
+  // handles it, instead of Hono's default handler swallowing it inside the
+  // wrapper and emitting a bare plain-text response with no capture.
+  app.get('/client/boom', () => {
+    throw new Error('fixture-ext exploded');
+  });
+  app.get('/client/teapot', () => {
+    throw new HTTPException(418, { message: 'fixture teapot' });
+  });
+
   // Never reachable through this proxy.
   app.get('/agent/ping', (c) => c.json({ leaked: 'agent' }));
   app.get('/helper/ping', (c) => c.json({ leaked: 'helper' }));
@@ -193,6 +205,11 @@ beforeEach(() => {
 });
 
 describe('client-ai extension client-surface proxy', () => {
+  // DISCLOSURE: these two assert the STUB's behaviour, not the real session
+  // middleware — `clientAiAuthMiddleware` is mocked above. What they prove is
+  // that this router runs a session gate before dispatch, nothing about token
+  // validation itself. The real middleware's 401 paths (and their published
+  // `session_invalid` code) are covered in middleware/clientAiAuth.test.ts.
   describe('session', () => {
     it('401s without a session token', async () => {
       const app = buildApp({ 'fixture-ext': makeSnapshot(optedIn) });
@@ -466,6 +483,41 @@ describe('client-ai extension client-surface proxy', () => {
       expect(res.status).toBe(200);
       expect(capturedQuery).not.toContain(VALID_TOKEN);
       expect(capturedQuery).toContain('keep=1');
+    });
+  });
+
+  // The wrapper must not absorb extension errors: core's onError is where the
+  // JSON error shape and the Sentry capture live, and the gateway's wrappers
+  // already rethrow for exactly that reason.
+  describe('error propagation', () => {
+    function withHostErrorHandler(app: Hono, handler: (err: Error, c: any) => Response) {
+      app.onError(handler as never);
+      return app;
+    }
+
+    it('rethrows an unhandled extension error to the host error handler', async () => {
+      const onError = vi.fn((err: Error, c: any) =>
+        c.json({ error: 'Internal Server Error', message: err.message }, 500));
+      const app = withHostErrorHandler(
+        buildApp({ 'fixture-ext': makeSnapshot(optedIn) }),
+        onError,
+      );
+      const res = await app.request(url('/fixture-ext/client/boom'), authed());
+      expect(onError).toHaveBeenCalled();
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({ message: 'fixture-ext exploded' });
+    });
+
+    it("rethrows an HTTPException so the host renders core's JSON body, not Hono's default text", async () => {
+      const app = withHostErrorHandler(
+        buildApp({ 'fixture-ext': makeSnapshot(optedIn) }),
+        (err: Error, c: any) => (err instanceof HTTPException
+          ? c.json({ error: err.message, message: err.message }, err.status)
+          : c.json({ error: 'Internal Server Error' }, 500)),
+      );
+      const res = await app.request(url('/fixture-ext/client/teapot'), authed());
+      expect(res.status).toBe(418);
+      expect(await res.json()).toMatchObject({ error: 'fixture teapot' });
     });
   });
 

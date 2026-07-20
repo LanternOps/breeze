@@ -24,8 +24,13 @@ import {
  *
  * It is deliberately default-deny at every step. PUBLISHED STATUS CONTRACT —
  * note that 401/403/503 are each emitted for MORE than one reason across the
- * chain, so a caller that must branch should read the body's `code` (this
- * file's own responses always carry one) rather than the status alone:
+ * chain, so a caller that must branch should read the body's `code` rather
+ * than the status alone. Three codes are published and each is emitted by real
+ * code on a tested path: `extension_surface_not_found` and `extension_disabled`
+ * (this file) and `session_invalid` (every 401 in `middleware/clientAiAuth`).
+ * The 403s below deliberately carry NO code — their `error` strings
+ * (`disabled`, `user_not_permitted`) are the existing client-ai contract and
+ * are not re-published here:
  *
  *   401  no/invalid/expired session                       (clientAiAuthMiddleware)
  *   403  · client user status is not 'active'             (clientAiAuthMiddleware)
@@ -65,6 +70,21 @@ import {
  *  - Path fencing is applied to the resolved (normalized) request path, and
  *    re-applied inside the wrapper, so `/agent`, `/helper` and any admin path
  *    stay unreachable no matter how the caller crafts the URL.
+ *  - Extension errors are RETHROWN out of the wrapper (as the extension
+ *    gateway does) so core's own `onError` renders them and Sentry sees them.
+ *
+ * DELIBERATE NON-GOALS, so they read as decisions rather than omissions:
+ *  - This proxy enforces only the org policy's `enabled` + permitted-user
+ *    axes (via `requireClientAiEnabledMiddleware`). `writeMode`, write
+ *    approval, DLP and budgets are NOT applied here: they are semantics of
+ *    core's own `/client-ai/sessions` chokepoint, and an extension client
+ *    surface owns its own equivalents. The policy object is not forwarded
+ *    across the dispatch boundary either, so an extension that needs those
+ *    axes must enforce them itself.
+ *  - Core's `requirePermission` gates always 403 on this path: the synthesized
+ *    `user.id` is a portal-user id, which is not a core `users` id, so
+ *    permission lookup returns nothing and the gate fails closed. Same
+ *    property as the MFA note above — intentional, and fail-closed.
  */
 
 /** Absolute mount point; the wrapper needs it to compute relative paths. */
@@ -137,8 +157,9 @@ function proxyablePrefixes(active: StagedExtensionContributions): string[] {
 /** Exported for direct unit coverage — several branches are unreachable via HTTP. */
 export function isProxyable(relativePath: string, prefixes: readonly string[]): boolean {
   if (!relativePath.startsWith('/')) return false;
-  // Unreachable through a parsed URL (the parser normalizes dot segments away)
-  // but kept, and unit-tested, so any non-HTTP caller stays fenced too.
+  // LOAD-BEARING, DO NOT REMOVE. Reachable over HTTP: Hono's `getPath`
+  // percent-decodes any path containing `%`, so `/client/%2e%2e/x` arrives here
+  // with literal `..` segments that no URL parser ever normalized away.
   if (relativePath.split('/').some((segment) => segment === '.' || segment === '..')) return false;
   if (matchesReserved(relativePath)) return false;
   return prefixes.some((pathPrefix) => matchesPrefix(relativePath, pathPrefix));
@@ -197,9 +218,15 @@ function synthesizeOrgAuthContext(session: {
  * extension's own routes cannot be reached by any path the outer check did not
  * already approve, and the auth context is lifted off the ALS seam.
  *
- * Exported for direct unit coverage: both fences here are unreachable through
- * `dispatch` (the outer check always wins), so they are tested against the
- * wrapper itself rather than shipped unverified.
+ * LOAD-BEARING, DO NOT REMOVE — these fences are not duplicates of the outer
+ * check. The outer check runs on `c.req.path` (decoded, un-normalized) while
+ * the forwarded request is rebuilt through `new URL(...).toString()` (WHATWG-
+ * normalized, undecoded); this re-fence is the only check that sees the
+ * post-normalization path the extension's router will actually match.
+ *
+ * Exported for direct unit coverage: `dispatch` will not hand these fences a
+ * path they reject, so they are tested against the wrapper itself rather than
+ * shipped unverified.
  */
 export function createClientSurfaceWrapper(
   active: StagedExtensionContributions,
@@ -220,6 +247,14 @@ export function createClientSurfaceWrapper(
   });
   active.routeApp?.composeInto(wrapper, mountPrefix);
   wrapper.notFound(deny);
+  // Rethrow, exactly as the extension gateway's wrappers do: core's own
+  // onError owns the JSON error shape AND the Sentry capture. Without this,
+  // Hono's default handler inside the wrapper swallows every extension error —
+  // an HTTPException degrades to plain text and an unhandled error becomes a
+  // bare 500 that Sentry never sees.
+  wrapper.onError((error) => {
+    throw error;
+  });
   return wrapper;
 }
 

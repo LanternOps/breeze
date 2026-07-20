@@ -23,6 +23,12 @@ import {
  *
  * Redis/session work happens BEFORE the DB context opens so the wrapping
  * transaction is never held across slow I/O (#1105).
+ *
+ * Every 401 here carries `code: 'session_invalid'`. 401 is emitted for several
+ * distinct reasons across this chain, and the extension client-surface proxy
+ * (routes/clientAi/ext.ts) publishes that code as the machine-readable signal
+ * a caller branches on to mean "re-authenticate" — so it must be emitted here,
+ * where the real 401s are, not only by the proxy.
  */
 export async function clientAiAuthMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
@@ -35,7 +41,7 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
     token = c.req.query('token') || null;
   }
   if (!token) {
-    return c.json({ error: 'Missing or invalid authorization header' }, 401);
+    return c.json({ error: 'Missing or invalid authorization header', code: 'session_invalid' }, 401);
   }
 
   const redis = getRedis();
@@ -45,17 +51,17 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
 
   const raw = await redis.get(CLIENT_AI_REDIS_KEYS.session(token));
   if (!raw) {
-    return c.json({ error: 'Invalid or expired session' }, 401);
+    return c.json({ error: 'Invalid or expired session', code: 'session_invalid' }, 401);
   }
 
   let session: ClientAiSessionPayload;
   try {
     session = JSON.parse(raw) as ClientAiSessionPayload;
   } catch {
-    return c.json({ error: 'Invalid or expired session' }, 401);
+    return c.json({ error: 'Invalid or expired session', code: 'session_invalid' }, 401);
   }
   if (!session?.portalUserId || !session?.orgId) {
-    return c.json({ error: 'Invalid or expired session' }, 401);
+    return c.json({ error: 'Invalid or expired session', code: 'session_invalid' }, 401);
   }
 
   const [user] = await withSystemDbAccessContext(() =>
@@ -77,7 +83,7 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
 
   if (!user) {
     await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
-    return c.json({ error: 'Invalid or expired session' }, 401);
+    return c.json({ error: 'Invalid or expired session', code: 'session_invalid' }, 401);
   }
 
   if (user.status !== 'active') {
@@ -122,7 +128,7 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
 export async function requireClientAiEnabledMiddleware(c: Context, next: Next) {
   const auth = c.get('clientAiAuth');
   if (!auth) {
-    return c.json({ error: 'Not authenticated' }, 401);
+    return c.json({ error: 'Not authenticated', code: 'session_invalid' }, 401);
   }
 
   // Per-partner entitlement, re-checked every request so disabling a partner

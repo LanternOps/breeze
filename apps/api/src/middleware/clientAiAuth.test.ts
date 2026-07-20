@@ -125,6 +125,46 @@ describe('clientAiAuthMiddleware', () => {
     expect(res.status).toBe(503);
   });
 
+  // The client-surface proxy publishes `session_invalid` as a machine-readable
+  // code callers branch on (401 is emitted for several distinct reasons across
+  // the chain). It is only a real contract if the middleware actually emits it
+  // on EVERY 401 path, so assert each one rather than the status alone.
+  describe('published session_invalid code', () => {
+    it('tags a missing bearer token', async () => {
+      const res = await get(buildApp());
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ code: 'session_invalid' });
+    });
+
+    it('tags an unknown/expired token', async () => {
+      redisMock.get.mockResolvedValue(null);
+      const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ code: 'session_invalid' });
+    });
+
+    it('tags an unparseable session payload', async () => {
+      redisMock.get.mockResolvedValue('{not json');
+      const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ code: 'session_invalid' });
+    });
+
+    it('tags a session payload missing its identity fields', async () => {
+      redisMock.get.mockResolvedValue(JSON.stringify({ createdAt: 'now' }));
+      const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ code: 'session_invalid' });
+    });
+
+    it('tags a vanished portal user row', async () => {
+      setupUserSelect(null);
+      const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ code: 'session_invalid' });
+    });
+  });
+
   it('attaches clientAiAuth, slides the TTL, and runs the handler inside an org-scoped DB context', async () => {
     const res = await get(buildApp(), { Authorization: `Bearer ${TOKEN}` });
     expect(res.status).toBe(200);
@@ -194,6 +234,15 @@ describe('requireClientAiEnabledMiddleware', () => {
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'disabled' });
+  });
+
+  it('401s with the published session_invalid code when no session is attached', async () => {
+    const app = new Hono();
+    app.use('*', requireClientAiEnabledMiddleware);
+    app.get('/guarded', (c) => c.json({ leaked: true }));
+    const res = await app.request('/guarded');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ code: 'session_invalid' });
   });
 
   it('passes the policy through to the handler when enabled', async () => {
