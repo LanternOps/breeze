@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { clientPanelSchema, clientSurfaceSchema } from '@breeze/extension-sdk';
 import type { SQLWrapper } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
@@ -161,6 +162,17 @@ const manifestSchema = z
           }),
       )
       .optional(),
+    // Opt-in for the end-user client-surface proxy, and the client panel
+    // contributions the client host mounts. Both are the LITERAL v1 schemas
+    // (imported from @breeze/extension-sdk), not local mirrors — the legacy
+    // load path synthesizes a v1 manifest from these fields, so validating
+    // with the same schema objects makes it impossible by construction for a
+    // legacy manifest to smuggle a declaration (an /agent or /helper prefix, a
+    // blanket '/', dot segments, a trailing slash, a traversing module path)
+    // past the refusals the v1 schema enforces. Absent means absent
+    // downstream: default-deny.
+    clientSurfaces: z.array(clientSurfaceSchema).optional(),
+    clientPanels: z.array(clientPanelSchema).optional(),
     tenancy: tenancySchema.optional().default({
       orgCascadeDeleteTables: [],
       deviceCascadeDeleteTables: [],
@@ -168,6 +180,29 @@ const manifestSchema = z
     }),
   })
   .superRefine((m, ctx) => {
+    // Same uniqueness contract as the v1 schema's superRefine — a duplicate
+    // would otherwise only fail later, at stage time, with a worse message.
+    if (m.clientSurfaces) {
+      const seen = new Set<string>();
+      for (const surface of m.clientSurfaces) {
+        if (seen.has(surface.pathPrefix)) {
+          ctx.addIssue({ code: 'custom', message: 'clientSurfaces pathPrefix values must be unique' });
+          break;
+        }
+        seen.add(surface.pathPrefix);
+      }
+    }
+    if (m.clientPanels) {
+      const seen = new Set<string>();
+      for (const panel of m.clientPanels) {
+        const key = `${panel.host}:${panel.surface}:${panel.element}`;
+        if (seen.has(key)) {
+          ctx.addIssue({ code: 'custom', message: 'clientPanels host/surface/element combinations must be unique' });
+          break;
+        }
+        seen.add(key);
+      }
+    }
     const tenantTables = [
       ...m.tenancy.orgCascadeDeleteTables,
       ...m.tenancy.deviceCascadeDeleteTables,

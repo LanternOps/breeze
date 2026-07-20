@@ -172,7 +172,7 @@ function isReservedSurface(path: string, reserved: string): boolean {
  * namespaces that carry their own machine identities (`/agent`, `/helper`) so a
  * manifest can never hand an end-user session a route intended for a device.
  */
-const clientSurfaceSchema = z.object({
+export const clientSurfaceSchema = z.object({
   pathPrefix: z
     .string()
     .regex(/^\/[a-zA-Z0-9\-_./]*$/, {
@@ -195,6 +195,23 @@ const clientSurfaceSchema = z.object({
     .refine((path) => !isReservedSurface(path, '/helper'), {
       message: 'clientSurfaces may not expose /helper/ paths',
     }),
+}).strict();
+
+/**
+ * A single end-user client panel contribution — the client-surface sibling of
+ * `web.slots`: which custom element a client host should mount for a named
+ * surface, and which web-bundle module defines it.
+ *
+ * Same default-deny lifecycle as `clientSurfaces`: absent (or empty) means the
+ * extension contributes no client panels. `module` is a bundle-relative path
+ * (served digest-addressed by the module route), so it gets the same
+ * traversal-free validation as every other bundle path in this schema.
+ */
+export const clientPanelSchema = z.object({
+  host: identifier,
+  surface: identifier,
+  element: z.string().regex(CUSTOM_ELEMENT_RE),
+  module: safeJavaScriptPath,
 }).strict();
 
 const manifestSchemaV1 = z.object({
@@ -237,6 +254,7 @@ const manifestSchemaV1 = z.object({
   ).optional(),
   agentRoutes: z.boolean().optional(),
   clientSurfaces: z.array(clientSurfaceSchema).optional(),
+  clientPanels: z.array(clientPanelSchema).optional(),
   // TODO(runtime-platform): carry legacy helperRoutes forward as capability
   // 'server.helper-routes.v1' (tracked in the internal runtime-platform plan).
   jobs: z.array(jobSchema),
@@ -258,6 +276,9 @@ const manifestSchemaV1 = z.object({
   }
   if (manifest.clientSurfaces && !uniqueBy(manifest.clientSurfaces, (surface) => surface.pathPrefix)) {
     ctx.addIssue({ code: 'custom', path: ['clientSurfaces'], message: 'clientSurfaces pathPrefix values must be unique' });
+  }
+  if (manifest.clientPanels && !uniqueBy(manifest.clientPanels, (panel) => `${panel.host}:${panel.surface}:${panel.element}`)) {
+    ctx.addIssue({ code: 'custom', path: ['clientPanels'], message: 'clientPanels host/surface/element combinations must be unique' });
   }
   if (manifest.web && (
     !uniqueBy(manifest.web.pages, (page) => page.id)

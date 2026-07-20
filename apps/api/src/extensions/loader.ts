@@ -79,6 +79,14 @@ function synthesizeLegacyManifest(extension: DiscoveredExtension): StagedLegacyM
     publicRoutes: extension.manifest.publicRoutes,
     agentRoutes: extension.manifest.agentRoutes,
     helperRoutes: extension.manifest.helperRoutes,
+    // Client contribution keys must SURVIVE synthesis: this function is an
+    // explicit allowlist, and dropping them here silently 404s every request
+    // through the client-surface proxy (the defect the legacy-seam e2e test
+    // pins). Already validated by the v1 schema objects at discovery
+    // (parseExtensionManifest), and re-validated by parseExtensionManifestV1
+    // at the end of staging.
+    clientSurfaces: extension.manifest.clientSurfaces,
+    clientPanels: extension.manifest.clientPanels,
     jobs: [],
     aiTools: [],
     tenancy: extension.manifest.tenancy,

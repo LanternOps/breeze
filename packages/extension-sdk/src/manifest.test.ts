@@ -284,6 +284,50 @@ describe('parseExtensionManifestV1', () => {
     });
   });
 
+  describe('clientPanels', () => {
+    const validPanel = {
+      host: 'client-ai',
+      surface: 'panel.main',
+      element: 'fixture-ext-panel',
+      module: 'web/panel.js',
+    };
+
+    it('is optional and absent by default (default-deny)', () => {
+      expect(parseExtensionManifestV1(valid).clientPanels).toBeUndefined();
+    });
+
+    it('accepts declared client panels verbatim', () => {
+      const parsed = parseExtensionManifestV1({ ...valid, clientPanels: [validPanel] });
+      expect(parsed.clientPanels).toEqual([validPanel]);
+    });
+
+    it.each([
+      ['non-custom-element name', { element: 'div' }],
+      ['upper-case element', { element: 'Fixture-Panel' }],
+      ['absolute module path', { module: '/web/panel.js' }],
+      ['parent-traversing module path', { module: '../../evil.js' }],
+      ['non-JS module', { module: 'web/panel.css' }],
+      ['empty host', { host: '' }],
+      ['non-identifier surface', { surface: 'Panel Main!' }],
+    ])('rejects %s', (_name, override) => {
+      expect(() => parseExtensionManifestV1({
+        ...valid,
+        clientPanels: [{ ...validPanel, ...override }],
+      })).toThrow();
+    });
+
+    it('rejects duplicate host/surface/element rows and unknown keys', () => {
+      expect(() => parseExtensionManifestV1({
+        ...valid,
+        clientPanels: [validPanel, { ...validPanel, module: 'web/other.js' }],
+      })).toThrow();
+      expect(() => parseExtensionManifestV1({
+        ...valid,
+        clientPanels: [{ ...validPanel, unknown: true }],
+      })).toThrow();
+    });
+  });
+
   it('rejects unknown keys at every manifest level', () => {
     expect(() => parseExtensionManifestV1({ ...valid, unknown: true })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, server: { ...valid.server, unknown: true } })).toThrow();
