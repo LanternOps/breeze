@@ -9,11 +9,13 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 import {
+  defaultStageExtension,
   extractVerifiedPayload,
   pruneStaleExtractionDirs,
   reconcileExtensions,
   type ReconcilePorts,
 } from './reconciler';
+import type { BreezeExtensionV1 } from '@breeze/extension-sdk';
 import { ExtensionIncompatibleError } from './errors';
 import {
   ExtensionContributionRegistry,
@@ -576,5 +578,77 @@ describe('extractVerifiedPayload — re-verifies bytes read after verification',
     expect(await extractVerifiedPayload(bundle, root)).toBe(dest);
     // Same inode ⇒ the happy path did not re-extract and rename a fresh tree.
     expect(statSync(path.join(dest, 'server/index.js')).ino).toBe(before);
+  });
+});
+
+describe('defaultStageExtension (v1 contract)', () => {
+  const v1Manifest: ExtensionManifestV1 = {
+    apiVersion: 'breeze.extensions/v1',
+    name: 'demo',
+    version: '1.0.0',
+    routeNamespace: 'demo',
+    requires: { breeze: '>=0.1.0', serverSdk: '^1.0.0', capabilities: [] },
+    server: { entry: 'server/index.cjs' },
+    migrationsDir: 'migrations',
+    schemaCompatibilityFloor: '1.0.0',
+    publicRoutes: [],
+    agentRoutes: false,
+    jobs: [],
+    aiTools: [],
+    tenancy: {
+      orgCascadeDeleteTables: [],
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
+      deviceOrgMoveDeleteTables: [],
+    },
+  } as unknown as ExtensionManifestV1;
+
+  // THE regression this suite exists for: the reconciler must stage signed
+  // bundles through the PUBLIC v1 SDK shape — register(registrar, context) —
+  // not the legacy single-argument ExtensionContext. The workspace extension
+  // shipped against the SDK contract and failed live staging because every
+  // prior test injected a fake stage port and never exercised this function.
+  it('stages a v1 module: registrar first, runtime context second', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const observed: Record<string, unknown> = {};
+    const module: BreezeExtensionV1 = {
+      register(registrar, context) {
+        observed.registrarMount = typeof registrar.mountRoute;
+        observed.dbExecute = typeof context.db?.execute;
+        observed.encrypt = typeof context.secrets?.encryptForColumn;
+        observed.audit = typeof context.audit;
+        observed.logIsLevelFirst = (() => {
+          // A legacy host passed log(message); v1 log(level, message) must not
+          // throw and must accept a fields object.
+          context.log('info', 'staging demo', { probe: true });
+          return true;
+        })();
+        registrar.mountRoute(new Hono());
+      },
+    };
+    const staged = await defaultStageExtension(module, v1Manifest, registry);
+    expect(observed).toEqual({
+      registrarMount: 'function',
+      dbExecute: 'function',
+      encrypt: 'function',
+      audit: 'function',
+      logIsLevelFirst: true,
+    });
+    expect(staged.routeApp).toBeTruthy();
+  });
+
+  it('refuses an aiTool registration the manifest never declared', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const module: BreezeExtensionV1 = {
+      register(registrar) {
+        registrar.registerAiTool('list_devices', {
+          definition: { name: 'list_devices', description: 'x', input_schema: {} },
+          tier: 1,
+          handler: async () => 'x',
+        });
+      },
+    };
+    await expect(defaultStageExtension(module, v1Manifest, registry))
+      .rejects.toThrow(/Undeclared AI tool registration/);
   });
 });
