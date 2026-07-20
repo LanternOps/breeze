@@ -112,6 +112,16 @@ export default defineConfig({
       // of false-failing `session_required` — the correctness linchpin the mocked
       // unit suite (which mocks `../db` + the Google stack) can't exercise.
       'src/jobs/intentReleaseWorkerGoogleHeadless.integration.test.ts',
+      // Co-located real-DB integration test for headless M365 Tier-3 dispatch
+      // (Task 9): drives approved m365_disable_user / m365_reset_password
+      // intents through the real release worker with only the Graph-actions
+      // executor client mocked, proving the real write-action authz ladder
+      // (feature flag -> connection load -> readiness -> budget -> executor
+      // call) resolves the org-keyed customer-graph-actions connection and
+      // runs to `completed` instead of false-failing `session_required` — the
+      // mocked unit suite (which mocks `../services/m365ToolsHeadless`
+      // wholesale) can't exercise this.
+      'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

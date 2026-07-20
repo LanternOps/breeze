@@ -17,6 +17,11 @@ import {
   executeGoogleToolHeadless,
   GoogleConnectionUnavailableError,
 } from '../services/googleToolsHeadless';
+import {
+  isHeadlessM365Tool,
+  executeM365ToolHeadless,
+  M365ConnectionUnavailableError,
+} from '../services/m365ToolsHeadless';
 
 /**
  * Durable release worker (spec
@@ -247,12 +252,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   const { auth } = revalidation;
 
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
-  // tools (they need the control-plane customer-graph-actions executor, not yet
-  // built). Google Tier-3 tools ARE headless-executable (org-keyed connection,
-  // resolved by intent.orgId) as of Phase 2 — so gate the session_required fail
-  // on "not a headless Google tool". See docs/superpowers/specs/
+  // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
+  // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
+  // Tier-3 tools (m365_disable_user, m365_reset_password) ARE ALSO
+  // headless-executable as of Phase 2 via the control-plane
+  // customer-graph-actions executor (executeM365ToolHeadless) — so gate the
+  // session_required fail on "not a headless Google tool AND not a headless
+  // M365 tool". See docs/superpowers/specs/
   // 2026-07-19-action-intents-phase2-google-headless-design.md.
-  if (!isHeadlessGoogleTool(intent.actionName) && requiresLiveSession(intent.actionName)) {
+  if (
+    !isHeadlessGoogleTool(intent.actionName)
+    && !isHeadlessM365Tool(intent.actionName)
+    && requiresLiveSession(intent.actionName)
+  ) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
   }
@@ -261,9 +273,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // then open the SAME org-scoped context a live request would use, bounded by
   // the same per-tool timeout. Headless Google tools resolve their per-tenant
   // OAuth connection by intent.orgId (fresh + re-authorized at execution);
-  // everything else runs through executeTool.
+  // headless M365 tools resolve their customer-graph-actions connection the
+  // same way via the control-plane write-action service; everything else runs
+  // through executeTool.
   const invoke = isHeadlessGoogleTool(intent.actionName)
     ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
+    : isHeadlessM365Tool(intent.actionName)
+    ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
     : () => executeTool(intent.actionName, intent.arguments, auth);
 
   let rawResult: string;
@@ -276,9 +292,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       intent.actionName,
     );
   } catch (err) {
-    if (err instanceof GoogleConnectionUnavailableError) {
-      // The org's Google connection is missing/rotated/inactive at release time
-      // — no API call was made. Fail closed with a distinct, categorized code.
+    if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
+      // The org's Google/M365 connection is missing/rotated/inactive (or the
+      // M365 write-action ladder refused for a connection-level reason:
+      // disabled/rate-limited/executor-down) at release time — no API call
+      // was made. Fail closed with a distinct, categorized code.
       await failIntent(intent, 'connection_unavailable', {
         details: { actionName: intent.actionName },
       });

@@ -98,7 +98,7 @@ function connectionNotReadyState(
 export async function executeM365WriteActionByOrg(
   orgId: string,
   action: M365WriteAction,
-  opts?: { actorId?: string; auditRequest?: RequestLike },
+  opts?: { actorId?: string; auditRequest?: RequestLike; idempotencyKey?: string },
 ): Promise<M365WriteActionServiceResult> {
   if (!isM365GraphActionsEnabledForOrg(orgId)) {
     return {
@@ -161,7 +161,11 @@ export async function executeM365WriteActionByOrg(
       // ready.tenantId is non-null here: connectionNotReadyState above
       // already refused the 'no-tenant' case.
       tenantId: ready.tenantId as string,
-      idempotencyKey: randomUUID(),
+      // The immutable action_intents.id when the caller is the release
+      // worker (see writeActionRequestSchema's doc comment) — the natural
+      // dedup key for a retried release. Falls back to a fresh UUID for
+      // callers with no intent context.
+      idempotencyKey: opts?.idempotencyKey ?? randomUUID(),
       action,
     });
   } catch (error) {
