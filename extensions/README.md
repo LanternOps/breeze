@@ -50,20 +50,16 @@ ignores extension checkouts, and stock Docker images neither install nor build
 them. A legacy checkout installs and builds inside its own directory with its
 own lockfile.
 
-## Vendored SDK tarball overrides
+## SDK dependencies
 
-Until the `@breeze/extension-{sdk,web-sdk,cli,testkit}` packages are
-published to a registry (tracked in a follow-up ticket — see the issue
-tracker), a cloned extension that consumes them ships its own vendored
-copies under `extensions/<name>/vendor/*.tgz` and depends on them via a
-`file:` specifier. Those tarballs' own transitive dependencies on
-`@breeze/extension-sdk` / `@breeze/extension-web-sdk` don't resolve against
-a registry either, so the root `package.json`'s `pnpm.overrides` carries
-static redirects for them (parent-scoped where a package name collides
-across extensions, e.g. `@breeze/extension-testkit@1.0.0>@breeze/extension-sdk`).
-These overrides are inert — pnpm never attempts to resolve them — on any
-clone with no `extensions/*` vendor tarball present, so they impose no cost
-on the base repo or on contributors who never clone an extension.
+Core Breeze apps and packages consume the committed extension SDK packages
+under `packages/` through `workspace:*` dependencies. Keep that resolution
+inside the root workspace; do not add checkout-specific package paths or
+overrides to the root manifest or public lockfile.
+
+A legacy extension checkout remains a self-contained project. It declares,
+installs, locks, and builds its own SDK dependencies inside its checkout rather
+than relying on the Breeze root workspace to resolve them.
 
 For local dev environment variables and service overrides an extension
 needs when running against the dev stack (container env, secrets, extra
