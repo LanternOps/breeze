@@ -162,7 +162,7 @@ describe('auth-lifecycle atomicity — real Postgres (Task 13)', () => {
 // userDeleteResurrect.integration.test.ts.
 // ============================================================================
 type AuthCtx = {
-  scope: 'partner' | 'organization';
+  scope: 'system' | 'partner' | 'organization';
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
@@ -185,7 +185,11 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         partnerId: ctx.partnerId,
         orgId: ctx.orgId,
         accessibleOrgIds: ctx.accessibleOrgIds ?? [],
-        user: { id: ctx.userId ?? null, email: 'integration@test' },
+        user: {
+          id: ctx.userId ?? null,
+          email: 'integration@test',
+          isPlatformAdmin: ctx.scope === 'system',
+        },
       });
       return withDbAccessContext(
         {
@@ -272,11 +276,11 @@ describe('membership-removal fan-out — atomic epoch advance + family revoke (T
     const epochBefore = await readUserEpoch(target.id);
 
     activeAuthContext = {
-      scope: 'partner',
-      partnerId: partner.id,
+      scope: 'system',
+      partnerId: null,
       orgId: null,
-      accessibleOrgIds: [],
-      accessiblePartnerIds: [partner.id],
+      accessibleOrgIds: null,
+      accessiblePartnerIds: null,
       userId: caller.id,
     };
 
@@ -307,11 +311,13 @@ describe('membership-removal fan-out — atomic epoch advance + family revoke (T
     const epochBefore = await readUserEpoch(target.id);
 
     activeAuthContext = {
-      scope: 'partner',
-      partnerId: partner.id,
+      // Global user identity rows may span multiple partners. Only system
+      // authority can prove it owns every tenant affected by this mutation.
+      scope: 'system',
+      partnerId: null,
       orgId: null,
-      accessibleOrgIds: [],
-      accessiblePartnerIds: [partner.id],
+      accessibleOrgIds: null,
+      accessiblePartnerIds: null,
       userId: caller.id,
     };
 

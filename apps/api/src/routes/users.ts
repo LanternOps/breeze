@@ -38,7 +38,6 @@ import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
-import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
@@ -279,7 +278,7 @@ async function generateAndDeliverInvite(
 function writeUserAudit(
   c: any,
   auth: { orgId: string | null; user: { id: string; email?: string; name?: string } },
-  scopeContext: ScopeContext,
+  scopeContext: ScopeContext | null,
   event: {
     action: string;
     resourceId?: string;
@@ -287,7 +286,7 @@ function writeUserAudit(
     details?: Record<string, unknown>;
   }
 ): void {
-  const orgId = resolveAuditOrgId(auth, scopeContext);
+  const orgId = scopeContext ? resolveAuditOrgId(auth, scopeContext) : auth.orgId;
 
   createAuditLogAsync({
     orgId: orgId ?? undefined,
@@ -1316,7 +1315,6 @@ userRoutes.patch(
   zValidator('json', updateUserSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
     const userId = c.req.param('id')!;
     const data = c.req.valid('json');
 
@@ -1324,14 +1322,31 @@ userRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    // Name and status live on the global identity row. A tenant-local admin
-    // must not mutate them after proving membership in only one organization;
-    // the same identity can be shared by other organizations.
-    if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: 'Full partner access required to update global identity fields' }, 403);
+    // Name and status live on the global identity row, which can be shared by
+    // memberships in multiple partners. No partner-scoped authorization proof
+    // can therefore establish authority over every tenant affected by this
+    // mutation (including session revocation). Keep this operation platform
+    // global and reject every tenant-scoped caller before any target lookup or
+    // side effect. authMiddleware live-binds system scope to isPlatformAdmin.
+    if (auth.scope !== 'system') {
+      return c.json({ error: 'System access required to update global identity fields' }, 403);
     }
 
-    const record = await getScopedUser(userId, scopeContext);
+    const record = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [globalUser] = await db
+          .select({
+            id: users.id,
+            email: users.email,
+            name: users.name,
+            status: users.status,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+        return globalUser ?? null;
+      })
+    );
 
     if (!record) {
       return c.json({ error: 'User not found' }, 404);
@@ -1437,7 +1452,7 @@ userRoutes.patch(
       }
     }
 
-    writeUserAudit(c, auth, scopeContext, {
+    writeUserAudit(c, auth, null, {
       action: becameInactive ? 'user.suspended' : 'user.update',
       resourceId: updated.id,
       resourceName: updated.name,
@@ -1445,7 +1460,7 @@ userRoutes.patch(
         changedFields: Object.keys(data),
         previousStatus: record.status,
         newStatus: updated.status,
-        scope: scopeContext.scope,
+        scope: auth.scope,
         ...(becameInactive && cleanup?.oauthResult
           ? {
               grantsRevoked: cleanup.oauthResult.grantsRevoked,
