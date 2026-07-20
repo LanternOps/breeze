@@ -27,7 +27,10 @@ const BLOCKED_TOOLS = new Set<string>([
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
-const TIER2_ACTIONS: Record<string, string[]> = {
+// Exported for contract tests only (tier-table disjointness + the web
+// tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
+// resolution always goes through checkGuardrails().
+export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -64,13 +67,15 @@ const TIER2_ACTIONS: Record<string, string[]> = {
 };
 
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
-const TIER1_ACTIONS: Record<string, string[]> = {
+// Exported for contract tests only — see the note on TIER2_ACTIONS.
+export const TIER1_ACTIONS: Record<string, string[]> = {
   security_scan: ['vulnerabilities'],
   manage_tags: ['list'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
-const TIER3_ACTIONS: Record<string, string[]> = {
+// Exported for contract tests only — see the note on TIER2_ACTIONS.
+export const TIER3_ACTIONS: Record<string, string[]> = {
   // SR5-01: filesystem READ/LIST are privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).

@@ -52,7 +52,15 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails, checkToolPermission, checkPermissionRequirement, checkPermissionRequirements } from './aiGuardrails';
+import {
+  checkGuardrails,
+  checkToolPermission,
+  checkPermissionRequirement,
+  checkPermissionRequirements,
+  TIER1_ACTIONS,
+  TIER2_ACTIONS,
+  TIER3_ACTIONS,
+} from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
@@ -641,5 +649,65 @@ describe('checkToolPermission — file_operations requires devices.execute (SR5-
 
     expect(result).toBeNull();
     expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+  });
+});
+
+// ─── Tier-table disjointness (#2686) ────────────────────────────────────
+
+describe('tier action tables are pairwise disjoint per tool', () => {
+  // checkGuardrails resolves first-match in the order TIER1 → TIER3 → TIER2, so
+  // an action listed in two tables silently wins by table position instead of
+  // erroring. The dangerous direction is a leftover entry in TIER1_ACTIONS: it
+  // de-escalates a Tier-3 action to auto-execute with NO approval, and nothing
+  // else catches it unless that exact action happens to be enumerated in the
+  // case tables above. Moving actions between tiers is exactly when a stale
+  // duplicate gets left behind.
+  const TABLES: Array<[string, Record<string, string[]>]> = [
+    ['TIER1_ACTIONS', TIER1_ACTIONS],
+    ['TIER2_ACTIONS', TIER2_ACTIONS],
+    ['TIER3_ACTIONS', TIER3_ACTIONS],
+  ];
+
+  it('no tool/action pair appears in more than one tier table', () => {
+    const collisions: string[] = [];
+
+    for (let i = 0; i < TABLES.length; i++) {
+      for (let j = i + 1; j < TABLES.length; j++) {
+        const [nameA, tableA] = TABLES[i]!;
+        const [nameB, tableB] = TABLES[j]!;
+        for (const [tool, actionsA] of Object.entries(tableA)) {
+          const actionsB = tableB[tool];
+          if (!actionsB) continue;
+          for (const action of actionsA) {
+            if (actionsB.includes(action)) {
+              collisions.push(`${tool} action "${action}" is in both ${nameA} and ${nameB}`);
+            }
+          }
+        }
+      }
+    }
+
+    expect(
+      collisions,
+      `Duplicate guardrail tier entries — resolution is first-match ` +
+      `(TIER1 → TIER3 → TIER2), so the duplicate silently wins by table ` +
+      `position. A stale TIER1_ACTIONS entry de-escalates an approval-required ` +
+      `action to auto-execute.\n` +
+      collisions.map((c) => `  • ${c}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('no tier table lists the same action twice for one tool', () => {
+    const dupes: string[] = [];
+    for (const [tableName, table] of TABLES) {
+      for (const [tool, actions] of Object.entries(table)) {
+        const seen = new Set<string>();
+        for (const action of actions) {
+          if (seen.has(action)) dupes.push(`${tableName}.${tool} lists "${action}" twice`);
+          seen.add(action);
+        }
+      }
+    }
+    expect(dupes).toEqual([]);
   });
 });

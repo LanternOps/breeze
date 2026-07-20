@@ -1,10 +1,28 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { formatToolName } from "../../lib/utils";
 import { TIER_DEFINITIONS, groupByCategory } from "./tierConfig";
-import type { ToolCategory } from "./tierConfig";
+import type { ToolCategory, TierIconName } from "./tierConfig";
+
+// tierConfig.ts is imported by an api-side contract test (issue #2686) and so
+// must stay dependency-free; it names its icons and they are resolved here.
+const TIER_ICONS: Record<TierIconName, LucideIcon> = {
+  eye: Eye,
+  "shield-check": ShieldCheck,
+  "shield-alert": ShieldAlert,
+  "shield-off": ShieldOff,
+};
 export function TierOverviewMatrix() {
   const { t } = useTranslation("security");
   const [search, setSearch] = useState("");
@@ -56,7 +74,7 @@ function TierCard({
   onToggle: (key: string) => void;
 }) {
   const { t } = useTranslation("security");
-  const Icon = tier.icon;
+  const Icon = TIER_ICONS[tier.iconName];
   const filteredTools = useMemo(() => {
     if (!search) return tier.tools;
     return tier.tools.filter(

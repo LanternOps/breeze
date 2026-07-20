@@ -1,5 +1,15 @@
-import type { LucideIcon } from 'lucide-react';
-import { Eye, ShieldCheck, ShieldAlert, ShieldOff } from 'lucide-react';
+// ⚠️  This module is a MIRROR of the guardrail tier tables in
+// apps/api/src/services/aiGuardrails.ts and is bound to them by the contract
+// test apps/api/src/services/aiGuardrailsTierConfig.parity.test.ts (issue
+// #2686). That test imports this file directly, so it must stay free of any
+// runtime dependency (no lucide-react, no React, no `@/` aliases) — tier icons
+// are named here and resolved in TierOverviewMatrix.tsx.
+//
+// Every `name` in a Tier 1-3 `tools` list must be either `tool_name` or
+// `tool_name (action/action/...)` using the REAL guardrail action identifiers,
+// because the parity test parses them and asserts
+// `checkGuardrails(tool, { action }).tier` equals the tier the entry sits in.
+// Prose inside the parentheses ("add/remove devices") will fail the test.
 
 // ── Tool categories for grouping in the UI ──────────────────────────────────
 export type ToolCategory =
@@ -25,11 +35,13 @@ export interface ToolEntry {
   category: ToolCategory;
 }
 
+export type TierIconName = 'eye' | 'shield-check' | 'shield-alert' | 'shield-off';
+
 export interface TierDefinition {
   tier: 1 | 2 | 3 | 4;
   label: string;
   description: string;
-  icon: LucideIcon;
+  iconName: TierIconName;
   borderColor: string;
   badgeBg: string;
   badgeText: string;
@@ -41,7 +53,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     tier: 1,
     label: 'Auto-Execute (Read-Only)',
     description: 'Read-only operations that execute automatically without any approval or logging overhead.',
-    icon: Eye,
+    iconName: 'eye',
     borderColor: 'border-l-green-500',
     badgeBg: 'bg-green-500/15',
     badgeText: 'text-green-700',
@@ -68,7 +80,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
-      { name: 'file_operations (list/read)', description: 'List and read files', category: 'Files, Disk & Registry' },
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (read_key/get_value)', description: 'Read Windows registry', category: 'Files, Disk & Registry' },
@@ -98,7 +109,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_groups (list/get/preview)', description: 'View device groups', category: 'Fleet Operations' },
       { name: 'manage_maintenance_windows (list/get)', description: 'View maintenance windows', category: 'Fleet Operations' },
       { name: 'manage_automations (list/get/history)', description: 'View automations', category: 'Fleet Operations' },
-      { name: 'manage_alert_rules (list/get/test)', description: 'View alert rules', category: 'Fleet Operations' },
+      { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Fleet Operations' },
       { name: 'generate_report (list/data/history/download)', description: 'View and download reports', category: 'Fleet Operations' },
       // Backup & Recovery
       { name: 'query_backups', description: 'List backup configs, jobs, and policies', category: 'Backup & Recovery' },
@@ -126,7 +137,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     tier: 2,
     label: 'Auto-Execute + Audit',
     description: 'Low-risk mutations that execute automatically but are logged to the audit trail.',
-    icon: ShieldCheck,
+    iconName: 'shield-check',
     borderColor: 'border-l-blue-500',
     badgeBg: 'bg-blue-500/15',
     badgeText: 'text-blue-700',
@@ -143,8 +154,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
       { name: 'manage_dns_policy', description: 'DNS policy management', category: 'Network & DNS' },
       // Remote Access & Control
-      { name: 'take_screenshot', description: 'Capture device screenshot', category: 'Remote Access & Control' },
-      { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       { name: 'set_device_context', description: 'Set brain device context', category: 'Remote Access & Control' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Remote Access & Control' },
       // Logs & Audit
@@ -163,10 +172,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Fleet Operations
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
-      { name: 'manage_groups (add/remove devices)', description: 'Manage group membership', category: 'Fleet Operations' },
-      { name: 'manage_maintenance_windows (create/update)', description: 'Create or update maintenance windows', category: 'Fleet Operations' },
+      { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
-      { name: 'manage_alert_rules (create/update)', description: 'Create or update alert rules', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
     ],
   },
@@ -174,7 +181,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     tier: 3,
     label: 'Requires Approval',
     description: 'Destructive or mutating operations that require explicit user approval before execution.',
-    icon: ShieldAlert,
+    iconName: 'shield-alert',
     borderColor: 'border-l-amber-500',
     badgeBg: 'bg-amber-500/15',
     badgeText: 'text-amber-700',
@@ -189,14 +196,16 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
       { name: 'computer_control', description: 'Send input actions to device', category: 'Remote Access & Control' },
       { name: 'create_remote_session', description: 'Create remote terminal or file session', category: 'Remote Access & Control' },
+      { name: 'take_screenshot', description: 'Capture device screenshot', category: 'Remote Access & Control' },
+      { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       // Security & Compliance
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
-      { name: 'file_operations (write/delete/mkdir/rename)', description: 'Mutate files on device', category: 'Files, Disk & Registry' },
+      { name: 'file_operations (list/read/write/delete/mkdir/rename)', description: 'Read, list, or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
-      { name: 'registry_operations (set/create/delete)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
+      { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
       // Scripts & Automation
@@ -215,16 +224,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_deployments (create/start/cancel)', description: 'Create, start, or cancel deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (scan/install/rollback)', description: 'Scan, install, or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
-      { name: 'manage_maintenance_windows (delete)', description: 'Delete maintenance windows', category: 'Fleet Operations' },
-      { name: 'manage_automations (create/update/delete/run)', description: 'Manage automation lifecycle', category: 'Fleet Operations' },
-      { name: 'manage_alert_rules (delete)', description: 'Delete alert rules', category: 'Fleet Operations' },
+      { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
     ],
   },
   {
     tier: 4,
     label: 'Blocked',
     description: 'Operations that are never allowed, such as cross-organization data access or unknown tools.',
-    icon: ShieldOff,
+    iconName: 'shield-off',
     borderColor: 'border-l-red-500',
     badgeBg: 'bg-red-500/15',
     badgeText: 'text-red-700',
@@ -251,8 +258,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'execute_command', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'run_script', limit: 5, windowSeconds: 300, tier: 3, permission: 'scripts.execute', category: 'Remote Access & Control' },
   { toolName: 'computer_control', limit: 20, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'take_screenshot', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'analyze_screen', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'take_screenshot', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
+  { toolName: 'analyze_screen', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'create_remote_session', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'set_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Remote Access & Control' },
   { toolName: 'resolve_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Remote Access & Control' },
