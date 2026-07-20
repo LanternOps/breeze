@@ -29,6 +29,8 @@ export interface PendingApproval {
   deviceContext?: DeviceContext;
   /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
   intentBacked?: boolean;
+  /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
+  selfApprovalRequestId?: string;
 }
 
 export interface PendingPlan {
@@ -132,6 +134,7 @@ export function processStreamEvent(
           description: event.description,
           deviceContext: event.deviceContext,
           intentBacked: event.intentBacked,
+          selfApprovalRequestId: event.selfApprovalRequestId,
         }
       }));
       return currentAssistantId;

@@ -593,6 +593,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           type: 'approval_required',
           executionId: approvalExec.id,
           approvalRequestId: intent.approvalRequestIds[0],
+          // Set ONLY when the fan-out created a row for the requester (the
+          // sole-operator branch) — the web card offers the inline L3
+          // WebAuthn self-approve for exactly that row. In a multi-approver
+          // org the requester holds no row and this stays undefined; the
+          // card keeps its waiting state (four-eyes preserved).
+          selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
           toolName,
           input,
           description,
