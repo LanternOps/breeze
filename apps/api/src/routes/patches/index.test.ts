@@ -19,6 +19,7 @@ const mockAuthState = vi.hoisted(() => ({
   scope: 'organization' as 'organization' | 'partner' | 'system',
   orgId: '11111111-1111-1111-1111-111111111111' as string | null,
   partnerId: null as string | null,
+  partnerOrgAccess: null as 'all' | 'selected' | 'none' | null,
   accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[] | null,
   permissions: [
     { resource: '*', action: '*' }
@@ -153,6 +154,7 @@ vi.mock('../../middleware/auth', () => ({
       scope: mockAuthState.scope,
       orgId: mockAuthState.orgId,
       partnerId: mockAuthState.partnerId,
+      partnerOrgAccess: mockAuthState.partnerOrgAccess,
       accessibleOrgIds: mockAuthState.accessibleOrgIds,
       canAccessOrg,
       orgCondition: () => ({ op: 'orgCondition' })
@@ -258,6 +260,7 @@ describe('patch routes', () => {
     mockAuthState.scope = 'organization';
     mockAuthState.orgId = ACCESSIBLE_ORG_ID;
     mockAuthState.partnerId = null;
+    mockAuthState.partnerOrgAccess = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     mockAuthState.permissions = [{ resource: '*', action: '*' }];
     app = new Hono();
@@ -1026,6 +1029,7 @@ describe('patch routes', () => {
     mockAuthState.scope = 'partner';
     mockAuthState.orgId = null;
     mockAuthState.partnerId = PARTNER_ID;
+    mockAuthState.partnerOrgAccess = 'all';
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
     const res = await app.request('/patches/bulk-approve', {
@@ -1077,6 +1081,7 @@ describe('patch routes', () => {
     mockAuthState.scope = 'partner';
     mockAuthState.orgId = null;
     mockAuthState.partnerId = PARTNER_ID;
+    mockAuthState.partnerOrgAccess = 'all';
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
 
     const res = await app.request(`/patches/bulk-approve?partnerId=${PARTNER_ID}`, {

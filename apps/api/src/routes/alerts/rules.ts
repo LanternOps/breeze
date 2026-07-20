@@ -175,6 +175,38 @@ rulesRoutes.get(
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
+    // Site authorization depends on the persisted target records, so it
+    // cannot be expressed by the alert_rules predicates alone. Filter the
+    // complete tenant-scoped candidate set before slicing the requested page;
+    // otherwise denied rows consume page slots and make later allowed rules
+    // undiscoverable while also producing an incorrect total.
+    if (auth.allowedSiteIds !== undefined) {
+      const candidateRules = await db
+        .select({
+          rule: alertRules,
+          template: alertTemplates
+        })
+        .from(alertRules)
+        .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
+        .where(whereCondition)
+        .orderBy(desc(alertRules.createdAt));
+
+      const accessibleRules = [];
+      for (const row of candidateRules) {
+        const targets = persistedRuleTargets(row.rule);
+        if (await canAccessRuleTargets(auth, row.rule.orgId!, targets.targetType, targets.targetIds, false)) {
+          accessibleRules.push(row);
+        }
+      }
+
+      return c.json({
+        data: accessibleRules
+          .slice(offset, offset + limit)
+          .map(({ rule, template }) => formatAlertRuleResponse(rule, template)),
+        pagination: { page, limit, total: accessibleRules.length }
+      });
+    }
+
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
@@ -195,17 +227,9 @@ rulesRoutes.get(
       .limit(limit)
       .offset(offset);
 
-    const accessibleRules = [];
-    for (const row of rulesList) {
-      const targets = persistedRuleTargets(row.rule);
-      if (await canAccessRuleTargets(auth, row.rule.orgId!, targets.targetType, targets.targetIds, false)) {
-        accessibleRules.push(row);
-      }
-    }
-
     return c.json({
-      data: accessibleRules.map(({ rule, template }) => formatAlertRuleResponse(rule, template)),
-      pagination: { page, limit, total: auth.allowedSiteIds ? accessibleRules.length : total }
+      data: rulesList.map(({ rule, template }) => formatAlertRuleResponse(rule, template)),
+      pagination: { page, limit, total }
     });
   }
 );

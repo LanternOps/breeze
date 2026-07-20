@@ -67,7 +67,7 @@ vi.mock('../../services/partnerWideAccess', () => ({
   PARTNER_WIDE_WRITE_DENIED_MESSAGE: 'Partner-wide denied',
 }));
 vi.mock('./helpers', () => ({
-  getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
+  getPagination: vi.fn(() => ({ page: 1, limit: 1, offset: 0 })),
   ensureOrgAccess: vi.fn(() => true),
   getAlertRuleWithOrgCheck: vi.fn(async () => ruleRef.current),
   isRecord: (value: unknown) => !!value && typeof value === 'object' && !Array.isArray(value),
@@ -194,10 +194,36 @@ describe('alert rule site target authorization', () => {
       id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'device', targetId: TARGET_A,
       overrideSettings: { targets: { type: 'device', ids: [TARGET_A] }, targetIds: [TARGET_A] },
     };
-    selectQueue.push([{ count: 1 }], [{ rule, template: null }], [{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }]);
+    selectQueue.push([{ rule, template: null }], [{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }]);
     const res = await app().request('/alerts/rules');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ data: [], pagination: { total: 0 } });
+  });
+
+  it('filters before pagination so denied rules do not hide later accessible rules', async () => {
+    const deniedRule = {
+      id: RULE_ID, orgId: ORG_ID, templateId: TEMPLATE_ID, targetType: 'device', targetId: TARGET_A,
+      overrideSettings: { targets: { type: 'device', ids: [TARGET_A] }, targetIds: [TARGET_A] },
+    };
+    const allowedRule = {
+      ...deniedRule,
+      id: '88888888-8888-4888-8888-888888888888',
+      targetId: TARGET_B,
+      overrideSettings: { targets: { type: 'device', ids: [TARGET_B] }, targetIds: [TARGET_B] },
+    };
+    selectQueue.push(
+      [{ rule: deniedRule, template: null }, { rule: allowedRule, template: null }],
+      [{ id: TARGET_A, orgId: ORG_ID, siteId: DENIED_SITE }],
+      [{ id: TARGET_B, orgId: ORG_ID, siteId: ALLOWED_SITE }],
+    );
+
+    const res = await app().request('/alerts/rules');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      data: [{ id: allowedRule.id }],
+      pagination: { page: 1, limit: 1, total: 1 },
+    });
   });
 
   it('rejects updating a persisted denied group target before any write', async () => {
