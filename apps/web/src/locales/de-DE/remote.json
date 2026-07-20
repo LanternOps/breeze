@@ -28,33 +28,34 @@
     "downloadFor": "Für {{platform}} herunterladen",
     "errors": {
       "connectionFailed": "Verbindung fehlgeschlagen",
-      "createDesktopCode": "Fehler beim Erstellen des Desktop-Codes",
+      "createDesktopCode": "Desktop-Verbindungscode konnte nicht erstellt werden",
       "createDesktopSession": "Die Desktop-Sitzung konnte nicht erstellt werden",
       "createVncTunnel": "VNC-Tunnel konnte nicht erstellt werden",
-      "deviceChanged": "Gerät konnte nicht geändert werden",
+      "deviceChanged": "Remote-Start fehlgeschlagen: Gerätedatensatz hat sich geändert. Bitte aktualisieren und erneut versuchen.",
       "http": "Fernstart fehlgeschlagen (HTTP {{status}})",
-      "invalidDesktopCode": "Fehler beim ungültigen Desktop-Code",
-      "issueVncCode": "VNC-Code konnte nicht ausgegeben werden",
-      "securityCheckToast": "Sicherheitsüberprüfung des Toasts fehlgeschlagen",
-      "securityPolicy": "Sicherheitsrichtlinie fehlgeschlagen",
-      "server": "Fehler beim Server",
-      "vncTunnelFailed": "Fehler beim VNC-Tunnel"
+      "invalidDesktopCode": "Ungültige Antwort für den Desktop-Verbindungscode",
+      "issueVncCode": "VNC-Verbindungscode konnte nicht ausgestellt werden",
+      "securityCheckToast": "Remote-Start nicht verfügbar: Sicherheitsprüfung fehlgeschlagen. Bitte wenden Sie sich an Ihren Administrator.",
+      "securityPolicy": "Remote-Start durch Sicherheitsrichtlinie blockiert",
+      "server": "Remote-Start fehlgeschlagen: Serverfehler. Bitte wenden Sie sich an Ihren Administrator.",
+      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden"
     },
     "fallback": {
-      "title": "Titel",
-      "viewerDescription": "Beschreibung des Betrachters",
-      "vncDescription": "Vnc-Beschreibung"
+      "linuxFirstRun": "Machen Sie die heruntergeladene Datei unter Linux ausführbar (chmod +x) und starten Sie sie einmal. Damit wird der Viewer registriert und Sitzungen öffnen sich danach automatisch.",
+      "title": "Viewer nicht geöffnet?",
+      "viewerDescription": "Wenn sich der Viewer geöffnet hat, können Sie dies schließen. Andernfalls laden Sie ihn unten herunter.",
+      "vncDescription": "Öffnen Sie die VNC-Sitzung stattdessen im Browser."
     },
     "launcherSkip": {
-      "configError": "Konfigurationsfehler",
-      "emptyUrlTemplate": "Leere URL-Vorlage",
+      "configError": "Das vom Partner konfigurierte Remote-Tool konnte nicht aufgelöst werden (Konfigurationsfehler). Es wird auf den integrierten Remote-Desktop zurückgegriffen.",
+      "emptyUrlTemplate": "Für das vom Partner konfigurierte Remote-Tool ist keine URL-Vorlage festgelegt. Es wird auf den integrierten Remote-Desktop zurückgegriffen.",
       "missingIdentifier": "Diesem Gerät fehlt die gerätespezifische Kennung, die das vom Partner konfigurierte Remote-Tool benötigt (z. B. die RustDesk-Peer-ID). Zurückgreifen auf den integrierten Remote-Desktop. Legen Sie die Kennung unter Geräteeinstellungen → Benutzerdefinierte Felder fest.",
       "providerDisabled": "Das vom Partner konfigurierte Remote-Tool für dieses Gerät ist derzeit deaktiviert. Zurückgreifen auf den integrierten Remote-Desktop."
     },
     "launching": "Start...",
     "launchingViewer": "Viewer wird gestartet...",
     "openInBrowser": "Im Browser öffnen",
-    "policyDisabled": "Richtlinie deaktiviert",
+    "policyDisabled": "Remote-Desktop ist durch Richtlinie deaktiviert",
     "policyDisabledNamed": "Der Remotedesktop ist durch die Richtlinie „{{name}}“ deaktiviert.",
     "unavailable": {
       "default": "Desktop ist auf diesem Gerät nicht verfügbar",
@@ -77,20 +78,20 @@
       "connectionFailed": "Verbindung fehlgeschlagen",
       "createTunnel": "Tunnel konnte nicht erstellt werden",
       "createVncTunnel": "VNC-Tunnel konnte nicht erstellt werden",
-      "issueConnectCode": "Verbindungscode konnte nicht ausgegeben werden",
-      "tunnelFailed": "Fehler beim Tunneln"
+      "issueConnectCode": "VNC-Verbindungscode konnte nicht ausgestellt werden",
+      "tunnelFailed": "Tunnel konnte nicht geöffnet werden"
     },
     "fallback": {
-      "description": "Beschreibung",
-      "title": "Titel"
+      "description": "Öffnen Sie die VNC-Sitzung stattdessen im Browser.",
+      "title": "Viewer nicht geöffnet?"
     },
     "launching": "Start...",
     "openInBrowser": "Im Browser öffnen",
-    "policyDisabled": "Richtlinie deaktiviert",
-    "policyDisabledNamed": "Richtlinie deaktiviert benannt",
-    "unavailable": "Nicht verfügbar",
+    "policyDisabled": "VNC-Relay ist durch Richtlinie deaktiviert",
+    "policyDisabledNamed": "VNC-Relay ist durch Richtlinie „{{name}}“ deaktiviert",
+    "unavailable": "VNC nicht verfügbar",
     "vncDesktop": "VNC-Desktop",
-    "vncRemote": "VNC-Remotezugriff"
+    "vncRemote": "VNC-Remote"
   },
   "deleteConfirmDialog": {
     "deletePermanently": "Dauerhaft löschen",

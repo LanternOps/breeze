@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Monitor } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
@@ -89,9 +90,26 @@ export default function App() {
     setError(msg);
   }, []);
 
-  // ── Main window: hidden, render nothing ─────────────────────────────
+  // ── Main window: idle card ──────────────────────────────────────────
+  // Normally hidden (it is just the process anchor), but Rust shows it when the
+  // viewer is launched by hand with no deep link. On Linux that is the required
+  // first run — the AppImage has to be executed once to register itself as the
+  // `breeze://` handler — so this window is the only confirmation the user gets
+  // that the install worked (#2614).
   if (windowLabel === 'main') {
-    return null;
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
+        <Monitor className="h-8 w-8 text-accent-soft" />
+        <h1 className="text-base font-semibold text-white">Breeze Viewer is ready</h1>
+        <p className="text-sm leading-relaxed text-gray-400">
+          Remote sessions open automatically when you choose{' '}
+          <span className="font-medium text-gray-200">Connect Desktop</span> in the Breeze console.
+        </p>
+        <p className="text-xs text-gray-500">
+          You can close this window — Breeze reopens the viewer when a session starts.
+        </p>
+      </div>
+    );
   }
 
   // ── Session window: viewer ─────────────────────────────────────────

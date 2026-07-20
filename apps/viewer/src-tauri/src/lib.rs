@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -40,6 +41,201 @@ fn register_url_scheme() {
         }
     }
 }
+
+/// Set once the app has asked to exit, so the shutdown that follows — which
+/// destroys every remaining window and re-enters the `Destroyed` handler — can't
+/// call `exit(0)` a second time from inside Tauri's own teardown. The macOS
+/// terminate sequence is already fragile enough to need the `RunEvent::Exit`
+/// workaround at the bottom of `run()`; re-entering it is not worth finding out.
+static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Filename of the desktop entry this app owns under the XDG applications dir.
+#[cfg(target_os = "linux")]
+const LINUX_DESKTOP_ENTRY_NAME: &str = "breeze-viewer.desktop";
+
+/// Resolve the launcher path to record in the Linux desktop entry.
+///
+/// Inside an AppImage, `current_exe()` points at the ephemeral squashfs mount
+/// (`/tmp/.mount_XXXXXX/usr/bin/breeze-viewer`), which disappears the moment the
+/// process exits — a desktop entry pointing there is dead on arrival. The
+/// AppImage runtime sets `$APPIMAGE` to the real, persistent path of the
+/// `.AppImage` file, so that always wins when present. A plain (non-AppImage)
+/// build falls back to `current_exe()`.
+///
+/// Relative paths are rejected: `Exec=` is resolved against an unspecified
+/// working directory, so anything non-absolute is a handler that fails later
+/// instead of failing here.
+/// Compiled on Linux, and under `cfg(test)` everywhere so the pure helpers
+/// stay unit-testable on any dev machine — only the fs/subprocess half of
+/// registration is Linux-only.
+#[cfg(any(target_os = "linux", test))]
+fn resolve_launcher_path(
+    appimage_env: Option<&str>,
+    current_exe: Option<&Path>,
+) -> Option<PathBuf> {
+    let candidate = match appimage_env.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(appimage) => PathBuf::from(appimage),
+        None => current_exe?.to_path_buf(),
+    };
+    candidate.is_absolute().then_some(candidate)
+}
+
+/// Directory the desktop entry is written to, per the XDG base directory spec.
+/// Compiled on Linux, and under `cfg(test)` everywhere so the pure helpers
+/// stay unit-testable on any dev machine — only the fs/subprocess half of
+/// registration is Linux-only.
+#[cfg(any(target_os = "linux", test))]
+fn xdg_applications_dir(xdg_data_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let base = match xdg_data_home.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(data_home) => PathBuf::from(data_home),
+        None => Path::new(home.map(str::trim).filter(|s| !s.is_empty())?).join(".local/share"),
+    };
+    base.is_absolute().then(|| base.join("applications"))
+}
+
+/// Quote a path for the `Exec=` key of a desktop entry.
+///
+/// Always quotes rather than deciding whether quoting is needed — the
+/// "does this character require quoting" branch is the bug-prone half, and an
+/// unconditionally quoted argument is valid per the Desktop Entry spec.
+/// Returns `None` for paths containing characters that would corrupt the
+/// key-value file format outright; we would rather skip registration than
+/// write a malformed entry that breaks every other handler in the file.
+/// Compiled on Linux, and under `cfg(test)` everywhere so the pure helpers
+/// stay unit-testable on any dev machine — only the fs/subprocess half of
+/// registration is Linux-only.
+#[cfg(any(target_os = "linux", test))]
+fn escape_desktop_exec(path: &str) -> Option<String> {
+    if path.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let mut out = String::with_capacity(path.len() + 2);
+    out.push('"');
+    for ch in path.chars() {
+        if matches!(ch, '"' | '`' | '$' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// Body of the desktop entry that claims `breeze://` for this install.
+///
+/// `NoDisplay=true` because this entry exists only to register the URL scheme —
+/// the viewer is launched by the Breeze console, not from an app menu, and a
+/// visible entry would linger after the user deletes the AppImage.
+/// Compiled on Linux, and under `cfg(test)` everywhere so the pure helpers
+/// stay unit-testable on any dev machine — only the fs/subprocess half of
+/// registration is Linux-only.
+#[cfg(any(target_os = "linux", test))]
+fn desktop_entry_contents(exec_quoted: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Breeze Viewer\n\
+         Comment=Breeze remote desktop viewer\n\
+         Exec={exec_quoted} %u\n\
+         Terminal=false\n\
+         NoDisplay=true\n\
+         StartupNotify=true\n\
+         StartupWMClass=breeze-viewer\n\
+         Categories=Network;RemoteAccess;\n\
+         MimeType=x-scheme-handler/breeze;\n"
+    )
+}
+
+/// Register this install as the `breeze://` handler on Linux.
+///
+/// Nothing else does this. An AppImage is a single self-contained file that is
+/// never installed into the XDG applications directory, so no `.desktop` file
+/// is ever seen by `update-desktop-database` and `x-scheme-handler/breeze`
+/// stays unclaimed. The console's deep link is then a silent no-op, its session
+/// poll times out, and the user is told to "Download for Linux" forever — even
+/// with the viewer already downloaded and running (issue #2614).
+///
+/// Runs on every launch so the handler follows the AppImage if the user moves
+/// it, but rewrites (and re-runs the two xdg subprocesses) only when the
+/// content actually changes.
+#[cfg(target_os = "linux")]
+fn register_url_scheme() {
+    let launcher = match resolve_launcher_path(
+        std::env::var("APPIMAGE").ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    ) {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping breeze:// registration: no absolute launcher path");
+            return;
+        }
+    };
+
+    let exec_quoted = match escape_desktop_exec(&launcher.to_string_lossy()) {
+        Some(quoted) => quoted,
+        None => {
+            eprintln!(
+                "Skipping breeze:// registration: launcher path is not representable in a desktop entry"
+            );
+            return;
+        }
+    };
+
+    let dir = match xdg_applications_dir(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    ) {
+        Some(dir) => dir,
+        None => {
+            eprintln!("Skipping breeze:// registration: cannot locate XDG applications directory");
+            return;
+        }
+    };
+
+    let entry_path = dir.join(LINUX_DESKTOP_ENTRY_NAME);
+    let contents = desktop_entry_contents(&exec_quoted);
+
+    if std::fs::read_to_string(&entry_path).ok().as_deref() == Some(contents.as_str()) {
+        return; // Already registered at this path — skip the subprocesses.
+    }
+
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!("Failed to create {}: {}", dir.display(), err);
+        return;
+    }
+    if let Err(err) = std::fs::write(&entry_path, &contents) {
+        eprintln!("Failed to write {}: {}", entry_path.display(), err);
+        return;
+    }
+
+    // Both are best-effort: some minimal desktops ship neither, and a missing
+    // cache refresh still leaves a valid entry on disk for the next login.
+    run_best_effort("update-desktop-database", &[dir.as_os_str()]);
+    run_best_effort(
+        "xdg-mime",
+        &[
+            std::ffi::OsStr::new("default"),
+            std::ffi::OsStr::new(LINUX_DESKTOP_ENTRY_NAME),
+            std::ffi::OsStr::new("x-scheme-handler/breeze"),
+        ],
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn run_best_effort(program: &str, args: &[&std::ffi::OsStr]) {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(output) if !output.status.success() => {
+            eprintln!("{} exited with status {}", program, output.status);
+        }
+        Err(err) => eprintln!("Failed to run {}: {}", program, err),
+        Ok(_) => {}
+    }
+}
+
+/// No URL-scheme registration is needed on Windows — the MSI installer writes
+/// the `breeze` scheme into the registry at install time.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn register_url_scheme() {}
 
 /// Per-window pending deep link URLs. Key = window label, value = deep link URL.
 struct DeepLinkState(Mutex<HashMap<String, String>>);
@@ -502,6 +698,12 @@ fn create_session_window(app: &tauri::AppHandle, url: String) {
         .build()
     {
         Ok(_) => {
+            // A real session took over — retire the idle anchor window if a
+            // manual launch had made it visible. Hidden, not closed: it is
+            // still the process anchor.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.hide();
+            }
             emit_with_retry(app, &label, url);
         }
         Err(e) => {
@@ -746,7 +948,6 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
-            #[cfg(target_os = "macos")]
             register_url_scheme();
 
             let initial_url = app
@@ -771,6 +972,36 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let _ = app.handle().run_on_main_thread(move || {
                     create_session_window(&handle, url);
+                });
+            } else {
+                // Launched with no deep link — which on Linux is the required
+                // first run, since the AppImage has to be executed once to
+                // register itself as the `breeze://` handler. The anchor window
+                // is `visible: false` in tauri.conf.json, so without this the
+                // process starts, registers, and then sits in the process list
+                // with no window and no output: indistinguishable from a crash
+                // (issue #2614). Show it so the launch has a visible result.
+                //
+                // Deferred rather than immediate because "no deep link at
+                // setup() time" is not the same as "no deep link": on a macOS
+                // cold start via `breeze://`, LaunchServices can deliver the URL
+                // to on_open_url *after* setup() returns. Showing the card
+                // straight away would flash it on screen before the session
+                // window replaces it. Waiting a beat and re-checking means the
+                // card appears only when nothing else claimed the launch.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if active_session_window_count(&h) > 0 {
+                            return;
+                        }
+                        if let Some(main) = h.get_webview_window("main") {
+                            let _ = main.show();
+                            let _ = main.set_focus();
+                        }
+                    });
                 });
             }
 
@@ -827,16 +1058,21 @@ pub fn run() {
                         map.remove(&label);
                     }
 
-                    // When the last session window closes, exit the app cleanly.
-                    // The hidden anchor window serves no purpose on its own.
-                    if label.starts_with("session-") {
+                    // When the last on-screen window closes, exit the app
+                    // cleanly. The anchor window serves no purpose on its own,
+                    // so closing it with no sessions left must quit rather than
+                    // leave an invisible process behind (#2614) — it is only
+                    // ever visible after a manual launch (see setup()).
+                    if label == "main" || label.starts_with("session-") {
                         let counter = app_handle.state::<WindowCounter>();
                         let n = *lock_or_recover(&counter.0, "window_counter");
                         let has_remaining = (1..=n).any(|i| {
                             let l = format!("session-{}", i);
                             l != label && app_handle.get_webview_window(&l).is_some()
                         });
-                        if !has_remaining {
+                        if !has_remaining
+                            && !EXIT_REQUESTED.swap(true, std::sync::atomic::Ordering::SeqCst)
+                        {
                             app_handle.exit(0);
                         }
                     }
@@ -862,6 +1098,104 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `$APPIMAGE` must win over `current_exe()`. Inside an AppImage the latter
+    /// is the ephemeral squashfs mount, so registering it produces a handler
+    /// that breaks the moment the process exits (#2614).
+    #[test]
+    fn resolve_launcher_path_prefers_appimage_over_current_exe() {
+        let exe = PathBuf::from("/tmp/.mount_abc123/usr/bin/breeze-viewer");
+        assert_eq!(
+            resolve_launcher_path(Some("/home/u/breeze-viewer-linux.AppImage"), Some(&exe)),
+            Some(PathBuf::from("/home/u/breeze-viewer-linux.AppImage"))
+        );
+    }
+
+    #[test]
+    fn resolve_launcher_path_falls_back_and_rejects_non_absolute() {
+        let exe = PathBuf::from("/opt/breeze/breeze-viewer");
+        // Unset, empty, and whitespace-only $APPIMAGE all fall back to the exe.
+        for env in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_launcher_path(env, Some(&exe)),
+                Some(exe.clone()),
+                "APPIMAGE={env:?}"
+            );
+        }
+        // Relative paths are useless in Exec= — reject rather than half-register.
+        assert_eq!(
+            resolve_launcher_path(Some("./breeze.AppImage"), Some(&exe)),
+            None
+        );
+        assert_eq!(
+            resolve_launcher_path(None, Some(Path::new("breeze-viewer"))),
+            None
+        );
+        assert_eq!(resolve_launcher_path(None, None), None);
+    }
+
+    #[test]
+    fn xdg_applications_dir_cases() {
+        assert_eq!(
+            xdg_applications_dir(Some("/home/u/.xdgdata"), Some("/home/u")),
+            Some(PathBuf::from("/home/u/.xdgdata/applications"))
+        );
+        assert_eq!(
+            xdg_applications_dir(None, Some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share/applications"))
+        );
+        // Empty XDG_DATA_HOME is "unset" per the spec, not an empty base path.
+        assert_eq!(
+            xdg_applications_dir(Some(""), Some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share/applications"))
+        );
+        // Nothing usable, and a relative base, both yield no directory.
+        assert_eq!(xdg_applications_dir(None, None), None);
+        assert_eq!(
+            xdg_applications_dir(Some("relative/data"), Some("/home/u")),
+            None
+        );
+    }
+
+    #[test]
+    fn escape_desktop_exec_quotes_and_escapes() {
+        assert_eq!(
+            escape_desktop_exec("/home/u/breeze-viewer-linux.AppImage").as_deref(),
+            Some("\"/home/u/breeze-viewer-linux.AppImage\"")
+        );
+        // Spaces are the realistic case (~/Downloads on a localized desktop).
+        assert_eq!(
+            escape_desktop_exec("/home/u/My Apps/breeze.AppImage").as_deref(),
+            Some("\"/home/u/My Apps/breeze.AppImage\"")
+        );
+        // Shell-significant characters are backslash-escaped inside the quotes.
+        assert_eq!(
+            escape_desktop_exec("/home/u/a$b`c\"d\\e").as_deref(),
+            Some("\"/home/u/a\\$b\\`c\\\"d\\\\e\"")
+        );
+        // A newline would terminate the Exec= key and corrupt the whole file.
+        assert_eq!(escape_desktop_exec("/home/u/a\nb"), None);
+        assert_eq!(escape_desktop_exec("/home/u/a\tb"), None);
+    }
+
+    /// The entry is worthless unless it claims the scheme and forwards the URL,
+    /// so lock both: a missing `%u` launches the viewer with no deep link, and
+    /// a missing MimeType leaves `breeze://` unclaimed — the exact #2614 bug.
+    #[test]
+    fn desktop_entry_declares_scheme_handler_and_forwards_url() {
+        let entry = desktop_entry_contents("\"/home/u/breeze.AppImage\"");
+        assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
+        assert!(
+            entry.contains("Exec=\"/home/u/breeze.AppImage\" %u\n"),
+            "{entry}"
+        );
+        assert!(
+            entry.contains("MimeType=x-scheme-handler/breeze;\n"),
+            "{entry}"
+        );
+        assert!(entry.contains("Type=Application\n"), "{entry}");
+        assert!(entry.ends_with('\n'), "{entry}");
+    }
 
     #[test]
     fn download_percent_cases() {
