@@ -219,6 +219,17 @@ commandsRoutes.post(
     // Query device_commands OUTSIDE the agentAuth transaction.
     // device_commands has no RLS; querying via the pool (auto-commit)
     // guarantees visibility of recently committed rows.
+    //
+    // The READ deliberately stays on the bare pool while the write below takes
+    // an explicit system context. Only insert/update/delete are instrumented by
+    // the contextless-write guard (CONTEXTLESS_WRITE_GUARD_METHODS, db/index.ts),
+    // and a bare-pool read of an RLS-free table returns the same rows a
+    // system-context read would — so wrapping it would buy nothing and cost a
+    // full BEGIN + set_config×6 + COMMIT round-trip on a hot agent path we are
+    // actively trying to keep off the connection pool (#1105). If
+    // device_commands ever gains an RLS policy, this read becomes a silent
+    // 0-row no-op and MUST move into withSystemDbAccessContext — same caveat as
+    // services/commandDispatch.ts.
     const [command] = await runOutsideDbContext(() =>
       db
         .select()
@@ -262,7 +273,15 @@ commandsRoutes.post(
     // + capture_pprof artifacts); persisted stdout is redacted per-site.
     const normalizedData = redactAgentResultErrorFields(rawNormalizedData);
 
-    const updated = await runOutsideDbContext(async () => {
+    // Terminal compare-and-set, outside the agentAuth transaction for the same
+    // visibility reasons as the lookup above, and under an explicit system
+    // context so this is not a contextless bare-pool write (#1375). Mirrors the
+    // WS twin in agentWs.processCommandResult; device_commands is intentionally
+    // system-scoped (no RLS), so the context changes nothing about what the
+    // write can touch — it makes the guard's invariant in db/index.ts true on
+    // this path too. Without it, this route was the largest remaining source of
+    // BREEZE-7 events after the WS path was fixed.
+    const updated = await runOutsideDbContext(async () => withSystemDbAccessContext(async () => {
       const query = db
         .update(deviceCommands)
         .set({
@@ -283,7 +302,7 @@ commandsRoutes.post(
       return typeof query.returning === 'function'
         ? query.returning({ id: deviceCommands.id })
         : query;
-    });
+    }));
 
     const updatedRows = Array.isArray(updated)
       ? updated
