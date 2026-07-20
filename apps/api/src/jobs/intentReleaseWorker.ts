@@ -22,6 +22,7 @@ import {
   executeM365ToolHeadless,
   M365ConnectionUnavailableError,
 } from '../services/m365ToolsHeadless';
+import { sealActionResultSecrets } from '../services/actionIntents/resultSecrets';
 
 /**
  * Durable release worker (spec
@@ -336,9 +337,15 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
 
+  // Seal any secret fields (reset_password temporaryPassword) before storage.
+  // Re-check the size cap afterwards: ciphertext is larger than plaintext.
+  let finalResult = sealActionResultSecrets(storedResult);
+  if (Buffer.byteLength(JSON.stringify(finalResult), 'utf8') > MAX_RESULT_BYTES) {
+    finalResult = { truncated: true };
+  }
   const completed = await transitionIntent(intent.id, 'executing', 'completed', {
     executedAt: new Date(),
-    result: storedResult,
+    result: finalResult,
   });
 
   if (!completed) {
