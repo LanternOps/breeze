@@ -112,7 +112,7 @@ Breeze RMM **vX.Y.Z** — one-line theme of the release.
 
 Self-hosters run their own droplets and read this section to decide whether an upgrade is safe and what they must touch. Always answer these four questions explicitly, even when the answer is "nothing required" — silence reads as "I don't know":
 
-1. **Upgrade command.** The standard line is: bump `BREEZE_VERSION`, then `docker compose pull api web && docker compose up -d` (and `pnpm install` if they build from source).
+1. **Upgrade command.** The standard line is: bump `BREEZE_VERSION`, then `docker compose pull api web portal && docker compose up -d` (and `pnpm install` if they build from source). Include `portal` — it is a separate container and was silently left behind for 11 days (stuck on 0.94.0 while api/web ran 0.98.1) back when the line pulled only `api web`.
 2. **Database / migrations.** State the count and that they're idempotent and auto-apply on boot via `autoMigrate` (unless `AUTO_MIGRATE=false`). **Explicitly flag any large-table rewrite or backfill** — that's the difference between a 2-second upgrade and a stalled boot. If nothing: "**Database — nothing required.**"
 3. **New required environment variables.** Anything the config validator now refuses to boot without (e.g. past examples: `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`, `IS_HOSTED`). A new required env var must *also* be mapped in the `api`/`web` `environment:` block of their compose, not just `.env` — say so. If none: "**No new required environment variables.**"
 4. **Behavior changes & feature flags.** Anything whose default changed (call out grandfathering of existing orgs), and any feature gated behind a flag (e.g. `PUBLIC_ENABLE_EDR_INTEGRATIONS`) — name the flag and its default.
@@ -239,10 +239,12 @@ Per droplet:
 ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-$NEW && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=0.X.Y/' .env && \
-  docker compose pull api web && \
-  docker compose up -d binaries-init api web"
+  docker compose pull api web portal && \
+  docker compose up -d binaries-init api web portal"
 # then verify:
 curl -sf https://<region>.2breeze.app/health     # 200 = healthy; check "version" in the JSON
+# portal is a SEPARATE container — /health does NOT cover it. Assert its image too:
+ssh root@<droplet> "docker ps --filter name=portal --format '{{.Image}}'"   # must be :0.X.Y, not an older tag
 # and confirm migrations applied cleanly:
 ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail -5"
 # expect "[auto-migrate] Applied N migration(s)" and the unprivileged app-user line

@@ -249,11 +249,17 @@ Droplets pull from `/opt/breeze` and use mutable image tags driven by `BREEZE_VE
 ssh root@<droplet> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
-  docker compose pull api web && \
-  docker compose up -d binaries-init api web"
+  docker compose pull api web portal && \
+  docker compose up -d binaries-init api web portal"
 ```
 
 Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
+
+**`portal` must be in that line.** The customer portal (`@breeze/portal`, the `/portal/*` surface customers reach from quote/invite emails) is a **separate container** from `api`/`web`. The deploy line used to pull only `api web`, so the portal was never rolled by any release — on 2026-07-20 both droplets were found still running `portal:0.94.0` while `api`/`web` were on `0.98.1`, meaning a portal fix merged in v0.97.0 had been invisible in production for 11 days while `/health` reported the new version. Verify it explicitly after deploying:
+
+```bash
+ssh root@<droplet> "docker ps --filter name=portal --format '{{.Image}}'"   # must match BREEZE_VERSION
+```
 
 **Required env vars added by v0.65+ — droplets without these refuse to start:**
 

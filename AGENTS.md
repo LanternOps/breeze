@@ -320,11 +320,13 @@ Production hosts pull from `/opt/breeze` and use mutable image tags driven by `B
 ssh root@<host> "cd /opt/breeze && \
   cp .env .env.bak-pre-<new-version> && \
   sed -i 's/^BREEZE_VERSION=.*/BREEZE_VERSION=<new-version>/' .env && \
-  docker compose pull api web && \
-  docker compose up -d binaries-init api web"
+  docker compose pull api web portal && \
+  docker compose up -d binaries-init api web portal"
 ```
 
 Then verify health with `curl -sf https://<host-or-domain>/health` (200 = healthy).
+
+**`portal` must be in that line.** The customer portal (`@breeze/portal`, serving `/portal/*` — the surface customers reach from quote and invite emails) is a separate container from `api`/`web`. While the deploy line pulled only `api web`, the portal was never rolled by a release and silently stayed several versions behind while `/health` reported the new version. After deploying, confirm the image matches: `docker ps --filter name=portal --format '{{.Image}}'`.
 
 **Required env vars added by v0.65+ — production hosts without these refuse to start:**
 
