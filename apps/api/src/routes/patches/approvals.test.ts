@@ -72,8 +72,11 @@ vi.mock('./helpers', () => ({
 
 import { approvalsRoutes } from './approvals';
 import { db } from '../../db';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
 
 const PATCH_ID = '22222222-2222-4222-8222-222222222222';
+let partnerOrgAccess: 'all' | 'selected' | 'none' = 'all';
 
 function mountApp() {
   const app = new Hono();
@@ -82,6 +85,7 @@ function mountApp() {
       user: { id: 'user-1' },
       scope: 'partner',
       partnerId: PARTNER_ID,
+      partnerOrgAccess,
     });
     await next();
   });
@@ -104,6 +108,7 @@ describe('patch approvals RBAC gating', () => {
     vi.clearAllMocks();
     hasPermission = true;
     mfaSatisfied = true;
+    partnerOrgAccess = 'all';
   });
 
   describe('without the devices:execute permission', () => {
@@ -148,7 +153,7 @@ describe('patch approvals RBAC gating', () => {
     });
   });
 
-  describe('with the devices:execute permission', () => {
+  describe('with the devices:execute permission and full partner org access', () => {
     it('allows POST /patches/bulk-approve', async () => {
       const res = await mountApp().request('/patches/bulk-approve', {
         method: 'POST',
@@ -171,6 +176,56 @@ describe('patch approvals RBAC gating', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('approved');
+    });
+
+    it('allows POST /patches/:id/decline', async () => {
+      mockPatchLookup(true);
+      const res = await mountApp().request(`/patches/${PATCH_ID}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('declined');
+    });
+
+    it('allows POST /patches/:id/defer', async () => {
+      mockPatchLookup(true);
+      const deferUntil = '2030-01-01T00:00:00.000Z';
+      const res = await mountApp().request(`/patches/${PATCH_ID}/defer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify({ deferUntil }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ status: 'deferred', deferUntil });
+    });
+  });
+
+  describe.each(['selected', 'none'] as const)('with partner org access %s', (orgAccess) => {
+    beforeEach(() => {
+      partnerOrgAccess = orgAccess;
+    });
+
+    it.each([
+      { path: '/patches/bulk-approve', body: { patchIds: [PATCH_ID] } },
+      { path: `/patches/${PATCH_ID}/approve`, body: {} },
+      { path: `/patches/${PATCH_ID}/decline`, body: {} },
+      { path: `/patches/${PATCH_ID}/defer`, body: { deferUntil: '2030-01-01T00:00:00.000Z' } },
+    ])('rejects POST $path before any database write, lookup, or audit', async ({ path, body }) => {
+      const res = await mountApp().request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+        body: JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(403);
+      expect(resolvePatchApprovalPartnerIdForRing).not.toHaveBeenCalled();
+      expect(upsertPatchApproval).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });
 

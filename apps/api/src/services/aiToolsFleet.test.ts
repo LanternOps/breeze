@@ -369,6 +369,14 @@ describe('manage_patches handler', () => {
     orgCondition: () => undefined,
   } as any;
 
+  const fullPartnerAuth = {
+    ...orgAuth,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds: ['org-1'],
+    partnerOrgAccess: 'all',
+  } as any;
+
   it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
@@ -397,15 +405,33 @@ describe('manage_patches handler', () => {
   it('approve action calls upsertPatchApproval with correct call shape', async () => {
     vi.mocked(upsertPatchApproval).mockClear();
     const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-    await tool.handler({ action: 'approve', patchId }, orgAuth);
+    await tool.handler({ action: 'approve', patchId }, fullPartnerAuth);
     expect(upsertPatchApproval).toHaveBeenCalledWith(
       expect.objectContaining({
         partnerId: 'partner-1',
         patchId,
         ringId: null,
         status: 'approved',
-      })
+      }),
+      fullPartnerAuth,
     );
+  });
+
+  it.each(['selected', 'none'] as const)('rejects partner org access %s before patch approval writes', async (orgAccess) => {
+    vi.mocked(upsertPatchApproval).mockClear();
+    const restrictedAuth = { ...fullPartnerAuth, partnerOrgAccess: orgAccess };
+
+    for (const input of [
+      { action: 'approve', patchId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' },
+      { action: 'decline', patchId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' },
+      { action: 'defer', patchId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', deferUntil: '2030-01-01T00:00:00.000Z' },
+      { action: 'bulk_approve', patchIds: ['bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'] },
+    ]) {
+      const result = JSON.parse(await tool.handler(input, restrictedAuth));
+      expect(result.error).toContain('full partner org access');
+    }
+
+    expect(upsertPatchApproval).not.toHaveBeenCalled();
   });
 });
 

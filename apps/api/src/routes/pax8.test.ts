@@ -9,6 +9,7 @@ const { permissionGate, authState, orgConditionSpy } = vi.hoisted(() => {
     canAccessOrg: true,
     partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
     scope: 'partner' as 'partner' | 'organization' | 'system',
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
     // null = system scope (no filter); string[] = partner/org scope accessible orgs
     accessibleOrgIds: ['22222222-2222-2222-2222-222222222222'] as string[] | null,
   };
@@ -111,6 +112,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.partnerId,
+      partnerOrgAccess: authState.partnerOrgAccess,
       orgId: authState.scope === 'organization' ? ORG_A : null,
       accessibleOrgIds: ids,
       canAccessOrg: vi.fn(() => authState.canAccessOrg),
@@ -156,6 +158,45 @@ vi.mock('../services/pax8SyncService', () => ({
 
 import { db } from '../db';
 import { pax8Routes } from './pax8';
+import { encryptSecret } from '../services/secretCrypto';
+import { writeRouteAudit } from '../services/auditEvents';
+import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
+import {
+  createPax8ClientForIntegration,
+  linkPax8SubscriptionToContractLine,
+  mapPax8Company,
+  unlinkPax8Subscription,
+} from '../services/pax8SyncService';
+
+const INTEGRATION_ID = '44444444-4444-4444-4444-444444444444';
+const SNAPSHOT_ID = '66666666-6666-6666-6666-666666666666';
+const CONTRACT_LINE_ID = '77777777-7777-7777-7777-777777777777';
+
+function partnerGlobalRequests() {
+  return [
+    { name: 'GET /integration', path: '/pax8/integration', method: 'GET', body: undefined, fullPartnerStatus: 200 },
+    {
+      name: 'POST /integration', path: '/pax8/integration', method: 'POST',
+      body: { name: 'Pax8' }, fullPartnerStatus: 400,
+    },
+    { name: 'POST /integration/test', path: '/pax8/integration/test', method: 'POST', body: {}, fullPartnerStatus: 404 },
+    { name: 'POST /sync', path: '/pax8/sync', method: 'POST', body: {}, fullPartnerStatus: 404 },
+    { name: 'GET /companies', path: '/pax8/companies', method: 'GET', body: undefined, fullPartnerStatus: 200 },
+    {
+      name: 'POST /companies/map', path: '/pax8/companies/map', method: 'POST',
+      body: { integrationId: INTEGRATION_ID, pax8CompanyId: 'company-1', orgId: null }, fullPartnerStatus: 404,
+    },
+    { name: 'GET /subscriptions', path: '/pax8/subscriptions', method: 'GET', body: undefined, fullPartnerStatus: 200 },
+    {
+      name: 'POST /subscriptions/link', path: '/pax8/subscriptions/link', method: 'POST',
+      body: { integrationId: INTEGRATION_ID, subscriptionSnapshotId: SNAPSHOT_ID, contractLineId: CONTRACT_LINE_ID }, fullPartnerStatus: 404,
+    },
+    {
+      name: 'DELETE /subscriptions/link', path: '/pax8/subscriptions/link', method: 'DELETE',
+      body: { integrationId: INTEGRATION_ID, subscriptionSnapshotId: SNAPSHOT_ID }, fullPartnerStatus: 404,
+    },
+  ] as const;
+}
 
 function mockSelectOnce(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -232,9 +273,66 @@ describe('pax8 routes', () => {
     authState.canAccessOrg = true;
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.scope = 'partner';
+    authState.partnerOrgAccess = 'all';
     authState.accessibleOrgIds = [ORG_A];
     app = new Hono();
     app.route('/pax8', pax8Routes);
+  });
+
+  describe.each(['selected', 'none'] as const)('with partner org access %s', (orgAccess) => {
+    it.each(partnerGlobalRequests())('rejects $name before database and external side effects', async ({ path, method, body }) => {
+      authState.partnerOrgAccess = orgAccess;
+
+      const res = await app.request(path, {
+        method,
+        ...(body ? {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        } : {}),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(encryptSecret).not.toHaveBeenCalled();
+      expect(enqueuePax8Sync).not.toHaveBeenCalled();
+      expect(createPax8ClientForIntegration).not.toHaveBeenCalled();
+      expect(mapPax8Company).not.toHaveBeenCalled();
+      expect(linkPax8SubscriptionToContractLine).not.toHaveBeenCalled();
+      expect(unlinkPax8Subscription).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(partnerGlobalRequests())('allows full-partner access through the capability gate for $name', async ({ path, method, body, fullPartnerStatus }) => {
+    authState.partnerOrgAccess = 'all';
+    mockSelectOnce([]);
+
+    const res = await app.request(path, {
+      method,
+      ...(body ? {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      } : {}),
+    });
+
+    expect(res.status).toBe(fullPartnerStatus);
+    expect(db.select).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { partnerOrgAccess: 'all' as const, expectedStatus: 200 },
+    { partnerOrgAccess: 'selected' as const, expectedStatus: 403 },
+    { partnerOrgAccess: 'none' as const, expectedStatus: 403 },
+  ])('applies the full-partner access matrix for shared integration reads: $partnerOrgAccess', async ({ partnerOrgAccess, expectedStatus }) => {
+    authState.partnerOrgAccess = partnerOrgAccess;
+    mockSelectOnce([]);
+
+    const res = await app.request('/pax8/integration');
+
+    expect(res.status).toBe(expectedStatus);
+    expect(db.select).toHaveBeenCalledTimes(partnerOrgAccess === 'all' ? 1 : 0);
   });
 
   it('rejects integration upsert when billing permission is denied', async () => {

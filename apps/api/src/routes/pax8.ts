@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
@@ -21,6 +21,10 @@ import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
 import { captureException } from '../services/sentry';
 import { pax8CompanyOrderReadiness } from '../services/pax8CompanyReadiness';
 import { snapshotActiveCommitmentEvidence } from '../services/pax8OrderService';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 
 export const pax8Routes = new Hono();
 
@@ -150,6 +154,16 @@ async function findActiveIntegration(partnerId: string, integrationId?: string) 
 }
 
 pax8Routes.use('*', authMiddleware);
+pax8Routes.use('*', async (c: Context, next: Next) => {
+  const auth = c.get('auth') as AuthContext;
+  if (!canManagePartnerWidePolicies(auth)) {
+    const error = auth.scope === 'organization'
+      ? 'Pax8 billing integrations are managed at partner scope'
+      : PARTNER_WIDE_WRITE_DENIED_MESSAGE;
+    return c.json({ error }, 403);
+  }
+  return next();
+});
 
 pax8Routes.get('/integration', partnerScopes, readPerm, zValidator('query', integrationQuerySchema), async (c) => {
   const auth = c.get('auth');
