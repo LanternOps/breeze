@@ -15,6 +15,7 @@ import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
+import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
@@ -562,6 +563,69 @@ async function decideHandler(
           details: { approvalId: existing.id },
         });
         return c.json({ error: 'forbidden' }, 403);
+      }
+
+      // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
+      // otherwise decided exactly once, at fan-out
+      // (services/actionIntents/intentService.ts), by branch mutual exclusion:
+      // the multi-approver branch fans rows out to OTHER users, and only the
+      // sole-operator branch ever creates a requester-owned row. Nothing
+      // downstream re-establishes that — this handler used to infer "you were
+      // the only eligible approver" purely from "a row exists that you own".
+      // Since release is first-wins CAS, any future fan-out regression that
+      // leaked a requester-owned row into a multi-approver intent would let the
+      // requester unilaterally release it with no server-side check catching
+      // it. So re-derive the eligible set here and require the self-approver to
+      // STILL be the only eligible approver for the intent's org.
+      //
+      // This is deliberately a re-derivation, not a persisted `sole_operator`
+      // flag (issue #2685 option 2 over option 1): it fails closed, and "you
+      // are no longer the only approver, so you no longer get to self-approve"
+      // is what the four-eyes model implies. An intent created while solo and
+      // decided after the org gained a second approver is REFUSED — intended.
+      // A persisted flag would still let that self-approve through.
+      //
+      // Only runs on a self-approve (requester === decider), so the common
+      // cross-user approve pays nothing. `resolveIntentApprovers` opens its own
+      // system context internally (partner_users is Shape-3 partner-axis RLS,
+      // invisible from an org-scoped request context), so it must be called
+      // with runOutsideDbContext — a nested withDbAccessContext RETAINS the
+      // ambient context rather than elevating (db/index.ts) — and calling it
+      // outside any context also avoids holding a pooled connection across the
+      // round-trip (the #1105 connection-hold class).
+      //
+      // Ordered with the stale-approver check ABOVE the assurance proof for the
+      // same reason that one is: a refused decision must never consume a
+      // WebAuthn challenge. Gated to `approved` only — a deny stays available
+      // in every case, since denying only cancels the action.
+      if (linkedIntent.requestedByUserId === userId) {
+        const eligibleNow = await runOutsideDbContext(() =>
+          resolveIntentApprovers(linkedIntent!.orgId),
+        );
+        const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);
+        // "ONLY eligible approver" is both halves: nobody else is eligible AND
+        // the self-approver still is. The second half is belt-and-braces over
+        // the live-authorization re-check above (which asks the permissions
+        // service rather than this resolver) — if the two ever disagree, refuse.
+        if (othersEligible.length > 0 || !eligibleNow.includes(userId)) {
+          recordActionIntentEvent({
+            orgId: linkedIntent.orgId,
+            intentId: linkedIntent.id,
+            actionName: linkedIntent.actionName,
+            argumentDigest: linkedIntent.argumentDigest,
+            source: linkedIntent.source,
+            outcome: 'approver_unauthorized',
+            actorId: userId,
+            details: {
+              approvalId: existing.id,
+              errorCode: 'not_sole_approver',
+              // Count only — never the approver ids (spec §7: ids of the
+              // event's own subjects, not a roster of other users).
+              eligibleApproverCount: eligibleNow.length,
+            },
+          });
+          return c.json({ error: 'not_sole_approver' }, 403);
+        }
       }
     }
   }

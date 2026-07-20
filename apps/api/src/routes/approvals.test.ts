@@ -60,6 +60,16 @@ vi.mock('../services/actionIntents/metrics', () => ({
   recordActionIntentEvent: vi.fn(),
 }));
 
+// #2685: the decide handler RE-DERIVES the eligible approver set before
+// permitting a self-approve, instead of inferring sole-operator status from
+// "a requester-owned row exists". Default: the deciding user is the only
+// eligible approver (the genuine sole-operator org), so the pre-existing
+// sole-operator tests keep their behaviour; the refusal test overrides it.
+vi.mock('../services/actionIntents/intentApprovers', () => ({
+  // Literal id, not TEST_USER — vi.mock factories are hoisted above the const.
+  resolveIntentApprovers: vi.fn(async () => ['00000000-0000-0000-0000-000000000001']),
+}));
+
 // The decide handler re-resolves the DECIDER's live authorization before an
 // intent-backed approve (approvals:decide + org access). Mocked as a
 // collaborator with permissive defaults (a still-authorized approver); the
@@ -198,6 +208,7 @@ import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
+import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
 
 function buildApp() {
   const app = new Hono();
@@ -291,6 +302,9 @@ beforeEach(() => {
   // Re-establish the default "password ok" (null = no error) after clearAllMocks
   // wipes the factory implementation; per-case overrides set their own.
   vi.mocked(requireCurrentPasswordStepUp).mockResolvedValue(null);
+  // #2685: re-establish the "decider is still the only eligible approver"
+  // default after clearAllMocks wipes the factory implementation.
+  vi.mocked(resolveIntentApprovers).mockResolvedValue([TEST_USER.id]);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -1408,6 +1422,74 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'self_approved_sole_operator' }),
+    );
+    // #2685: the happy path must have actually re-derived the approver set,
+    // not skipped the check.
+    expect(resolveIntentApprovers).toHaveBeenCalledWith('org-9');
+  });
+
+  // #2685: sole-operator status is RE-DERIVED at decide time, not inferred
+  // from row ownership.
+  it('refuses a self-approve (403 not_sole_approver) when the org now has another eligible approver, even at L3', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
+    // Fully-assured self-approve — proves the refusal is the approver-set
+    // re-derivation, not the L3 step-up gate.
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    vi.mocked(resolveIntentApprovers).mockResolvedValueOnce([TEST_USER.id, 'other-approver']);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('not_sole_approver');
+    // Fails closed BEFORE the CAS — the intent is never transitioned.
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-9',
+        intentId: 'intent-1',
+        outcome: 'approver_unauthorized',
+        actorId: TEST_USER.id,
+        details: expect.objectContaining({ errorCode: 'not_sole_approver' }),
+      }),
+    );
+  });
+
+  it('refuses a self-approve BEFORE consuming an assurance proof (no WebAuthn challenge burned)', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
+    vi.mocked(resolveIntentApprovers).mockResolvedValueOnce([TEST_USER.id, 'other-approver']);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+  });
+
+  it('never re-derives approvers for a cross-user approve (the check is self-approve only)', async () => {
+    mockDecideWithIntent({ requestedByUserId: 'requester-1' });
+    mockIntentFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(resolveIntentApprovers).not.toHaveBeenCalled();
+  });
+
+  it('still allows a self-DENY when the org gained another eligible approver (deny is never blocked)', async () => {
+    mockDecideWithIntent({ requestedByUserId: TEST_USER.id });
+    const { intentCasSet } = mockIntentFanInTx();
+    vi.mocked(resolveIntentApprovers).mockResolvedValueOnce([TEST_USER.id, 'other-approver']);
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'changed my mind' }),
+    });
+    expect(res.status).toBe(200);
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected' }),
     );
   });
 

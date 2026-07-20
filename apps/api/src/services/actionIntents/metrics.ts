@@ -27,7 +27,11 @@ import type { ActionIntentSource } from '../../db/schema/actionIntents';
  * (`existing.boundArgumentDigest !== linkedIntent.argumentDigest`);
  * `approver_unauthorized` fires when the deciding user no longer holds
  * approvals:decide / org access at decide time (a demoted approver reusing a
- * still-visible fanned-out row). Both are failure outcomes (see
+ * still-visible fanned-out row), and — per the "WHY belongs in
+ * details.errorCode" rule above — ALSO carries the sole-operator
+ * re-derivation refusal (#2685) as `details.errorCode:
+ * 'not_sole_approver'`: a requester self-approving an intent whose org now
+ * has another eligible approver. Both are failure outcomes (see
  * `FAILURE_OUTCOMES`).
  */
 export type ActionIntentOutcome =
