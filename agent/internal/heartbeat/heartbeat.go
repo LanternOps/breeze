@@ -4008,13 +4008,45 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 	return nil
 }
 
+// toWSCommandResult maps an internal tools.CommandResult onto the WebSocket
+// wire result, carrying stdout, stderr and the exit code through to the
+// server (#2474). The stdout->Result reparse is load-bearing: server handlers
+// for discovery, backup, snmp and monitor read the structured `result` field,
+// not stdout. Result is set ONLY when stdout parses as JSON — raw text rides
+// exclusively in Stdout. Duplicating it into Result would double the payload
+// and, for stdout near the executor's 1MB cap, trip the server's 1MB refine
+// on `result` and get the whole command_result rejected.
+func toWSCommandResult(commandID string, result tools.CommandResult) websocket.CommandResult {
+	wsResult := websocket.CommandResult{
+		CommandID: commandID,
+		Status:    result.Status,
+		ExitCode:  result.ExitCode,
+		Stdout:    result.Stdout,
+		Stderr:    result.Stderr,
+	}
+
+	if result.Error != "" {
+		wsResult.Error = result.Error
+	} else if result.Stdout != "" {
+		var jsonResult any
+		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
+			wsResult.Result = jsonResult
+		}
+	}
+
+	return wsResult
+}
+
 // HandleCommand processes a command from WebSocket and returns a result
 func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResult {
 	if !h.accepting.Load() {
 		return websocket.CommandResult{
 			CommandID: wsCmd.ID,
 			Status:    "failed",
-			Error:     "agent is shutting down",
+			// Synthetic exit code: no process ran. ExitCode is not omitempty,
+			// so leaving it zero would persist a false "exited 0".
+			ExitCode: 1,
+			Error:    "agent is shutting down",
 		}
 	}
 
@@ -4026,24 +4058,14 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	result := h.executeCommandViaPool(cmd)
 
-	wsResult := websocket.CommandResult{
-		CommandID: cmd.ID,
-		Status:    result.Status,
-	}
-
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
-		var jsonResult any
-		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
-			wsResult.Result = jsonResult
-		} else {
-			wsResult.Result = result.Stdout
-		}
-	}
+	wsResult := toWSCommandResult(cmd.ID, result)
 
 	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) {
-		go h.submitCommandResult(cmd.ID, result)
+		go func() {
+			if err := h.submitCommandResult(cmd.ID, result); err != nil {
+				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
+			}
+		}()
 	}
 
 	return wsResult
@@ -4060,7 +4082,9 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	}) {
 		return tools.CommandResult{
 			Status: "failed",
-			Error:  "command rejected, worker pool full",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode: 1,
+			Error:    "command rejected, worker pool full",
 		}
 	}
 
@@ -4092,13 +4116,15 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 			watchdog.Reset(warnAfter)
 		case <-h.stopChan:
 			return tools.CommandResult{
-				Status: "failed",
-				Error:  "agent is shutting down",
+				Status:   "failed",
+				ExitCode: 1, // synthetic: no exit code observed (shutdown)
+				Error:    "agent is shutting down",
 			}
 		case <-h.pool.Context().Done():
 			return tools.CommandResult{
-				Status: "failed",
-				Error:  "command execution interrupted during shutdown",
+				Status:   "failed",
+				ExitCode: 1, // synthetic: no exit code observed (shutdown)
+				Error:    "command execution interrupted during shutdown",
 			}
 		}
 	}
