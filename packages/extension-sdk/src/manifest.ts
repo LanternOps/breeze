@@ -245,3 +245,14 @@ export function parseExtensionManifestV1(raw: unknown): ExtensionManifestV1 {
     throw error;
   }
 }
+
+/**
+ * Non-throwing counterpart to {@link parseExtensionManifestV1}. Returns the raw
+ * Zod result so callers (e.g. the conformance testkit) can enumerate every issue
+ * with its structured `path`/`code`, rather than a flattened, prettified string.
+ */
+export function safeParseExtensionManifestV1(
+  raw: unknown,
+): z.ZodSafeParseResult<ExtensionManifestV1> {
+  return manifestSchemaV1.safeParse(raw);
+}
