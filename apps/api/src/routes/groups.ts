@@ -6,7 +6,11 @@ import { db } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
-import { evaluateGroupMembership, pinDeviceToGroup } from '../services/groupMembership';
+import {
+  evaluateGroupMembership,
+  pinDeviceToGroup,
+  pruneGroupMembershipsOutsideSite,
+} from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -567,6 +571,7 @@ groupRoutes.patch(
 
     // Determine the effective type (updated or existing)
     const effectiveType = payload.type ?? group.type;
+    const siteChanged = payload.siteId !== undefined && payload.siteId !== group.siteId;
 
     // Validate filter conditions if provided
     let filterFieldsUsed: string[] | undefined;
@@ -594,11 +599,19 @@ groupRoutes.patch(
       updates.filterFieldsUsed = filterFieldsUsed;
     }
 
-    const [updated] = await db
-      .update(deviceGroups)
-      .set(updates)
-      .where(eq(deviceGroups.id, id))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(deviceGroups)
+        .set(updates)
+        .where(eq(deviceGroups.id, id))
+        .returning();
+
+      if (siteChanged && row?.siteId) {
+        await pruneGroupMembershipsOutsideSite(row.id, row.siteId, row.orgId, tx);
+      }
+
+      return row;
+    });
 
     if (!updated) {
       return c.json({ error: 'Failed to update group' }, 500);
@@ -615,12 +628,16 @@ groupRoutes.patch(
       }
     });
 
-    // If dynamic group filter changed, re-evaluate membership
-    if (effectiveType === 'dynamic' && filterChanged && updated.filterConditions) {
-      // Run membership evaluation asynchronously (don't block the response)
-      evaluateGroupMembership(updated.id).catch((err) => {
-        console.error(`Failed to re-evaluate membership for group ${updated.id}:`, err);
-      });
+    // Site changes are security-boundary changes, so finish evaluation before
+    // returning. Filter-only changes retain the existing asynchronous behavior.
+    if (effectiveType === 'dynamic' && (filterChanged || siteChanged) && updated.filterConditions) {
+      if (siteChanged) {
+        await evaluateGroupMembership(updated.id);
+      } else {
+        evaluateGroupMembership(updated.id).catch((err) => {
+          console.error(`Failed to re-evaluate membership for group ${updated.id}:`, err);
+        });
+      }
     }
 
     const deviceCount = await getDeviceCountForGroup(id);

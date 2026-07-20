@@ -9,11 +9,13 @@ const {
   mockInsert,
   mockUpdate,
   mockDelete,
+  mockTransaction,
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ vi.mock('../../db', () => ({
     insert: mockInsert,
     update: mockUpdate,
     delete: mockDelete,
+    transaction: mockTransaction,
   },
 }));
 
@@ -60,6 +63,10 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../../services/groupMembership', () => ({
+  pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue({ removed: 0 }),
+}));
+
 // Let ensureOrgAccess run for real; only mock getPagination
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual('./helpers');
@@ -89,6 +96,7 @@ vi.mock('@hono/zod-validator', () => ({
 
 import { groupsRoutes } from './groups';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,6 +213,12 @@ describe('Device Groups routes — multi-tenant isolation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: mockSelect,
+      insert: mockInsert,
+      update: mockUpdate,
+      delete: mockDelete,
+    }));
     app = buildApp(makeAuth());
   });
 
@@ -513,6 +527,66 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       const json = await res.json();
       expect(json.error).toMatch(/[Ss]ite/);
       expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('prunes memberships from the previous site when the group site changes', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = { ...groupInOrgA, siteId: oldSiteId };
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      expect(pruneGroupMembershipsOutsideSite).toHaveBeenCalledWith(
+        GROUP_ID,
+        SITE_ID,
+        ORG_A,
+        expect.anything(),
+      );
+    });
+
+    it('rolls back a legacy site reassignment when membership pruning fails', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = { ...groupInOrgA, siteId: oldSiteId };
+      let transactionCommitted = false;
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+      mockTransaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => {
+        try {
+          const result = await fn({
+            select: mockSelect,
+            insert: mockInsert,
+            update: mockUpdate,
+            delete: mockDelete,
+          });
+          transactionCommitted = true;
+          return result;
+        } catch (error) {
+          transactionCommitted = false;
+          throw error;
+        }
+      });
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockRejectedValueOnce(new Error('prune failed'));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      expect(transactionCommitted).toBe(false);
     });
 
     it('returns 400 when updated parentId does not belong to the group org', async () => {

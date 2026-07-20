@@ -6,6 +6,7 @@ import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './
 
 type MembershipAction = 'added' | 'removed';
 type MembershipReason = 'manual' | 'filter_match' | 'filter_unmatch' | 'pinned' | 'unpinned';
+type GroupMembershipDatabase = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete'>;
 
 export interface MembershipUpdateSummary {
   evaluatedGroups: number;
@@ -58,9 +59,10 @@ export async function logMembershipChange(
   deviceId: string,
   action: MembershipAction,
   reason: MembershipReason,
-  orgId: string
+  orgId: string,
+  database: GroupMembershipDatabase = db,
 ): Promise<void> {
-  await db.insert(groupMembershipLog).values({
+  await database.insert(groupMembershipLog).values({
     groupId,
     deviceId,
     orgId,
@@ -242,6 +244,48 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   }
 
   return { evaluatedGroups: 1, added: toAdd.length, removed: toRemove.length };
+}
+
+/**
+ * Remove every membership whose device no longer belongs to a site's group.
+ * This intentionally removes pinned as well as dynamic memberships: pinning
+ * may override a dynamic filter, but it must never override the persisted
+ * site boundary of the group.
+ */
+export async function pruneGroupMembershipsOutsideSite(
+  groupId: string,
+  siteId: string,
+  orgId: string,
+  database: GroupMembershipDatabase = db,
+): Promise<{ removed: number }> {
+  const memberships = await database
+    .select({
+      deviceId: deviceGroupMemberships.deviceId,
+      siteId: devices.siteId,
+    })
+    .from(deviceGroupMemberships)
+    .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
+    .where(eq(deviceGroupMemberships.groupId, groupId));
+
+  const deviceIds = [...new Set(
+    memberships
+      .filter((membership) => membership.siteId !== siteId)
+      .map((membership) => membership.deviceId),
+  )];
+  if (deviceIds.length === 0) return { removed: 0 };
+
+  await database
+    .delete(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.groupId, groupId),
+      inArray(deviceGroupMemberships.deviceId, deviceIds),
+    ));
+  await Promise.all(
+    deviceIds.map((deviceId) =>
+      logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', orgId, database)),
+  );
+
+  return { removed: deviceIds.length };
 }
 
 export async function updateDeviceMembership(

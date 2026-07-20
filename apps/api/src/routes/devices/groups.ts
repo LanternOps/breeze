@@ -8,6 +8,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services
 import { getPagination, ensureOrgAccess } from './helpers';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
 
 export const groupsRoutes = new Hono();
 
@@ -238,11 +239,21 @@ groupsRoutes.patch(
       }
     }
 
-    const [updated] = await db
-      .update(deviceGroups)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(deviceGroups.id, groupId))
-      .returning();
+    const siteChanged = data.siteId !== undefined && data.siteId !== group.siteId;
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(deviceGroups)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(deviceGroups.id, groupId))
+        .returning();
+
+      if (siteChanged && row?.siteId) {
+        await pruneGroupMembershipsOutsideSite(groupId, row.siteId, group.orgId, tx);
+      }
+
+      return row;
+    });
 
     writeRouteAudit(c, {
       orgId: group.orgId,

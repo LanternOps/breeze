@@ -42,13 +42,28 @@ vi.mock('./filterEngine', () => ({
   isFilterConditionGroup: vi.fn().mockReturnValue(true),
 }));
 
-import { evaluateDeviceMembershipForGroup, evaluateGroupMembership, updateDeviceMembership } from './groupMembership';
+import {
+  evaluateDeviceMembershipForGroup,
+  evaluateGroupMembership,
+  pruneGroupMembershipsOutsideSite,
+  updateDeviceMembership,
+} from './groupMembership';
 
 function selectChain(rows: unknown[], withLimit = false) {
   const terminal = withLimit
     ? { limit: vi.fn().mockResolvedValue(rows) }
     : Promise.resolve(rows);
   return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(terminal) }) };
+}
+
+function membershipJoinChain(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  };
 }
 
 describe('evaluateGroupMembership persisted site scope', () => {
@@ -134,5 +149,19 @@ describe('evaluateGroupMembership persisted site scope', () => {
     const result = await updateDeviceMembership('device-1', ['siteId'], 'org-1');
 
     expect(result).toEqual({ evaluatedGroups: 1, added: 0, removed: 1 });
+  });
+
+  it('prunes pinned and dynamic memberships outside a reassigned group site', async () => {
+    mockSelect.mockReturnValueOnce(membershipJoinChain([
+      { deviceId: 'pinned-old-site', siteId: 'site-1', isPinned: true },
+      { deviceId: 'dynamic-old-site', siteId: 'site-1', isPinned: false },
+      { deviceId: 'new-site-member', siteId: 'site-2', isPinned: false },
+    ]));
+
+    const result = await pruneGroupMembershipsOutsideSite('group-1', 'site-2', 'org-1');
+
+    expect(result).toEqual({ removed: 2 });
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    expect(mockInsert).toHaveBeenCalledTimes(2);
   });
 });
