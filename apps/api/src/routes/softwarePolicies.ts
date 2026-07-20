@@ -630,6 +630,13 @@ softwarePoliciesRoutes.post(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
+    // A partner-owned policy can evaluate (and auto-remediate) devices across
+    // every organization under the partner. Restricted partner users must not
+    // be able to trigger that system-scoped work.
+    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     let rawPayload: unknown;
     try {
       rawPayload = await c.req.json();
@@ -641,9 +648,46 @@ softwarePoliciesRoutes.post(
       return c.json({ error: parsed.error.issues.map((issue) => issue.message).join('; ') }, 400);
     }
 
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const siteAllowedDeviceIds = policy.orgId
+      ? await resolveSiteAllowedDeviceIds(policy.orgId, perms)
+      : (perms?.allowedSiteIds ? [] : null);
+
+    let targetDeviceIds = parsed.data.deviceIds
+      ? Array.from(new Set(parsed.data.deviceIds))
+      : undefined;
+
+    if (targetDeviceIds) {
+      if (siteAllowedDeviceIds) {
+        const allowed = new Set(siteAllowedDeviceIds);
+        if (targetDeviceIds.some((deviceId) => !allowed.has(deviceId))) {
+          return c.json({ error: 'Access to one or more device sites denied' }, 403);
+        }
+      }
+
+      const deviceConditions: SQL[] = [inArray(devices.id, targetDeviceIds)];
+      const orgCondition = auth.orgCondition(devices.orgId);
+      if (orgCondition) deviceConditions.push(orgCondition);
+      if (policy.orgId) deviceConditions.push(eq(devices.orgId, policy.orgId));
+
+      const authorizedDevices = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(...deviceConditions));
+      const authorizedIds = new Set(authorizedDevices.map((device) => device.id));
+      if (targetDeviceIds.some((deviceId) => !authorizedIds.has(deviceId))) {
+        return c.json({ error: 'Access to one or more devices denied' }, 403);
+      }
+    } else if (siteAllowedDeviceIds) {
+      if (siteAllowedDeviceIds.length === 0) {
+        return c.json({ message: 'No accessible devices found for compliance check', queued: 0 });
+      }
+      targetDeviceIds = siteAllowedDeviceIds;
+    }
+
     let jobId: string;
     try {
-      jobId = await scheduleSoftwareComplianceCheck(policy.id, parsed.data.deviceIds);
+      jobId = await scheduleSoftwareComplianceCheck(policy.id, targetDeviceIds);
     } catch (error) {
       console.error(`[softwarePolicies] Failed to schedule on-demand compliance check for policy ${id}:`, error);
       captureException(error);
@@ -657,7 +701,7 @@ softwarePoliciesRoutes.post(
       action: 'compliance_check_requested',
       actor: 'user',
       actorId: auth.user.id,
-      details: { jobId, deviceIds: parsed.data.deviceIds ?? null },
+      details: { jobId, deviceIds: targetDeviceIds ?? null },
     }).catch((err) => {
       console.error('[softwarePolicies] Audit write failed for compliance_check_requested:', err);
     });
@@ -668,7 +712,7 @@ softwarePoliciesRoutes.post(
       resourceType: 'software_policy',
       resourceId: policy.id,
       resourceName: policy.name,
-      details: { jobId, deviceCount: parsed.data.deviceIds?.length ?? 0 },
+      details: { jobId, deviceCount: targetDeviceIds?.length ?? 0 },
     });
 
     return c.json({ message: 'Compliance check scheduled', jobId });
