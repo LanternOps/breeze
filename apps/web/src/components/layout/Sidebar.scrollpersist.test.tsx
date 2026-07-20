@@ -24,6 +24,11 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../stores/uiStore', () => ({
   useUiStore: () => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() }),
 }));
+// Unrelated to this suite's scroll-persistence assertions — stub out so the
+// module doesn't need a real (subscribable) auth store or registry fetch.
+vi.mock('../extensions/useExtensionNavigation', () => ({
+  useExtensionNavigation: () => [],
+}));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 

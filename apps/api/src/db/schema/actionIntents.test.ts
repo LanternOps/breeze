@@ -138,6 +138,7 @@ describe('action_intents schema', () => {
         'decidedByUserId',
         'decidedAssuranceLevel',
         'decidedVia',
+        'executionStartedAt',
         'executedAt',
         'result',
         'errorCode',

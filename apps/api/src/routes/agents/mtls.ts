@@ -173,6 +173,12 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     return row ?? null;
   });
 
+  // Issue #2621 — deliberately NOT passing pendingTokenHash here. Staged
+  // credentials from an unconfirmed rotation authenticate for ordinary agent
+  // traffic, but this route mints fresh cert material and stays fail-closed on
+  // the CURRENT token only (same rationale as the superseded-token rejection
+  // below). A legitimate agent confirms its rotation on the next request and
+  // renews immediately after; the pending set is never the long-term identity.
   const match = device
     ? matchAgentTokenHash({
         agentTokenHash: device.agentTokenHash,

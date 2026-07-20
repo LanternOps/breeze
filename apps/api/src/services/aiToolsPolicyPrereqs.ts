@@ -18,6 +18,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { ringAutoApproveSchema, backupProfileSelectionsSchema } from '@breeze/shared/validators';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -105,13 +106,17 @@ function safeHandler(toolName: string, fn: Handler): Handler {
     try {
       return await fn(input, auth);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Internal error';
       const code = pgErrorCode(err);
-      console.error(`[policy-prereq:${toolName}]`, input.action, message, err);
+      // Log BEFORE the pg-code early returns — those branches return without
+      // reaching sanitizeThrownToolError, so without this they log nothing.
+      console.error(`[policy-prereq:${toolName}]`, input.action, code ?? '', err);
       if (code === '23503') return JSON.stringify({ error: 'Referenced record not found.' });
       if (code === '23505') return JSON.stringify({ error: 'Duplicate entry — a record with this name already exists.' });
       if (code === '22P02') return JSON.stringify({ error: 'Invalid ID format — expected a valid UUID.' });
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      // Fail closed: anything else may embed the query/column list (#2603).
+      return JSON.stringify({
+        error: sanitizeThrownToolError(`policy-prereq:${toolName}`, err, { action: input.action }),
+      });
     }
   };
 }

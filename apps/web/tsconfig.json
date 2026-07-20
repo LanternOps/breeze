@@ -5,7 +5,8 @@
     "paths": {
       "@/*": ["./src/*"],
       "@breeze/shared": ["../../packages/shared/src"],
-      "@breeze/shared/reportPdf": ["../../packages/shared/src/reportPdf"]
+      "@breeze/shared/reportPdf": ["../../packages/shared/src/reportPdf"],
+      "@breeze/extension-web-sdk": ["../../packages/extension-web-sdk/src"]
     },
     "jsx": "react-jsx",
     "jsxImportSource": "react"

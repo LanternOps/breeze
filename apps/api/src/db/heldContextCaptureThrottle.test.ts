@@ -9,7 +9,9 @@ vi.mock('../services/sentry', () => ({
 
 import {
   shouldCaptureHeldContext,
+  shouldReportHeldContextSite,
   __resetHeldContextCaptureThrottleForTests,
+  __resetHeldContextAssertDedupeForTests,
 } from './index';
 
 // Guards the #1105 quota fix: the held-context warning must NOT emit one Sentry
@@ -59,5 +61,35 @@ describe('shouldCaptureHeldContext (held-context Sentry-capture throttle)', () =
     expect(shouldCaptureHeldContext('system', 2, W)).toBe(false);
     __resetHeldContextCaptureThrottleForTests();
     expect(shouldCaptureHeldContext('system', 2, W)).toBe(true);
+  });
+});
+
+// Guards the second flavor of the same quota failure: the enqueue tripwire
+// (assertOutsideHeldDbContext) marks a wrong CALL SITE, not N distinct errors.
+// Unthrottled it produced ~2.2k Sentry events in a day from seven call sites
+// (BREEZE-H) and helped exhaust the org quota. One capture per site per process
+// is the whole signal; console.warn stays per-occurrence.
+describe('shouldReportHeldContextSite (enqueue-tripwire Sentry-capture dedupe)', () => {
+  beforeEach(() => {
+    __resetHeldContextAssertDedupeForTests();
+  });
+
+  it('reports a given call site once, then suppresses it', () => {
+    expect(shouldReportHeldContextSite('stack-a')).toBe(true);
+    expect(shouldReportHeldContextSite('stack-a')).toBe(false);
+    expect(shouldReportHeldContextSite('stack-a')).toBe(false);
+  });
+
+  it('tracks distinct call sites independently', () => {
+    expect(shouldReportHeldContextSite('stack-a')).toBe(true);
+    expect(shouldReportHeldContextSite('stack-b')).toBe(true);
+    expect(shouldReportHeldContextSite('stack-a')).toBe(false);
+    expect(shouldReportHeldContextSite('stack-b')).toBe(false);
+  });
+
+  it('reset clears the seen-set', () => {
+    expect(shouldReportHeldContextSite('stack-a')).toBe(true);
+    __resetHeldContextAssertDedupeForTests();
+    expect(shouldReportHeldContextSite('stack-a')).toBe(true);
   });
 });

@@ -1,17 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { addBulkMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors, dbCtx } = vi.hoisted(() => ({
+  addBulkMock: vi.fn(),
+  selectMock: vi.fn(),
+  fromMock: vi.fn(),
+  whereMock: vi.fn(),
+  groupByMock: vi.fn(),
+  workerProcessors: [] as Array<(job: { data: unknown }) => Promise<unknown>>,
+  // Tracks simulated withSystemDbAccessContext nesting so tests can assert
+  // WHERE an enqueue ran relative to the held context (#1105, BREEZE-K class).
+  dbCtx: { depth: 0 },
+}));
+
 vi.mock('bullmq', () => ({
-  Queue: class {},
-  Worker: class {},
+  Queue: class {
+    add = vi.fn();
+    addBulk = addBulkMock;
+    close = vi.fn();
+  },
+  Worker: class {
+    constructor(_name: string, processor: (job: { data: unknown }) => Promise<unknown>) {
+      workerProcessors.push(processor);
+    }
+
+    close = vi.fn();
+    on = vi.fn();
+  },
   Job: class {}
 }));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
-    select: vi.fn()
+    select: selectMock
   },
-  withSystemDbAccessContext: undefined
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    dbCtx.depth++;
+    try {
+      return await fn();
+    } finally {
+      dbCtx.depth--;
+    }
+  }),
+  // #1105 tripwire used by createInstrumentedQueue (the queue factory this
+  // worker now constructs through). No-op here — no held context under test.
+  assertOutsideHeldDbContext: vi.fn()
 }));
 
 vi.mock('../db/schema', () => ({
@@ -36,7 +69,11 @@ vi.mock('../services/eventBus', () => ({
 }));
 
 import { publishEvent } from '../services/eventBus';
-import { publishSecurityScoreChangedEvents } from './securityPostureWorker';
+import {
+  createSecurityPostureWorker,
+  publishSecurityScoreChangedEvents,
+  shutdownSecurityPostureWorker
+} from './securityPostureWorker';
 
 function buildChanges(count: number) {
   return Array.from({ length: count }, (_, index) => ({
@@ -116,5 +153,40 @@ describe('publishSecurityScoreChangedEvents', () => {
     expect(result.failed).toBe(0);
     expect(result.published).toBe(12);
     expect(maxActive).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('scan-orgs enqueue context (#1105, BREEZE-K class)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    workerProcessors.length = 0;
+    dbCtx.depth = 0;
+    selectMock.mockReturnValue({ from: fromMock });
+    fromMock.mockReturnValue({ where: whereMock });
+    whereMock.mockReturnValue({ groupBy: groupByMock });
+    await shutdownSecurityPostureWorker();
+  });
+
+  it('fans out scan-orgs enqueues OUTSIDE the held system DB context, read inside it', async () => {
+    createSecurityPostureWorker();
+
+    let depthAtRead = -1;
+    groupByMock.mockImplementation(async () => {
+      depthAtRead = dbCtx.depth;
+      return [{ orgId: '11111111-1111-1111-1111-111111111111' }];
+    });
+    const depthAtEnqueue: number[] = [];
+    addBulkMock.mockImplementation(async () => {
+      depthAtEnqueue.push(dbCtx.depth);
+      return [];
+    });
+
+    const result = await workerProcessors[0]!({
+      data: { type: 'scan-orgs', queuedAt: '2026-02-22T00:00:00.000Z' }
+    });
+
+    expect(result).toEqual({ queued: 1 });
+    expect(depthAtRead).toBe(1);
+    expect(depthAtEnqueue).toEqual([0]);
   });
 });

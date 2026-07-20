@@ -16,7 +16,7 @@ import {
 } from '../../services/backupEncryption';
 import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
-import { deriveS3RegionFromEndpoint } from '@breeze/shared';
+import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
 import { configSchema, configUpdateSchema, validateS3Details } from './schemas';
 
@@ -165,10 +165,18 @@ async function probeS3Config(details: Record<string, unknown>): Promise<void> {
     throw new Error('S3 region is not configured — edit the storage configuration and set the region for this endpoint');
   }
 
+  // Coerce here too (not just at config-save time in validateS3Details) —
+  // configs saved before that validation existed can still carry a
+  // scheme-less endpoint, which would otherwise reach the SDK and fail
+  // opaquely deep inside @smithy/core's endpoint resolver instead of giving a
+  // message a user can act on (Sentry BREEZE-P). See coerceS3EndpointUrl for
+  // the two distinct failure modes a scheme-less value produces.
+  const normalizedEndpoint = coerceS3EndpointUrl(endpoint);
+
   const client = new S3Client({
     region,
-    endpoint,
-    forcePathStyle: Boolean(endpoint),
+    endpoint: normalizedEndpoint,
+    forcePathStyle: Boolean(normalizedEndpoint),
     credentials: {
       accessKeyId,
       secretAccessKey,
@@ -220,9 +228,14 @@ configsRoutes.post(
     const details: Record<string, unknown> = { ...(payload.details ?? {}) };
     if (payload.provider === 's3') {
       // Schema already rejected unresolvable configs; persist the resolved
-      // region so endpoint-derived regions are explicit in storage.
-      const { region } = validateS3Details(details);
+      // region AND the normalized endpoint so both are explicit in storage.
+      // The endpoint matters most: it is shipped verbatim to the Go agent
+      // (jobs/backupWorker.ts -> agent/internal/backup/providers/s3.go), which
+      // does no scheme coercion of its own, so a scheme-less value stored here
+      // fails on every device while this API's own test probe passes.
+      const { region, endpoint } = validateS3Details(details);
       if (region) details.region = region;
+      if (endpoint) details.endpoint = endpoint;
     }
     const encryption = payload.encryption ?? false;
     try {
@@ -346,11 +359,18 @@ configsRoutes.patch(
         ? preserveSecretFields(payload.details, current.providerConfig)
         : current.providerConfig;
       if (payload.details !== undefined && current.provider === 's3' && isRecord(nextProviderConfig)) {
-        const { error, region } = validateS3Details(nextProviderConfig);
+        // NOTE: configUpdateSchema has no superRefine (it cannot — `provider`
+        // is not part of an update payload, so the schema can't tell an s3
+        // config from a local one). This hand-rolled call is therefore the
+        // ONLY thing standing between a malformed endpoint and the database on
+        // the PATCH path. Do not remove it without adding equivalent
+        // validation elsewhere. Covered by the PATCH tests in configs.test.ts.
+        const { error, region, endpoint } = validateS3Details(nextProviderConfig);
         if (error) {
           return c.json({ error }, 400);
         }
         if (region) nextProviderConfig.region = region;
+        if (endpoint) nextProviderConfig.endpoint = endpoint;
       }
       const nextEncryption = payload.encryption ?? current.encryption;
 

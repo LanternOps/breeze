@@ -64,6 +64,41 @@ export default defineConfig({
       // glob, so the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/jobs/quoteSendQueue.integration.test.ts',
+      // Intent stale-execution reaper real-DB test: imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/jobs/ outside the `src/__tests__/integration/**` glob,
+      // so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/jobs/intentExpiryReaper.integration.test.ts',
+      // Decide-path intent fan-in atomicity real-DB test (Task 6): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/routes/ outside the `src/__tests__/integration/**` glob,
+      // so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Create-path atomicity + tenant-isolation real-DB test (Task 7): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/services/actionIntents/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would fail
+      // it on connect. Belongs to vitest.integration.config.ts (in its include).
+      'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // Headless Google Tier-3 dispatch real-DB test (Phase 2): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/jobs/ outside the `src/__tests__/integration/**` glob, so
+      // the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/jobs/intentReleaseWorkerGoogleHeadless.integration.test.ts',
+      // Headless M365 Tier-3 dispatch real-DB test (Task 9): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/jobs/ outside the `src/__tests__/integration/**` glob, so
+      // the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
+      // Two-replica runtime extension reconcile + failure policy (Task 8,
+      // issue #2619): imports `__tests__/integration/setup` (real postgres
+      // pool) and forks real child processes against `:5433`. Belongs to
+      // vitest.integration.config.ts (already in its include).
+      'src/extensions/twoReplicaReconcile.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

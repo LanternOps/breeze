@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@types/semver": "^7.7.1",
-    "hono": "^4.12.30",
+    "hono": "^4.12.31",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
   }

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   parseExtensionManifest,
@@ -5,6 +7,7 @@ import {
   RESERVED_ROUTE_NAMESPACES,
   SUPPORTED_EXTENSION_CAPABILITIES,
 } from './index';
+import { RESERVED_ROUTE_NAMESPACES as LEGACY_RESERVED_ROUTE_NAMESPACES } from './legacy';
 
 describe('versioned SDK adapter', () => {
   it('re-exports the v1 SDK alongside legacy names', () => {
@@ -168,42 +171,126 @@ describe('parseExtensionManifest', () => {
 });
 
 describe('RESERVED_ROUTE_NAMESPACES', () => {
-  // Hand-maintained contract. Regenerate the inner-mount list with:
-  //   grep -oE "api\.route\('/[a-z0-9-]+" apps/api/src/index.ts
-  // That yields the 111 `/api/v1/*` mounts inside the versioned router. Add
-  // the outer-app mounts that don't go through that router: `oauth`,
-  // `settings` (both mounted directly on the outer Hono app), and the
-  // shortlink prefix `s` (`app.route('/s', publicShortLinkRoutes)`).
-  const CORE_NAMESPACES = [
-    'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
-    'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
-    'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-    'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
-    'client-ai', 'config', 'configuration-policies', 'contracts',
-    'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
-    'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-    'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
-    'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
-    'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
-    'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
-    'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
-    'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
-    'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
-    'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
-    'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
-    'software-inventory', 'software-policies', 'sso', 'system',
-    'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
-    'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
-    'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
-    'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
-  ];
+  // Ground truth is DERIVED from apps/api/src/index.ts at test time rather
+  // than hand-maintained (#2635), so a core mount added without reserving it
+  // fails this suite automatically.
+  //
+  // KNOWN BLIND SPOTS — two mount styles declare their paths in another file,
+  // so this single-file derivation cannot see them:
+  //
+  //   1. `api.route('/', subRouter)` — the sub-router declares its OWN
+  //      top-level segments. Reserved by hand and pinned by the root-mount
+  //      tripwire below.
+  //   2. `mountX(app)` helper-function mounts — 2 today
+  //      (`mountInviteLandingRoutes`, `mountExtensionGateway`), neither of
+  //      which adds a `/api/v1/<ns>` top-level segment. NOT tripwired; a new
+  //      helper that mounts under /api/v1 would escape this test, so reserve
+  //      its namespace by hand.
+  const API_INDEX = fileURLToPath(
+    new URL('../../../apps/api/src/index.ts', import.meta.url),
+  );
 
-  it('has exactly 115 entries in the ground-truth contract', () => {
-    expect(CORE_NAMESPACES).toHaveLength(115);
+  const validManifest = {
+    name: 'sample',
+    routeNamespace: 'sample',
+    entry: 'src/index.ts',
+    migrationsDir: 'migrations',
+    tenancy: { orgCascadeDeleteTables: ['sample_items'] },
+  };
+
+  const source = readFileSync(API_INDEX, 'utf8');
+
+  // Matches are anchored to statement position (`^\s*`), which excludes
+  // commented-out mounts by construction — no comment stripping needed, and
+  // no risk of a stray `/*` in a route pattern eating real code.
+  // Mounts on the versioned router: api.route('/devices', …) → /api/v1/devices
+  const INNER_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/([a-z0-9-]+)/gm;
+  // Mounts placed directly on the outer app under the same prefix:
+  // app.route('/api/v1/oauth', …) → oauth
+  const OUTER_MOUNT_RE = /^\s*app\.route\(\s*['"`]\/api\/v1\/([a-z0-9-]+)/gm;
+  // api.route('/', subRouter) — see the blind-spot note above. Captures the
+  // router identifier so the tripwire pins identity, not just a count.
+  const ROOT_MOUNT_RE = /^\s*api\.route\(\s*['"`]\/['"`]\s*,\s*([A-Za-z0-9_]+)/gm;
+
+  function deriveCoreNamespaces(): string[] {
+    const namespaces = new Set<string>();
+    for (const m of source.matchAll(INNER_MOUNT_RE)) namespaces.add(m[1]);
+    for (const m of source.matchAll(OUTER_MOUNT_RE)) namespaces.add(m[1]);
+    return [...namespaces].sort();
+  }
+
+  const coreNamespaces = deriveCoreNamespaces();
+
+  it('derives the core mount list from apps/api/src/index.ts', () => {
+    // Guards against the derivation silently matching nothing or only part of
+    // the file (moved file, renamed router, changed mount style) and passing
+    // vacuously. Keep the floor just under the real count.
+    expect(coreNamespaces.length).toBeGreaterThan(110);
+    expect(coreNamespaces).toContain('devices');
+    expect(coreNamespaces).toContain('service-principals');
+  });
+
+  it('pins which sub-routers are root-mounted where the derivation cannot see them', () => {
+    // Tripwire for the blind spot documented above. Pinning the identifiers
+    // rather than a count means swapping one root-mounted router for another
+    // still fails, instead of passing on an unchanged total.
+    //
+    // Resolved top-level segments (all reserved):
+    //   externalServicesRoutes        → billing, support
+    //   invoiceAssemblyRoutes         → orgs, tickets
+    //   invoiceSettingsRoutes         → orgs, partner
+    //   ticketResponseTemplateRoutes  → ticket-response-templates
+    //   ticketFormRoutes              → ticket-forms
+    //   lifecycleRoutes               → me
+    //   lifecycleAdminRoutes          → admin
+    //   m365CallbackRoute             → c2c
+    // If this list changes, open the new sub-router, resolve its top-level
+    // segments by hand, and add them to RESERVED_ROUTE_NAMESPACES.
+    const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].map((m) => m[1]).sort();
+    expect(rootMounts).toEqual([
+      'externalServicesRoutes',
+      'invoiceAssemblyRoutes',
+      'invoiceSettingsRoutes',
+      'lifecycleAdminRoutes',
+      'lifecycleRoutes',
+      'm365CallbackRoute',
+      'ticketFormRoutes',
+      'ticketResponseTemplateRoutes',
+    ]);
+  });
+
+  it.each([
+    'billing',
+    'support',
+    'ticket-forms',
+    'ticket-response-templates',
+  ])('reserves and rejects root-mounted sub-router namespace %s', (namespace) => {
+    expect(RESERVED_ROUTE_NAMESPACES.has(namespace)).toBe(true);
+    expect(() => parseExtensionManifest({ ...validManifest, routeNamespace: namespace }))
+      .toThrow();
   });
 
   it('reserves every core /api/v1 route namespace', () => {
-    const missing = CORE_NAMESPACES.filter((ns) => !RESERVED_ROUTE_NAMESPACES.has(ns));
+    const missing = coreNamespaces.filter((ns) => !RESERVED_ROUTE_NAMESPACES.has(ns));
     expect(missing).toEqual([]);
+  });
+
+  it('keeps the extension-sdk and legacy reserved sets identical', () => {
+    // Both sets gate routeNamespace validation on their own code path, so a
+    // namespace reserved in only one of them is still hijackable via the other.
+    expect([...LEGACY_RESERVED_ROUTE_NAMESPACES].sort())
+      .toEqual([...RESERVED_ROUTE_NAMESPACES].sort());
+  });
+
+  it.each([
+    'service-principals',
+    'partner-service-principals',
+    'partner-api',
+  ])('rejects core auth surface %s as a routeNamespace', (namespace) => {
+    // Regression guard for #2634 — these three shipped unreserved, letting an
+    // installed+enabled extension shadow auth-sensitive core endpoints.
+    expect(RESERVED_ROUTE_NAMESPACES.has(namespace)).toBe(true);
+    expect(() => parseExtensionManifest({ ...validManifest, routeNamespace: namespace }))
+      .toThrow();
   });
 });

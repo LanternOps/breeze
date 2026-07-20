@@ -28,33 +28,34 @@
     "downloadFor": "Descargar para {{platform}}",
     "errors": {
       "connectionFailed": "La conexión falló",
-      "createDesktopCode": "No se pudo crear el código de escritorio",
+      "createDesktopCode": "No se pudo crear el código de conexión al escritorio",
       "createDesktopSession": "No se pudo crear la sesión de escritorio",
-      "createVncTunnel": "No se pudo crear el túnel vnc",
-      "deviceChanged": "No se pudo cambiar el dispositivo",
+      "createVncTunnel": "No se pudo crear el túnel VNC",
+      "deviceChanged": "Falló el inicio remoto: el registro del dispositivo cambió. Actualiza e inténtalo de nuevo.",
       "http": "Error en el inicio remoto (HTTP {{status}})",
-      "invalidDesktopCode": "El código de escritorio no es válido",
-      "issueVncCode": "No se pudo emitir el código vnc",
-      "securityCheckToast": "No se pudo realizar el control de seguridad",
-      "securityPolicy": "No se pudo cumplir con la política de seguridad",
-      "server": "Error al servidor",
-      "vncTunnelFailed": "No se pudo realizar el túnel vnc"
+      "invalidDesktopCode": "Respuesta inválida del código de conexión al escritorio",
+      "issueVncCode": "No se pudo emitir el código de conexión VNC",
+      "securityCheckToast": "Inicio remoto no disponible: falló la verificación de seguridad. Comunícate con tu administrador.",
+      "securityPolicy": "Inicio remoto bloqueado por la política de seguridad",
+      "server": "Falló el inicio remoto: error del servidor. Comunícate con tu administrador.",
+      "vncTunnelFailed": "El túnel VNC no se pudo abrir"
     },
     "fallback": {
-      "title": "Título",
-      "viewerDescription": "Descripción del visor",
-      "vncDescription": "Descripción de VNC"
+      "linuxFirstRun": "En Linux, haz que el archivo descargado sea ejecutable (chmod +x) y ábrelo una vez. Eso registra el visor y, a partir de entonces, las sesiones se abren automáticamente.",
+      "title": "¿No se abrió el visor?",
+      "viewerDescription": "Si el visor se abrió, puedes descartar esto. Si no, descárgalo abajo.",
+      "vncDescription": "Abre la sesión VNC en tu navegador."
     },
     "launcherSkip": {
-      "configError": "Error de configuración",
-      "emptyUrlTemplate": "Plantilla de URL vacía",
+      "configError": "No se pudo resolver la herramienta remota configurada por el partner (error de configuración). Se usará el escritorio remoto integrado.",
+      "emptyUrlTemplate": "La herramienta remota configurada por el partner no tiene una plantilla de URL definida. Se usará el escritorio remoto integrado.",
       "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en Configuración del dispositivo → Campos personalizados.",
       "providerDisabled": "La herramienta remota configurada por el socio para este dispositivo está actualmente deshabilitada. Recurrir al escritorio remoto integrado."
     },
     "launching": "Iniciando...",
     "launchingViewer": "Lanzando visor...",
     "openInBrowser": "Abrir en el navegador",
-    "policyDisabled": "Política deshabilitada",
+    "policyDisabled": "El escritorio remoto está deshabilitado por la política",
     "policyDisabledNamed": "El escritorio remoto está deshabilitado por la política \"{{name}}\"",
     "unavailable": {
       "default": "El escritorio no está disponible en este dispositivo",
@@ -76,21 +77,21 @@
     "errors": {
       "connectionFailed": "La conexión falló",
       "createTunnel": "No se pudo crear el túnel",
-      "createVncTunnel": "No se pudo crear el túnel vnc",
-      "issueConnectCode": "No se pudo emitir el código de conexión",
-      "tunnelFailed": "No se pudo realizar el túnel"
+      "createVncTunnel": "No se pudo crear el túnel VNC",
+      "issueConnectCode": "No se pudo emitir el código de conexión VNC",
+      "tunnelFailed": "El túnel no se pudo abrir"
     },
     "fallback": {
-      "description": "Descripción",
-      "title": "Título"
+      "description": "Abre la sesión VNC en tu navegador.",
+      "title": "¿No se abrió el visor?"
     },
     "launching": "Iniciando...",
     "openInBrowser": "Abrir en el navegador",
-    "policyDisabled": "Política deshabilitada",
-    "policyDisabledNamed": "Política deshabilitada Nombrada",
-    "unavailable": "Indisponible",
-    "vncDesktop": "Escritorio Vnc",
-    "vncRemote": "control remoto vnc"
+    "policyDisabled": "El relay VNC está deshabilitado por la política",
+    "policyDisabledNamed": "El relay VNC está deshabilitado por la política «{{name}}»",
+    "unavailable": "VNC no disponible",
+    "vncDesktop": "Escritorio VNC",
+    "vncRemote": "VNC remoto"
   },
   "deleteConfirmDialog": {
     "deletePermanently": "Eliminar permanentemente",

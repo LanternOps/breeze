@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { coerceS3EndpointUrl } from '@breeze/shared';
 import { createReadStream, statSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -23,8 +24,22 @@ function getS3Client(): S3Client {
     const accessKeyId = requireEnv('S3_ACCESS_KEY');
     const secretAccessKey = requireEnv('S3_SECRET_KEY');
 
+    // A scheme-less S3_ENDPOINT would otherwise reach the SDK and fail
+    // opaquely inside @smithy/core's endpoint resolver the first time it's
+    // used, instead of naming the misconfigured env var (Sentry BREEZE-P).
+    // Two distinct failure modes depending on the shape — a bare host throws
+    // `TypeError: Invalid URL`, a `host:port` parses to an empty host and
+    // fails later as a connection error. See coerceS3EndpointUrl.
+    let endpoint: string | undefined;
+    try {
+      endpoint = coerceS3EndpointUrl(process.env.S3_ENDPOINT);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid S3_ENDPOINT env var: ${detail}`);
+    }
+
     s3Client = new S3Client({
-      endpoint: process.env.S3_ENDPOINT || undefined,
+      endpoint,
       region: process.env.S3_REGION || 'us-east-1',
       credentials: { accessKeyId, secretAccessKey },
       // Required for MinIO and other S3-compatible providers that use path-style URLs

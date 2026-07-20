@@ -41,7 +41,9 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	if script.Script == "" {
 		return tools.CommandResult{
-			Status:     "failed",
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
 			Error:      "script content is empty",
 			DurationMs: time.Since(start).Milliseconds(),
 		}
@@ -209,7 +211,9 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 
 	if !session.HasScope("run_as_user") {
 		return tools.CommandResult{
-			Status:     "failed",
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
 			Error:      "user helper does not have run_as_user scope",
 			DurationMs: time.Since(start).Milliseconds(),
 		}

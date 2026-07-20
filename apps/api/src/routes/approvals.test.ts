@@ -51,13 +51,10 @@ vi.mock('../db/schema/actionIntents', () => ({
   },
 }));
 
-// Task 5: decide-handler extension mirrors the CAS onto the linked
-// action_intents row. Mocked as a collaborator (like assertApprovalAssurance)
-// so these route tests exercise decideHandler's own wiring, not
-// transitionIntent's internals (covered by intentService.test.ts).
-vi.mock('../services/actionIntents/intentService', () => ({
-  transitionIntent: vi.fn(async () => true),
-}));
+// Task 6: the decide handler now performs the intent CAS INLINE inside the
+// single system-scoped fan-in transaction (was a separate transitionIntent
+// call), so approvals.ts no longer imports intentService and there is nothing
+// to mock here — the CAS is asserted directly on the mocked tx.update below.
 
 vi.mock('../services/actionIntents/metrics', () => ({
   recordActionIntentEvent: vi.fn(),
@@ -199,7 +196,6 @@ import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } fro
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
-import { transitionIntent } from '../services/actionIntents/intentService';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 
@@ -295,10 +291,6 @@ beforeEach(() => {
   // Re-establish the default "password ok" (null = no error) after clearAllMocks
   // wipes the factory implementation; per-case overrides set their own.
   vi.mocked(requireCurrentPasswordStepUp).mockResolvedValue(null);
-  // Task 5: default the intent CAS to "won the race" so non-race-focused
-  // tests don't have to wire it explicitly; the first-wins test overrides
-  // this to false.
-  vi.mocked(transitionIntent).mockResolvedValue(true);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -1195,11 +1187,11 @@ describe('Task 5: decide-handler bound to action_intents', () => {
   // Wires the decideHandler flow for an intent-linked approval row:
   //   1) pre-fetch select (approval_requests, carries intentId + boundArgumentDigest)
   //   2) intent load select (action_intents, by id, system context)
-  //   3) approval_requests CAS update
-  // transitionIntent (the intent CAS) is mocked at the module level, not
-  // wired through db — see the collaborator-mock comment at the top of the
-  // file. requestedByUserId defaults to someone OTHER than TEST_USER so the
-  // sole-operator gate doesn't fire unless a test opts in.
+  //   3) approval_requests CAS update (the deciding user's OWN approval — the
+  //      Task 6 intent CAS is separate, done inline in the fan-in transaction
+  //      wired by mockIntentFanInTx). requestedByUserId defaults to someone
+  //      OTHER than TEST_USER so the sole-operator gate doesn't fire unless a
+  //      test opts in.
   function mockDecideWithIntent(opts: {
     riskTier?: string;
     requestedByUserId?: string;
@@ -1264,31 +1256,45 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     return { approvalRow, intentRow, casSet };
   }
 
-  // The post-CAS fan-in (sibling expiry + intent_approved outbox insert)
-  // runs inside `db.transaction` under system context. Captures both calls.
-  function mockIntentFanInTx() {
+  // Task 6: the whole intent fan-in — the intent CAS (inline, was
+  // transitionIntent), sibling expiry, and the intent_approved outbox insert —
+  // runs inside ONE `db.transaction` under system context. The tx does TWO
+  // updates in order (1: action_intents CAS with `.returning({ id })`, 2:
+  // approval_requests sibling expiry) plus, on approve, one intent_outbox
+  // insert. `casWins` controls whether the CAS RETURNING is non-empty; when it
+  // loses the race the handler returns early inside the tx (no sibling expiry,
+  // no outbox, no metrics).
+  function mockIntentFanInTx(opts: { casWins?: boolean } = {}) {
+    const casWins = opts.casWins ?? true;
+    const casReturning = vi.fn().mockResolvedValue(casWins ? [{ id: 'intent-1' }] : []);
+    const intentCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: casReturning }),
+    });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const outboxValues = vi.fn().mockResolvedValue(undefined);
     const tx = {
-      update: vi.fn(() => ({ set: siblingSet }) as any),
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: intentCasSet } as any) // 1) intent CAS
+        .mockReturnValueOnce({ set: siblingSet } as any), // 2) sibling expiry
       insert: vi.fn(() => ({ values: outboxValues }) as any),
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    return { siblingSet, outboxValues, tx };
+    return { intentCasSet, siblingSet, outboxValues, tx };
   }
 
   it('approving an intent-linked row transitions the intent, writes an intent_approved outbox row, and expires siblings', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
-    const { siblingSet, outboxValues, tx } = mockIntentFanInTx();
+    const { intentCasSet, siblingSet, outboxValues, tx } = mockIntentFanInTx();
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
 
-    expect(transitionIntent).toHaveBeenCalledWith(
-      'intent-1',
-      'pending_approval',
-      'approved',
-      expect.objectContaining({ decidedByUserId: TEST_USER.id }),
+    // Task 6: the intent CAS is now an inline `tx.update(action_intents)` with
+    // the pending_approval -> approved transition, inside the same transaction
+    // as the sibling expiry + outbox insert.
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'approved', decidedByUserId: TEST_USER.id }),
     );
     expect(siblingSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'expired' }),
@@ -1315,7 +1321,8 @@ describe('Task 5: decide-handler bound to action_intents', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(403);
-    expect(transitionIntent).not.toHaveBeenCalled();
+    // Fails closed BEFORE the CAS — the fan-in transaction never opens.
+    expect(db.transaction).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ intentId: 'intent-1', outcome: 'approver_unauthorized' }),
     );
@@ -1327,14 +1334,14 @@ describe('Task 5: decide-handler bound to action_intents', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(403);
-    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 
   it('still allows an intent-linked DENY from a decider who lost approvals:decide (deny is harmless)', async () => {
     // Deny cancels the action — it never drives a release — so a demoted
     // approver denying must stay available (the re-check is approve-only).
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
-    mockIntentFanInTx();
+    const { intentCasSet } = mockIntentFanInTx();
     vi.mocked(userCanDecideApprovals).mockReturnValue(false);
 
     const res = await buildApp().request('/approvals/appr-1/deny', {
@@ -1343,18 +1350,15 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       body: JSON.stringify({ reason: 'no' }),
     });
     expect(res.status).toBe(200);
-    expect(transitionIntent).toHaveBeenCalledWith(
-      'intent-1',
-      'pending_approval',
-      'rejected',
-      expect.anything(),
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected' }),
     );
     vi.mocked(userCanDecideApprovals).mockReturnValue(true);
   });
 
   it('denying an intent-linked row transitions the intent to rejected, expires siblings, and writes NO outbox row', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
-    const { siblingSet, tx } = mockIntentFanInTx();
+    const { intentCasSet, siblingSet, tx } = mockIntentFanInTx();
 
     const res = await buildApp().request('/approvals/appr-1/deny', {
       method: 'POST',
@@ -1363,11 +1367,8 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     });
     expect(res.status).toBe(200);
 
-    expect(transitionIntent).toHaveBeenCalledWith(
-      'intent-1',
-      'pending_approval',
-      'rejected',
-      expect.anything(),
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected' }),
     );
     expect(siblingSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'expired' }),
@@ -1387,7 +1388,6 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     const body = await res.json();
     expect(body.error).toBe('step_up_required');
     expect(body.requiredLevel).toBe(3);
-    expect(transitionIntent).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
@@ -1399,15 +1399,12 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       decidedVia: 'webauthn_platform',
       authenticatorDeviceId: 'dev-1',
     });
-    mockIntentFanInTx();
+    const { intentCasSet } = mockIntentFanInTx();
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(transitionIntent).toHaveBeenCalledWith(
-      'intent-1',
-      'pending_approval',
-      'approved',
-      expect.objectContaining({ decidedAssuranceLevel: 3 }),
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'approved', decidedAssuranceLevel: 3 }),
     );
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'self_approved_sole_operator' }),
@@ -1421,7 +1418,6 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe('digest_mismatch');
-    expect(transitionIntent).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1442,11 +1438,17 @@ describe('Task 5: decide-handler bound to action_intents', () => {
 
   it('first-wins: a decide arriving after the intent already moved is a no-op but still 200s for this row', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
-    vi.mocked(transitionIntent).mockResolvedValueOnce(false);
+    // Task 6: the CAS is now inline in the fan-in transaction, so the tx DOES
+    // open — but the CAS matches zero rows (another decider/reaper already
+    // moved the intent), so it returns early: no sibling expiry, no outbox, no
+    // metrics event. The user's own approval row still committed → 200.
+    const { siblingSet, outboxValues } = mockIntentFanInTx({ casWins: false });
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.transaction).toHaveBeenCalled();
+    expect(siblingSet).not.toHaveBeenCalled();
+    expect(outboxValues).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
   });
 
@@ -1480,7 +1482,7 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(set).toHaveBeenCalled();
-    expect(transitionIntent).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
     // Only the pre-fetch + CAS selects/updates ran — no intent load select.
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
@@ -1581,26 +1583,29 @@ describe('POST /approvals/:id/report-suspicious', () => {
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     } as any);
-    // 3) sibling-expiry update (inside system context)
+    // 3) Task 6: the reject fan-in is now ONE db.transaction — the intent CAS
+    //    (inline, `.returning(...)` the metadata for the metrics event) plus
+    //    the sibling-expiry update, both on `tx`.
+    const casReturning = vi
+      .fn()
+      .mockResolvedValue([{ orgId: 'org-9', actionName: 'y', argumentDigest: 'd', source: 'mcp_api' }]);
+    const intentCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: casReturning }),
+    });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update).mockReturnValueOnce({ set: siblingSet } as any);
-    // 4) intent load (for orgId, inside system context)
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ orgId: 'org-9', actionName: 'y', argumentDigest: 'd', source: 'mcp_api' }]),
-        }),
-      }),
-    } as any);
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: intentCasSet } as any) // 1) intent CAS
+        .mockReturnValueOnce({ set: siblingSet } as any), // 2) sibling expiry
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
     vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
 
     const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
     expect(res.status).toBe(204);
-    expect(transitionIntent).toHaveBeenCalledWith(
-      'intent-77',
-      'pending_approval',
-      'rejected',
-      expect.objectContaining({ decidedByUserId: TEST_USER.id }),
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected', decidedByUserId: TEST_USER.id }),
     );
     expect(siblingSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
     expect(recordActionIntentEvent).toHaveBeenCalledWith(

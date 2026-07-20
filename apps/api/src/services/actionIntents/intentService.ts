@@ -91,6 +91,7 @@ export interface ActionIntentTransitionPatch {
   decidedByUserId?: string | null;
   decidedAssuranceLevel?: AssuranceLevel | null;
   decidedVia?: string | null;
+  executionStartedAt?: Date | null;
   executedAt?: Date | null;
   result?: Record<string, unknown> | null;
   errorCode?: string | null;
@@ -243,123 +244,113 @@ export async function createActionIntent(
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
 
-  // TX1 (org-scoped): insert the intent row, or detect an idempotent replay.
-  // action_intents is org-scoped Shape-1 — the requester inserting their own
-  // org's row is exactly what breeze_has_org_access(org_id) authorizes, so
-  // this stays under the caller's org context.
-  const insertOutcome = await withDbAccessContext(dbContext, async () => {
-    const [inserted] = await db
-      .insert(actionIntents)
-      .values({
-        orgId,
-        partnerId: auth.partnerId ?? null,
-        requestedByUserId: requesterId,
-        source: input.source,
-        requestingClientLabel,
-        actionName: input.toolName,
-        arguments: input.input,
-        argumentDigest,
-        targetSummary,
-        impactSummary,
-        reason: input.reason ?? null,
-        riskTier: guardrail.tier,
-        idempotencyKey,
-        correlationId: randomUUID(),
-        expiresAt,
-      })
-      // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
-      // index (migration 2026-07-18-action-intents.sql) covering only LIVE
-      // statuses — a terminal intent must not block a legitimate future
-      // identical request. The conflict target's `where` must match the
-      // index predicate exactly (LIVE_INTENT_STATUSES) or Postgres can't
-      // infer which index to use and raises "no unique or exclusion
-      // constraint matching the ON CONFLICT specification".
-      .onConflictDoNothing({
-        target: [actionIntents.orgId, actionIntents.idempotencyKey],
-        where: inArray(actionIntents.status, LIVE_INTENT_STATUSES),
-      })
-      .returning();
-
-    if (inserted) {
-      return { kind: 'new' as const, intent: inserted };
-    }
-
-    // Idempotent replay: converge on the existing LIVE row instead of
-    // creating a duplicate (spec §4 step 3 / §13). No new fan-out, no new
-    // outbox row — the retry is a no-op beyond returning what already
-    // exists. The approver set resolved above is simply unused on this path.
-    // Filtered to LIVE_INTENT_STATUSES (not just org_id+idempotency_key)
-    // because IMPORTANT-4 means multiple rows can now share the same key —
-    // at most one LIVE at a time (which is exactly what the conflict fired
-    // against) plus any number of prior terminal ones; an unfiltered select
-    // with no ORDER BY could nondeterministically return a stale terminal
-    // row instead.
-    const [existing] = await db
-      .select()
-      .from(actionIntents)
-      .where(
-        and(
-          eq(actionIntents.orgId, orgId),
-          eq(actionIntents.idempotencyKey, idempotencyKey),
-          inArray(actionIntents.status, LIVE_INTENT_STATUSES),
-        ),
-      )
-      .limit(1);
-    if (!existing) {
-      throw new ActionIntentError(
-        'Insert conflicted on (org_id, idempotency_key) but no existing live row was found',
-        'idempotency_race',
-      );
-    }
-    const approvalRows = await db
-      .select({ id: approvalRequests.id })
-      .from(approvalRequests)
-      .where(eq(approvalRequests.intentId, existing.id));
-    return {
-      kind: 'replay' as const,
-      result: {
-        intent: existing,
-        approvalRequestIds: approvalRows.map((r) => r.id),
-        fanOutUserIds: [],
-        isNew: false,
-      } satisfies CreationResult,
-    };
-  });
-
-  if (insertOutcome.kind === 'replay') {
-    return toSnapshot(insertOutcome.result.intent, insertOutcome.result.approvalRequestIds);
-  }
-
-  const inserted = insertOutcome.intent;
-
-  // TX2 (system-scoped, CRITICAL-1): the cross-user approval_requests
-  // fan-out + the intent_outbox insert. approval_requests carries FORCED
-  // Shape-6 user-scoped RLS (WITH CHECK user_id = breeze_current_user_id() OR
-  // scope = 'system' — migration 2026-05-16-approval-shape6-system-bypass.sql),
-  // so inserting a row for an approver OTHER than the requester under the
-  // requester's org-scoped context denies with 42501 and aborts the whole
-  // transaction. Mirrors fanOutMobileApprovals's system-scope escalation
-  // (routes/agents/elevationRequests.ts:190-223) in spirit, but is
-  // deliberately NOT nested inside TX1 (i.e. not
-  // `runOutsideDbContext(() => withSystemDbAccessContext(...))` called from
-  // inside TX1's callback): approval_requests.intent_id and
-  // intent_outbox.intent_id both carry a real FK to action_intents(id), and a
-  // second, genuinely separate transaction (its own pooled connection) can
-  // only see `inserted.id` once TX1 has actually committed — Postgres's FK
-  // check fails fast ("is not present in table") against an uncommitted row
-  // in a concurrently-open transaction, it does not wait for it. So TX1 must
-  // close (return from withDbAccessContext) before TX2 opens; this trades
-  // strict atomicity between "intent row" and "fan-out" for correctness — the
-  // same tradeoff the elevation precedent accepts (its fan-out is explicitly
-  // best-effort/after-commit). A TX2 failure here is NOT swallowed the way
-  // elevation's per-approver push is: the intent already exists as a
-  // committed 'pending_approval' row with no approvers, so on any TX2 error
-  // we best-effort mark it 'failed' (never leave it silently orphaned) and
-  // rethrow so the caller (chat SDK / MCP) sees a real failure instead of a
-  // false success.
+  // ONE system-scoped transaction (durability): insert the intent row (or
+  // detect an idempotent replay) AND, in the SAME transaction, fan out the
+  // cross-user approval_requests and write the intent_created outbox row. The
+  // child→parent FKs (approval_requests.intent_id, intent_outbox.intent_id →
+  // action_intents.id) are satisfied within one transaction because a
+  // transaction sees its own uncommitted parent row — so the historical
+  // TX1(org)/TX2(system) split is gone. That split existed ONLY because the two
+  // stages ran on separate pooled connections at different scopes (a genuinely
+  // separate TX2 connection could not see TX1's uncommitted intent row, and
+  // Postgres's FK check fails fast rather than waiting). Collapsing them means a
+  // crash or fault anywhere between the insert and the outbox rolls the WHOLE
+  // thing back: there is no longer a window where a committed pending_approval
+  // intent is stranded with no approvers and no outbox row (the release worker
+  // would never see it and no approver could ever decide it).
+  //
+  // Scope tradeoff (defense-in-depth): collapsing forces the intent INSERT out
+  // of the caller's org-scoped RLS context and into system scope — you cannot
+  // re-scope mid-transaction, and the approval_requests fan-out REQUIRES system
+  // scope (Shape-6 user-scoped RLS: a row for an approver OTHER than the
+  // requester denies with 42501 under the requester's org context; migration
+  // 2026-05-16-approval-shape6-system-bypass.sql). This trades one layer of
+  // defense-in-depth (org-access RLS re-checking the intent insert) for
+  // atomicity. Mitigations: (a) app-layer authz (tier gating +
+  // resolveWritableToolOrgId) is already complete above; (b) org_id comes from
+  // the authenticated `auth`, never user input; (c) the release/decide paths
+  // re-validate org access before anything executes; (d) intent_outbox and the
+  // fan-out were already system-only, so the whole operation being
+  // system-scoped is internally consistent. Cross-tenant READS remain denied —
+  // RLS filters reads by org_id regardless of which scope inserted the row
+  // (proven by createIntentAtomicity.integration.test.ts).
   let creation: CreationResult;
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
+      const [inserted] = await db
+        .insert(actionIntents)
+        .values({
+          orgId,
+          partnerId: auth.partnerId ?? null,
+          requestedByUserId: requesterId,
+          source: input.source,
+          requestingClientLabel,
+          actionName: input.toolName,
+          arguments: input.input,
+          argumentDigest,
+          targetSummary,
+          impactSummary,
+          reason: input.reason ?? null,
+          riskTier: guardrail.tier,
+          idempotencyKey,
+          correlationId: randomUUID(),
+          expiresAt,
+        })
+        // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
+        // index (migration 2026-07-18-action-intents.sql) covering only LIVE
+        // statuses — a terminal intent must not block a legitimate future
+        // identical request. The conflict target's `where` must match the
+        // index predicate exactly (LIVE_INTENT_STATUSES) or Postgres can't
+        // infer which index to use and raises "no unique or exclusion
+        // constraint matching the ON CONFLICT specification".
+        .onConflictDoNothing({
+          target: [actionIntents.orgId, actionIntents.idempotencyKey],
+          where: inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+        })
+        .returning();
+
+      if (!inserted) {
+        // Idempotent replay: converge on the existing LIVE row instead of
+        // creating a duplicate (spec §4 step 3 / §13). No new fan-out, no new
+        // outbox row — the retry is a no-op beyond returning what already
+        // exists. The approver set resolved above is simply unused on this path.
+        // Filtered to LIVE_INTENT_STATUSES (not just org_id+idempotency_key)
+        // because IMPORTANT-4 means multiple rows can now share the same key —
+        // at most one LIVE at a time (which is exactly what the conflict fired
+        // against) plus any number of prior terminal ones; an unfiltered select
+        // with no ORDER BY could nondeterministically return a stale terminal
+        // row instead.
+        const [existing] = await db
+          .select()
+          .from(actionIntents)
+          .where(
+            and(
+              eq(actionIntents.orgId, orgId),
+              eq(actionIntents.idempotencyKey, idempotencyKey),
+              inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+            ),
+          )
+          .limit(1);
+        if (!existing) {
+          throw new ActionIntentError(
+            'Insert conflicted on (org_id, idempotency_key) but no existing live row was found',
+            'idempotency_race',
+          );
+        }
+        const approvalRows = await db
+          .select({ id: approvalRequests.id })
+          .from(approvalRequests)
+          .where(eq(approvalRequests.intentId, existing.id));
+        return {
+          intent: existing,
+          approvalRequestIds: approvalRows.map((r) => r.id),
+          fanOutUserIds: [],
+          isNew: false,
+        };
+      }
+
+      // New intent: fan out the cross-user approval_requests and write the
+      // intent_created outbox row, all in this same transaction.
       let approvalRequestIds: string[] = [];
       let fanOutUserIds: string[] = [];
 
@@ -426,17 +417,24 @@ export async function createActionIntent(
       return { intent: finalIntent, approvalRequestIds, fanOutUserIds, isNew: true };
     });
   } catch (err) {
-    console.error(`[intentService] approval fan-out failed for intent ${inserted.id}:`, err);
-    await transitionIntent(inserted.id, 'pending_approval', 'failed', { errorCode: 'fanout_failed' }).catch(
-      (transitionErr) => {
-        console.error(`[intentService] failed to mark intent ${inserted.id} failed after fan-out error:`, transitionErr);
-      },
-    );
+    // One transaction ⇒ any throw already rolled the intent insert back with
+    // the fan-out/outbox; there is no committed row to mark 'failed' (the
+    // pre-collapse best-effort transitionIntent(...,'failed') is gone with the
+    // split). Preserve a deliberate ActionIntentError (e.g. the idempotency_race
+    // edge) verbatim so its distinct code survives; wrap anything else (a real
+    // DB/RLS fault in the insert, fan-out, or outbox) as fanout_failed so the
+    // caller (chat SDK / MCP) sees a real failure, never a false success.
+    if (err instanceof ActionIntentError) throw err;
+    console.error('[intentService] action intent creation transaction failed (rolled back):', err);
     throw new ActionIntentError(
-      `Failed to fan out approval requests for action intent ${inserted.id}`,
+      'Failed to create action intent (approval fan-out / outbox)',
       'fanout_failed',
     );
   }
+
+  // A replay returns the existing snapshot without push/audit (both gated on
+  // isNew below); the final `return toSnapshot(...)` covers it identically to
+  // the new-intent path.
 
   // Best-effort push AFTER the creation transaction commits (#1105) — never
   // hold a DB transaction open across the push network round-trip. Token

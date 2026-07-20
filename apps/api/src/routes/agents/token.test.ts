@@ -30,6 +30,10 @@ vi.mock('../../db/schema', () => ({
     helperTokenIssuedAt: 'helperTokenIssuedAt',
     previousHelperTokenHash: 'previousHelperTokenHash',
     previousHelperTokenExpiresAt: 'previousHelperTokenExpiresAt',
+    pendingTokenHash: 'pendingTokenHash',
+    pendingWatchdogTokenHash: 'pendingWatchdogTokenHash',
+    pendingHelperTokenHash: 'pendingHelperTokenHash',
+    pendingTokenExpiresAt: 'pendingTokenExpiresAt',
     updatedAt: 'updatedAt',
   },
 }));
@@ -60,6 +64,8 @@ const CURRENT_AGENT_TOKEN_HASH = 'current-agent-token-hash';
 
 function buildApp(opts?: {
   rotationRequired?: boolean;
+  /** Issue #2621 — caller authenticated with a staged (pending) credential. */
+  pendingTokenPresented?: boolean;
   authTokenHash?: string;
   // Force the middleware to set an agent context with NO authTokenHash, so the
   // fail-closed `if (!authTokenHash) return 401` guard becomes reachable. The
@@ -80,6 +86,7 @@ function buildApp(opts?: {
         : (opts?.authTokenHash ?? CURRENT_AGENT_TOKEN_HASH),
     });
     c.set('agentTokenRotationRequired', opts?.rotationRequired ?? false);
+    c.set('agentPendingTokenPresented', opts?.pendingTokenPresented ?? false);
     await next();
   });
   app.route('/agents', tokenRoutes);
@@ -122,7 +129,11 @@ describe('agent token rotation route', () => {
     vi.useRealTimers();
   });
 
-  it('rotates the token and returns the new plaintext token', async () => {
+  // Issue #2621 — rotation STAGES the new credentials. It must not touch the
+  // current agent/watchdog/helper hashes: those stay authoritative until the
+  // agent proves it durably persisted the replacements. Committing here is what
+  // stranded agents whose config.Save failed.
+  it('stages the new credentials without committing them as current', async () => {
     vi.mocked(generateApiKey)
       .mockReturnValueOnce('brz_rotated_agent_token')
       .mockReturnValueOnce('brz_rotated_watchdog_token')
@@ -144,6 +155,8 @@ describe('agent token rotation route', () => {
       watchdogAuthToken: 'brz_rotated_watchdog_token',
       helperAuthToken: 'brz_rotated_helper_token',
       rotatedAt: '2026-03-31T18:45:00.000Z',
+      confirmationRequired: true,
+      pendingExpiresAt: '2026-03-31T19:45:00.000Z',
     });
 
     // The UPDATE is compare-and-swapped against the hash that authenticated
@@ -153,21 +166,26 @@ describe('agent token rotation route', () => {
 
     expect(generateApiKey).toHaveBeenCalledTimes(3);
     expect(set).toHaveBeenCalledWith({
-      // previousTokenHash snapshots the authenticating (current-at-rotation) hash.
-      previousTokenHash: CURRENT_AGENT_TOKEN_HASH,
-      previousTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
-      agentTokenHash: createHash('sha256').update('brz_rotated_agent_token').digest('hex'),
-      tokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
-      previousWatchdogTokenHash: 'old-watchdog-token-hash',
-      previousWatchdogTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
-      watchdogTokenHash: createHash('sha256').update('brz_rotated_watchdog_token').digest('hex'),
-      watchdogTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
-      previousHelperTokenHash: 'old-helper-token-hash',
-      previousHelperTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
-      helperTokenHash: createHash('sha256').update('brz_rotated_helper_token').digest('hex'),
-      helperTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      pendingTokenHash: createHash('sha256').update('brz_rotated_agent_token').digest('hex'),
+      pendingWatchdogTokenHash: createHash('sha256').update('brz_rotated_watchdog_token').digest('hex'),
+      pendingHelperTokenHash: createHash('sha256').update('brz_rotated_helper_token').digest('hex'),
+      pendingTokenExpiresAt: new Date('2026-03-31T19:45:00.000Z'),
       updatedAt: new Date('2026-03-31T18:45:00.000Z'),
     });
+
+    // Explicitly assert the fields that MUST NOT move during staging. If any of
+    // these ever reappear here, the persist-before-commit ordering is broken and
+    // #2621 is back.
+    const staged = (set.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0];
+    for (const forbidden of [
+      'agentTokenHash',
+      'watchdogTokenHash',
+      'helperTokenHash',
+      'previousTokenHash',
+      'tokenIssuedAt',
+    ]) {
+      expect(staged).not.toHaveProperty(forbidden);
+    }
 
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
@@ -175,16 +193,30 @@ describe('agent token rotation route', () => {
         orgId: 'org-1',
         actorType: 'agent',
         actorId: 'agent-123',
-        action: 'agent.token.rotate',
+        action: 'agent.token.rotate.staged',
         resourceType: 'device',
         resourceId: 'device-1',
         resourceName: 'host-1',
         details: {
-          rotatedAt: '2026-03-31T18:45:00.000Z',
-          previousTokenGracePeriodSeconds: 300,
+          stagedAt: '2026-03-31T18:45:00.000Z',
+          pendingExpiresAt: '2026-03-31T19:45:00.000Z',
         },
       })
     );
+  });
+
+  it('refuses to start a new rotation while one is staged but unconfirmed', async () => {
+    const response = await buildApp({ pendingTokenPresented: true }).request(
+      '/agents/agent-123/rotate-token',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Confirm the pending rotation before starting a new one',
+      code: 'pending_rotation_unconfirmed',
+    });
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the authenticated device record is not found', async () => {
@@ -299,5 +331,151 @@ describe('agent token rotation route', () => {
     expect(writeAuditEvent).not.toHaveBeenCalled();
 
     consoleWarn.mockRestore();
+  });
+});
+
+// Issue #2621 — phase two. Promotion is gated on the agent presenting the
+// STAGED token, which is the endpoint's proof that it durably persisted the
+// credential. Without that gate the server would again be committing hashes on
+// faith, which is the original bug.
+describe('agent token rotation confirm route', () => {
+  const PENDING_HASH = 'pending-agent-token-hash';
+
+  function mockDevice(overrides: Record<string, unknown> = {}) {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([
+            {
+              id: 'device-1',
+              hostname: 'host-1',
+              agentTokenHash: 'old-token-hash',
+              watchdogTokenHash: 'old-watchdog-token-hash',
+              helperTokenHash: 'old-helper-token-hash',
+              pendingTokenHash: PENDING_HASH,
+              pendingWatchdogTokenHash: 'pending-watchdog-token-hash',
+              pendingHelperTokenHash: 'pending-helper-token-hash',
+              pendingTokenExpiresAt: new Date('2026-03-31T19:45:00.000Z'),
+              ...overrides,
+            },
+          ]),
+        })),
+      })),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-31T18:45:00.000Z'));
+    mockDevice();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('promotes the staged credentials when the caller presents the staged token', async () => {
+    const where = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]),
+    }));
+    const set = vi.fn(() => ({ where }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+
+    const response = await buildApp({ authTokenHash: PENDING_HASH }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      confirmed: true,
+      confirmedAt: '2026-03-31T18:45:00.000Z',
+    });
+
+    expect(set).toHaveBeenCalledWith({
+      previousTokenHash: 'old-token-hash',
+      previousTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
+      agentTokenHash: PENDING_HASH,
+      tokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      previousWatchdogTokenHash: 'old-watchdog-token-hash',
+      previousWatchdogTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
+      watchdogTokenHash: 'pending-watchdog-token-hash',
+      watchdogTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      previousHelperTokenHash: 'old-helper-token-hash',
+      previousHelperTokenExpiresAt: new Date('2026-03-31T18:50:00.000Z'),
+      helperTokenHash: 'pending-helper-token-hash',
+      helperTokenIssuedAt: new Date('2026-03-31T18:45:00.000Z'),
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingHelperTokenHash: null,
+      pendingTokenExpiresAt: null,
+      updatedAt: new Date('2026-03-31T18:45:00.000Z'),
+    });
+
+    // The promotion CAS binds to the staged hash so a stale confirm cannot
+    // promote a credential set that has since been re-staged.
+    expect(eq).toHaveBeenCalledWith('pendingTokenHash', PENDING_HASH);
+
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'agent.token.rotate.confirmed' })
+    );
+  });
+
+  // A confirm arriving on the OLD token proves nothing about what the endpoint
+  // wrote to disk. Promoting on it would recreate #2621 exactly.
+  it('refuses to promote when the caller presents the current (not staged) token', async () => {
+    const response = await buildApp({ authTokenHash: 'old-token-hash' }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Confirm must be sent with the pending rotation token',
+      code: 'pending_token_required',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses to promote an expired staged set', async () => {
+    mockDevice({ pendingTokenExpiresAt: new Date('2026-03-31T18:00:00.000Z') });
+
+    const response = await buildApp({ authTokenHash: PENDING_HASH }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Pending rotation has expired; request a new rotation',
+      code: 'pending_rotation_expired',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // The agent retries confirmation until it succeeds. A retry whose predecessor
+  // actually landed must read as success, or a healthy device retries forever.
+  it('is idempotent when the rotation was already promoted', async () => {
+    mockDevice({
+      agentTokenHash: PENDING_HASH,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingHelperTokenHash: null,
+      pendingTokenExpiresAt: null,
+    });
+
+    const response = await buildApp({ authTokenHash: PENDING_HASH }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      confirmed: true,
+      alreadyCurrent: true,
+    });
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
