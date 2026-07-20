@@ -243,12 +243,26 @@ ssh root@<droplet> "cd /opt/breeze && \
   docker compose up -d binaries-init api web portal"
 # then verify:
 curl -sf https://<region>.2breeze.app/health     # 200 = healthy; check "version" in the JSON
-# portal is a SEPARATE container — /health does NOT cover it. Assert its image too:
-ssh root@<droplet> "docker ps --filter name=portal --format '{{.Image}}'"   # must be :0.X.Y, not an older tag
 # and confirm migrations applied cleanly:
 ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail -5"
 # expect "[auto-migrate] Applied N migration(s)" and the unprivileged app-user line
 ```
+
+**Then assert version parity across EVERY first-party container — `/health` does NOT cover this.**
+
+`/health` is served by the API, so it reports the new version even when a sibling container was never rolled. Don't eyeball the service list; enumerate what is actually running and compare each tag to `BREEZE_VERSION`:
+
+```bash
+ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
+  docker ps -a --format '{{.Names}}\t{{.Image}}' | grep 'ghcr.io/lanternops/breeze/' | \
+  while IFS=\$'\t' read -r n i; do t=\${i##*:}; \
+    [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
+# every line must be OK. Any SKEW = that service was not rolled — pull/up it and re-check.
+# Today that is api, web, portal, binaries-init. It self-updates as services are added,
+# which is the point: the hand-maintained list above is what failed before.
+```
+
+**Why this check exists.** The deploy line names services explicitly (rather than a bare `docker compose pull && up -d`) for two real reasons: `billing` is built from a local `breeze-billing:local` image that has no registry to pull from, and a bare `up -d` would bounce `caddy`/`redis`/`tunnel` unnecessarily. But that makes the service list a **hand-maintained list that goes stale the moment a new first-party service is added** — and nothing else catches it. `portal` was added in v0.94.0, never made it into the deploy line, and silently sat on `0.94.0` through five releases while `/health` cheerfully reported `0.98.1`; a portal fix shipped in v0.97.0 was invisible in production for 11 days until a customer-facing proposal link surfaced it. Watchtower is **not** a safety net here: it runs with `WATCHTOWER_LABEL_ENABLE=true` and no service carries the enable label, so it updates nothing. The parity check is the backstop that does not depend on anyone remembering to update a list.
 
 ### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
 

@@ -326,7 +326,17 @@ ssh root@<host> "cd /opt/breeze && \
 
 Then verify health with `curl -sf https://<host-or-domain>/health` (200 = healthy).
 
-**`portal` must be in that line.** The customer portal (`@breeze/portal`, serving `/portal/*` — the surface customers reach from quote and invite emails) is a separate container from `api`/`web`. While the deploy line pulled only `api web`, the portal was never rolled by a release and silently stayed several versions behind while `/health` reported the new version. After deploying, confirm the image matches: `docker ps --filter name=portal --format '{{.Image}}'`.
+**The service list is hand-maintained and WILL go stale — always assert version parity after deploying.** Services are named explicitly (not a bare `docker compose pull && up -d`) because the billing service builds from a local image with no registry to pull from, and a bare `up -d` would needlessly bounce the reverse proxy, redis and the tunnel. The cost is that a newly added first-party service is silently never rolled — the customer portal (a separate container serving `/portal/*`, which customers reach from quote and invite emails) stayed several versions behind for weeks while `/health` reported the new version. Watchtower is not a backstop: it is label-gated and no service carries the label.
+
+`/health` is served by the API and cannot detect this, so enumerate what is actually running:
+
+```bash
+ssh root@<host> "cd /opt/breeze && set -a && . ./.env && set +a && \
+  docker ps -a --format '{{.Names}}\t{{.Image}}' | grep 'ghcr.io/lanternops/breeze/' | \
+  while IFS=\$'\t' read -r n i; do t=\${i##*:}; \
+    [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
+# every line must be OK; any SKEW means that service was never rolled.
+```
 
 **Required env vars added by v0.65+ — production hosts without these refuse to start:**
 

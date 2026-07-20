@@ -255,10 +255,16 @@ ssh root@<droplet> "cd /opt/breeze && \
 
 Then `curl -sf https://<region>.2breeze.app/health` to verify (200 = healthy).
 
-**`portal` must be in that line.** The customer portal (`@breeze/portal`, the `/portal/*` surface customers reach from quote/invite emails) is a **separate container** from `api`/`web`. The deploy line used to pull only `api web`, so the portal was never rolled by any release — on 2026-07-20 both droplets were found still running `portal:0.94.0` while `api`/`web` were on `0.98.1`, meaning a portal fix merged in v0.97.0 had been invisible in production for 11 days while `/health` reported the new version. Verify it explicitly after deploying:
+**The service list is hand-maintained and WILL go stale — always assert version parity after deploying.** The line names services explicitly (not a bare `docker compose pull && up -d`) because `billing` builds from a local `breeze-billing:local` image with no registry to pull from, and a bare `up -d` would needlessly bounce `caddy`/`redis`/`tunnel`. The cost is that adding a new first-party service silently breaks the rollout: `portal` was added in v0.94.0, never made it into the deploy line, and sat on `0.94.0` through five releases while `/health` reported `0.98.1` — a portal fix from v0.97.0 was invisible in production for 11 days (2026-07-20). Watchtower is not a backstop: it runs `WATCHTOWER_LABEL_ENABLE=true` and no service carries the label, so it updates nothing.
+
+`/health` is served by the API and cannot detect this, so enumerate what is actually running instead of trusting the list:
 
 ```bash
-ssh root@<droplet> "docker ps --filter name=portal --format '{{.Image}}'"   # must match BREEZE_VERSION
+ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
+  docker ps -a --format '{{.Names}}\t{{.Image}}' | grep 'ghcr.io/lanternops/breeze/' | \
+  while IFS=\$'\t' read -r n i; do t=\${i##*:}; \
+    [ \"\$t\" = \"\$BREEZE_VERSION\" ] && echo \"OK    \$n \$t\" || echo \"SKEW  \$n \$t (expected \$BREEZE_VERSION)\"; done"
+# every line must be OK; any SKEW means that service was never rolled.
 ```
 
 **Required env vars added by v0.65+ — droplets without these refuse to start:**
