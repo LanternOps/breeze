@@ -320,6 +320,7 @@ describe('user routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' }
       });
@@ -1564,6 +1565,33 @@ describe('user routes', () => {
   });
 
   describe('PATCH /users/:id (admin update)', () => {
+    it.each([
+      { field: 'name', value: 'Cross-tenant rename' },
+      { field: 'status', value: 'disabled' },
+    ])('rejects organization-scoped global identity update for $field before lookup', async ({ field, value }) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          partnerOrgAccess: null,
+          orgId: 'org-a',
+          user: { id: 'org-admin', email: 'admin-a@example.com' },
+        });
+        return next();
+      });
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ [field]: value }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
+    });
+
     it('rejects unknown top-level fields including roleId (strict schema)', async () => {
       // The Edit dialog historically sent { email, name, roleId } and roleId was
       // silently dropped because updateUserSchema lacked .strict(). After the

@@ -38,6 +38,7 @@ import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
@@ -1321,6 +1322,13 @@ userRoutes.patch(
 
     if (!data.name && !data.status) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // Name and status live on the global identity row. A tenant-local admin
+    // must not mutate them after proving membership in only one organization;
+    // the same identity can be shared by other organizations.
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: 'Full partner access required to update global identity fields' }, 403);
     }
 
     const record = await getScopedUser(userId, scopeContext);
