@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ShieldAlert,
   Check,
@@ -182,6 +182,18 @@ export default function AiApprovalDialog({
   const [intentError, setIntentError] = useState<string | null>(null);
 
   const canSelfDecide = Boolean(intentBacked && selfApprovalRequestId);
+  // The card is only passive (no time signal, nothing to act on) in the
+  // four-eyes case. The sole-operator card is actionable and its intent still
+  // expires after CHAT_EXPIRY_MS, so it gets the countdown too.
+  const showCountdown = !intentBacked || canSelfDecide;
+
+  // Read inside the interval callback without listing the state in the
+  // effect's deps — doing so would restart the timer (and reset `start`) on
+  // every decide-state transition.
+  const decideStateRef = useRef(intentDecideState);
+  useEffect(() => {
+    decideStateRef.current = intentDecideState;
+  }, [intentDecideState]);
 
   const handleIntentDecision = async (decision: "approve" | "deny") => {
     // Deny must stay reachable from `needs_device` (it needs no WebAuthn
@@ -241,25 +253,44 @@ export default function AiApprovalDialog({
     }
   };
 
-  // Intent-backed executions are decided durably via the /approvals surface,
-  // not this card (see the prop doc above) — there is nothing here to
-  // auto-reject on a client-side timer, and doing so would just fire a
-  // self-approval-shaped request the backend now correctly refuses. Skip the
-  // countdown entirely for that case.
+  // Four-eyes intent-backed cards are passive — somebody else decides them on
+  // the /approvals surface, so there is no deadline worth showing here. The
+  // sole-operator card DOES get the countdown: the underlying intent expires
+  // after CHAT_EXPIRY_MS and without a timer the user only learns that by
+  // completing a Touch ID prompt and collecting a 410.
+  //
+  // onReject() stays suppressed for EVERY intent-backed card at zero: the
+  // client-side auto-deny is a legacy-Tier-2 mechanism and firing it against a
+  // durable intent would just POST a self-approval-shaped request the backend
+  // correctly refuses. The self-approve card instead settles into the same
+  // terminal "expired" presentation a server 410 produces.
   useEffect(() => {
-    if (intentBacked) return;
+    if (intentBacked && !canSelfDecide) return;
     const start = Date.now();
     const interval = setInterval(() => {
       const remaining = AUTO_DENY_MS - (Date.now() - start);
       if (remaining <= 0) {
         clearInterval(interval);
-        onReject();
+        setRemainingMs(0);
+        if (!intentBacked) {
+          onReject();
+          return;
+        }
+        // Don't clobber an in-flight ceremony or an already-settled row — the
+        // server's own 409/410 is authoritative for those.
+        if (
+          decideStateRef.current === "idle" ||
+          decideStateRef.current === "needs_device"
+        ) {
+          setIntentError(t("aiApprovalDialog.expired"));
+          setIntentDecideState("unavailable");
+        }
       } else {
         setRemainingMs(remaining);
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject, intentBacked]);
+  }, [onReject, intentBacked, canSelfDecide, t]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
@@ -269,7 +300,7 @@ export default function AiApprovalDialog({
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
-  const isUrgent = !intentBacked && remainingMs < 30_000;
+  const isUrgent = showCountdown && remainingMs < 30_000;
 
   return (
     <div
@@ -295,7 +326,7 @@ export default function AiApprovalDialog({
                 : t("aiApprovalDialog.title")}
           </span>
         </div>
-        {!intentBacked && (
+        {showCountdown && (
           <div
             className="flex items-center gap-1.5 text-xs text-gray-500"
             role="timer"
@@ -313,7 +344,7 @@ export default function AiApprovalDialog({
       )}
 
       {/* Countdown progress bar */}
-      {!intentBacked && (
+      {showCountdown && (
         <div
           className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
           role="progressbar"

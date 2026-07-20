@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AiApprovalDialog from './AiApprovalDialog';
 
@@ -366,5 +366,128 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
     expect(screen.getByText(/waiting for an approver/i)).toBeInTheDocument();
+  });
+});
+
+describe('self-approve expiry countdown', () => {
+  // The intent behind a sole-operator card still dies at CHAT_EXPIRY_MS (5
+  // min). Without a visible timer the user only discovers that by completing a
+  // Touch ID prompt and collecting a 410 — so the actionable card shows the
+  // countdown, while the passive four-eyes card (nothing to act on, somebody
+  // else's deadline) still does not.
+  const makeSelfProps = () => ({
+    toolName: 'file_operations',
+    description: 'Read a file',
+    input: {} as Record<string, unknown>,
+    onApprove: vi.fn<() => void>(),
+    onReject: vi.fn<() => void>(),
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders the countdown timer when canSelfDecide', () => {
+    render(
+      <AiApprovalDialog
+        {...makeSelfProps()}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    expect(screen.getByRole('timer')).toHaveTextContent('5:00');
+  });
+
+  it('ticks the countdown down as time passes', () => {
+    render(
+      <AiApprovalDialog
+        {...makeSelfProps()}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(65_000);
+    });
+
+    expect(screen.getByRole('timer')).toHaveTextContent('3:5');
+  });
+
+  it('does not render the countdown for the four-eyes case', () => {
+    render(<AiApprovalDialog {...makeSelfProps()} intentBacked />);
+
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+  });
+
+  it('never auto-rejects an intent-backed card when the timer runs out', () => {
+    // The client-side auto-deny is a legacy-Tier-2 mechanism. Firing it against
+    // a durable intent would POST a self-approval-shaped request the backend
+    // correctly refuses, so zero must settle the card locally instead.
+    const props = makeSelfProps();
+    render(
+      <AiApprovalDialog
+        {...props}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(5 * 60 * 1000 + 2000);
+    });
+
+    expect(props.onReject).not.toHaveBeenCalled();
+    expect(props.onApprove).not.toHaveBeenCalled();
+    expect(decideIntentApproval).not.toHaveBeenCalled();
+  });
+
+  it('settles into the terminal expired state at zero, with no doomed buttons', () => {
+    render(
+      <AiApprovalDialog
+        {...makeSelfProps()}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(5 * 60 * 1000 + 2000);
+    });
+
+    // Same presentation a server 410 produces — the row really is gone.
+    // (getAllByRole: the urgent sr-only warning is also role="alert" at 0:00.)
+    expect(
+      screen.getAllByRole('alert').map(el => el.textContent).join(' '),
+    ).toMatch(/expired/i);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /deny/i })).toBeNull();
+    expect(screen.getByRole('timer')).toHaveTextContent('0:00');
+  });
+
+  it('still auto-rejects a legacy (non-intent) card at zero', () => {
+    // Guard against the countdown-widening change accidentally disabling the
+    // Tier-2 auto-deny it was originally built for.
+    const props = makeSelfProps();
+    render(<AiApprovalDialog {...props} />);
+
+    act(() => {
+      vi.advanceTimersByTime(5 * 60 * 1000 + 2000);
+    });
+
+    expect(props.onReject).toHaveBeenCalled();
   });
 });

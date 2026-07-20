@@ -80,6 +80,66 @@ function warningToasts() {
   return showToastMock.mock.calls.filter(([toast]) => toast.type === 'warning');
 }
 
+const pendingApproval = (over: Partial<TabState['pendingApproval'] & object> = {}) => ({
+  executionId: 'exec-1',
+  toolName: 'file_operations',
+  input: {},
+  description: 'Read a file',
+  intentBacked: true,
+  selfApprovalRequestId: 'ap-1',
+  ...over,
+});
+
+describe('workspace store clearPendingApproval', () => {
+  // Wired to AiApprovalDialog's onIntentDecided: after an inline sole-operator
+  // self-approve the intent is settled server-side, so the tab's card AND its
+  // approval badge must both go away.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageHarness.data.clear();
+    useWorkspaceStore.setState({
+      tabs: [
+        tab({ id: 'tab-1', pendingApproval: pendingApproval(), hasApprovalPending: true }),
+        tab({
+          id: 'tab-2',
+          sessionId: 'session-2',
+          pendingApproval: pendingApproval({ executionId: 'exec-2', selfApprovalRequestId: 'ap-2' }),
+          hasApprovalPending: true,
+        }),
+      ],
+      activeTabId: 'tab-1',
+      _readers: new Map(),
+    });
+  });
+
+  const tabById = (id: string) => useWorkspaceStore.getState().tabs.find(t => t.id === id)!;
+
+  it('nulls pendingApproval AND resets hasApprovalPending for the target tab', () => {
+    useWorkspaceStore.getState().clearPendingApproval('tab-1');
+
+    expect(tabById('tab-1').pendingApproval).toBeNull();
+    // Dropping this reset leaves a stale approval badge on the tab forever
+    // after a self-approve — invisible to every other test.
+    expect(tabById('tab-1').hasApprovalPending).toBe(false);
+  });
+
+  it('leaves a sibling tab untouched (no wrong-tab clear in a multi-tab workspace)', () => {
+    useWorkspaceStore.getState().clearPendingApproval('tab-1');
+
+    expect(tabById('tab-2').pendingApproval).not.toBeNull();
+    expect(tabById('tab-2').pendingApproval?.executionId).toBe('exec-2');
+    expect(tabById('tab-2').hasApprovalPending).toBe(true);
+  });
+
+  it('is a no-op for an unknown tab id', () => {
+    useWorkspaceStore.getState().clearPendingApproval('tab-missing');
+
+    expect(tabById('tab-1').pendingApproval).not.toBeNull();
+    expect(tabById('tab-1').hasApprovalPending).toBe(true);
+    expect(tabById('tab-2').hasApprovalPending).toBe(true);
+  });
+});
+
 describe('workspace store ticket actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();

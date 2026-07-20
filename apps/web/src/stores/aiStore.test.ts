@@ -165,4 +165,25 @@ describe('ai store', () => {
 
     expect(sendSpy).not.toHaveBeenCalled();
   });
+
+  it('clearPendingApproval nulls pendingApproval', () => {
+    // Wired to AiApprovalDialog's onIntentDecided: after an inline sole-operator
+    // self-approve the intent is already settled server-side, so the card must
+    // come down without going back through the legacy approve endpoint.
+    useAiStore.setState({
+      pendingApproval: {
+        executionId: 'exec-1',
+        toolName: 'file_operations',
+        input: {},
+        description: 'Read a file',
+        intentBacked: true,
+        selfApprovalRequestId: 'ap-1'
+      }
+    });
+
+    useAiStore.getState().clearPendingApproval();
+
+    expect(useAiStore.getState().pendingApproval).toBeNull();
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
 });
