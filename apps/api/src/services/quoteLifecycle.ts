@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { quotes, quoteImages, type SendQuoteEmailReason } from '../db/schema/quotes';
+import { quotes, quoteImages, quoteRecipients, type SendQuoteEmailReason } from '../db/schema/quotes';
 import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote, toCustomerLines } from './quoteService';
@@ -159,6 +159,15 @@ export async function sendQuote(
   // name when it's absent OR blank — updateQuote persists billToName verbatim,
   // including '', which a bare `?? org.name` would freeze as an empty name.
   const billToName = quote.billToName?.trim() ? quote.billToName : (org?.name ?? null);
+  // The addressed recipients are also the authenticated portal identities
+  // allowed to accept/decline this quote. Persist a canonical set at send time;
+  // CC recipients are informational and intentionally do not gain signer power.
+  const billingRecipient = resolveBillingEmail(org?.billingContact);
+  const recipientEmails = Array.from(new Set(
+    (opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []))
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => email.length > 0),
+  ));
   const claimed = await db
     .update(quotes)
     .set({
@@ -179,6 +188,12 @@ export async function sendQuote(
     .returning({ id: quotes.id });
   if (claimed.length === 0) {
     throw new QuoteServiceError('Quote was already sent', 409, 'INVALID_STATE');
+  }
+
+  if (recipientEmails.length > 0) {
+    await db.insert(quoteRecipients).values(
+      recipientEmails.map((email) => ({ quoteId: id, orgId: quote.orgId, email })),
+    ).onConflictDoNothing();
   }
 
   // The in-memory `quote` row was read (getQuote) BEFORE the freeze above, so its
@@ -221,7 +236,6 @@ export async function sendQuote(
     const partnerName = partnerRow?.name;
     // Composer-picked recipients win; the org's billing contact is the fallback
     // so a bare "Send" keeps working exactly as before.
-    const billingRecipient = resolveBillingEmail(org?.billingContact);
     const recipients = opts.to && opts.to.length > 0 ? opts.to : (billingRecipient ? [billingRecipient] : []);
     const emailService = getEmailService();
     if (emailService && recipients.length > 0) {

@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { portalUsers } from '../../db/schema';
+import { portalBranding, portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
@@ -48,6 +48,17 @@ import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbConte
 
 export const authRoutes = new Hono();
 const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
+
+async function isPortalPasswordResetEnabled(orgId: string): Promise<boolean> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ enablePasswordReset: portalBranding.enablePasswordReset })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1)
+  );
+  return row?.enablePasswordReset !== false;
+}
 
 // ============================================
 // Auth middleware
@@ -375,7 +386,7 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
       .limit(1)
   );
 
-  if (user) {
+  if (user && await isPortalPasswordResetEnabled(user.orgId)) {
     const resetToken = nanoid(48);
     const tokenHash = createHash('sha256').update(resetToken).digest('hex');
     const expiresAt = new Date(Date.now() + RESET_TTL_MS);
@@ -467,6 +478,20 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
 
   if (!storedUserId) {
     return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+
+  const [resetUser] = await withSystemDbAccessContext(() =>
+    db
+      .select({ orgId: portalUsers.orgId })
+      .from(portalUsers)
+      .where(eq(portalUsers.id, storedUserId))
+      .limit(1)
+  );
+  if (!resetUser) {
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
+  if (!await isPortalPasswordResetEnabled(resetUser.orgId)) {
+    return c.json({ error: 'Password reset is not enabled for this portal' }, 403);
   }
 
   const passwordHash = await hashPassword(password);

@@ -314,11 +314,47 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   return { invoice: inv, lines, stripeConnected: conn?.status === 'connected' }; // accounting view (all lines)
 }
 
+export type CustomerInvoiceLine = {
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  taxable: boolean;
+  lineTotal: string;
+};
+
+type CustomerInvoiceLineSource = {
+  name?: string | null;
+  description?: string | null;
+  quantity: string;
+  unitPrice: string;
+  taxable: boolean;
+  lineTotal: string;
+};
+
+/** Explicit serialization boundary: never spread an invoice_lines row here. */
+export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
+  return {
+    description: line.description ?? line.name ?? '',
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    taxable: line.taxable,
+    lineTotal: line.lineTotal,
+  };
+}
+
 export async function getCustomerInvoice(invoiceId: string, orgId?: string) {
   const inv = await getOwnedInvoiceOr404(invoiceId); // RLS scopes; portal context supplies org access
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
-  const lines = await db.select().from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
+  const rows = await db.select({
+    name: invoiceLines.name,
+    description: invoiceLines.description,
+    quantity: invoiceLines.quantity,
+    unitPrice: invoiceLines.unitPrice,
+    taxable: invoiceLines.taxable,
+    lineTotal: invoiceLines.lineTotal,
+  }).from(invoiceLines).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.customerVisible, true))).orderBy(invoiceLines.sortOrder);
+  const lines = rows.map(toCustomerInvoiceLine);
   return { invoice: inv, lines };
 }
 

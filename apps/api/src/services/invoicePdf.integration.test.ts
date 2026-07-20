@@ -173,8 +173,8 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     const { invoice, lines } = await withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, f.orgId));
     expect(invoice.id).toBe(f.invoiceId);
     // The seed has 3 lines, one of which is customerVisible:false (hidden bundle child).
-    expect(lines.every((l) => l.customerVisible)).toBe(true);
     expect(lines).toHaveLength(2);
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,quantity,taxable,unitPrice')).toBe(true);
   });
 
   it('throws 404 (not 403) when the requesting org does not own the invoice', async () => {

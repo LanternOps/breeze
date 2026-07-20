@@ -123,6 +123,42 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
   });
 
+  it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{
+      id: 'internal-line-id',
+      invoiceId: 'i1',
+      orgId: 'org1',
+      sourceType: 'time_entry',
+      sourceId: 'internal-source-id',
+      catalogItemId: 'internal-catalog-id',
+      ticketId: 'internal-ticket-id',
+      description: 'Customer-facing work',
+      quantity: '2.00',
+      unitPrice: '75.00',
+      costBasis: '20.00',
+      revenueAllocation: { labor: '150.00' },
+      taxable: true,
+      lineTotal: '150.00',
+      isUnapprovedTime: true,
+      customerVisible: true,
+      sortOrder: 0,
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(Object.keys(result.lines[0]!).sort()).toEqual([
+      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+    ]);
+    expect(result.lines[0]).toEqual({
+      description: 'Customer-facing work',
+      quantity: '2.00',
+      unitPrice: '75.00',
+      taxable: true,
+      lineTotal: '150.00',
+    });
+  });
+
   it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', firstViewedAt: null }]);
     await expect(

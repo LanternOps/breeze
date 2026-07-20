@@ -249,10 +249,10 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
                 </tr>
               </thead>
               <tbody>
-                {lines.map((l) => {
+                {lines.map((l, index) => {
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
                   return (
-                  <tr key={l.id} className="border-b align-top last:border-0">
+                  <tr key={`${l.description}-${index}`} className="border-b align-top last:border-0">
                     <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

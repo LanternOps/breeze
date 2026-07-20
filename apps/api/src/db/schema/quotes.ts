@@ -1,7 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   pgTable, uuid, text, varchar, integer, boolean, numeric, jsonb, timestamp,
-  char, date, pgEnum, index, uniqueIndex, primaryKey, type AnyPgColumn
+  char, date, pgEnum, index, uniqueIndex, primaryKey, foreignKey, type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 // Reuse the exported `bytea` custom type (Buffer-mapped) from users.ts instead
@@ -183,6 +183,26 @@ export const quoteAcceptances = pgTable('quote_acceptances', {
 }, (t) => [
   index('quote_acceptances_quote_idx').on(t.quoteId),
   index('quote_acceptances_org_idx').on(t.orgId)
+]);
+
+/** Portal identities authorized to perform legal/billing actions on a quote.
+ * Rows are written when the quote is sent; legacy quotes without rows fail
+ * closed until they are explicitly re-sent/authorized. `email` is stored in
+ * trimmed lowercase form so authorization comparisons are deterministic. */
+export const quoteRecipients = pgTable('quote_recipients', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  quoteId: uuid('quote_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  email: varchar('email', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('quote_recipients_quote_email_uq').on(t.quoteId, t.email),
+  index('quote_recipients_org_idx').on(t.orgId),
+  foreignKey({
+    columns: [t.quoteId, t.orgId],
+    foreignColumns: [quotes.id, quotes.orgId],
+    name: 'quote_recipients_quote_id_org_id_fkey',
+  }).onDelete('cascade'),
 ]);
 
 export const partnerQuoteSequences = pgTable('partner_quote_sequences', {

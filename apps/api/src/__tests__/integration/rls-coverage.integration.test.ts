@@ -176,6 +176,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_orders', 'partner_id'],
   ['pax8_order_lines', 'partner_id'],
   ['accounting_connections', 'partner_id'],
+  ['network_known_guests', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],

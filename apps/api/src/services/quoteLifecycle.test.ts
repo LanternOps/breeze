@@ -11,6 +11,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 // actually wrote (e.g. the frozen bill-to snapshot on send), not just what the
 // re-select mock returns.
 const setCalls: Array<Record<string, unknown>> = [];
+const insertValueCalls: unknown[] = [];
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -25,6 +26,16 @@ vi.mock('../db', () => {
     return chain;
   };
   const db = makeChain();
+  db.insert = vi.fn(() => {
+    const insertChain: Record<string, unknown> = {};
+    insertChain.values = vi.fn((payload: unknown) => {
+      insertValueCalls.push(payload);
+      return insertChain;
+    });
+    insertChain.onConflictDoNothing = vi.fn(() => insertChain);
+    (insertChain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => Promise.resolve([]).then(resolve);
+    return insertChain;
+  });
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -61,6 +72,8 @@ import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecyc
 import { renderQuotePdf } from './quotePdf';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+beforeEach(() => { insertValueCalls.length = 0; });
 
 /**
  * Regression coverage for the malformed public quote accept link
@@ -442,6 +455,21 @@ describe('sendQuote email delivery status', () => {
       to: ['buyer@customer.example'],
       cc: ['cfo@customer.example'],
     }));
+    expect(insertValueCalls).toContainEqual([
+      expect.objectContaining({ quoteId: 'q1', orgId: 'org1', email: 'buyer@customer.example' }),
+    ]);
+  });
+
+  it('normalizes and de-duplicates persisted quote recipient authorization', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
+    queueResult([]); // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
+
+    await sendQuote('q1', actor, { to: [' Buyer@Customer.Example ', 'buyer@customer.example'] });
+
+    expect(insertValueCalls).toContainEqual([
+      expect.objectContaining({ quoteId: 'q1', orgId: 'org1', email: 'buyer@customer.example' }),
+    ]);
   });
 
   it('includePdf:false skips the PDF render and attaches nothing', async () => {

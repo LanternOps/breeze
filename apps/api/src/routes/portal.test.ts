@@ -281,15 +281,15 @@ describe('portal routes', () => {
     });
 
     it('should send password reset email when user exists', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(
-        mockSelectLimit([
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
             orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
           }
-        ]) as any
-      );
+        ]) as any)
+        .mockReturnValueOnce(mockSelectLimit([]) as any); // password reset defaults enabled
 
       const res = await app.request('/portal/auth/forgot-password', {
         method: 'POST',
@@ -307,20 +307,43 @@ describe('portal routes', () => {
         resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
       });
     });
+
+    it('keeps the generic response but does not issue a token when password reset is disabled', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([{
+          id: 'portal-user-1',
+          email: 'portal@example.com',
+          orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+        }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
+
+      const res = await app.request('/portal/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'portal@example.com',
+          orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true });
+      expect(sendPasswordResetMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /portal/auth/reset-password', () => {
     it('should reset password with valid token', async () => {
       vi.mocked(nanoid).mockReturnValueOnce('reset-token');
-      vi.mocked(db.select).mockReturnValueOnce(
-        mockSelectLimit([
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
             orgId: 'org-123'
           }
-        ]) as any
-      );
+        ]) as any)
+        .mockReturnValueOnce(mockSelectLimit([]) as any); // issuance feature flag
 
       await app.request('/portal/auth/forgot-password', {
         method: 'POST',
@@ -336,6 +359,10 @@ describe('portal routes', () => {
           where: vi.fn().mockResolvedValue(undefined)
         })
       } as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-123' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([]) as any); // consumption feature flag
 
       const res = await app.request('/portal/auth/reset-password', {
         method: 'POST',
@@ -365,9 +392,61 @@ describe('portal routes', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('rejects a previously issued token if password reset is disabled before consumption', async () => {
+      vi.mocked(nanoid).mockReturnValueOnce('disabled-after-issue-token');
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([{
+          id: 'portal-user-reset-disabled',
+          email: 'reset-disabled@example.com',
+          orgId: 'org-reset-disabled',
+        }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: true }]) as any);
+
+      await app.request('/portal/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'reset-disabled@example.com' }),
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-reset-disabled' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
+
+      const res = await app.request('/portal/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: 'disabled-after-issue-token',
+          password: 'NewStrongPass123',
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /portal/devices', () => {
+    it('returns 403 when self-service device access is disabled', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ enableSelfService: false }]) as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      } as any);
+
+      const token = await loginUser();
+      const res = await app.request('/portal/devices', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'PORTAL_SELF_SERVICE_DISABLED' });
+    });
+
     it('should return devices with pagination', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(
@@ -380,6 +459,7 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // self-service defaults enabled
         .mockReturnValueOnce(mockSelectWhere([{ count: 2 }]) as any)
         .mockReturnValueOnce(
           mockSelectOrderLimitOffset([
@@ -748,6 +828,25 @@ describe('portal routes', () => {
   });
 
   describe('GET /portal/assets', () => {
+    it('returns 403 when asset checkout is disabled', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ enableAssetCheckout: false }]) as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      } as any);
+
+      const token = await loginUser();
+      const res = await app.request('/portal/assets', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'PORTAL_ASSET_CHECKOUT_DISABLED' });
+    });
+
     it('should return available assets', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(
@@ -760,6 +859,7 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
         .mockReturnValueOnce(mockSelectLeftJoinWhere([{ count: 1 }]) as any)
         .mockReturnValueOnce(
           mockSelectLeftJoinOrderLimitOffset([
@@ -807,6 +907,7 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
         .mockReturnValueOnce(mockSelectLimit([{ id: 'device-1' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
@@ -857,6 +958,7 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
         .mockReturnValueOnce(mockSelectLimit([{ id: 'device-1' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ id: 'checkout-1' }]) as any);
 
@@ -891,7 +993,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
-        .mockReturnValueOnce(mockSelectLimit([{ id: 'checkout-1' }]) as any);
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
+        .mockReturnValueOnce(mockSelectLimit([{ id: 'checkout-1', checkedOutTo: portalUser.id }]) as any);
 
       vi.mocked(db.update)
         .mockReturnValueOnce({
@@ -936,6 +1039,7 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -953,6 +1057,51 @@ describe('portal routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('does not allow another portal contact in the same org to check in the asset', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // feature flag default enabled
+        .mockReturnValueOnce(mockSelectLimit([{ id: 'checkout-1', checkedOutTo: 'another-contact' }]) as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      } as any);
+
+      const token = await loginUser();
+      const res = await app.request('/portal/assets/2e3f2d2f-3f1f-4bcf-bd0c-4c7d5f0b0001/checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).toHaveBeenCalledTimes(1); // login timestamp only
+    });
+
+    it('reports a conflict when checkout ownership changes before the atomic update', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([portalUser]) as any)
+        .mockReturnValueOnce(mockSelectLimit([]) as any) // feature flag default enabled
+        .mockReturnValueOnce(mockSelectLimit([{ id: 'checkout-1', checkedOutTo: portalUser.id }]) as any);
+
+      vi.mocked(db.update)
+        .mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        } as any)
+        .mockReturnValueOnce(mockUpdateReturning([]) as any);
+
+      const token = await loginUser();
+      const res = await app.request('/portal/assets/2e3f2d2f-3f1f-4bcf-bd0c-4c7d5f0b0001/checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(409);
     });
   });
 

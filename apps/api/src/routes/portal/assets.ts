@@ -113,7 +113,7 @@ assetRoutes.post(
     }
 
     const [activeCheckout] = await db
-      .select({ id: assetCheckouts.id })
+      .select({ id: assetCheckouts.id, checkedOutTo: assetCheckouts.checkedOutTo })
       .from(assetCheckouts)
       .where(
         and(
@@ -190,7 +190,7 @@ assetRoutes.post(
     const payload = c.req.valid('json');
 
     const [activeCheckout] = await db
-      .select({ id: assetCheckouts.id })
+      .select({ id: assetCheckouts.id, checkedOutTo: assetCheckouts.checkedOutTo })
       .from(assetCheckouts)
       .where(
         and(
@@ -204,6 +204,9 @@ assetRoutes.post(
     if (!activeCheckout) {
       return c.json({ error: 'Asset is not checked out' }, 400);
     }
+    if (activeCheckout.checkedOutTo !== auth.user.id) {
+      return c.json({ error: 'Only the contact who checked out this asset may check it in' }, 403);
+    }
 
     const now = new Date();
     const [checkout] = await db
@@ -214,7 +217,13 @@ assetRoutes.post(
         condition: payload.condition,
         updatedAt: now
       })
-      .where(eq(assetCheckouts.id, activeCheckout.id))
+      .where(and(
+        eq(assetCheckouts.id, activeCheckout.id),
+        eq(assetCheckouts.deviceId, id),
+        eq(assetCheckouts.orgId, auth.user.orgId),
+        eq(assetCheckouts.checkedOutTo, auth.user.id),
+        isNull(assetCheckouts.checkedInAt),
+      ))
       .returning({
         id: assetCheckouts.id,
         deviceId: assetCheckouts.deviceId,
@@ -223,7 +232,7 @@ assetRoutes.post(
         condition: assetCheckouts.condition
       });
     if (!checkout) {
-      return c.json({ error: 'Failed to check in asset' }, 500);
+      return c.json({ error: 'Asset checkout changed before it could be checked in' }, 409);
     }
 
     writePortalAudit(c, {
