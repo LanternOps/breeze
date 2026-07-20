@@ -47,6 +47,7 @@ function makeApp() {
 }
 
 const RULE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
+const ALERTS_READ = 'alerts:read';
 const ALERTS_WRITE = 'alerts:write';
 
 describe('notification routing rules authz (Finding #6)', () => {
@@ -58,6 +59,17 @@ describe('notification routing rules authz (Finding #6)', () => {
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
       partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
     } as typeof authRef.current;
+  });
+
+  it('403 on GET /alerts/routing-rules without ALERTS_READ', async () => {
+    const res = await makeApp().request('/alerts/routing-rules');
+    expect(res.status).toBe(403);
+  });
+
+  it('passes the read gate when ALERTS_READ is granted', async () => {
+    grantedRef.current.add(ALERTS_READ);
+    const res = await makeApp().request('/alerts/routing-rules');
+    expect(res.status).not.toBe(403);
   });
 
   it('403 on POST /alerts/routing-rules without ALERTS_WRITE', async () => {
