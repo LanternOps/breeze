@@ -525,10 +525,23 @@ snapshotsRoutes.post(
       if (!storage) {
         return c.json({ error: 'Snapshot storage configuration is unavailable' }, 409);
       }
-      const capability = await checkBackupProviderCapabilities({
-        provider: storage.provider,
-        providerConfig: storage.providerConfig,
-      });
+      // checkBackupProviderCapabilities now throws (rather than answering
+      // "unsupported") when the stored config itself is unusable — e.g. a
+      // malformed endpoint. Surface that as its own message instead of
+      // reporting a config error to the user as "object lock is not enabled".
+      let capability: Awaited<ReturnType<typeof checkBackupProviderCapabilities>>;
+      try {
+        capability = await checkBackupProviderCapabilities({
+          provider: storage.provider,
+          providerConfig: storage.providerConfig,
+        });
+      } catch (error) {
+        return c.json({
+          error: error instanceof Error
+            ? `Snapshot storage configuration is invalid: ${error.message}`
+            : 'Snapshot storage configuration is invalid',
+        }, 409);
+      }
       if (!capability.objectLock.supported) {
         return c.json({
           error: capability.objectLock.error ?? 'Bucket object lock is not enabled',
