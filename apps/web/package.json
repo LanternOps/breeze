@@ -52,7 +52,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-hook-form": "^7.81.0",
-    "react-i18next": "^17.0.9",
+    "react-i18next": "^17.0.10",
     "react-markdown": "^10.1.0",
     "recharts": "^2.15.0",
     "remark-gfm": "^4.0.1",
