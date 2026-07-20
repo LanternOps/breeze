@@ -109,6 +109,38 @@ describe('configurationPolicies assignment routes', () => {
     app.route('/', assignmentRoutes);
   });
 
+  it('filters policy assignment reads through target site authorization', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'allowed', level: 'device', targetId: DEVICE_ID },
+      { id: 'denied', level: 'site', targetId: '55555555-5555-4555-8555-555555555555' },
+    ]);
+    authorizeAssignmentTargetMock.mockImplementation(async (_auth, _level, targetId) => ({
+      valid: targetId === DEVICE_ID,
+      error: 'Target is outside your site access',
+    }));
+
+    const res = await app.request(`/${POLICY_ID}/assignments`);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      data: [{ id: 'allowed', level: 'device', targetId: DEVICE_ID }],
+    });
+    expect(authorizeAssignmentTargetMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('authorizes an explicit target before listing its assignments', async () => {
+    authorizeAssignmentTargetMock.mockResolvedValue({
+      valid: false,
+      error: 'Target device is outside your site access',
+    });
+
+    const res = await app.request(`/assignments/target?level=device&targetId=${DEVICE_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(listAssignmentsForTargetMock).not.toHaveBeenCalled();
+  });
+
   it('assigns a policy when the target belongs to the policy organization', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
     validateAssignmentTargetMock.mockResolvedValue({ valid: true });
