@@ -267,15 +267,16 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
     expect(intent.errorCode).not.toBe('session_required');
   });
 
-  it('resets a password headlessly and stores temporaryPassword in intent.result', async () => {
+  it('resets a password headlessly and stores a SEALED temporaryPasswordEnc in intent.result', async () => {
     const { orgId, intentId } = await seedApprovedM365Intent('m365_reset_password');
     await seedActionsConnection({ orgId, tenantId: randomUUID(), status: 'active' });
 
+    const plaintextTemporaryPassword = 'Tmp!23xyz789';
     h.executeWriteAction.mockResolvedValue({
       success: true,
       action: 'm365.user.reset_password',
       userId: 'u1',
-      temporaryPassword: 'Tmp!23xyz789',
+      temporaryPassword: plaintextTemporaryPassword,
       forceChangeNextSignIn: true,
     });
 
@@ -285,7 +286,11 @@ describe('releaseApprovedIntent headless M365 dispatch (real Postgres, breeze_ap
 
     const intent = await readIntent(intentId);
     expect(intent.status).toBe('completed');
-    expect(intent.result).toMatchObject({ success: true, temporaryPassword: 'Tmp!23xyz789' });
+    expect(intent.result).toMatchObject({ success: true, userId: 'u1', forceChangeNextSignIn: true });
+    const result = intent.result as Record<string, unknown>;
+    expect(typeof result.temporaryPasswordEnc).toBe('string');
+    expect(result).not.toHaveProperty('temporaryPassword');
+    expect(JSON.stringify(result)).not.toContain(plaintextTemporaryPassword);
   });
 
   it('revoked connection: fails connection_unavailable with NO executor call', async () => {
