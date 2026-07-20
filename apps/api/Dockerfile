@@ -21,6 +21,9 @@ COPY packages/shared/package.json ./packages/shared/
 # creates the workspace symlinks the API's tsup bundle resolves at build time.
 COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
+# devDependency of apps/api. This stage installs devDependencies (no --prod),
+# so its manifest belongs here too — see apps/api/src/config/dockerfileWorkspaceManifests.test.ts.
+COPY packages/extension-cli/package.json ./packages/extension-cli/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline

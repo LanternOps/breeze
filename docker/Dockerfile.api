@@ -8,6 +8,8 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
+# devDependency of apps/api; this stage installs devDependencies (no --prod).
+COPY packages/extension-cli/package.json ./packages/extension-cli/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -17,6 +19,7 @@ COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=deps /app/packages/extension-api/node_modules ./packages/extension-api/node_modules
 COPY --from=deps /app/packages/extension-sdk/node_modules ./packages/extension-sdk/node_modules
+COPY --from=deps /app/packages/extension-cli/node_modules ./packages/extension-cli/node_modules
 COPY . .
 RUN pnpm --filter @breeze/api build
 # Create a self-contained deployment (resolves pnpm symlinks).
