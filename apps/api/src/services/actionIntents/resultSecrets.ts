@@ -3,11 +3,16 @@
  *
  * Registry of secret-bearing action results (today: only the M365 reset
  * password). The temporary password is encrypted at rest (AES-256-GCM via
- * secretCrypto, AAD-bound to action_intents.result), revealed AT MOST ONCE via
- * POST /action-intents/:id/reveal-secret, and burned out of the jsonb by a CAS
- * update the moment it is revealed — or redacted by the expiry reaper after
- * REVEAL_WINDOW_DAYS. The plaintext must never reach logs, audit details, or
- * metrics.
+ * secretCrypto, AAD-bound to action_intents.result, v3 ciphertext only),
+ * revealed AT MOST ONCE via POST /action-intents/:id/reveal-secret, and
+ * burned out of the jsonb by a CAS update the moment it is revealed — or
+ * redacted by the expiry reaper after REVEAL_WINDOW_DAYS. The plaintext must
+ * never reach logs, audit details, or metrics. If sealing does not produce
+ * v3 ciphertext (APP_ENCRYPTION_KEY_ID missing, so secretCrypto silently
+ * falls back to un-AAD-bound v1), the plaintext is dropped instead of stored
+ * — the guarantee is fail-closed confidentiality, not "always retrievable."
+ * Unsealing likewise refuses any non-v3 sealed value rather than decrypting
+ * it, closing off a v1-substitution decrypt oracle.
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
@@ -19,7 +24,10 @@ export const TEMP_PASSWORD_ENC_KEY = 'temporaryPasswordEnc';
 export const TEMP_PASSWORD_LEGACY_KEY = 'temporaryPassword';
 export const TEMP_PASSWORD_REVEALED_KEY = 'temporaryPasswordRevealed';
 export const TEMP_PASSWORD_EXPIRED_KEY = 'temporaryPasswordExpired';
+export const TEMP_PASSWORD_SEAL_FAILED_KEY = 'temporaryPasswordSealFailed';
 export const REVEAL_WINDOW_DAYS = 7;
+
+const ENC_V3_PREFIX = 'enc:v3:';
 
 const SECRET_BEARING_ACTION = 'm365.user.reset_password';
 
@@ -31,8 +39,21 @@ export function sealActionResultSecrets(
   const pw = result[TEMP_PASSWORD_LEGACY_KEY];
   if (typeof pw !== 'string' || pw.length === 0) return result;
   const sealed = encryptSecret(pw, { aad: ACTION_INTENT_RESULT_AAD });
-  if (!sealed) return result;
   const { [TEMP_PASSWORD_LEGACY_KEY]: _plain, ...rest } = result;
+  if (!sealed || !sealed.startsWith(ENC_V3_PREFIX)) {
+    // secretCrypto only produced v1 (or nothing) — almost certainly because
+    // APP_ENCRYPTION_KEY_ID is unset. v1 ciphertext is not AAD-bound, so
+    // storing it would let a decrypt oracle substitute ciphertext across
+    // intents. The Entra password reset already happened and cannot be
+    // undone, so failing the whole intent would be a false failure signal;
+    // instead fail closed on confidentiality — drop the plaintext and mark
+    // the secret unretrievable. forceChangePasswordNextSignIn bounds impact.
+    console.error(
+      '[resultSecrets] seal produced non-v3 ciphertext — APP_ENCRYPTION_KEY_ID missing? '
+      + 'Temp password dropped (fail closed).',
+    );
+    return { ...rest, [TEMP_PASSWORD_SEAL_FAILED_KEY]: true };
+  }
   return { ...rest, [TEMP_PASSWORD_ENC_KEY]: sealed };
 }
 
@@ -51,6 +72,12 @@ export function hasSealedTemporaryPassword(result: Record<string, unknown>): boo
 export function unsealTemporaryPassword(result: Record<string, unknown>): string | null {
   const sealed = result[TEMP_PASSWORD_ENC_KEY];
   if (typeof sealed === 'string') {
+    if (!sealed.startsWith(ENC_V3_PREFIX)) {
+      // Refuse to decrypt non-v3 sealed values: decryptSecret's v1 branch
+      // ignores AAD/strict entirely, so a v1 (or otherwise-versioned) value
+      // here would be a decrypt oracle, not a real secret.
+      throw new Error('non-v3 sealed value refused');
+    }
     return decryptSecret(sealed, { aad: ACTION_INTENT_RESULT_AAD, strict: true });
   }
   const legacy = result[TEMP_PASSWORD_LEGACY_KEY];
