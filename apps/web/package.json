@@ -29,7 +29,7 @@
     "@novnc/novnc": "1.7.0",
     "@sentry/astro": "^10.62.0",
     "@simplewebauthn/browser": "^13.3.0",
-    "@tanstack/react-query": "^5.101.2",
+    "@tanstack/react-query": "^5.101.3",
     "@tiptap/extension-link": "^3.28.0",
     "@tiptap/extension-underline": "^3.28.0",
     "@tiptap/pm": "^3.28.0",
