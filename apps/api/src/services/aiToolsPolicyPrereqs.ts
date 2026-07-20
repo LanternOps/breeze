@@ -107,6 +107,9 @@ function safeHandler(toolName: string, fn: Handler): Handler {
       return await fn(input, auth);
     } catch (err: unknown) {
       const code = pgErrorCode(err);
+      // Log BEFORE the pg-code early returns — those branches return without
+      // reaching sanitizeThrownToolError, so without this they log nothing.
+      console.error(`[policy-prereq:${toolName}]`, input.action, code ?? '', err);
       if (code === '23503') return JSON.stringify({ error: 'Referenced record not found.' });
       if (code === '23505') return JSON.stringify({ error: 'Duplicate entry — a record with this name already exists.' });
       if (code === '22P02') return JSON.stringify({ error: 'Invalid ID format — expected a valid UUID.' });

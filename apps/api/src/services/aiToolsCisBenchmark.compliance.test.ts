@@ -87,7 +87,10 @@ describe('get_cis_compliance', () => {
       .map(outputNameOf)
       .filter((n): n is string => n !== null);
 
-    expect(names.length).toBeGreaterThan(5);
+    // Exact count, not a floor: `outputNameOf` depends on Drizzle internals
+    // (`fieldAlias` / `name`), so a silently-shrinking array would otherwise make
+    // the uniqueness assertion pass vacuously.
+    expect(names.length, `resolved names: ${names.join(', ')}`).toBe(19);
     expect(new Set(names).size, `duplicate output columns: ${names.join(', ')}`).toBe(names.length);
 
     // The two that actually collided must now be explicitly disambiguated.

@@ -33,7 +33,9 @@ describe('aiToolErrors', () => {
       ['unique violation', 'duplicate key value violates unique constraint "devices_pkey"'],
       ['fk violation', 'insert or update violates foreign key constraint "fk_org"'],
       ['rls violation', 'new row violates row-level security policy for table "devices"'],
-      ['sqlstate', 'error 23503 raised during insert'],
+      ['sqlstate with context', 'SQLSTATE 23503 raised during insert'],
+      ['error code with context', 'pg error code 42703 while planning'],
+      ['alphanumeric sqlstate, no context needed', 'query aborted: 22P02'],
       ['network', 'connect ECONNREFUSED 10.1.2.3:5432'],
       ['dns', 'getaddrinfo ENOTFOUND db.internal.example'],
       ['stack trace', 'Boom\n    at Object.handler (/app/dist/index.js:12:3)'],
@@ -55,6 +57,24 @@ describe('aiToolErrors', () => {
       ]) {
         expect(looksLikeInternalErrorDetail(safe)).toBe(false);
       }
+    });
+
+    /**
+     * False-positive guard. Breeze is an RMM: managed-device filesystem paths and
+     * arbitrary numbers are ORDINARY DOMAIN DATA, not infrastructure leakage.
+     * Genericizing these would silently degrade what the model can reason about.
+     */
+    it.each([
+      ['managed-device path', 'Backup path /var/lib/mysql is not readable on this device'],
+      ['home path', 'Scan skipped /home/user/Downloads (permission set by policy)'],
+      ['opt path', 'Agent installed at /opt/breeze-agent needs an upgrade'],
+      ['5-digit number in the old 42xxx range', 'Upload exceeds the limit of 42000 bytes'],
+      ['5-digit number in the old 23xxx range', 'Agent reported 23456 pending events'],
+      ['domain use of "column"', 'Report column "hostname" is not valid'],
+      ['device offline phrasing', 'Connection failed - device is offline'],
+    ])('does not flag RMM domain text: %s', (_label, text) => {
+      expect(looksLikeInternalErrorDetail(text)).toBe(false);
+      expect(scrubErrorText(text)).toBe(text);
     });
   });
 
@@ -104,6 +124,53 @@ describe('aiToolErrors', () => {
       expect(out.warning).toBe('Partial results returned');
 
       expect(JSON.stringify(out)).not.toContain('benchmark_version');
+    });
+
+    /**
+     * The error context must be INHERITED by everything under an error-ish key.
+     * Matching only the key directly adjacent to the string missed all three of
+     * these shapes, because the inner keys are UUIDs or array indices — and
+     * `errors[deviceId] = err.message` is exactly how the bulk agent-management
+     * tools report per-device failures.
+     */
+    describe('inherits error context into nested containers', () => {
+      it('scrubs a Record<deviceId, string> under `errors`', () => {
+        const out = scrubErrorFieldsDeep({
+          queued: 0,
+          errors: { 'a1b2c3d4-0000-4000-8000-000000000001': RAW_DRIZZLE_ERROR },
+        }) as { queued: number; errors: Record<string, string> };
+
+        expect(out.queued).toBe(0);
+        expect(out.errors['a1b2c3d4-0000-4000-8000-000000000001']).toBe(
+          GENERIC_TOOL_ERROR_MESSAGE,
+        );
+        expect(JSON.stringify(out)).not.toContain('benchmark_version');
+      });
+
+      it('scrubs an array of error strings', () => {
+        const out = scrubErrorFieldsDeep({ errors: [RAW_DRIZZLE_ERROR, 'Device offline'] }) as {
+          errors: string[];
+        };
+        expect(out.errors[0]).toBe(GENERIC_TOOL_ERROR_MESSAGE);
+        // Short author-written entries inside the same array still survive.
+        expect(out.errors[1]).toBe('Device offline');
+      });
+
+      it('scrubs `errorMessage` and snake_case `*_error` keys', () => {
+        const out = scrubErrorFieldsDeep({
+          errorMessage: RAW_DRIZZLE_ERROR,
+          db_error: 'relation "devices" does not exist',
+        }) as Record<string, string>;
+        expect(out.errorMessage).toBe(GENERIC_TOOL_ERROR_MESSAGE);
+        expect(out.db_error).toBe(GENERIC_TOOL_ERROR_MESSAGE);
+      });
+    });
+
+    it('does not rebuild non-plain objects (Date survives intact)', () => {
+      const when = new Date('2026-01-01T00:00:00.000Z');
+      const out = scrubErrorFieldsDeep({ checkedAt: when }) as { checkedAt: Date };
+      expect(out.checkedAt).toBeInstanceOf(Date);
+      expect(out.checkedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z');
     });
 
     it('handles null, primitives and arrays safely', () => {

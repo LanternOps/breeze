@@ -49,26 +49,35 @@ const INTERNAL_DETAIL_PATTERNS: RegExp[] = [
   /failed query/i,
   /\bselect\s+["'`]/i,
   /\b(?:insert\s+into|update|delete\s+from)\s+["'`]/i,
-  // PostgreSQL error text
+  // PostgreSQL error text. These are deliberately anchored on the surrounding
+  // Postgres phrasing rather than on a bare quoted identifier: Breeze is an RMM,
+  // and tool results legitimately contain strings like
+  // `Report column "hostname" is not valid` that must NOT be genericized.
   /relation\s+"[^"]+"\s+does not exist/i,
-  /column\s+(?:reference\s+)?"[^"]+"/i,
-  /constraint\s+"[^"]+"/i,
+  /column\s+reference\s+"[^"]+"\s+is ambiguous/i,
+  /column\s+"[^"]+"\s+(?:of relation\b|does not exist|cannot be null|is of type)/i,
+  /(?:violates|on table|constraint)\s+"[^"]+"\s*$/i,
   /duplicate key value violates/i,
-  /violates (?:foreign key|not-null|check) constraint/i,
+  /violates (?:foreign key|not-null|check|unique) constraint/i,
   /violates row-level security policy/i,
   /syntax error at or near/i,
   /operator does not exist/i,
   /invalid input syntax for/i,
   /permission denied for (?:table|relation|schema|sequence)/i,
-  // Bare SQLSTATE codes
-  /\b(?:23\d{3}|42\d{3}|22P02|40P01|57014)\b/,
+  // SQLSTATE codes. Alphanumeric codes are distinctive enough to match bare;
+  // purely numeric ones require SQLSTATE-ish context, because a bare five-digit
+  // number is ordinary RMM data ("Upload exceeds the limit of 42000 bytes").
+  /\b(?:22P02|40P01|42P01|42703|42883)\b/,
+  /\b(?:sqlstate|error\s*code|pg\s*code)\b\D{0,16}\b(?:23\d{3}|42\d{3}|57014)\b/i,
   // Node / network / infrastructure
   /\b(?:ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|EPIPE|EAI_AGAIN)\b/,
   /getaddrinfo/i,
-  /connect(?:ion)? (?:to server )?(?:failed|refused|terminated)/i,
-  // Stack traces and module paths
+  /connection (?:refused|terminated|to server)/i,
+  // Stack traces and server-side module paths. Managed-device filesystem paths
+  // (/var/lib/..., /opt/..., /home/...) are core RMM domain data and are NOT
+  // matched here — only markers that can only come from OUR runtime.
   /\n\s+at\s+\S+/,
-  /(?:\/(?:home|usr|opt|var|app)\/|node_modules\/|file:\/\/)/,
+  /(?:node_modules\/|file:\/\/|\/app\/dist\/|\.[cm]?[jt]sx?:\d+:\d+)/,
   // Redis / BullMQ internals
   /\bWRONGTYPE\b|\bNOSCRIPT\b|\bLOADING\b/,
 ];
@@ -79,8 +88,12 @@ const INTERNAL_DETAIL_PATTERNS: RegExp[] = [
  */
 const MAX_SAFE_ERROR_CHARS = 300;
 
-/** Object keys whose string values are treated as error text during deep scrub. */
-const ERROR_FIELD_PATTERN = /(?:^|[a-z])(?:error|warning)s?$/i;
+/**
+ * Object keys that mark an error context. Covers `error`, `errors`, `warning(s)`,
+ * `queueError`, `scheduleWarning`, `errorMessage`, `errorDetail`, `errorLog`, and
+ * snake_case forms like `db_error` / `sync_error`.
+ */
+const ERROR_FIELD_PATTERN = /(?:^|[a-z_])(?:error|warning)s?(?:message|text|detail|log)?$/i;
 
 function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -111,24 +124,55 @@ export function scrubErrorText(text: string): string {
 }
 
 /**
- * Recursively scrub string values under error-ish keys (`error`, `warning`,
- * `queueError`, `scheduleWarning`, `errors[]`, …) anywhere in a tool payload.
+ * Recursively scrub string values under error-ish keys anywhere in a tool payload.
  * Non-error fields are left untouched — this must not degrade tool data.
+ *
+ * The error context is **inherited by everything beneath the matching key**, which
+ * is what makes the common partial-failure shapes safe:
+ *
+ *   { errors: { "<deviceId>": "<raw driver text>" } }   // keys are UUIDs
+ *   { errors: ["<raw driver text>", ...] }              // array of strings
+ *   { errorMessage: "<raw driver text>" }
+ *
+ * Matching only the key directly adjacent to the string (the original approach)
+ * missed all three, because the inner keys are UUIDs or array indices.
+ *
+ * NOTE: intended for values produced by `JSON.parse`. Non-plain objects (Date,
+ * Map, class instances) are returned untouched rather than rebuilt, so this
+ * cannot silently flatten them if it is ever reused on live objects.
  */
-export function scrubErrorFieldsDeep(value: unknown, depth = 0): unknown {
-  if (depth > 8) return value;
-  if (Array.isArray(value)) {
-    return value.map((item) => scrubErrorFieldsDeep(item, depth + 1));
+export function scrubErrorFieldsDeep(
+  value: unknown,
+  depth = 0,
+  inErrorContext = false,
+): unknown {
+  if (typeof value === 'string') {
+    return inErrorContext ? scrubErrorText(value) : value;
   }
   if (value === null || typeof value !== 'object') return value;
 
+  // Fail CLOSED at the depth cap: inside an error context, an un-walkable subtree
+  // is replaced rather than passed through unscrubbed.
+  if (depth > 8) return inErrorContext ? GENERIC_TOOL_ERROR_MESSAGE : value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubErrorFieldsDeep(item, depth + 1, inErrorContext));
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof child === 'string' && ERROR_FIELD_PATTERN.test(key)) {
-      out[key] = scrubErrorText(child);
-    } else {
-      out[key] = scrubErrorFieldsDeep(child, depth + 1);
-    }
+    const childInErrorContext = inErrorContext || ERROR_FIELD_PATTERN.test(key);
+    // defineProperty rather than `out[key] =` so a JSON-parsed "__proto__" key is
+    // preserved as an own property instead of hitting the prototype setter.
+    Object.defineProperty(out, key, {
+      value: scrubErrorFieldsDeep(child, depth + 1, childInErrorContext),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return out;
 }
@@ -153,9 +197,13 @@ export function sanitizeThrownToolError(
     err instanceof Error && err.stack ? `\n${err.stack}` : '',
   );
 
+  // The allowlist branch is ALSO detector-checked. `Tool execution timed out
+  // after Nms: ${label}` interpolates a value, so the safe branch must not be a
+  // way around the scrub.
   if (
     raw &&
     raw.length <= MAX_SAFE_ERROR_CHARS &&
+    !looksLikeInternalErrorDetail(raw) &&
     SAFE_THROWN_MESSAGE_PATTERNS.some((pattern) => pattern.test(raw))
   ) {
     return raw;
