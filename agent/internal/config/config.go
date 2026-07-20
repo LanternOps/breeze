@@ -48,10 +48,18 @@ type Config struct {
 	// via heartbeat configUpdate (#2288). The heartbeat loop probes it after
 	// backupProbeThreshold consecutive primary failures and promote-swaps on
 	// a successful authenticated heartbeat. Never a secret; lives in agent.yaml.
-	BackupServerURL              string `mapstructure:"backup_server_url"`
-	AuthToken                    string `mapstructure:"auth_token"`
-	WatchdogAuthToken            string `mapstructure:"watchdog_auth_token"`
-	HelperAuthToken              string `mapstructure:"helper_auth_token"`
+	BackupServerURL   string `mapstructure:"backup_server_url"`
+	AuthToken         string `mapstructure:"auth_token"`
+	WatchdogAuthToken string `mapstructure:"watchdog_auth_token"`
+	HelperAuthToken   string `mapstructure:"helper_auth_token"`
+	// Issue #2621 — staged credentials from a rotation that has been durably
+	// written but not yet confirmed to the server. They are persisted ALONGSIDE
+	// the still-current set, never in place of it: that is what makes a crash at
+	// any point during rotation survivable. On startup an agent that finds these
+	// populated re-drives the confirmation instead of silently dropping them.
+	PendingAuthToken             string `mapstructure:"pending_auth_token"`
+	PendingWatchdogAuthToken     string `mapstructure:"pending_watchdog_auth_token"`
+	PendingHelperAuthToken       string `mapstructure:"pending_helper_auth_token"`
 	OrgID                        string `mapstructure:"org_id"`
 	SiteID                       string `mapstructure:"site_id"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
@@ -319,6 +327,18 @@ func Load(cfgFile string) (*Config, error) {
 		}
 		if v := sv.GetString("helper_auth_token"); v != "" {
 			cfg.HelperAuthToken = v
+		}
+		// Issue #2621 — staged rotation credentials. Losing these on load would
+		// reintroduce the stranding bug from the other direction: the server may
+		// already have promoted them, and this is the agent's only durable copy.
+		if v := sv.GetString("pending_auth_token"); v != "" {
+			cfg.PendingAuthToken = v
+		}
+		if v := sv.GetString("pending_watchdog_auth_token"); v != "" {
+			cfg.PendingWatchdogAuthToken = v
+		}
+		if v := sv.GetString("pending_helper_auth_token"); v != "" {
+			cfg.PendingHelperAuthToken = v
 		}
 		if v := sv.GetString("mtls_cert_pem"); v != "" {
 			cfg.MtlsCertPEM = v
@@ -599,6 +619,31 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	if cfg.HelperAuthToken != "" {
 		sv.Set("helper_auth_token", cfg.HelperAuthToken)
 	}
+	// Issue #2621 — SaveTo rebuilds the secrets file from scratch, so any staged
+	// rotation credentials on disk would be silently dropped by an unrelated
+	// caller (the mTLS renewal path calls config.Save mid-flight). Losing them
+	// would strand an agent whose staged set is the only one the server still
+	// accepts, which is the very failure this design removes. Carry them
+	// forward: prefer the in-memory values, else preserve what is on disk.
+	pendingOnDisk, _ := readPersistedCredentialsAt(cfgPath)
+	setPendingSecret := func(key, fromCfg string, fromDisk func(*PersistedCredentials) string) {
+		if fromCfg != "" {
+			sv.Set(key, fromCfg)
+			return
+		}
+		if pendingOnDisk != nil {
+			if v := fromDisk(pendingOnDisk); v != "" {
+				sv.Set(key, v)
+			}
+		}
+	}
+	setPendingSecret(secretKeyPendingAuthToken, cfg.PendingAuthToken,
+		func(p *PersistedCredentials) string { return p.PendingAuthToken })
+	setPendingSecret(secretKeyPendingWatchdogAuthToken, cfg.PendingWatchdogAuthToken,
+		func(p *PersistedCredentials) string { return p.PendingWatchdogAuthToken })
+	setPendingSecret(secretKeyPendingHelperAuthToken, cfg.PendingHelperAuthToken,
+		func(p *PersistedCredentials) string { return p.PendingHelperAuthToken })
+
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)

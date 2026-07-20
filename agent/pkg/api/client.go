@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,14 +33,14 @@ type Client struct {
 }
 
 type EnrollRequest struct {
-	EnrollmentKey    string        `json:"enrollmentKey"`
-	EnrollmentSecret string        `json:"enrollmentSecret,omitempty"`
-	Hostname         string        `json:"hostname"`
-	OSType           string        `json:"osType"`
-	OSVersion        string        `json:"osVersion"`
-	Architecture     string        `json:"architecture"`
-	AgentVersion     string        `json:"agentVersion,omitempty"`
-	DeviceRole       string        `json:"deviceRole,omitempty"`
+	EnrollmentKey    string `json:"enrollmentKey"`
+	EnrollmentSecret string `json:"enrollmentSecret,omitempty"`
+	Hostname         string `json:"hostname"`
+	OSType           string `json:"osType"`
+	OSVersion        string `json:"osVersion"`
+	Architecture     string `json:"architecture"`
+	AgentVersion     string `json:"agentVersion,omitempty"`
+	DeviceRole       string `json:"deviceRole,omitempty"`
 	// IsVirtual / VirtualizationPlatform are the orthogonal "is this a VM and
 	// on what hypervisor" attribute (issue #1387), derived by the agent from
 	// the same hardware identity strings that drive DeviceRole. They are a
@@ -105,6 +106,21 @@ type RotateTokenResponse struct {
 	WatchdogAuthToken string `json:"watchdogAuthToken"`
 	HelperAuthToken   string `json:"helperAuthToken"`
 	RotatedAt         string `json:"rotatedAt"`
+	// Issue #2621 — set by two-phase-capable servers. The credentials above are
+	// STAGED: the server still treats the agent's previous set as current until
+	// ConfirmTokenRotation succeeds. The agent must durably persist and read
+	// back the new set BEFORE confirming.
+	ConfirmationRequired bool   `json:"confirmationRequired"`
+	PendingExpiresAt     string `json:"pendingExpiresAt"`
+}
+
+// ConfirmTokenRotationResponse is the reply to phase two of a rotation.
+type ConfirmTokenRotationResponse struct {
+	Confirmed      bool   `json:"confirmed"`
+	AlreadyCurrent bool   `json:"alreadyCurrent"`
+	ConfirmedAt    string `json:"confirmedAt"`
+	Error          string `json:"error"`
+	Code           string `json:"code"`
 }
 
 type AgentConfig struct {
@@ -317,6 +333,50 @@ func (c *Client) RotateToken() (*RotateTokenResponse, error) {
 	var result RotateTokenResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode rotate-token response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// ErrPendingRotationExpired reports that the staged credential set died before
+// the agent could confirm it. The caller must fall back to its durable
+// credentials and start a fresh rotation.
+var ErrPendingRotationExpired = errors.New("pending rotation expired")
+
+// ConfirmTokenRotation completes phase two of a two-phase rotation. It MUST be
+// called on a client built with the NEW (staged) agent token — the server treats
+// possession of that token as the endpoint's proof that the credential was
+// durably persisted, and only then promotes it to current.
+func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/agents/%s/rotate-token/confirm", c.baseURL, c.agentID)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rotate-token confirm request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send rotate-token confirm request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rotate-token confirm response body: %w", err)
+	}
+
+	var result ConfirmTokenRotationResponse
+	// Decode before the status check: the 409 body carries the machine-readable
+	// code that tells us whether retrying can ever succeed.
+	_ = json.Unmarshal(bodyBytes, &result)
+
+	if resp.StatusCode != http.StatusOK {
+		if result.Code == "pending_rotation_expired" {
+			return nil, ErrPendingRotationExpired
+		}
+		return nil, fmt.Errorf("rotate-token confirm failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	return &result, nil

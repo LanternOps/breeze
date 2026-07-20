@@ -63,12 +63,22 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
         helperTokenHash: devices.helperTokenHash,
         previousHelperTokenHash: devices.previousHelperTokenHash,
         previousHelperTokenExpiresAt: devices.previousHelperTokenExpiresAt,
+        pendingHelperTokenHash: devices.pendingHelperTokenHash,
+        pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         partnerId: organizations.partnerId,
       })
       .from(devices)
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
-      .where(or(eq(devices.helperTokenHash, tokenHash), eq(devices.previousHelperTokenHash, tokenHash)))
+      // Issue #2621 — the staged helper credential must be findable here too,
+      // otherwise a helper holding the persisted-but-unconfirmed token 401s.
+      .where(
+        or(
+          eq(devices.helperTokenHash, tokenHash),
+          eq(devices.previousHelperTokenHash, tokenHash),
+          eq(devices.pendingHelperTokenHash, tokenHash)
+        )
+      )
       .limit(1);
     return row ?? null;
   });
@@ -78,6 +88,8 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
         agentTokenHash: device.helperTokenHash,
         previousTokenHash: device.previousHelperTokenHash,
         previousTokenExpiresAt: device.previousHelperTokenExpiresAt,
+        pendingTokenHash: device.pendingHelperTokenHash,
+        pendingTokenExpiresAt: device.pendingTokenExpiresAt,
         tokenHash,
       })
     : null;

@@ -116,11 +116,14 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands               []Command              `json:"commands"`
-	ConfigUpdate           map[string]any         `json:"configUpdate,omitempty"`
-	UpgradeTo              string                 `json:"upgradeTo,omitempty"`
-	RenewCert              bool                   `json:"renewCert,omitempty"`
-	RotateToken            bool                   `json:"rotateToken,omitempty"`
+	Commands     []Command      `json:"commands"`
+	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
+	UpgradeTo    string         `json:"upgradeTo,omitempty"`
+	RenewCert    bool           `json:"renewCert,omitempty"`
+	RotateToken  bool           `json:"rotateToken,omitempty"`
+	// Issue #2621 — the server sees this agent authenticating with the STAGED
+	// credentials of an unconfirmed rotation. Finish phase two.
+	ConfirmTokenRotation   bool                   `json:"confirmTokenRotation,omitempty"`
 	HelperEnabled          bool                   `json:"helperEnabled,omitempty"`
 	UacInterceptionEnabled *bool                  `json:"uacInterceptionEnabled,omitempty"`
 	HelperSettings         *HelperSettings        `json:"helperSettings,omitempty"`
@@ -964,6 +967,15 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 
 func (h *Heartbeat) Start() {
+	// Issue #2621 — before the first heartbeat, finish any credential rotation
+	// that was interrupted between the durable disk write and the server
+	// confirmation. This runs first on purpose: if the agent was offline long
+	// enough for its old credentials to fall out of the previous-token grace
+	// window, the staged credentials are the ONLY ones the server still accepts,
+	// and reconciling here is what gets the agent back on a current credential
+	// instead of 401-looping.
+	go h.reconcilePendingRotation()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -3416,6 +3428,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		go h.handleTokenRotation()
 	}
 
+	// Issue #2621 — the server is telling us we are running on staged
+	// credentials it never promoted (we confirmed late, or crashed before
+	// confirming). Finish phase two so the rotation stops depending on the
+	// pending window staying open.
+	if response.ConfirmTokenRotation {
+		go h.reconcilePendingRotation()
+	}
+
 	// Handle helper upgrade if requested
 	if response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
@@ -3617,33 +3637,152 @@ func (h *Heartbeat) handleTokenRotation() {
 		return
 	}
 
-	h.mu.Lock()
-	h.secureToken.Replace(rotateResp.AuthToken)
-	h.config.AuthToken = rotateResp.AuthToken
-	h.config.WatchdogAuthToken = rotateResp.WatchdogAuthToken
-	h.config.HelperAuthToken = rotateResp.HelperAuthToken
-	saveErr := config.Save(h.config)
-	h.config.AuthToken = ""
-	h.config.WatchdogAuthToken = ""
-	h.config.HelperAuthToken = ""
-	h.mu.Unlock()
-
-	if saveErr != nil {
-		log.Error("agent token rotated in memory but failed to persist new token", "error", saveErr.Error())
-	} else {
-		log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+	// Issue #2621 — PERSIST BEFORE COMMIT.
+	//
+	// The old sequence swapped credentials in memory and only then tried to save,
+	// treating a save failure as a log line. Because the server had already
+	// committed the new hashes, that log line was the last warning before the
+	// device was stranded: the next restart loaded stale credentials and every
+	// request 401'd once the grace window closed.
+	//
+	// Now the server has merely STAGED these credentials — the agent's existing
+	// ones are still current server-side. So a failure anywhere below is
+	// recoverable: we abort, keep using credentials we know are both durable and
+	// valid, and the staged set expires harmlessly.
+	if err := config.StagePendingCredentials(
+		rotateResp.AuthToken,
+		rotateResp.WatchdogAuthToken,
+		rotateResp.HelperAuthToken,
+	); err != nil {
+		// Deliberately NOT swapping the in-memory credentials here. Continuing on
+		// unpersisted credentials is exactly the divergence that caused #2621.
+		log.Error("agent token rotation aborted — new credentials could not be durably persisted; continuing on the existing durable credentials",
+			"error", err.Error())
+		return
 	}
 
+	// The staged set is on disk and verified by readback. Only now is it safe to
+	// ask the server to promote it, authenticating WITH the new token — that is
+	// the proof of durable possession the server requires.
+	if !h.confirmTokenRotation(rotateResp.AuthToken) {
+		// Confirmation failed. Both credential sets are on disk and both are
+		// accepted by the server while the staged set lives, so the agent keeps
+		// working either way. Startup reconciliation and the heartbeat
+		// confirmTokenRotation flag will retry the promotion.
+		log.Warn("rotation credentials persisted but confirmation failed; will retry — agent remains authenticated on its current credentials")
+		return
+	}
+
+	h.applyRotatedCredentials(rotateResp.AuthToken, rotateResp.WatchdogAuthToken, rotateResp.HelperAuthToken)
+	log.Info("agent token rotated", "rotatedAt", rotateResp.RotatedAt)
+}
+
+// confirmTokenRotation runs phase two: it tells the server the staged
+// credentials are durably held, which promotes them to current. Returns true
+// only on a confirmed promotion.
+//
+// A failure here is safe by construction — the server keeps the agent's
+// previous credentials current until it succeeds — so the caller can simply
+// retry later rather than unwinding anything.
+func (h *Heartbeat) confirmTokenRotation(newAuthToken string) bool {
+	confirmClient := api.NewClient(h.serverURL(), newAuthToken, h.config.AgentID)
+	resp, err := confirmClient.ConfirmTokenRotation()
+	if err != nil {
+		if errors.Is(err, api.ErrPendingRotationExpired) {
+			// The staged set can never be promoted now. Drop it so startup
+			// reconciliation doesn't retry forever; the durable current
+			// credentials are untouched and still valid.
+			log.Warn("pending token rotation expired before it could be confirmed; discarding staged credentials")
+			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
+				log.Error("failed to clear expired staged credentials", "error", clearErr.Error())
+			}
+			return false
+		}
+		log.Error("agent token rotation confirmation failed", "error", err.Error())
+		return false
+	}
+
+	return resp.Confirmed
+}
+
+// applyRotatedCredentials collapses a confirmed rotation into the agent's
+// durable current credentials and refreshes every in-memory consumer.
+//
+// Called only after the server has confirmed the promotion, so writing these as
+// current can no longer diverge from the server's view.
+func (h *Heartbeat) applyRotatedCredentials(authToken, watchdogAuthToken, helperAuthToken string) {
+	if err := config.PromotePendingCredentials(authToken, watchdogAuthToken, helperAuthToken); err != nil {
+		// The server has promoted, and the tokens remain on disk under their
+		// pending_* keys, which startup reconciliation reads back. The agent is
+		// not stranded, but this file is now in a shape that needs attention.
+		log.Error("rotation confirmed by server but promoting staged credentials on disk failed; staged copy is still on disk and will be recovered on restart",
+			"error", err.Error())
+	}
+
+	h.mu.Lock()
+	h.secureToken.Replace(authToken)
+	h.mu.Unlock()
+
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
-	h.sendWatchdogTokenUpdate(rotateResp.WatchdogAuthToken)
+	h.sendWatchdogTokenUpdate(watchdogAuthToken)
 
 	// Retain and push the rotated helper token to any connected assist sessions.
-	h.setHelperToken(rotateResp.HelperAuthToken)
-	h.sendHelperTokenUpdate(rotateResp.HelperAuthToken)
+	h.setHelperToken(helperAuthToken)
+	h.sendHelperTokenUpdate(helperAuthToken)
 
 	if h.wsClient != nil {
 		h.wsClient.ForceReconnect()
 	}
+}
+
+// reconcilePendingRotation recovers a rotation that was interrupted between the
+// durable disk write and the server confirmation — the crash window the
+// two-phase design is built to survive.
+//
+// Both credential sets are on disk at that point and the server accepts either
+// while the staged set is live, so the agent is never locked out; this just
+// finishes the handshake. Safe to call on every startup: it is a no-op when
+// there is nothing staged.
+func (h *Heartbeat) reconcilePendingRotation() {
+	// Share the rotation mutex with handleTokenRotation: a startup reconcile, a
+	// heartbeat-triggered reconcile and a fresh rotation can all fire at once,
+	// and two concurrent confirms would race the server's compare-and-swap.
+	if !h.tokenRotating.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.tokenRotating.Store(false)
+
+	persisted, err := config.ReadPersistedCredentials()
+	if err != nil {
+		log.Warn("could not read persisted credentials for rotation reconciliation", "error", err.Error())
+		return
+	}
+
+	if persisted.PendingAuthToken == "" {
+		return
+	}
+	if persisted.PendingWatchdogAuthToken == "" || persisted.PendingHelperAuthToken == "" {
+		// An incomplete staged set can never be promoted — the server only ever
+		// stages all three together. Drop it rather than confirm a partial set.
+		log.Warn("discarding incomplete staged credential set")
+		if clearErr := config.ClearPendingCredentials(); clearErr != nil {
+			log.Error("failed to clear incomplete staged credentials", "error", clearErr.Error())
+		}
+		return
+	}
+
+	log.Info("found an unconfirmed credential rotation on disk; resuming confirmation")
+
+	if !h.confirmTokenRotation(persisted.PendingAuthToken) {
+		return
+	}
+
+	h.applyRotatedCredentials(
+		persisted.PendingAuthToken,
+		persisted.PendingWatchdogAuthToken,
+		persisted.PendingHelperAuthToken,
+	)
+	log.Info("resumed credential rotation confirmed and promoted")
 }
 
 // sendWatchdogStateSync sends a state_sync IPC message to the watchdog

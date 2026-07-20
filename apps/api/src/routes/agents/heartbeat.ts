@@ -935,8 +935,20 @@ if (latestHelper) {
   }
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
+
+  // Issue #2621 — a staged rotation is still outstanding. Don't ask for another
+  // one (that would churn the staged set and re-open the divergence window);
+  // ask the agent to finish the one it has. This is also the recovery path for
+  // an agent that persisted the new credentials and then crashed before
+  // confirming: it reconnects on the staged token and gets told to confirm.
+  const pendingRotationLive =
+    !!device.pendingTokenHash &&
+    !!device.pendingTokenExpiresAt &&
+    device.pendingTokenExpiresAt > new Date();
+
   const rotateToken =
     !authenticatedWithPreviousToken &&
+    !pendingRotationLive &&
     (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
 
   let manageRemoteManagement = false;
@@ -966,6 +978,11 @@ if (latestHelper) {
       watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,
       renewCert: renewCert || undefined,
       rotateToken: rotateToken || undefined,
+      // Issue #2621 — set when the caller authenticated with the STAGED
+      // credential, i.e. it demonstrably holds the new token but never
+      // confirmed. Tells the agent to call /rotate-token/confirm and finish.
+      confirmTokenRotation:
+        (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
       helperEnabled: helperSettings?.enabled ?? false,
       helperSettings: helperSettings ?? undefined,
       // Opt-in default: a null pamSettings (resolver error, logged above) sends

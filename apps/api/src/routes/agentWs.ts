@@ -885,6 +885,9 @@ export async function validateAgentToken(agentId: string, token: string): Promis
         watchdogTokenHash: devices.watchdogTokenHash,
         previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
         previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
+        pendingTokenHash: devices.pendingTokenHash,
+        pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
+        pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
@@ -926,6 +929,13 @@ export async function validateAgentToken(agentId: string, token: string): Promis
     watchdogTokenHash: device.watchdogTokenHash,
     previousWatchdogTokenHash: device.previousWatchdogTokenHash,
     previousWatchdogTokenExpiresAt: device.previousWatchdogTokenExpiresAt,
+    // Issue #2621 — an agent that persisted a staged rotation and restarted
+    // before confirming reconnects with the staged token. The WS path must
+    // accept it, or the control channel dies in exactly the crash window the
+    // two-phase design exists to make survivable.
+    pendingTokenHash: device.pendingTokenHash,
+    pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
+    pendingTokenExpiresAt: device.pendingTokenExpiresAt,
     tokenHash,
   });
   if (!match || match.role !== 'agent') {
