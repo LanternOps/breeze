@@ -1,0 +1,42 @@
+{
+  "apiVersion": "breeze.extensions/v1",
+  "name": "e2e-fixture",
+  "version": "1.0.0",
+  "routeNamespace": "e2e-fixture",
+  "requires": {
+    "breeze": "*",
+    "serverSdk": "*",
+    "webSdk": "*",
+    "capabilities": ["web.pages.v1", "web.navigation.v1", "web.slots.v1"]
+  },
+  "server": { "entry": "server/index.cjs" },
+  "web": {
+    "entry": "web/index.js",
+    "pages": [
+      { "id": "home", "path": "/", "element": "e2e-fixture-page" }
+    ],
+    "navigation": [
+      { "id": "home", "label": "E2E Fixture", "path": "/", "order": 1 }
+    ],
+    "slots": [
+      {
+        "id": "device-tab",
+        "slot": "device.detail.tabs",
+        "contractVersion": 1,
+        "element": "e2e-fixture-device-tab",
+        "label": "E2E Fixture",
+        "order": 1
+      },
+      {
+        "id": "org-section",
+        "slot": "organization.settings.sections",
+        "contractVersion": 1,
+        "element": "e2e-fixture-org-section",
+        "label": "E2E Fixture"
+      }
+    ]
+  },
+  "schemaCompatibilityFloor": "1.0.0",
+  "jobs": [],
+  "aiTools": []
+}

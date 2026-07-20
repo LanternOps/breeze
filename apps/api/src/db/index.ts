@@ -505,6 +505,28 @@ export function classifyContextlessExecuteVerb(arg: unknown): string | null {
  */
 const STRICT_TRIPWIRE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
+// Dedup the Sentry capture per call site, mirroring the contextless-write
+// guard above: the tripwire marks a wrong CALL SITE, not N distinct errors, so
+// one report per site per process is the whole signal. Unthrottled, a single
+// hot path burned ~2.2k events/day (BREEZE-H) against the org quota — the same
+// flood-then-blackout failure mode #1894 fixed for the held-duration warning.
+// `console.warn` still fires every time so logs stay complete.
+const reportedHeldContextSites = new Set<string>();
+export function __resetHeldContextAssertDedupeForTests(): void {
+  reportedHeldContextSites.clear();
+}
+
+/**
+ * Returns true at most once per key (originating call site) for the lifetime of
+ * the process; subsequent calls with the same key return false. Pure apart from
+ * the module-level seen-set — exported for unit testing.
+ */
+export function shouldReportHeldContextSite(key: string): boolean {
+  if (reportedHeldContextSites.has(key)) return false;
+  reportedHeldContextSites.add(key);
+  return true;
+}
+
 export function assertOutsideHeldDbContext(operation: string): void {
   if (!hasDbAccessContext()) {
     return;
@@ -517,7 +539,9 @@ export function assertOutsideHeldDbContext(operation: string): void {
     throw new Error(message);
   }
   console.warn(message);
-  captureMessage(message, 'warning', { operation, stack: new Error().stack });
+  const stack = new Error().stack;
+  if (!shouldReportHeldContextSite(stack ?? operation)) return;
+  captureMessage(message, 'warning', { operation, stack });
 }
 
 const proxiedDb = new Proxy(baseDb, {

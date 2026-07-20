@@ -44,6 +44,23 @@ describe('parseExtensionManifest', () => {
     expect(m.tenancy.deviceOrgMoveDeleteTables).toEqual(['demo_things']);
   });
 
+  it('accepts helperRoutes flag', () => {
+    const m = parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      helperRoutes: true,
+      tenancy: {},
+    });
+    expect(m.helperRoutes).toBe(true);
+  });
+
+  it('defaults helperRoutes to false', () => {
+    const m = parseExtensionManifest({
+      name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
+      tenancy: {},
+    });
+    expect(m.helperRoutes).toBe(false);
+  });
+
   it('rejects unprefixed tables in deviceOrgMoveDeleteTables', () => {
     expect(() => parseExtensionManifest({
       name: 'demo', routeNamespace: 'demo', entry: 'src/index.ts',
@@ -86,6 +103,12 @@ describe('parseExtensionManifest', () => {
   it('rejects publicRoutes under /agent/ — they must stay behind agentAuthMiddleware', () => {
     for (const route of ['/agent', '/agent/hook', '/agent/*']) {
       expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow(/agent/i);
+    }
+  });
+
+  it('rejects publicRoutes under /helper/ — they must stay behind core helper auth', () => {
+    for (const route of ['/helper', '/helper/search', '/helper/*']) {
+      expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow(/helper/i);
     }
   });
 
@@ -159,7 +182,8 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'client-ai', 'config', 'configuration-policies', 'contracts',
     'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
     'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-    'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
+    'events', 'ext', 'extensions', 'filters', 'google', 'groups', 'helper',
+    'huntress',
     'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
     'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
     'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
@@ -175,8 +199,8 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
   ];
 
-  it('has exactly 115 entries in the ground-truth contract', () => {
-    expect(CORE_NAMESPACES).toHaveLength(115);
+  it('has exactly 116 entries in the ground-truth contract', () => {
+    expect(CORE_NAMESPACES).toHaveLength(116);
   });
 
   it('reserves every core /api/v1 route namespace', () => {

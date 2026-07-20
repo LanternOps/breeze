@@ -18,6 +18,8 @@
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
     "metric-anomalies:backfill": "tsx scripts/metric-anomaly-backfill.ts",
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
+    "breezectl": "node dist/scripts/breezectl.cjs",
+    "breezectl:dev": "tsx scripts/breezectl.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
@@ -68,6 +70,7 @@
     "hono": "^4.12.30",
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
+    "js-yaml": "^4.3.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "nanoid": "^5.1.15",
@@ -90,6 +93,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@breeze/extension-cli": "workspace:*",
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.9.3",
@@ -103,7 +107,6 @@
     "@vitest/coverage-v8": "^4.1.10",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
-    "js-yaml": "^4.3.0",
     "jszip": "^3.10.1",
     "tsup": "^8.3.5",
     "tsx": "^4.23.1",

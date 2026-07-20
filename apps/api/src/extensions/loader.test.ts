@@ -28,6 +28,14 @@ vi.mock('../middleware/agentAuth', () => ({
     },
   ),
 }));
+vi.mock('../middleware/helperAuth', () => ({
+  helperAuth: vi.fn(
+    async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
+      c.header('x-guard', 'helper');
+      return next();
+    },
+  ),
+}));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string, options: { aad?: string }) => `encrypted:${options.aad}:${value}`),
@@ -292,6 +300,23 @@ describe('mountExtensions', () => {
     vi.unstubAllEnvs();
   });
 
+  it('throws immediately when a source-dir extension calls ctx.registerJob', async () => {
+    scaffoldRuntimeExtension(root, {}, `import { Hono } from 'hono';
+     const ext = {
+       register(ctx) {
+         const app = new Hono();
+         app.get('/health', (c) => c.json({ ok: true }));
+         ctx.mountRoute(app);
+         ctx.registerJob({ name: 'sweep', cron: '0 * * * *', handler: async () => {} });
+       },
+     };
+     export default ext;`);
+    const app = new Hono();
+    await expect(mountExtensions(app, root)).rejects.toThrow(
+      /source-dir extensions cannot register jobs/,
+    );
+  });
+
   it('throws on AI tool name collision', async () => {
     scaffoldRuntimeExtension(root);
     const { aiTools } = await import('../services/aiTools');
@@ -349,6 +374,84 @@ describe('mountExtensions', () => {
     // middleware silently evaporate — e.g. an extension applying
     // ctx.agentAuthMiddleware to a non-/agent/ route would get user auth
     // instead, with c.get('agent') undefined: an auth downgrade.
+    it('applies core helperAuth to /helper/ routes when the manifest opts in via helperRoutes', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        { helperRoutes: true },
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             if (!ctx.helperAuthMiddleware) throw new Error('missing ctx.helperAuthMiddleware');
+             const app = new Hono();
+             app.get('/helper/health', (c) => c.json({ ok: true }));
+             app.get('/health', (c) => c.json({ ok: true }));
+             ctx.mountRoute(app);
+           },
+         };
+         export default ext;`,
+      );
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const helperRoute = await app.request('/api/v1/ext/demo/helper/health');
+      expect(helperRoute.status).toBe(200);
+      expect(helperRoute.headers.get('x-guard')).toBe('helper');
+
+      // Everything outside /helper/ stays on the user default-deny.
+      const userRoute = await app.request('/api/v1/ext/demo/health');
+      expect(userRoute.headers.get('x-guard')).toBe('user');
+    });
+
+    it('keeps /helper/ routes on user auth when the manifest does NOT opt in', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        {},
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             const app = new Hono();
+             app.get('/helper/health', (c) => c.json({ ok: true }));
+             ctx.mountRoute(app);
+           },
+         };
+         export default ext;`,
+      );
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const res = await app.request('/api/v1/ext/demo/helper/health');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-guard')).toBe('user');
+    });
+
+    it('no-ops a redundant ctx.helperAuthMiddleware when the loader already ran the SAME (helper) auth', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        { helperRoutes: true },
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             const app = new Hono();
+             // Redundant belt-and-suspenders: the loader guard already applies
+             // helper auth to /helper/ paths for this manifest.
+             app.use('/helper/*', ctx.helperAuthMiddleware);
+             app.get('/helper/thing', (c) => c.json({ ok: true }));
+             ctx.mountRoute(app);
+           },
+         };
+         export default ext;`,
+      );
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const { helperAuth } = await import('../middleware/helperAuth');
+      const res = await app.request('/api/v1/ext/demo/helper/thing');
+      expect(res.status).toBe(200);
+      // Core helper auth ran exactly ONCE (the loader's) — the extension's
+      // redundant call was skipped by the kind-matched wrapper.
+      expect(vi.mocked(helperAuth)).toHaveBeenCalledTimes(1);
+    });
+
     it('runs the extension\'s ctx.agentAuthMiddleware on a non-/agent/ route (loader ran USER auth — kinds differ, must not be skipped)', async () => {
       scaffoldRuntimeExtension(
         root,

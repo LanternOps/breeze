@@ -23,7 +23,8 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-  'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
+  'events', 'ext', 'extensions', 'filters', 'google', 'groups', 'helper',
+  'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
   'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
   'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
@@ -180,6 +181,8 @@ const manifestSchemaV1 = z.object({
       }),
   ).optional(),
   agentRoutes: z.boolean().optional(),
+  // TODO(runtime-platform): carry legacy helperRoutes forward as capability
+  // 'server.helper-routes.v1' (see internal/plans/2026-07-18-workspace-finder-phase3-plan.md).
   jobs: z.array(jobSchema),
   aiTools: z.array(aiToolSchema),
   tenancy: tenancySchema.default({

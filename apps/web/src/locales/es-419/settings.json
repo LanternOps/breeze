@@ -2408,6 +2408,8 @@
       "billingDescription": "Dirección fiscal y de facturación",
       "pax8": "Marketplace Pax8",
       "pax8Description": "Suscripciones y pedidos",
+      "extensions": "Extensiones",
+      "extensionsDescription": "Secciones de extensiones de terceros",
       "portalBranding": "Portal y marca",
       "branding": "Marca",
       "brandingDescription": "Tema del portal y elementos visuales",

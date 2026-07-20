@@ -2408,6 +2408,8 @@
       "billingDescription": "Steuer- und Rechnungsadresse",
       "pax8": "Pax8-Marktplatz",
       "pax8Description": "Abonnements und Bestellungen",
+      "extensions": "Erweiterungen",
+      "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
       "brandingDescription": "Portalthema und Visuals",

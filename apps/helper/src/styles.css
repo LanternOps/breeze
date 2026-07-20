@@ -3,38 +3,49 @@
    Dark theme, compact, frameless, 380x600 popup
    ============================================================ */
 
+/* Workspace design tokens + Tailwind layers. This is the only stylesheet
+   index.html actually loads (<link rel="stylesheet" href="/src/styles.css">),
+   so the --ws-* custom properties and Tailwind's generated utility CSS must
+   be pulled in here. (src/styles/globals.css duplicates this @import +
+   @tailwind block but is not linked/imported from anywhere and stays
+   orphaned — see task-2-report.md for why its scrollbar rules were not
+   used either.) */
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* ----------------------------------------------------------
    CSS Variables
    ---------------------------------------------------------- */
 :root {
-  --bg-primary: #1a1b1e;
-  --bg-secondary: #25262b;
-  --bg-tertiary: #2c2e33;
-  --bg-hover: #343a40;
-  --bg-input: #2c2e33;
+  /* Legacy dark-era aliases remapped onto --ws-* tokens so every screen that
+     still references them re-coheres in BOTH light and dark themes. The raw
+     hex values above were dark-only and rendered light-on-light once html/body
+     moved to --ws-canvas. Keep these as thin aliases; do not reintroduce hex. */
+  --bg-primary: var(--ws-canvas);
+  --bg-secondary: var(--ws-surface);
+  --bg-tertiary: var(--ws-raised);
+  --bg-hover: var(--ws-accent-soft);
+  --bg-input: var(--ws-surface);
 
-  --text-primary: #e4e5e7;
-  --text-secondary: #909296;
-  --text-muted: #6b6e73;
-  --text-placeholder: #555860;
+  --text-primary: var(--ws-ink);
+  --text-secondary: var(--ws-text-secondary);
+  --text-muted: var(--ws-text-tertiary);
+  --text-placeholder: var(--ws-text-tertiary);
 
-  --accent: #4c9aff;
-  --accent-hover: #3d8af0;
-  --accent-subtle: rgba(76, 154, 255, 0.12);
+  --accent: var(--ws-accent);
+  --accent-subtle: var(--ws-accent-soft);
 
-  --user-bubble: #2b5a9e;
-  --user-bubble-text: #e4e5e7;
-  --assistant-bubble: #2c2e33;
-  --assistant-bubble-text: #e4e5e7;
+  --error-bg: var(--ws-danger-soft);
+  --error-text: var(--ws-danger);
+  --error-border: var(--ws-danger-soft);
 
-  --error-bg: rgba(255, 69, 58, 0.12);
-  --error-text: #ff6b6b;
-  --error-border: rgba(255, 69, 58, 0.25);
+  --success: var(--ws-success);
 
-  --success: #51cf66;
-
-  --border: #373a40;
-  --border-light: #2c2e33;
+  --border: var(--ws-border);
+  --border-light: var(--ws-border-subtle);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -66,10 +77,10 @@ html,
 body {
   height: 100%;
   overflow: hidden;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
+  font-family: var(--ws-font);
+  background: var(--ws-canvas);
+  color: var(--ws-ink);
+  font-size: var(--ws-text-13);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -80,13 +91,20 @@ body {
 }
 
 /* ----------------------------------------------------------
+   Utility Classes
+   ---------------------------------------------------------- */
+.ws-tabular {
+  font-feature-settings: 'tnum';
+}
+
+/* ----------------------------------------------------------
    Container
    ---------------------------------------------------------- */
 .helper-container {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
 }
 
 .helper-center {
@@ -96,6 +114,101 @@ body {
   text-align: center;
   padding: 24px;
   color: var(--text-secondary);
+}
+
+/* ----------------------------------------------------------
+   Shell (one header over a single swapping main region)
+   ---------------------------------------------------------- */
+.helper-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+  background: var(--ws-canvas);
+}
+
+/* Grid items' min-width:auto would size the column to the header's
+   min-content and force horizontal overflow on narrow windows (down to the
+   360px minimum) — let rows shrink and truncate internally instead. */
+.helper-shell > * {
+  min-width: 0;
+}
+
+/* Nav sits between the title and the drag spacer; must stay clickable. */
+.helper-shell-nav {
+  display: flex;
+  align-items: center;
+  padding-left: 10px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.helper-shell-main {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The active view fills the 1fr row. These roots set height:100% for the
+   standalone/full-window case; in the shell they flex to the region so an
+   error banner above them can coexist without overflow. */
+.helper-shell-main > .helper-container,
+.helper-shell-main > .helper-history {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Wide windows with the chat panel open: main region splits into Files (1fr)
+   plus a fixed-width chat panel. Grid children get min-* so both columns can
+   shrink and scroll internally instead of forcing horizontal overflow. */
+.helper-shell-main-split {
+  display: grid;
+  grid-template-columns: 1fr var(--ws-chat-panel-w, 340px);
+}
+
+.helper-shell-main-split > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* An error surfacing while the chat panel rides beside Files spans both grid
+   columns as a top strip rather than getting wedged into a single cell. */
+.helper-shell-main-split > .helper-error-banner {
+  grid-column: 1 / -1;
+}
+
+/* The chat side panel: a raised surface hinged on a subtle left border, sliding
+   in from the right. It's a flex column so ChatView's messages scroll and the
+   composer pins to the bottom, mirroring the full-swap chat. */
+.helper-chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--ws-raised);
+  border-left: 1px solid var(--ws-border-subtle);
+  box-shadow: var(--ws-shadow-1);
+  animation: helper-chat-panel-in 160ms var(--ws-ease);
+}
+
+@keyframes helper-chat-panel-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Chat toggle in a "showing the panel" state. */
+.helper-chat-toggle[aria-pressed='true'] {
+  background: var(--ws-raised);
+  border-color: var(--ws-border-subtle);
+  color: var(--ws-ink);
 }
 
 .helper-center p {
@@ -111,8 +224,8 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  background: var(--ws-canvas);
+  border-bottom: 1px solid var(--ws-border-subtle);
   -webkit-app-region: drag;
   app-region: drag;
   user-select: none;
@@ -123,6 +236,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .helper-status-dot {
@@ -141,11 +255,14 @@ body {
 }
 
 .helper-title {
-  font-size: 13px;
+  font-size: var(--ws-text-15);
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ws-ink);
   letter-spacing: 0.01em;
   pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ----------------------------------------------------------
@@ -186,21 +303,20 @@ body {
   align-items: center;
   justify-content: center;
   padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--ws-dur-fast) var(--ws-ease), box-shadow var(--ws-dur-fast) var(--ws-ease);
   -webkit-app-region: no-drag;
   user-select: none;
 }
 
 .helper-btn:hover {
-  background: var(--bg-hover);
-  border-color: var(--text-muted);
+  box-shadow: var(--ws-shadow-1);
 }
 
 .helper-btn:active {
@@ -304,7 +420,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  color: var(--text-muted);
+  color: var(--ws-text-secondary);
   text-align: center;
 }
 
@@ -316,7 +432,7 @@ body {
 .helper-empty p:first-child {
   font-size: 15px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--ws-ink);
 }
 
 /* ----------------------------------------------------------
@@ -325,7 +441,6 @@ body {
 .helper-message {
   max-width: 85%;
   padding: 8px 12px;
-  border-radius: var(--radius-lg);
   font-size: 13px;
   line-height: 1.45;
   word-wrap: break-word;
@@ -346,15 +461,13 @@ body {
 
 .helper-message-user {
   align-self: flex-end;
-  background: var(--user-bubble);
-  color: var(--user-bubble-text);
+  color: var(--ws-ink);
   border-bottom-right-radius: var(--radius-sm);
 }
 
 .helper-message-assistant {
   align-self: flex-start;
-  background: var(--assistant-bubble);
-  color: var(--assistant-bubble-text);
+  color: var(--ws-ink);
   border-bottom-left-radius: var(--radius-sm);
 }
 
@@ -385,7 +498,7 @@ body {
 
 .helper-message-assistant .helper-message-content strong {
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content em {
@@ -395,17 +508,17 @@ body {
 .helper-message-assistant .helper-message-content code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--accent);
+  color: var(--ws-accent);
 }
 
 .helper-message-assistant .helper-message-content pre {
   margin: 6px 0;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   overflow-x: auto;
   white-space: pre;
 }
@@ -413,7 +526,7 @@ body {
 .helper-message-assistant .helper-message-content pre code {
   padding: 0;
   background: none;
-  color: var(--text-secondary);
+  color: var(--ws-text-secondary);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -429,7 +542,7 @@ body {
 }
 
 .helper-message-assistant .helper-message-content a {
-  color: var(--accent);
+  color: var(--ws-accent);
   text-decoration: none;
 }
 
@@ -443,7 +556,7 @@ body {
   font-size: 13px;
   font-weight: 600;
   margin: 8px 0 4px;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content table {
@@ -456,27 +569,133 @@ body {
 .helper-message-assistant .helper-message-content th,
 .helper-message-assistant .helper-message-content td {
   padding: 3px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   text-align: left;
 }
 
 .helper-message-assistant .helper-message-content th {
-  background: var(--bg-primary);
+  background: var(--ws-canvas);
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ws-ink);
 }
 
 .helper-message-assistant .helper-message-content blockquote {
   margin: 6px 0;
   padding: 4px 10px;
-  border-left: 3px solid var(--border);
-  color: var(--text-secondary);
+  border-left: 3px solid var(--ws-border);
+  color: var(--ws-text-secondary);
 }
 
 .helper-message-assistant .helper-message-content hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border);
   margin: 8px 0;
+}
+
+/* ----------------------------------------------------------
+   Chat file result cards (search_workspace_files tool results) — typography
+   matches FileTable's row styles (.ws-file-table-name / .ws-file-table-
+   secondary) so a card reads as the same "file row" language wherever it
+   renders (full-swap chat or the 340px side panel). Width stays relative
+   (max-width: 85%, matching .helper-message) — no fixed widths, so the card
+   is fluid at panel width too.
+   ---------------------------------------------------------- */
+.helper-file-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 85%;
+  animation: messageIn 200ms ease-out;
+}
+
+.helper-file-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--ws-radius-control);
+}
+
+.helper-file-card-row:hover {
+  background: var(--ws-accent-soft);
+}
+
+.helper-file-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.helper-file-card-name {
+  font-size: var(--ws-text-13);
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-card-meta {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helper-file-card-error {
+  font-size: var(--ws-text-12);
+  color: var(--error-text);
+}
+
+.helper-file-card-open {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-size: var(--ws-text-12);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.helper-file-card-open:hover {
+  border-color: var(--ws-accent);
+  color: var(--ws-accent);
+}
+
+.helper-file-card-open:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ----------------------------------------------------------
+   Citation chips — inline in assistant markdown, replacing
+   [file:<id>|<relPath>] tokens the model cites passages with.
+   ---------------------------------------------------------- */
+.helper-citation-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin: 0 1px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+  font-size: var(--ws-text-12);
+  font-weight: 500;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.helper-citation-chip:hover {
+  text-decoration: underline;
 }
 
 /* ----------------------------------------------------------
@@ -493,7 +712,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--ws-text-tertiary);
   animation: thinkingBounce 1.4s ease-in-out infinite;
 }
 
@@ -504,7 +723,7 @@ body {
 .helper-thinking-label {
   margin-left: 4px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--ws-text-secondary);
 }
 
 @keyframes thinkingBounce {
@@ -526,7 +745,7 @@ body {
   width: 2px;
   height: 14px;
   margin-left: 2px;
-  background: var(--accent);
+  background: var(--ws-accent);
   vertical-align: text-bottom;
   animation: blink 800ms step-end infinite;
 }
@@ -550,8 +769,7 @@ body {
   gap: 8px;
   padding: 6px 12px;
   border-radius: var(--radius-md);
-  background: var(--accent-subtle);
-  color: var(--accent);
+  background: var(--ws-accent-soft);
   font-size: 12px;
   font-weight: 500;
   align-self: flex-start;
@@ -566,8 +784,8 @@ body {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
+  border: 2px solid var(--ws-border);
+  border-top-color: var(--ws-accent);
   border-radius: 50%;
   animation: spin 700ms linear infinite;
   flex-shrink: 0;
@@ -587,8 +805,7 @@ body {
   align-items: flex-end;
   gap: 8px;
   padding: 10px 14px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border-subtle);
   flex-shrink: 0;
 }
 
@@ -597,24 +814,22 @@ body {
   min-height: 34px;
   max-height: 100px;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
+  font-family: var(--ws-font);
   font-size: 13px;
   line-height: 1.4;
   resize: none;
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--ws-dur-fast) var(--ws-ease);
 }
 
 .helper-input::placeholder {
-  color: var(--text-placeholder);
+  color: var(--ws-text-tertiary);
 }
 
 .helper-input:focus {
-  border-color: var(--accent);
+  border-color: var(--ws-accent);
 }
 
 .helper-input:disabled {
@@ -629,19 +844,17 @@ body {
   padding: 7px 14px;
   border: none;
   border-radius: var(--radius-md);
-  background: var(--accent);
-  color: #ffffff;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition-fast), transform var(--transition-fast);
+  transition: filter var(--ws-dur-fast) var(--ws-ease), transform var(--ws-dur-fast) var(--ws-ease);
   -webkit-app-region: no-drag;
   flex-shrink: 0;
   height: 34px;
 }
 
 .helper-btn-send:hover:not(:disabled) {
-  background: var(--accent-hover);
+  filter: brightness(0.92);
 }
 
 .helper-btn-send:active:not(:disabled) {
@@ -665,18 +878,18 @@ body {
 }
 
 .helper-messages::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--ws-border);
   border-radius: 3px;
 }
 
 .helper-messages::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--ws-text-tertiary);
 }
 
 /* Firefox scrollbar */
 .helper-messages {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--ws-border) transparent;
 }
 
 /* ----------------------------------------------------------
@@ -861,13 +1074,730 @@ body {
 }
 
 .helper-history-list::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--ws-border);
   border-radius: 3px;
 }
 
 .helper-history-list {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: var(--ws-border) transparent;
+}
+
+/* ----------------------------------------------------------
+   Workspace Files View
+   ---------------------------------------------------------- */
+.helper-workspace-tabs {
+  display: flex;
+  padding: 8px 14px;
+  background: var(--ws-canvas);
+  border-bottom: 1px solid var(--ws-border-subtle);
+  flex-shrink: 0;
+}
+
+.ws-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--ws-accent-soft);
+  border-radius: var(--ws-radius-control);
+}
+
+.ws-segmented-item {
+  border: 0;
+  background: transparent;
+  padding: 4px 12px;
+  font-size: var(--ws-text-13);
+  color: var(--ws-text-secondary);
+  border-radius: calc(var(--ws-radius-control) - 2px);
+  cursor: pointer;
+  transition: background var(--ws-dur-fast) var(--ws-ease), color var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-segmented-item[aria-selected='true'] {
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  box-shadow: var(--ws-shadow-1);
+}
+
+.helper-workspace-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.helper-workspace-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  flex-shrink: 0;
+}
+
+.helper-workspace-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.helper-workspace-search-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.helper-workspace-search-input:focus {
+  border-color: var(--accent);
+}
+
+.helper-workspace-select {
+  max-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  outline: none;
+}
+
+/* ----------------------------------------------------------
+   Filter chips (Search toolbar) — each chip is a Radix DropdownMenu;
+   the menu body below styles DropdownMenu.Content/Item.
+   ---------------------------------------------------------- */
+.ws-filter-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 8px;
+  flex-shrink: 0;
+}
+
+.ws-filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  background: var(--ws-surface);
+  color: var(--ws-text-secondary);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-12);
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background var(--ws-dur-fast) var(--ws-ease), color var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-filter-chip:hover {
+  color: var(--ws-ink);
+}
+
+.ws-filter-chip-active {
+  border-color: transparent;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+}
+
+.ws-filter-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  border-radius: 50%;
+  padding: 1px;
+}
+
+.ws-filter-chip-close:hover {
+  background: hsl(0 0% 0% / 0.08);
+}
+
+.ws-filter-chip-menu {
+  z-index: 5;
+  min-width: 180px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+}
+
+.ws-filter-chip-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  border-radius: var(--ws-radius-control);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-filter-chip-menu-item:hover {
+  background: var(--ws-accent-soft);
+}
+
+.ws-filter-chip-menu-empty {
+  padding: 6px 8px;
+  color: var(--ws-text-tertiary);
+  font-size: var(--ws-text-12);
+}
+
+.ws-filter-chip-menu-date {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ws-filter-chip-menu-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--ws-border-subtle);
+}
+
+.ws-filter-chip-menu-custom label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+}
+
+.ws-filter-chip-menu-custom input[type='date'] {
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-12);
+  padding: 3px 5px;
+}
+
+.helper-workspace-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ws-border) transparent;
+}
+
+.helper-workspace-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.helper-workspace-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.helper-workspace-list::-webkit-scrollbar-thumb {
+  background: var(--ws-border);
+  border-radius: 3px;
+}
+
+/* ----------------------------------------------------------
+   File table (sortable list-table — search/browse/recents)
+   ---------------------------------------------------------- */
+.ws-file-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-file-table-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px 120px 110px 70px;
+  gap: 8px;
+  padding: 4px 8px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--ws-canvas);
+  z-index: 1;
+}
+
+.ws-file-table-colbtn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-size: var(--ws-text-11);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--ws-text-tertiary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-file-table-colbtn:hover {
+  color: var(--ws-text-secondary);
+}
+
+.ws-file-table-chevron {
+  font-size: var(--ws-text-11);
+  color: var(--ws-text-tertiary);
+}
+
+.ws-file-table-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-file-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px 120px 110px 70px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border-radius: var(--ws-radius-control);
+  transition: background var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-file-table-row:hover {
+  background: var(--ws-accent-soft);
+}
+
+.ws-file-table-row.ws-row-selected {
+  background: var(--ws-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--ws-accent);
+}
+
+/* Narrow-window layout: the native Tauri popup opens at inner_size 380x600,
+   below the ~488px minimum of the 5-column grid. At <=480px collapse to three
+   tracks and hide the Modified (4th) + Size (5th) columns — header buttons AND
+   row cells — via display:none so the DOM order and grid column counts stay in
+   lockstep (the grid simply lays out the 3 remaining tracks). */
+@media (max-width: 480px) {
+  .ws-file-table-header,
+  .ws-file-table-row {
+    grid-template-columns: minmax(0, 1fr) 90px 80px;
+  }
+
+  .ws-file-table-header > .ws-file-table-colbtn:nth-child(4),
+  .ws-file-table-header > .ws-file-table-colbtn:nth-child(5),
+  .ws-file-table-row > .ws-file-table-cell:nth-child(4),
+  .ws-file-table-row > .ws-file-table-cell:nth-child(5) {
+    display: none;
+  }
+}
+
+.ws-file-table-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-file-table-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+
+.ws-file-table-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ws-file-table-name {
+  font-size: var(--ws-text-13);
+  font-weight: 500;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ws-file-table-source {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.ws-file-table-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-file-table-secondary {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+}
+
+.ws-file-table-tertiary {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-tertiary);
+}
+
+/* ----------------------------------------------------------
+   RowMenu — right-click context menu + hover ⋯ overflow button,
+   both opening the same items (file/directory rows in FileTable).
+   ---------------------------------------------------------- */
+.ws-row-menu {
+  position: relative;
+}
+
+.ws-row-menu-overflow {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-text-13);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--ws-shadow-1);
+  transition: opacity var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-row-menu:hover .ws-row-menu-overflow,
+.ws-row-menu:focus-within .ws-row-menu-overflow,
+.ws-row-menu-overflow[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ws-row-menu-content {
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+  z-index: 5;
+}
+
+.ws-row-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--ws-ink);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+}
+
+.ws-row-menu-item[data-highlighted] {
+  background: var(--ws-accent-soft);
+}
+
+.ws-row-menu-item[data-disabled] {
+  color: var(--ws-text-tertiary);
+  cursor: default;
+}
+
+/* ----------------------------------------------------------
+   Toaster — bottom-center, auto-dismissing confirmation (e.g. "Path copied").
+   ---------------------------------------------------------- */
+.ws-toast-viewport {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 20;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+
+.ws-toast {
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: var(--ws-radius-control);
+  box-shadow: var(--ws-shadow-2);
+  padding: 4px;
+}
+
+.ws-toast-desc {
+  display: block;
+  padding: 6px 10px;
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-13);
+  color: var(--ws-ink);
+}
+
+.ws-file-table-snippet {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ws-file-table-snippet b {
+  color: var(--ws-ink);
+  font-weight: 600;
+}
+
+.ws-file-table-mismatch {
+  border-left: 2px solid var(--ws-border);
+  padding-left: 6px;
+  color: var(--ws-ink);
+}
+
+.ws-file-table-open-error {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-tertiary);
+  white-space: normal;
+}
+
+/* ----------------------------------------------------------
+   Empty state
+   ---------------------------------------------------------- */
+.ws-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.ws-empty-state-title {
+  font-size: var(--ws-text-15);
+  font-weight: 600;
+  color: var(--ws-text-secondary);
+}
+
+.ws-empty-state-hint {
+  font-size: var(--ws-text-13);
+  color: var(--ws-text-tertiary);
+  max-width: 320px;
+}
+
+/* ----------------------------------------------------------
+   Skeleton rows (loading)
+   ---------------------------------------------------------- */
+.ws-skeleton-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+}
+
+.ws-skeleton-bar {
+  display: block;
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-border-subtle);
+  animation: ws-shimmer 1.2s ease-in-out infinite;
+}
+
+.ws-skeleton-bar-name {
+  width: 60%;
+  height: var(--ws-text-13);
+}
+
+.ws-skeleton-bar-meta {
+  width: 30%;
+  height: var(--ws-text-11);
+}
+
+@keyframes ws-shimmer {
+  0%, 100% {
+    background-color: var(--ws-border-subtle);
+  }
+  50% {
+    background-color: var(--ws-canvas);
+  }
+}
+
+/* ----------------------------------------------------------
+   Error row (list-level fetch failure, with retry)
+   ---------------------------------------------------------- */
+.ws-error-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 20px;
+  font-size: var(--ws-text-13);
+  color: var(--ws-danger);
+  text-align: center;
+}
+
+.ws-error-retry {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.helper-file-copied {
+  font-size: 11px;
+  color: var(--success);
+}
+
+.helper-file-open-error {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.helper-workspace-browse {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.helper-workspace-rail {
+  width: 104px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.helper-workspace-rail-item {
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.helper-workspace-rail-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.helper-workspace-rail-item-active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.helper-workspace-rail-empty {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.helper-workspace-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.helper-workspace-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.helper-workspace-crumb {
+  padding: 1px 3px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.helper-workspace-crumb:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.helper-workspace-crumb-sep {
+  color: var(--text-muted);
+}
+
+.helper-workspace-section-title {
+  padding: 10px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
 }
 
 /* ----------------------------------------------------------
@@ -1144,4 +2074,172 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .helper-sessionbanner { animation: none; }
   .helper-sessionbanner-dot { animation: none; }
+}
+
+/* ---- Workspace content preview (dev estates): snippets, inferred metadata,
+   filing panel. Calm/editorial; no amber except genuine system state. ---- */
+.helper-file-snippet {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.helper-file-snippet b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.helper-file-inferred {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+.helper-file-mismatch {
+  border-left: 2px solid var(--helper-border);
+  padding-left: 6px;
+  color: var(--text-primary);
+}
+/* ----------------------------------------------------------
+   Filing tab: cards column + ProjectRail drop targets. ws-* tokens
+   (light-default reshape) — see FilingCard.tsx / ProjectRail.tsx.
+   ---------------------------------------------------------- */
+.ws-filing-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.ws-filing-cards {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-filing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--ws-surface);
+  border-radius: var(--ws-radius-surface);
+  box-shadow: var(--ws-shadow-1);
+  padding: 12px;
+  cursor: grab;
+  max-height: 240px;
+  overflow: hidden;
+  transition: opacity var(--ws-dur-slow) var(--ws-ease),
+    max-height var(--ws-dur-slow) var(--ws-ease),
+    padding var(--ws-dur-slow) var(--ws-ease);
+}
+
+.ws-filing-card-settling {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.ws-filing-card-subject {
+  font-size: var(--ws-text-13);
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+
+.ws-filing-card-meta {
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-secondary);
+}
+
+.ws-filing-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ws-filing-card-select {
+  padding: 5px 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-surface);
+  color: var(--ws-text-secondary);
+  font-family: var(--ws-font);
+  font-size: var(--ws-text-12);
+  outline: none;
+}
+
+.ws-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: var(--ws-text-12);
+  white-space: normal;
+}
+
+.ws-chip-success {
+  background: var(--ws-success-soft);
+  color: var(--ws-success);
+}
+
+.ws-chip-warning {
+  background: var(--ws-warning-soft);
+  color: var(--ws-warning);
+}
+
+.ws-btn-accent {
+  border: none;
+  border-radius: var(--ws-radius-control);
+  background: var(--ws-accent);
+  color: var(--ws-accent-contrast);
+  padding: 6px 14px;
+  font-size: var(--ws-text-12);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-btn-accent:hover {
+  filter: brightness(1.08);
+}
+
+.ws-project-rail {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border-left: 1px solid var(--ws-border);
+  overflow-y: auto;
+}
+
+.ws-project-rail-item {
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ws-radius-control);
+  font-size: var(--ws-text-13);
+  color: var(--ws-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--ws-dur-fast) var(--ws-ease), border-color var(--ws-dur-fast) var(--ws-ease);
+}
+
+.ws-project-rail-item.ws-drop-target {
+  background: var(--ws-accent-soft);
+  border-color: var(--ws-accent);
+}
+
+.ws-project-rail-empty {
+  padding: 6px 8px;
+  font-size: var(--ws-text-12);
+  color: var(--ws-text-tertiary);
 }

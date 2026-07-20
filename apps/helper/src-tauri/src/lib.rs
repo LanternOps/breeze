@@ -1,4 +1,5 @@
 mod ipc;
+mod workspace_open;
 
 use crate::ipc::token::HelperToken;
 use futures_util::StreamExt;
@@ -44,6 +45,14 @@ struct AgentConfigFull {
 // ---------------------------------------------------------------------------
 
 fn agent_config_path() -> PathBuf {
+    // Debug builds honor BREEZE_AGENT_CONFIG so a dev rig can point the helper
+    // at a seeded agent.yaml without touching the machine's real enrollment.
+    #[cfg(debug_assertions)]
+    if let Ok(p) = std::env::var("BREEZE_AGENT_CONFIG") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         PathBuf::from("/Library/Application Support/Breeze/agent.yaml")
@@ -1000,6 +1009,7 @@ fn build_tray_menu(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             read_agent_config,
             helper_fetch,
@@ -1010,6 +1020,7 @@ pub fn run() {
             update_chat_active,
             helper_token_ready,
             submit_consent,
+            workspace_open::open_workspace_path,
         ])
         .setup(|app| {
             // Create main window manually (not from config) so we can set
@@ -1025,7 +1036,8 @@ pub fn run() {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Breeze Helper")
-            .inner_size(380.0, 600.0)
+            .inner_size(920.0, 640.0)
+            .min_inner_size(360.0, 520.0)
             .resizable(true)
             .center();
 

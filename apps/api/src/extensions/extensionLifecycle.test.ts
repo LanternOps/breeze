@@ -93,6 +93,16 @@ function makeAuth(): AuthContext {
   } as unknown as AuthContext;
 }
 
+/**
+ * `executeTool` re-reads the DURABLE enabled flag before running an
+ * extension-contributed handler, so every call must supply a store. These tests
+ * exercise the registry lifecycle, not the flag, so they inject an
+ * always-enabled store; the stale-replica case is covered separately below.
+ */
+function enabledStore(enabled = true) {
+  return { isEnabled: async () => enabled };
+}
+
 describe('extension route and AI lifecycle', () => {
   it('stages, advertises, validates, executes, replaces, and withdraws one active snapshot', async () => {
     const registry = new ExtensionContributionRegistry();
@@ -118,6 +128,7 @@ describe('extension route and AI lifecycle', () => {
       { query: 42 },
       makeAuth(),
       registry,
+      enabledStore(),
     ));
     expect(invalid.error).toMatch(/invalid input/i);
     expect(await executeTool(
@@ -125,6 +136,7 @@ describe('extension route and AI lifecycle', () => {
       { query: 'hello' },
       makeAuth(),
       registry,
+      enabledStore(),
     )).toBe('v1:hello');
 
     registry.activate(stage(
@@ -143,13 +155,14 @@ describe('extension route and AI lifecycle', () => {
       .toEqual({ version: 'v2' });
     expect(getToolDefinitions(registry).some((tool) => tool.name === 'lifecycle_lookup_v1'))
       .toBe(false);
-    await expect(executeTool('lifecycle_lookup_v1', {}, makeAuth(), registry))
+    await expect(executeTool('lifecycle_lookup_v1', {}, makeAuth(), registry, enabledStore()))
       .rejects.toThrow(/unknown tool/i);
     expect(await executeTool(
       'lifecycle_lookup_v2',
       { query: 'new' },
       makeAuth(),
       registry,
+      enabledStore(),
     )).toBe('v2:new');
 
     registry.withdraw('lifecycle-demo');
@@ -159,7 +172,7 @@ describe('extension route and AI lifecycle', () => {
     expect(getToolDefinitions(registry).some((tool) => tool.name === 'lifecycle_lookup_v2'))
       .toBe(false);
     expect(getToolTier('lifecycle_lookup_v2', registry)).toBeUndefined();
-    await expect(executeTool('lifecycle_lookup_v2', {}, makeAuth(), registry))
+    await expect(executeTool('lifecycle_lookup_v2', {}, makeAuth(), registry, enabledStore()))
       .rejects.toThrow(/unknown tool/i);
   });
 
@@ -186,6 +199,7 @@ describe('extension route and AI lifecycle', () => {
       { query: 'old' },
       makeAuth(),
       registry,
+      enabledStore(),
     );
     await started;
     registry.activate(stage(
@@ -202,6 +216,7 @@ describe('extension route and AI lifecycle', () => {
       { query: 'next' },
       makeAuth(),
       registry,
+      enabledStore(),
     )).toBe('v2:next');
   });
 
@@ -228,7 +243,78 @@ describe('extension route and AI lifecycle', () => {
       { query: 'still-old' },
       makeAuth(),
       registry,
+      enabledStore(),
     )).toBe('v1:still-old');
+  });
+
+  // THE STALE-REPLICA CASE. `breezectl extensions disable X` lands on ONE
+  // replica: it flips the database flag and withdraws X from its OWN registry.
+  // Every other replica keeps `enabled: true` in memory indefinitely — there is
+  // no cross-replica invalidation and no restart. If executeTool trusted that
+  // in-memory flag, the emergency shutoff would silently fail for the one
+  // surface that most warrants it: running the extension's own code.
+  it('refuses to run an extension AI handler whose durable flag is false, even though the local registry snapshot still says enabled', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'should-never-run');
+    registry.activate(stage(
+      registry,
+      makeManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    // Precisely the stale state: in-memory says enabled, the database says no.
+    expect(registry.get('lifecycle-demo')?.enabled).toBe(true);
+    expect(registry.getAiTool('lifecycle_lookup_v1')).toBeDefined();
+    expect(registry.findAiToolOwner('lifecycle_lookup_v1')).toBe('lifecycle-demo');
+
+    await expect(executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(false),
+    )).rejects.toThrow(/unknown tool/i);
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('runs the same handler once the durable flag reads enabled', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'ran');
+    registry.activate(stage(
+      registry,
+      makeManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+
+    expect(await executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(true),
+    )).toBe('ran');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  // The gate must not add a database read to the core tool path. The gate sits
+  // BEFORE input validation, so reaching the validation error proves it was
+  // skipped (an invalid uuid stops short of the handler and the database).
+  it('never consults the enabled store for a core tool', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const isEnabled = vi.fn(async () => false);
+
+    const result = JSON.parse(await executeTool(
+      'get_device_details',
+      { deviceId: 'not-a-uuid' },
+      makeAuth(),
+      registry,
+      { isEnabled },
+    ));
+
+    expect(result.error).toBeTruthy();
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it('rejects cross-extension AI collisions without partially replacing either owner', () => {

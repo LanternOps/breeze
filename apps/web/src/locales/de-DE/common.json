@@ -61,7 +61,8 @@
     "sectionOperations": "Betrieb",
     "sectionBackup": "Datensicherung",
     "sectionReporting": "Berichte",
-    "sectionSettings": "Einstellungen"
+    "sectionSettings": "Einstellungen",
+    "sectionExtensions": "Erweiterungen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

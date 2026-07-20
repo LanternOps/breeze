@@ -129,6 +129,9 @@ export type AiStreamEvent =
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
   | { type: 'error'; message: string }
+  // ── Generic client-declared session tools (e.g. Helper chat) — published by
+  //    services/clientSessionTools.ts when the model calls a client-declared tool.
+  | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   // ── AI for Office (client sessions) — published by the client tool bridge/handlers ──
   | { type: 'tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown>; mutating: boolean }
   | {
