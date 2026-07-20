@@ -662,7 +662,15 @@ export const submitEventLogsSchema = z.object({
     category: z.enum(['security', 'hardware', 'application', 'system']),
     source: z.string().min(1),
     eventId: z.string().optional(),
-    message: z.string().min(1),
+    // The agent truncates every event message to 500 chars on all collector
+    // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
+    // only — a compromised or older agent could POST arbitrarily large messages
+    // into device_event_logs, which carries a GIN trigram index (search) that
+    // bloats super-linearly in value size. Re-bound it server-side. 2000 (4x the
+    // agent truncation) leaves headroom for the one un-truncated darwin path
+    // (crash-report synthesized messages, eventlogs_darwin.go) and future
+    // collectors while still hard-bounding the abuse vector. (#2642)
+    message: z.string().min(1).max(2000),
     details: z.record(z.string(), z.any()).optional().refine(
       (val) => !val || JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }

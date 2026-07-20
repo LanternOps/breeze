@@ -6,7 +6,19 @@ import {
   agentWarrantyInfoSchema,
   enrollSchema,
   heartbeatSchema,
+  submitEventLogsSchema,
 } from './schemas';
+
+// Build a minimal valid event-log entry the schema accepts.
+function makeEvent(message: string) {
+  return {
+    timestamp: '2026-05-19T01:00:00.000Z',
+    level: 'info' as const,
+    category: 'system' as const,
+    source: 'test',
+    message,
+  };
+}
 
 // Build a minimal valid change item the schema accepts.
 function makeChange(suffix: number) {
@@ -178,5 +190,38 @@ describe('virtualization attribute — heartbeatSchema (tolerant)', () => {
     if (parsed.success) {
       expect(parsed.data.isVirtual).toBeUndefined();
     }
+  });
+});
+
+describe('submitEventLogsSchema — server-side message length cap (#2642)', () => {
+  const MAX = 2000;
+
+  it('accepts a message at the 2000-char cap', () => {
+    const parsed = submitEventLogsSchema.safeParse({
+      events: [makeEvent('a'.repeat(MAX))],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a message one char over the cap — an unbounded agent message can no longer reach device_event_logs', () => {
+    const parsed = submitEventLogsSchema.safeParse({
+      events: [makeEvent('a'.repeat(MAX + 1))],
+    });
+    // Mutation guard: this reds if the `.max()` is dropped from `message`.
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects the whole batch when any single event message is oversized', () => {
+    const parsed = submitEventLogsSchema.safeParse({
+      events: [makeEvent('ok'), makeEvent('a'.repeat(MAX + 1)), makeEvent('ok')],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('still enforces the pre-existing min(1) — an empty message is rejected', () => {
+    const parsed = submitEventLogsSchema.safeParse({
+      events: [makeEvent('')],
+    });
+    expect(parsed.success).toBe(false);
   });
 });
