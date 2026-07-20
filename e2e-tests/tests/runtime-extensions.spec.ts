@@ -261,7 +261,14 @@ test.describe('Runtime extension activation + disable/enable (Task 6, Plan 03)',
     // reach the forged origin. Not "got blocked by CSP" (script-src 'self'
     // would also stop it) — never requested at all, because the loader's
     // same-origin check runs before any fetch/import is issued.
-    expect(urls.some((url) => url.startsWith(FORGED_ORIGIN))).toBe(false);
+    const requestedForgedOrigin = urls.some((url) => {
+      try {
+        return new URL(url).origin === FORGED_ORIGIN;
+      } catch {
+        return false;
+      }
+    });
+    expect(requestedForgedOrigin).toBe(false);
 
     await authedPage.unroute('**/api/v1/extensions/registry');
   });
