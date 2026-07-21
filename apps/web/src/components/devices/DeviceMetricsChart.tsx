@@ -288,7 +288,7 @@ export default function DeviceMetricsChart({
             <Tooltip
               wrapperClassName="chart-tooltip"
               labelFormatter={(value) => formatDateTime(String(value))}
-              formatter={(value: number, name: string) => [`${value}%`, name]}
+              formatter={(value, name) => [`${value}%`, name]}
             />
             <Legend />
             {visibleMetrics.cpu && (

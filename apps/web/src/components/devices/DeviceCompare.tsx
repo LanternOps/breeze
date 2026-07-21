@@ -1837,7 +1837,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
                       labelFormatter={(value) =>
                         formatDateTime(String(value), effectiveTimezone)
                       }
-                      formatter={(value: number, name: string) => [
+                      formatter={(value, name) => [
                         `${value}%`,
                         name,
                       ]}

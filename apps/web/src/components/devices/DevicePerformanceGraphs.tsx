@@ -260,7 +260,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             <Tooltip
               wrapperClassName="chart-tooltip"
               labelFormatter={(value) => formatDateTime(String(value))}
-              formatter={(value: number, name: string) => [`${value}%`, name]}
+              formatter={(value, name) => [`${value}%`, name]}
             />
             {!compact && <Legend />}
             <Line type="monotone" dataKey="cpu" stroke="#3b82f6" strokeWidth={2} dot={false} name={t('devicePerformanceGraphs.metrics.cpu')} />
@@ -324,7 +324,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                 <Tooltip
                   wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => formatDateTime(String(value))}
-                  formatter={(value: number, name: string) => [formatBandwidth(value), name]}
+                  formatter={(value, name) => [formatBandwidth(typeof value === "number" ? value : Number(value)), name]}
                 />
                 {!compact && <Legend />}
                 <Area
@@ -405,7 +405,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
                 <Tooltip
                   wrapperClassName="chart-tooltip"
                   labelFormatter={(value) => formatDateTime(String(value))}
-                  formatter={(value: number, name: string) => [formatBytesPerSec(value), name]}
+                  formatter={(value, name) => [formatBytesPerSec(typeof value === "number" ? value : Number(value)), name]}
                 />
                 {!compact && <Legend />}
                 <Area

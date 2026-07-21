@@ -418,8 +418,8 @@ export default function DeviceBootPerformanceTab({
                   labelFormatter={(value) =>
                     formatTimestampFull(String(value), timezone)
                   }
-                  formatter={(value: number, name: string) => [
-                    formatBootTime(value),
+                  formatter={(value, name) => [
+                    formatBootTime(typeof value === "number" ? value : Number(value)),
                     name,
                   ]}
                 />
@@ -479,8 +479,8 @@ export default function DeviceBootPerformanceTab({
                   labelFormatter={(value) =>
                     formatTimestampFull(String(value), timezone)
                   }
-                  formatter={(value: number) => [
-                    formatBootTime(value),
+                  formatter={(value) => [
+                    formatBootTime(typeof value === "number" ? value : Number(value)),
                     "Total Boot Time",
                   ]}
                 />
