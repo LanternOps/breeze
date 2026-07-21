@@ -18,7 +18,12 @@ export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
  * only `failed` is worth telling the user about, because it silently caps every
  * approval from this device at L1.
  */
-export type ApproverRegistrationStatus = 'idle' | 'registered' | 'failed' | 'unsupported';
+export type ApproverRegistrationStatus =
+  | 'idle'
+  | 'registered'
+  | 'deferred'
+  | 'failed'
+  | 'unsupported';
 
 interface AuthState {
   user: User | null;
@@ -30,6 +35,13 @@ interface AuthState {
   pushRegistrationReason: string | null;
   approverRegistration: ApproverRegistrationStatus;
   approverRegistrationReason: string | null;
+  /**
+   * #2707: single-use approver-register grant minted at login/mfa-verify.
+   * Memory-only — RootNavigator reads-and-clears it before attempting
+   * registration; it must never be persisted to SecureStore (see
+   * services/auth.ts storeToken/storeUser, which stay untouched).
+   */
+  authenticatorRegisterGrantId: string | null;
 }
 
 const initialState: AuthState = {
@@ -42,6 +54,7 @@ const initialState: AuthState = {
   pushRegistrationReason: null,
   approverRegistration: 'idle',
   approverRegistrationReason: null,
+  authenticatorRegisterGrantId: null,
 };
 
 export const loginAsync = createAsyncThunk(
@@ -57,7 +70,7 @@ export const loginAsync = createAsyncThunk(
       await storeToken(result.token);
       await storeUser(result.user);
 
-      return { token: result.token, user: result.user };
+      return { token: result.token, user: result.user, registerGrant: result.registerGrant };
     } catch (error: unknown) {
       const apiError = error as { message?: string };
       return rejectWithValue(apiError.message || 'Login failed');
@@ -138,6 +151,7 @@ const authSlice = createSlice({
       // show the next user on this phone the previous user's banner.
       state.approverRegistration = 'idle';
       state.approverRegistrationReason = null;
+      state.authenticatorRegisterGrantId = null;
     },
     clearError: (state) => {
       state.error = null;
@@ -163,6 +177,11 @@ const authSlice = createSlice({
       state.approverRegistration = action.payload.status;
       state.approverRegistrationReason = action.payload.reason ?? null;
     },
+    // #2707: the grant is single-use — RootNavigator takes it (read-and-clear)
+    // BEFORE the registration attempt so a re-fired effect can't replay it.
+    clearAuthenticatorRegisterGrant: (state) => {
+      state.authenticatorRegisterGrantId = null;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -181,6 +200,7 @@ const authSlice = createSlice({
           state.token = action.payload.token;
           state.user = action.payload.user;
           state.mfaChallenge = null;
+          state.authenticatorRegisterGrantId = action.payload.registerGrant ?? null;
         }
       })
       .addCase(loginAsync.rejected, (state, action) => {
@@ -197,6 +217,7 @@ const authSlice = createSlice({
         state.user = action.payload.user;
         state.error = null;
         state.mfaChallenge = null;
+        state.authenticatorRegisterGrantId = action.payload.registerGrant ?? null;
       })
       .addCase(verifyMfaAsync.rejected, (state, action) => {
         state.isLoading = false;
@@ -213,6 +234,7 @@ const authSlice = createSlice({
         state.mfaChallenge = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
+        state.authenticatorRegisterGrantId = null;
       })
       .addCase(logoutAsync.rejected, (state) => {
         state.user = null;
@@ -222,6 +244,7 @@ const authSlice = createSlice({
         state.mfaChallenge = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
+        state.authenticatorRegisterGrantId = null;
       });
   },
 });
@@ -234,5 +257,6 @@ export const {
   setLoading,
   setPushRegistration,
   setApproverRegistration,
+  clearAuthenticatorRegisterGrant,
 } = authSlice.actions;
 export default authSlice.reducer;

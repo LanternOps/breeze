@@ -81,6 +81,9 @@ export function ApprovalGate({ children }: Props) {
       {!error && pushRegistration !== 'failed' && approverRegistration === 'failed' ? (
         <ApproverFailedBanner />
       ) : null}
+      {!error && pushRegistration !== 'failed' && approverRegistration === 'deferred' ? (
+        <ApproverDeferredBanner />
+      ) : null}
     </>
   );
 }
@@ -146,6 +149,45 @@ function ApproverFailedBanner() {
         <Text style={[type.meta, { color: theme.textHi }]}>
           This device isn't set up for biometric approval — your approvals will be
           recorded at the lowest assurance level.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Shown when {@link ensureApproverDevice} deferred registration because the
+ * login-minted grant was consumed or absent (e.g. a restored session, not a
+ * fresh interactive login). This is informational, not an error — approvals
+ * still work at L1 — so it uses the neutral/brand border rather than the
+ * `deny` styling {@link ApproverFailedBanner} uses.
+ */
+function ApproverDeferredBanner() {
+  const insets = useSafeAreaInsets();
+  const theme = useApprovalTheme('dark');
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{
+        position: 'absolute',
+        top: insets.top + spacing[2],
+        left: spacing[4],
+        right: spacing[4],
+      }}
+    >
+      <View
+        style={{
+          backgroundColor: theme.bg2,
+          borderRadius: radii.md,
+          paddingVertical: spacing[3],
+          paddingHorizontal: spacing[4],
+          borderColor: theme.border,
+          borderWidth: 1,
+        }}
+      >
+        <Text style={[type.bodyMd, { color: theme.textHi }]}>Finish approver setup</Text>
+        <Text style={[type.meta, { color: theme.textHi, marginTop: spacing[1] }]}>
+          Sign out and back in to let this phone approve requests with Face ID.
         </Text>
       </View>
     </View>

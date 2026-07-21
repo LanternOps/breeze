@@ -3,8 +3,14 @@ import { NavigationContainer, DefaultTheme as NavDefaultTheme } from '@react-nav
 import { Alert, Pressable, Text, View } from 'react-native';
 import * as Sentry from '@sentry/react-native';
 
-import { useAppSelector, useAppDispatch } from '../store';
-import { setCredentials, logout, logoutAsync, setApproverRegistration } from '../store/authSlice';
+import { useAppSelector, useAppDispatch, store } from '../store';
+import {
+  setCredentials,
+  logout,
+  logoutAsync,
+  setApproverRegistration,
+  clearAuthenticatorRegisterGrant,
+} from '../store/authSlice';
 import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
 import { getCurrentUser, onDeviceBlocked } from '../services/api';
 import { spacing, type } from '../theme';
@@ -96,7 +102,14 @@ export function RootNavigator() {
   useEffect(() => {
     if (!token || !user) return;
     let active = true;
-    void ensureApproverDevice().then((outcome) => {
+    // #2707 read-and-clear: take the login-minted grant OUT of Redux before the
+    // async attempt. The grant is deliberately NOT in this effect's deps — the
+    // effect re-fires on every `user` identity change (checkAuth double-fires on
+    // cold start), and a replayed single-use grant would 403 and overwrite a
+    // successful registration with `failed`.
+    const registerGrant = store.getState().auth.authenticatorRegisterGrantId;
+    if (registerGrant) dispatch(clearAuthenticatorRegisterGrant());
+    void ensureApproverDevice(undefined, registerGrant ?? undefined).then((outcome) => {
       if (!active) return;
       dispatch(
         setApproverRegistration({

@@ -91,6 +91,8 @@ export interface User {
 export interface LoginResponse {
   token: string;
   user: User;
+  /** #2707: single-use approver-register grant minted at login; memory-only. */
+  registerGrant: string | null;
 }
 
 export type MfaMethod = 'totp' | 'sms';
@@ -102,7 +104,7 @@ export interface MfaChallenge {
 }
 
 export type LoginResult =
-  | { kind: 'success'; token: string; user: User }
+  | { kind: 'success'; token: string; user: User; registerGrant: string | null }
   | { kind: 'mfaRequired'; challenge: MfaChallenge };
 
 export interface ApiError {
@@ -134,6 +136,8 @@ interface LoginPayload {
   mfaMethod?: MfaMethod;
   phoneLast4?: string | null;
   error?: string;
+  /** #2707: single-use approver-register grant; mobile-header-gated. */
+  authenticatorRegisterGrantId?: string;
 }
 
 type MobileAlertRecord = {
@@ -337,7 +341,12 @@ export async function login(email: string, password: string): Promise<LoginResul
     throw { message: response.error || 'Invalid login response' } as ApiError;
   }
 
-  return { kind: 'success', token, user: response.user };
+  return {
+    kind: 'success',
+    token,
+    user: response.user,
+    registerGrant: response.authenticatorRegisterGrantId ?? null,
+  };
 }
 
 export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
@@ -351,7 +360,7 @@ export async function verifyMfa(code: string, tempToken: string): Promise<LoginR
     throw { message: response.error || 'Invalid MFA response' } as ApiError;
   }
 
-  return { token, user: response.user };
+  return { token, user: response.user, registerGrant: response.authenticatorRegisterGrantId ?? null };
 }
 
 export async function sendMfaSms(tempToken: string): Promise<void> {
