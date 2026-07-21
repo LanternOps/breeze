@@ -16,7 +16,8 @@ import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../..
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
-import { validateStepUpGrant, consumeStepUpGrant } from '../../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../services/mfaStepUpGrant';
+import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
@@ -370,6 +371,37 @@ export async function enforceApproverRegisterStepUp(
     return c.json({ error: 'register_step_up_required' }, 403);
   }
   return null;
+}
+
+/**
+ * #2707: best-effort login-time mint of a register_approver_device grant,
+ * returned to the MOBILE client as `authenticatorRegisterGrantId` so the app
+ * can register its approver key promptlessly right after login.
+ *
+ * Gated on the mobile device-id header: web logins hit the same endpoints and
+ * must NEVER receive a live register grant (300s XSS-readable window for a
+ * grant the page can't use). Returns null on any failure — login must not
+ * break because Redis is down; the phone simply registers on a later login.
+ *
+ * NEVER call this from the /auth/refresh handler: a stolen refresh token
+ * would then mint a fresh register grant on every rotation, defeating the
+ * stolen-session protection the grant exists to provide.
+ */
+export async function mintLoginRegisterGrant(
+  c: Context,
+  userId: string,
+  sid: string
+): Promise<string | null> {
+  if (!readMobileDeviceId(c)) return null;
+  const epochs = await getUserEpochs(userId);
+  if (!epochs) return null;
+  return mintStepUpGrant({
+    userId,
+    operation: 'register_approver_device',
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid,
+  });
 }
 
 export function isSecureCookieEnvironment(): boolean {

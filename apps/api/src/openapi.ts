@@ -124,7 +124,12 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           user: { $ref: '#/components/schemas/User' },
           tokens: { $ref: '#/components/schemas/Tokens' },
           mfaRequired: { type: 'boolean' },
-          tempToken: { type: 'string', description: 'Temporary token for MFA verification' }
+          tempToken: { type: 'string', description: 'Temporary token for MFA verification' },
+          authenticatorRegisterGrantId: {
+            type: 'string',
+            description:
+              'Single-use 300s grant for registering this device as an approver. Only returned on POST /auth/login and /auth/mfa/verify to clients sending X-Breeze-Mobile-Device-Id; never on /auth/register or /auth/refresh.',
+          },
         }
       },
       RegisterRequest: {

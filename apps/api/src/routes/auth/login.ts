@@ -55,7 +55,8 @@ import {
   auditLogin,
   userRequiresSetup,
   userHasUsablePasskey,
-  authResponseFloorPromise
+  authResponseFloorPromise,
+  mintLoginRegisterGrant
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
@@ -611,6 +612,13 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // shape. The floor is calibrated above the slowest legitimate denial
   // path so a successful login is no faster than any other outcome.
   await floorPromise;
+
+  // #2707: mobile-only best-effort mint of a register_approver_device grant,
+  // so the app can register its approver key promptlessly right after login.
+  // Gated inside mintLoginRegisterGrant on the mobile device-id header — web
+  // logins never get a value here.
+  const authenticatorRegisterGrantId = await mintLoginRegisterGrant(c, user.id, familyId);
+
   return c.json({
     user: {
       id: user.id,
@@ -627,7 +635,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     mfaRequired: false,
     requiresSetup,
     mfaEnrollmentRequired,
-    enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined
+    enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
+    ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})
   });
 });
 

@@ -46,7 +46,8 @@ import {
   requireCurrentPasswordStepUp,
   enforceExistingFactorStepUp,
   parsePendingMfa,
-  evaluatePendingMfa
+  evaluatePendingMfa,
+  mintLoginRegisterGrant
 } from './helpers';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
@@ -361,6 +362,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     const requiresSetup = userRequiresSetup(user);
 
+    // #2707: mobile-only best-effort mint of a register_approver_device
+    // grant — same rationale as the /auth/login no-MFA success response.
+    const authenticatorRegisterGrantId = await mintLoginRegisterGrant(c, user.id, mfaFamilyId);
+
     return c.json({
       user: {
         id: user.id,
@@ -375,7 +380,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       },
       tokens: toPublicTokens(tokens),
       mfaRequired: false,
-      requiresSetup
+      requiresSetup,
+      ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})
     });
   }
 

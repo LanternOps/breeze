@@ -93,8 +93,28 @@ vi.mock('../../services/tenantStatus', () => ({
 }));
 
 vi.mock('../../services/mobileDeviceBinding', () => ({
-  readMobileDeviceId: vi.fn(() => null),
+  // Reads the real request header so tests can drive mobile-vs-web behaviour
+  // (#2707 authenticatorRegisterGrantId gate) just by setting/omitting
+  // 'X-Breeze-Mobile-Device-Id' on the request — no per-test mock wiring.
+  readMobileDeviceId: vi.fn((c: { req: { header: (name: string) => string | undefined } }) => {
+    const raw = c.req.header('x-breeze-mobile-device-id');
+    const trimmed = raw?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : null;
+  }),
   carryForwardBinding: vi.fn(() => undefined),
+}));
+
+// #2707: mintLoginRegisterGrant (the REAL implementation, kept unmocked in
+// the './helpers' factory below) calls this to mint the mobile approver
+// register grant. Mocked here so tests control it without touching Redis.
+const grantMocks = vi.hoisted(() => ({
+  mintStepUpGrant: vi.fn(async () => null as string | null),
+}));
+
+vi.mock('../../services/mfaStepUpGrant', () => ({
+  mintStepUpGrant: grantMocks.mintStepUpGrant,
+  validateStepUpGrant: vi.fn(),
+  consumeStepUpGrant: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -118,7 +138,14 @@ vi.mock('../../middleware/auth', () => ({
 // real helper's SINGLE internal emission, so the "called exactly once"
 // assertions in the inactive-tenant/account tests will fail if anyone
 // reintroduces a redundant recordFailedLogin() in login.ts (#719 regression).
-vi.mock('./helpers', () => ({
+// #2707: keep this as an importOriginal-based partial mock (not a bare
+// object) so the REAL mintLoginRegisterGrant runs. It is the unit under test
+// for the authenticatorRegisterGrantId describe block below — it exercises
+// the real readMobileDeviceId/getUserEpochs/mintStepUpGrant wiring, all of
+// which are mocked at their own module boundaries above/below. Every other
+// export here is still an explicit vi.fn() override, unchanged from before.
+vi.mock('./helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers')>()),
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
   setRefreshTokenCookie: vi.fn(),
@@ -251,10 +278,10 @@ function updateChain() {
   };
 }
 
-async function postLogin(body: { email: string; password: string }) {
+async function postLogin(body: { email: string; password: string }, extraHeaders: Record<string, string> = {}) {
   return loginRoutes.request('/login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
@@ -1186,5 +1213,119 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
     expect(res.status).toBe(200);
     expect(createTokenPair).toHaveBeenCalled();
+  });
+});
+
+// #2707: authenticatorRegisterGrantId — login-time mint of a
+// register_approver_device grant for the mobile app, mobile-only, and never
+// on refresh. mintLoginRegisterGrant itself runs FOR REAL here (see the
+// './helpers' mock above); only its two collaborators outside this file
+// (readMobileDeviceId, mintStepUpGrant) are mocked, so these tests exercise
+// the real gate + wiring in login.ts/helpers.ts, not a re-description of it.
+describe('authenticatorRegisterGrantId login mint (#2707)', () => {
+  async function successfulLoginRequest(opts: { headers?: Record<string, string> } = {}) {
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+    return postLogin({ email: 'admin@msp.com', password: 'correct-horse' }, opts.headers);
+  }
+
+  async function successfulRefreshRequest(opts: { headers?: Record<string, string> } = {}) {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 1,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 1,
+      mep: 1,
+    } as any);
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    grantMocks.mintStepUpGrant.mockResolvedValue(null);
+  });
+
+  it('successful login WITH the mobile device-id header includes the grant', async () => {
+    grantMocks.mintStepUpGrant.mockResolvedValue('login-grant-1');
+
+    const res = await successfulLoginRequest({ headers: { 'X-Breeze-Mobile-Device-Id': 'install-1' } });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).authenticatorRegisterGrantId).toBe('login-grant-1');
+    expect(grantMocks.mintStepUpGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'register_approver_device' })
+    );
+  });
+
+  it('successful login WITHOUT the header omits the field entirely (web never gets a grant)', async () => {
+    const res = await successfulLoginRequest();
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('authenticatorRegisterGrantId');
+    expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('a mint failure (Redis down) still returns tokens', async () => {
+    grantMocks.mintStepUpGrant.mockResolvedValue(null);
+
+    const res = await successfulLoginRequest({ headers: { 'X-Breeze-Mobile-Device-Id': 'install-1' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('authenticatorRegisterGrantId');
+    expect(body.tokens).toBeDefined();
+  });
+
+  it('POST /auth/refresh NEVER includes the field, even with the mobile header', async () => {
+    grantMocks.mintStepUpGrant.mockResolvedValue('should-never-appear');
+
+    const res = await successfulRefreshRequest({ headers: { 'X-Breeze-Mobile-Device-Id': 'install-1' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('authenticatorRegisterGrantId');
+    expect(grantMocks.mintStepUpGrant).not.toHaveBeenCalled();
   });
 });
