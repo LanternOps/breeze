@@ -120,19 +120,19 @@ require_grep 'verifyFileSHA256' agent/internal/agentapp/watchdog_bootstrap.go \
 require_grep 'checksum mismatch' agent/internal/agentapp/watchdog_bootstrap_test.go \
   "watchdog bootstrap tests must cover checksum mismatch"
 
-require_grep '"packageManager": "pnpm@10\.33\.4"' package.json \
+require_grep '"packageManager": "pnpm@10\.34\.5"' package.json \
   "package.json must pin pnpm to a reproducible version"
-require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/security.yml \
-  "security workflow must pin PNPM_VERSION to 10.33.4"
+require_grep "PNPM_VERSION: '10\.34\.5'" .github/workflows/security.yml \
+  "security workflow must pin PNPM_VERSION to 10.34.5"
 # Defense-in-depth: every site that installs pnpm must pin the same version
 # as the packageManager field, so a single uncoordinated bump can't sneak in.
-require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/ci.yml \
-  "CI workflow must pin PNPM_VERSION to 10.33.4"
-require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/release.yml \
-  "release workflow must pin PNPM_VERSION to 10.33.4"
+require_grep "PNPM_VERSION: '10\.34\.5'" .github/workflows/ci.yml \
+  "CI workflow must pin PNPM_VERSION to 10.34.5"
+require_grep "PNPM_VERSION: '10\.34\.5'" .github/workflows/release.yml \
+  "release workflow must pin PNPM_VERSION to 10.34.5"
 for dockerfile in apps/api/Dockerfile apps/web/Dockerfile docker/Dockerfile.api docker/Dockerfile.web; do
-  require_grep 'npm install -g pnpm@10\.33\.4' "$dockerfile" \
-    "$dockerfile must pin pnpm to 10.33.4"
+  require_grep 'npm install -g pnpm@10\.34\.5' "$dockerfile" \
+    "$dockerfile must pin pnpm to 10.34.5"
 done
 
 # The customer-Graph-read credential boundary ships as a separately built
