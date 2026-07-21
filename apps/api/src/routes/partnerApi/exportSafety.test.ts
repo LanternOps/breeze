@@ -400,8 +400,30 @@ describe('recursive export safety', () => {
   });
 
   it('defaults to scanning every field when no resource is supplied', () => {
-    // Backward-compatible: omitting resource keeps the pre-change behavior.
-    expect(inspectDefinitionForSecrets({ disks: [{ device: '/dev/mapper/ubuntu--vg-ubuntu--lv' }] }))
+    // Backward-compatible: omitting resource still runs the structural layer.
+    // Use a genuinely secret-like token (short delimited paths are correctly safe).
+    expect(inspectDefinitionForSecrets({ value: 'kR8xQ2mVp7LnWc4TgYhBz6JdFs1AeNu9XvCiPo3R' }))
       .toMatchObject({ safe: false });
+  });
+
+  it('does not flag delimited machine paths embedded in customer-authored script content', () => {
+    // Script content (customer-authored, structural layer ON) legitimately
+    // contains long device paths. Segment-aware detection must let them pass.
+    const script = { content: [
+      'mount /dev/mapper/ubuntu--vg-ubuntu--lv /mnt/data',
+      'ls -la /var/lib/docker/overlay2/containers',
+    ].join('\n') };
+    expect(inspectDefinitionForSecrets(script, 'scripts')).toEqual({ safe: true });
+  });
+
+  it('flags a random secret token in customer-authored content via the segment detector', () => {
+    for (const token of [
+      'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      'kR8xQ2mVp7LnWc4TgYhBz6JdFs1AeNu9XvCiPo3R',
+      'de305d5475b4431badb2eb6b9e546014aabbccdd',
+    ]) {
+      expect(inspectDefinitionForSecrets({ value: token }, 'custom-field-values'))
+        .toMatchObject({ safe: false, reason: 'secret_detected' });
+    }
   });
 });
