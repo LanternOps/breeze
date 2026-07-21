@@ -80,7 +80,10 @@ const namespaceDuplicateBaselines = {
     // in fr-FR.
     // +3: quote send composer — "Cc" (label + toggle) and the example email
     // placeholder are locale-invariant.
-    'billing.json': 48,
+    // +1: the unassigned-lines row format ("{{qty}} × {{price}}") is two
+    // interpolations and a multiplication sign — there is no French wording to
+    // translate, and every other locale carries the identical value.
+    'billing.json': 49,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,
