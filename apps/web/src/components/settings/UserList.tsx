@@ -12,6 +12,7 @@ export type User = {
   role: string;
   status: UserStatus | string;
   lastLogin: string;
+  mfaEnabled?: boolean;
 };
 
 type UserListProps = {
@@ -21,6 +22,7 @@ type UserListProps = {
   onEdit?: (user: User) => void;
   onRemove?: (user: User) => void;
   onResendInvite?: (user: User) => void;
+  onResetMfa?: (user: User) => void;
 };
 
 const statusStyles: Record<string, string> = {
@@ -36,7 +38,7 @@ const statusLabelKeys: Record<UserStatus, string> = {
   pending: 'userList.status.pending',
 };
 
-export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite }: UserListProps) {
+export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite, onResetMfa }: UserListProps) {
   const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
 
@@ -150,6 +152,18 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                         >
                           {t('userList.actions.devices')}
                         </a>
+                        {user.mfaEnabled && (
+                          <>
+                            <span className="text-muted-foreground">|</span>
+                            <button
+                              type="button"
+                              onClick={() => onResetMfa?.(user)}
+                              className="text-sm font-medium text-primary hover:underline"
+                            >
+                              {t('userList.actions.resetMfa')}
+                            </button>
+                          </>
+                        )}
                         <span className="text-muted-foreground">|</span>
                         <button
                           type="button"

@@ -8,7 +8,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import AccessDenied from '../shared/AccessDenied';
 
-type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
+type ModalMode = 'closed' | 'invite' | 'edit' | 'remove' | 'resetMfa';
 
 type InviteFormValues = {
   email: string;
@@ -76,6 +76,7 @@ export default function UsersPage() {
         lastLogin: u.lastLoginAt
           ? new Date(u.lastLoginAt as string).toLocaleDateString()
           : t('usersPage.never'),
+        mfaEnabled: Boolean(u.mfaEnabled),
       }));
       setUsers(rows);
     } catch (err) {
@@ -120,6 +121,35 @@ export default function UsersPage() {
   const handleRemove = (user: User) => {
     setSelectedUser(user);
     setModalMode('remove');
+  };
+
+  const handleResetMfa = (user: User) => {
+    setSelectedUser(user);
+    setModalMode('resetMfa');
+  };
+
+  const handleConfirmResetMfa = async () => {
+    if (!selectedUser) return;
+
+    setSubmitting(true);
+    try {
+      const response = await fetchWithAuth(`/users/${selectedUser.id}/mfa/reset`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || t('usersPage.errors.resetMfa'));
+      }
+
+      await fetchUsers();
+      handleCloseModal();
+      addToast('success', t('usersPage.toasts.mfaReset', { email: selectedUser.email }));
+    } catch (err) {
+      addToast('error', err instanceof Error ? err.message : t('usersPage.errors.resetMfa'));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleResendInvite = async (user: User) => {
@@ -310,6 +340,7 @@ export default function UsersPage() {
         onEdit={handleEdit}
         onRemove={handleRemove}
         onResendInvite={handleResendInvite}
+        onResetMfa={handleResetMfa}
       />
 
       {/* Invite Modal */}
@@ -426,6 +457,36 @@ export default function UsersPage() {
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? t('usersPage.actions.removing') : t('common:actions.remove')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset MFA Confirmation Modal */}
+      {modalMode === 'resetMfa' && selectedUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
+            <h2 className="text-lg font-semibold">{t('usersPage.resetMfa.title')}</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {t('usersPage.resetMfa.messagePrefix')} <span className="font-medium">{selectedUser.name}</span> ({selectedUser.email})?
+              {t('usersPage.resetMfa.messageSuffix')}
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseModal}
+                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              >
+                {t('common:actions.cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmResetMfa}
+                disabled={submitting}
+                className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? t('usersPage.actions.resetting') : t('usersPage.resetMfa.confirm')}
               </button>
             </div>
           </div>

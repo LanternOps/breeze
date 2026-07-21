@@ -3120,7 +3120,8 @@
       "invite": "Invite user",
       "resendInvite": "Resend invite",
       "manageMobileDevices": "Manage this user's mobile devices",
-      "devices": "Devices"
+      "devices": "Devices",
+      "resetMfa": "Reset MFA"
     },
     "searchLabel": "Search users",
     "searchPlaceholder": "Search by name, email, or role",
@@ -3147,7 +3148,8 @@
     "actions": {
       "tryAgain": "Try again",
       "saveChanges": "Save changes",
-      "removing": "Removing..."
+      "removing": "Removing...",
+      "resetting": "Resetting..."
     },
     "errors": {
       "fetchUsers": "Failed to fetch users",
@@ -3156,7 +3158,8 @@
       "sendInvite": "Failed to send invitation",
       "updateUser": "Failed to update user",
       "updateRole": "Failed to update role",
-      "removeUser": "Failed to remove user"
+      "removeUser": "Failed to remove user",
+      "resetMfa": "Failed to reset MFA"
     },
     "invite": {
       "title": "Invite User",
@@ -3181,7 +3184,14 @@
       "inviteManual": "Invite created for {{email}} but the email could not be sent. Copy the invite link to share manually.",
       "inviteSent": "Invitation sent to {{email}}",
       "copied": "Copied!",
-      "copyLink": "Copy link"
+      "copyLink": "Copy link",
+      "mfaReset": "MFA reset for {{email}}"
+    },
+    "resetMfa": {
+      "title": "Reset MFA?",
+      "messagePrefix": "This removes the second factor for",
+      "messageSuffix": " They'll sign in with just their password, be prompted to set up MFA again, and any active sessions are signed out.",
+      "confirm": "Reset MFA"
     }
   }
 }

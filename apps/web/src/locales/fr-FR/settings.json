@@ -3067,7 +3067,8 @@
       "invite": "Inviter l’utilisateur",
       "resendInvite": "Réenvoyer l’invitation",
       "manageMobileDevices": "Gérez les appareils mobiles de cet utilisateur",
-      "devices": "Dispositifs"
+      "devices": "Dispositifs",
+      "resetMfa": "Réinitialiser la MFA"
     },
     "searchLabel": "Rechercher des utilisateurs",
     "searchPlaceholder": "Rechercher par nom, e-mail ou rôle",
@@ -3094,7 +3095,8 @@
     "actions": {
       "tryAgain": "Réessayer",
       "saveChanges": "Enregistrer les modifications",
-      "removing": "Enlèvement..."
+      "removing": "Enlèvement...",
+      "resetting": "Réinitialisation..."
     },
     "errors": {
       "fetchUsers": "Impossible de récupérer les utilisateurs",
@@ -3103,7 +3105,8 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "updateUser": "Impossible de mettre à jour l’utilisateur",
       "updateRole": "Impossible de mettre à jour le rôle",
-      "removeUser": "Impossible de supprimer l’utilisateur"
+      "removeUser": "Impossible de supprimer l’utilisateur",
+      "resetMfa": "Échec de la réinitialisation de la MFA"
     },
     "invite": {
       "title": "Inviter l’utilisateur",
@@ -3128,7 +3131,14 @@
       "inviteManual": "Invitation créée pour {{email}} mais l’e-mail n’a pas pu être envoyé. Copiez le lien de l’invitation pour le partager manuellement.",
       "inviteSent": "Invitation envoyée à {{email}}",
       "copied": "Copié !",
-      "copyLink": "Copier le lien"
+      "copyLink": "Copier le lien",
+      "mfaReset": "MFA réinitialisée pour {{email}}"
+    },
+    "resetMfa": {
+      "title": "Réinitialiser la MFA ?",
+      "messagePrefix": "Cela supprime le second facteur de",
+      "messageSuffix": " La connexion se fera avec le seul mot de passe, la MFA devra être reconfigurée, et les sessions actives seront déconnectées.",
+      "confirm": "Réinitialiser la MFA"
     }
   },
   "tdSynnexSftpPanel": {

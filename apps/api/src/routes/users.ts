@@ -39,6 +39,7 @@ import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUse
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
+import { invalidateMfaAssuranceAfterFactorChange } from '../services/mfaAssurance';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 
@@ -950,6 +951,7 @@ userRoutes.get(
           name: users.name,
           status: users.status,
           lastLoginAt: users.lastLoginAt,
+          mfaEnabled: users.mfaEnabled,
           roleId: roles.id,
           roleName: roles.name,
           orgAccess: partnerUsers.orgAccess,
@@ -970,6 +972,7 @@ userRoutes.get(
         name: users.name,
         status: users.status,
         lastLoginAt: users.lastLoginAt,
+        mfaEnabled: users.mfaEnabled,
         roleId: roles.id,
         roleName: roles.name,
         siteIds: organizationUsers.siteIds,
@@ -1618,6 +1621,97 @@ userRoutes.delete(
     await runPostCommitCleanup(userId);
 
     return c.json({ success: true });
+  }
+);
+
+// Admin MFA reset — recovery path for a user who lost their authenticator and
+// has no recovery codes (self-service POST /auth/mfa/disable is impossible for
+// them: it demands a live code). An admin with USERS_WRITE over the target's
+// tenant clears the factor and forces re-enrollment on next login.
+//
+// Deliberate design choices:
+//  - NOT gated on the org/partner MFA-enforcement policy: enforcement blocks
+//    self-disable, but this IS the recovery lever, and a still-enforced policy
+//    simply forces the user to re-enroll at next login (which is the goal).
+//  - NOT gated on ENABLE_2FA: if 2FA was turned off platform-wide, legacy
+//    enabled rows can't be cleared via self-service (that path early-returns),
+//    so admin reset is the ONLY recovery — it must keep working.
+//  - Self is refused: an admin must not strip their OWN factor here (that would
+//    bypass the code + password step-up the self-service flow requires).
+//  - requireMfa() forces the acting admin's session to have satisfied MFA, so a
+//    stolen access token alone cannot reset another user's second factor.
+userRoutes.post(
+  '/:id/mfa/reset',
+  requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const scopeContext = getScopeContext(auth);
+    const userId = c.req.param('id')!;
+
+    if (userId === auth.user.id) {
+      return c.json(
+        { error: 'Use the self-service MFA disable flow to remove your own second factor' },
+        400
+      );
+    }
+
+    // Tenant boundary: getScopedUser only resolves a target that has a
+    // membership in the caller's org/partner, so an admin cannot reset a user
+    // outside their tenant (RLS on `users` is the second line of defense).
+    const record = await getScopedUser(userId, scopeContext);
+    if (!record) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    const [mfaState] = await db
+      .select({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!mfaState?.mfaEnabled) {
+      return c.json({ error: 'MFA is not enabled for this user' }, 400);
+    }
+    const previousMethod = mfaState.mfaMethod || 'totp';
+
+    // Cross-user write: clear the factor + advance mfa_epoch (kills the target's
+    // live access/refresh JWTs) + revoke refresh families + post-commit token/
+    // OAuth cutoff + remote-session teardown, via the same primitive the
+    // self-service disable uses. MUST run in system context — the target's
+    // `refresh_token_families` rows are user-scoped RLS and the admin's ambient
+    // context would revoke zero of them (see invalidateMfaAssuranceAfterFactorChange).
+    const result = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        invalidateMfaAssuranceAfterFactorChange(userId, 'admin-mfa-reset', async (tx: Tx) => {
+          await tx
+            .update(users)
+            .set({
+              mfaSecret: null,
+              mfaEnabled: false,
+              mfaMethod: null,
+              mfaRecoveryCodes: null,
+              phoneNumber: null,
+              phoneVerified: false,
+              updatedAt: new Date()
+            })
+            .where(eq(users.id, userId));
+        })
+      )
+    );
+
+    writeUserAudit(c, auth, scopeContext, {
+      action: 'user.mfa_reset',
+      resourceId: userId,
+      resourceName: record.email,
+      details: {
+        method: previousMethod,
+        mfaEpoch: result.mfaEpoch,
+        teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+      }
+    });
+
+    return c.json({ success: true, message: 'MFA reset for user' });
   }
 );
 

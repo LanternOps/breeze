@@ -36,11 +36,21 @@ export interface FactorChangeResult {
  * suspended/rogue-factor session could keep a live remote session, and the
  * caller (route audit) must be able to record that.
  *
- * Runs under the caller's ambient (user-scoped) request context: every
- * caller here is a self-service `authMiddleware`-gated handler writing the
- * caller's OWN `users` row + OWN `refresh_token_families` rows, which
- * Shape-6 / user-id-scoped RLS admits without a system-context escape (same
- * precedent as /change-password). Do NOT wrap this in system context.
+ * Context: the SELF-SERVICE callers (mfa.ts setup/disable/enable/step-up,
+ * change-password) run under the caller's ambient (user-scoped) request
+ * context, writing the caller's OWN `users` + OWN `refresh_token_families`
+ * rows, which Shape-6 / user-id-scoped RLS admits without a system-context
+ * escape. Those callers must NOT wrap this in system context — the ambient
+ * context is exactly what scopes the write to themselves.
+ *
+ * The ONE cross-user caller — the admin MFA-reset route (POST
+ * /users/:id/mfa/reset in routes/users.ts) — is the exception: it writes a
+ * DIFFERENT user's rows, and `refresh_token_families` RLS only admits
+ * `user_id = self OR scope = 'system'`, so the admin's ambient context would
+ * silently revoke ZERO families. That caller MUST wrap this in
+ * `runOutsideDbContext(() => withSystemDbAccessContext(() => ...))`, and gates
+ * the cross-tenant authorization itself (requirePermission + getScopedUser)
+ * BEFORE calling in — RLS is defense-in-depth there, not the primary check.
  */
 export async function invalidateMfaAssuranceAfterFactorChange(
   userId: string,

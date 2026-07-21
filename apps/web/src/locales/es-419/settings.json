@@ -3067,7 +3067,8 @@
       "invite": "Invitar usuario",
       "resendInvite": "Reenviar invitación",
       "manageMobileDevices": "Administrar los dispositivos móviles de este usuario",
-      "devices": "Dispositivos"
+      "devices": "Dispositivos",
+      "resetMfa": "Restablecer MFA"
     },
     "searchLabel": "Buscar usuarios",
     "searchPlaceholder": "Buscar por nombre, correo electrónico o rol",
@@ -3094,7 +3095,8 @@
     "actions": {
       "tryAgain": "Intentar otra vez",
       "saveChanges": "Guardar cambios",
-      "removing": "Eliminando..."
+      "removing": "Eliminando...",
+      "resetting": "Restableciendo..."
     },
     "errors": {
       "fetchUsers": "No se pudieron recuperar los usuarios",
@@ -3103,7 +3105,8 @@
       "sendInvite": "No se pudo enviar la invitación",
       "updateUser": "No se pudo actualizar el usuario",
       "updateRole": "No se pudo actualizar el rol",
-      "removeUser": "No se pudo eliminar el usuario"
+      "removeUser": "No se pudo eliminar el usuario",
+      "resetMfa": "No se pudo restablecer MFA"
     },
     "invite": {
       "title": "Invitar usuario",
@@ -3128,7 +3131,14 @@
       "inviteManual": "Invitación creada para {{email}} pero no se pudo enviar el correo electrónico. Copie el enlace de invitación para compartirlo manualmente.",
       "inviteSent": "Invitación enviada a {{email}}",
       "copied": "¡Copiado!",
-      "copyLink": "Copiar enlace"
+      "copyLink": "Copiar enlace",
+      "mfaReset": "MFA restablecido para {{email}}"
+    },
+    "resetMfa": {
+      "title": "¿Restablecer MFA?",
+      "messagePrefix": "Esto elimina el segundo factor de",
+      "messageSuffix": " Iniciará sesión solo con su contraseña, se le pedirá configurar MFA de nuevo y se cerrarán las sesiones activas.",
+      "confirm": "Restablecer MFA"
     }
   },
   "tdSynnexSftpPanel": {

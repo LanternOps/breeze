@@ -3067,7 +3067,8 @@
       "invite": "Benutzer einladen",
       "resendInvite": "Einladung erneut senden",
       "manageMobileDevices": "Verwalten Sie die Mobilgeräte dieses Benutzers",
-      "devices": "Geräte"
+      "devices": "Geräte",
+      "resetMfa": "MFA zurücksetzen"
     },
     "searchLabel": "Benutzer suchen",
     "searchPlaceholder": "Nach Name, E-Mail oder Rolle suchen",
@@ -3094,7 +3095,8 @@
     "actions": {
       "tryAgain": "Versuchen Sie es erneut",
       "saveChanges": "Änderungen speichern",
-      "removing": "Entfernen..."
+      "removing": "Entfernen...",
+      "resetting": "Wird zurückgesetzt..."
     },
     "errors": {
       "fetchUsers": "Benutzer konnten nicht abgerufen werden",
@@ -3103,7 +3105,8 @@
       "sendInvite": "Einladung konnte nicht gesendet werden",
       "updateUser": "Benutzer konnte nicht aktualisiert werden",
       "updateRole": "Die Rolle konnte nicht aktualisiert werden",
-      "removeUser": "Benutzer konnte nicht entfernt werden"
+      "removeUser": "Benutzer konnte nicht entfernt werden",
+      "resetMfa": "MFA konnte nicht zurückgesetzt werden"
     },
     "invite": {
       "title": "Benutzer einladen",
@@ -3128,7 +3131,14 @@
       "inviteManual": "Einladung für {{email}} erstellt, aber die E-Mail konnte nicht gesendet werden. Kopieren Sie den Einladungslink, um ihn manuell zu teilen.",
       "inviteSent": "Einladung an {{email}} gesendet",
       "copied": "Kopiert!",
-      "copyLink": "Link kopieren"
+      "copyLink": "Link kopieren",
+      "mfaReset": "MFA für {{email}} zurückgesetzt"
+    },
+    "resetMfa": {
+      "title": "MFA zurücksetzen?",
+      "messagePrefix": "Dies entfernt den zweiten Faktor für",
+      "messageSuffix": " Die Anmeldung erfolgt dann nur mit dem Passwort, MFA muss erneut eingerichtet werden, und aktive Sitzungen werden abgemeldet.",
+      "confirm": "MFA zurücksetzen"
     }
   },
   "tdSynnexSftpPanel": {

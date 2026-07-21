@@ -3120,7 +3120,8 @@
       "invite": "Convidar usuário",
       "resendInvite": "Reenviar convite",
       "manageMobileDevices": "Gerenciar os dispositivos móveis deste usuário",
-      "devices": "Dispositivos"
+      "devices": "Dispositivos",
+      "resetMfa": "Redefinir MFA"
     },
     "searchLabel": "Pesquisar usuários",
     "searchPlaceholder": "Pesquise por nome, e-mail ou função",
@@ -3147,7 +3148,8 @@
     "actions": {
       "tryAgain": "Tente novamente",
       "saveChanges": "Salvar alterações",
-      "removing": "Removendo..."
+      "removing": "Removendo...",
+      "resetting": "Redefinindo..."
     },
     "errors": {
       "fetchUsers": "Falha ao buscar usuários",
@@ -3156,7 +3158,8 @@
       "sendInvite": "Falha ao enviar convite",
       "updateUser": "Falha ao atualizar o usuário",
       "updateRole": "Falha ao atualizar a função",
-      "removeUser": "Falha ao remover usuário"
+      "removeUser": "Falha ao remover usuário",
+      "resetMfa": "Falha ao redefinir a MFA"
     },
     "invite": {
       "title": "Convidar usuário",
@@ -3181,7 +3184,14 @@
       "inviteManual": "Convite criado para {{email}}, mas não foi possível enviar o e-mail. Copie o link do convite para compartilhar manualmente.",
       "inviteSent": "Convite enviado para {{email}}",
       "copied": "Copiado!",
-      "copyLink": "Copiar link"
+      "copyLink": "Copiar link",
+      "mfaReset": "MFA redefinida para {{email}}"
+    },
+    "resetMfa": {
+      "title": "Redefinir MFA?",
+      "messagePrefix": "Isso remove o segundo fator de",
+      "messageSuffix": " O login passará a exigir apenas a senha, será solicitada a configuração da MFA novamente e as sessões ativas serão encerradas.",
+      "confirm": "Redefinir MFA"
     }
   }
 }

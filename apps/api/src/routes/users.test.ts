@@ -2011,6 +2011,130 @@ describe('user routes', () => {
     });
   });
 
+  describe('POST /users/:id/mfa/reset (admin recovery: clear factor + invalidate assurance)', () => {
+    const TARGET = '11111111-1111-1111-1111-111111111111';
+
+    // getScopedUser (partner scope) reads partnerUsers ⋈ users ⋈ roles; return a
+    // membership so the target resolves inside the caller's tenant.
+    function mockScopedUser(found: boolean) {
+      return {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(
+                  found ? [{ id: TARGET, email: 'target@example.com', name: 'Target', status: 'active', roleId: 'r1', roleName: 'Tech' }] : []
+                )
+              })
+            })
+          })
+        })
+      } as any;
+    }
+
+    // The MFA-state probe: select({mfaEnabled,mfaMethod}).from(users).where().limit(1).
+    function mockMfaState(row: { mfaEnabled: boolean; mfaMethod: string | null } | null) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(row ? [row] : [])
+          })
+        })
+      } as any;
+    }
+
+    // tx stub for invalidateMfaAssuranceAfterFactorChange: the clear update takes
+    // no .returning(); advanceUserEpochs({mfa}) sets `mfaEpoch` and RETURNs the
+    // epoch row; revokeAllRefreshFamilies sets revoked_at/revoked_reason.
+    function mockFactorChangeTx() {
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => {
+              const ret: any = Promise.resolve(undefined);
+              ret.returning = () =>
+                values && 'mfaEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 0, mfaEpoch: 7, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : Promise.resolve([]);
+              return ret;
+            }
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
+      return { capturedUpdates };
+    }
+
+    it('clears the factor, bumps mfa_epoch + revokes families in-tx (system context), then post-commit cleanup', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedUser(true))
+        .mockReturnValueOnce(mockMfaState({ mfaEnabled: true, mfaMethod: 'totp' }));
+      const { capturedUpdates } = mockFactorChangeTx();
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      // Cross-user write went through the system-context escape.
+      expect(runOutsideDbContext).toHaveBeenCalled();
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
+      // Factor cleared (mfaEnabled:false) + mfa_epoch bumped + families revoked.
+      expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null)).toBe(true);
+      expect(capturedUpdates.some((v) => 'mfaEpoch' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith(TARGET);
+      // Audit records the admin action against the target.
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'user.mfa_reset', resourceId: TARGET, actorId: 'user-123' })
+      );
+    });
+
+    it('refuses to reset the caller’s own MFA (must use self-service disable)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', { scope: 'partner', partnerId: 'partner-123', orgId: null, user: { id: TARGET, email: 't@e.com' } });
+        return next();
+      });
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('404s for a target outside the caller’s tenant (no cross-tenant reset)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(false));
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('400s when the target has no MFA enabled (nothing to reset)', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockScopedUser(true))
+        .mockReturnValueOnce(mockMfaState({ mfaEnabled: false, mfaMethod: null }));
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+  });
+
   describe('PATCH /users/:id remote session teardown on deactivation', () => {
     const teardownMock = vi.mocked(terminateUserRemoteSessions);
 
