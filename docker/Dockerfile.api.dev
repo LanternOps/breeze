@@ -16,9 +16,9 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
-# apps/api devDependencies on @breeze/extension-cli — pnpm resolves workspace:*
-# links for dev deps too, so the manifest MUST be present or install fails with
-# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND and the container crash-loops.
+# devDependency of apps/api. This image installs devDependencies (bare
+# `pnpm install` below), so its manifest must be here or pnpm aborts with
+# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
 COPY packages/extension-cli/package.json ./packages/extension-cli/
 
 # Install all dependencies (including devDependencies for development)

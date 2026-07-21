@@ -14,10 +14,6 @@ COPY turbo.json tsconfig.json ./
 # Copy package.json files for dependency installation
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
-# apps/web depends on @breeze/extension-web-sdk — the manifest MUST be present
-# or pnpm install fails with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND and the container
-# crash-loops. (The production web image got this fix in a5e457211; the dev
-# image needs it too.)
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 
 # Install all dependencies (including devDependencies for development)
