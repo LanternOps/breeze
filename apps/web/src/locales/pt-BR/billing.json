@@ -447,7 +447,11 @@
         "addSection": "Adicionar seção",
         "adding": "Adicionando…",
         "cancel": "Cancelar",
+        "collapseSection": "Recolher seção",
+        "dragLine": "Arraste para reordenar a linha",
+        "dragLineTitle": "Arraste para reordenar dentro desta tabela. Pelo teclado: use Mover para cima/baixo no menu da linha.",
         "dragSection": "Arraste para reordenar a seção",
+        "expandSection": "Expandir seção",
         "fetch": "Buscar",
         "fetchAddImage": "Buscar e adicionar imagem",
         "fromUrl": "Da URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Substituir imagem",
         "sectionActions": "Ações da seção",
         "showCostMargin": "Mostrar custo e margem",
+        "tidyAllDescriptions": "Aprimorar todas as descrições",
         "uploadAddImage": "Enviar e adicionar imagem",
         "uploading": "Enviando…"
       },
       "addLine": {
+        "addFromCatalog": "Adicionar do catálogo",
+        "aiLookupAction": "Busca com IA",
         "catalogItem": "Item do catálogo",
         "manualLine": "Linha manual",
-        "moreWays": "Mais formas de adicionar (catálogo, busca com IA, detalhes)",
+        "moreDetails": "Mais detalhes",
         "searchDistributor": "Pesquisar distribuidor",
         "searchPax8": "Pesquisar Pax8"
       },
@@ -605,6 +612,7 @@
         "billing": "Cobrança",
         "billingFrequencyAria": "Frequência de cobrança",
         "cost": "Custo",
+        "costMissingAria": "Custo não informado — esta linha é excluída da estimativa de lucro.",
         "descriptionAria": "Descrição da linha",
         "descriptionOptional": "Descrição (opcional)",
         "enterCostFirstMarkup": "Informe um custo primeiro para definir a margem %",
@@ -619,8 +627,11 @@
         "profit": "Lucro",
         "quantityAria": "Quantidade",
         "saveToCatalog": "Salvar no catálogo",
+        "showLess": "Mostrar menos",
+        "showMore": "Mostrar mais",
         "sku": "SKU",
         "skuOptional": "SKU (opcional)",
+        "tidyWithAi": "Aprimorar com IA",
         "unitCost": "Custo unitário"
       },
       "liveTotals": {
@@ -635,6 +646,10 @@
         "taxRate": "Alíquota de imposto",
         "taxRateHelp": "Aplica-se às linhas marcadas como tributáveis. Definido nas configurações de imposto da organização.",
         "title": "Totais ao vivo"
+      },
+      "outline": {
+        "aria": "Conteúdo do orçamento",
+        "title": "Conteúdo"
       },
       "recurrence": {
         "annual": "Anual",
@@ -662,6 +677,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} linhas · {{amount}}",
+        "collapsedSummary_one": "{{count}} linha · {{amount}}",
+        "collapsedSummary_other": "{{count}} linhas · {{amount}}",
         "emptyLines": "Ainda não há linhas. Adicione um item de catálogo ou uma linha manual abaixo.",
         "fallbackName": "Tabela de preços {{number}}",
         "item": "Item",
@@ -682,6 +700,10 @@
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
         "title": "Termos e Condições"
+      },
+      "tidyAll": {
+        "complete": "{{count}} descrição(ões) revisada(s).",
+        "noDescriptions": "Nenhuma descrição de linha para aprimorar nesta seção."
       },
       "title": {
         "label": "Título da cotação",
@@ -728,6 +750,14 @@
         "add": "Adicionar",
         "nameAria": "Nome da nova linha",
         "placeholder": "Digite o nome do item…"
+      },
+      "unassigned": {
+        "explainer": "Estas linhas não estão em nenhuma seção de preços, mas mesmo assim aparecem na cotação do cliente e entram nos totais dela. Mova cada uma para uma seção de preços para controlar onde ela aparece.",
+        "moveAria": "Mover {{line}} para uma seção de preços",
+        "movePlaceholder": "Mover para…",
+        "noTargets": "Adicione uma seção de preços e depois mova estas linhas para ela.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Linhas não atribuídas"
       }
     },
     "actions": {

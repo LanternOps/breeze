@@ -447,7 +447,11 @@
         "addSection": "Add section",
         "adding": "Adding…",
         "cancel": "Cancel",
+        "collapseSection": "Collapse section",
+        "dragLine": "Drag to reorder line",
+        "dragLineTitle": "Drag to reorder within this table. Keyboard: use the line menu's Move up / Move down.",
         "dragSection": "Drag to reorder section",
+        "expandSection": "Expand section",
         "fetch": "Fetch",
         "fetchAddImage": "Fetch & add image",
         "fromUrl": "From URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Replace image",
         "sectionActions": "Section actions",
         "showCostMargin": "Show cost & margin",
+        "tidyAllDescriptions": "Tidy all descriptions",
         "uploadAddImage": "Upload & add image",
         "uploading": "Uploading…"
       },
       "addLine": {
+        "addFromCatalog": "Add from catalog",
+        "aiLookupAction": "AI lookup",
         "catalogItem": "Catalog item",
         "manualLine": "Manual line",
-        "moreWays": "More ways to add (catalog, AI lookup, details)",
+        "moreDetails": "More details",
         "searchDistributor": "Search distributor",
         "searchPax8": "Search Pax8"
       },
@@ -605,6 +612,7 @@
         "billing": "Billing",
         "billingFrequencyAria": "Billing frequency",
         "cost": "Cost",
+        "costMissingAria": "Cost not entered — this line is excluded from the profit estimate.",
         "descriptionAria": "Line description",
         "descriptionOptional": "Description (optional)",
         "enterCostFirstMarkup": "Enter a cost first to set markup %",
@@ -619,8 +627,11 @@
         "profit": "Profit",
         "quantityAria": "Quantity",
         "saveToCatalog": "Save to catalog",
+        "showLess": "Show less",
+        "showMore": "Show more",
         "sku": "SKU",
         "skuOptional": "SKU (optional)",
+        "tidyWithAi": "Tidy with AI",
         "unitCost": "Unit cost"
       },
       "liveTotals": {
@@ -635,6 +646,10 @@
         "taxRate": "Tax rate",
         "taxRateHelp": "Applies to lines marked taxable. Set in the organization’s tax settings.",
         "title": "Live totals"
+      },
+      "outline": {
+        "aria": "Quote contents",
+        "title": "Contents"
       },
       "recurrence": {
         "annual": "Annual",
@@ -662,6 +677,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} lines · {{amount}}",
+        "collapsedSummary_one": "{{count}} line · {{amount}}",
+        "collapsedSummary_other": "{{count}} lines · {{amount}}",
         "emptyLines": "No lines yet. Add a catalog item or a manual line below.",
         "fallbackName": "Pricing table {{number}}",
         "item": "Item",
@@ -682,6 +700,10 @@
       "terms": {
         "placeholder": "Payment terms, warranty clauses, etc.",
         "title": "Terms & Conditions"
+      },
+      "tidyAll": {
+        "complete": "Finished reviewing {{count}} description(s).",
+        "noDescriptions": "No line descriptions to tidy in this section."
       },
       "title": {
         "label": "Quote title",
@@ -728,6 +750,14 @@
         "add": "Add",
         "nameAria": "New line name",
         "placeholder": "Type an item name…"
+      },
+      "unassigned": {
+        "explainer": "These lines aren’t in any pricing section, but they still appear on the customer’s quote and count toward its totals. Move each one into a pricing section to control where it appears.",
+        "moveAria": "Move {{line}} into a pricing section",
+        "movePlaceholder": "Move to…",
+        "noTargets": "Add a pricing section, then move these lines into it.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Unassigned lines"
       }
     },
     "actions": {
@@ -1044,7 +1074,7 @@
       "tabs": {
         "editor": "Editor",
         "preview": "Preview",
-        "detail": "Detail"
+        "detail": "Details"
       }
     }
   },

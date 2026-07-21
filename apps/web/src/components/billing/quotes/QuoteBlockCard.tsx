@@ -3,11 +3,11 @@
 // the collapsed add-line picker. Row rendering lives in QuoteLineRows.tsx.
 // Split from QuoteEditor.tsx — see quoteEditorShared.tsx for the shared
 // save-language plumbing.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
+import { ChevronRight, Loader2, Package, Sparkles } from 'lucide-react';
 import '../../../lib/i18n';
-import { markupPct, priceFromMarkup, type QuoteLineForMath } from '@breeze/shared';
+import { fromCents, markupPct, priceFromMarkup, toCents, type QuoteLineForMath } from '@breeze/shared';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { fetchWithAuth } from '../../../stores/auth';
 import { type CatalogItem } from '../../../lib/api/catalog';
@@ -25,13 +25,13 @@ import {
   formatMoney,
 } from './quoteTypes';
 import { type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quoteEditorShared';
-import { GhostRow, EditableLineRow, ReadonlyLineRow } from './QuoteLineRows';
+import { GhostRow, EditableLineRow, ReadonlyLineRow, type LineRevealRequest } from './QuoteLineRows';
 import { ContractBlockEditor } from './QuoteContractBlockEditor';
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 export function BlockCard({
-  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
-  moveTargets, onMoveLineToBlock,
+  block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, mixedCadence, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
+  moveTargets, onMoveLineToBlock, revealRequest, hasDirtyLines, onDropLine,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -43,6 +43,13 @@ export function BlockCard({
   isPending: (key: string) => boolean;
   canWrite: boolean;
   showInternal: boolean;
+  /** Set (with a bumped nonce) when the rail's "missing cost" notice targets a
+   *  line in this block — forwarded to whichever row matches `lineId`. See
+   *  LineRevealRequest (QuoteLineRows) for the full contract. */
+  revealRequest?: LineRevealRequest | null;
+  /** True when the QUOTE's lines (all blocks, not just this one) span more than
+   *  one billing cadence — only then do rows repeat the '/mo' | '/yr' suffix. */
+  mixedCadence: boolean;
   /** When true (quote deposit = 'selected_lines'), each editable line row shows a
    *  deposit-eligible checkbox. */
   depositSelectMode: boolean;
@@ -65,6 +72,13 @@ export function BlockCard({
   /** Other pricing panels this block's lines can move to (empty → control hidden). */
   moveTargets: { id: string; label: string }[];
   onMoveLineToBlock: (line: QuoteLine, targetBlockId: string) => void;
+  /** True when any of this block's lines holds an uncommitted edit (parent's
+   *  lineDrafts) — pins a pricing block expanded so a collapse can never hide
+   *  unsaved work mid-flight (mirrors the internal band's dirty rule). */
+  hasDirtyLines: boolean;
+  /** Commit a row drag-drop: the dragged line id + the gap index it landed in
+   *  (0..n). Routes to the SAME reorder path the ⋯ menu's Move up/down uses. */
+  onDropLine: (dragLineId: string, targetIdx: number) => void;
 }) {
   const { t } = useTranslation('billing');
   // Pending state scoped to this block: editing/removing this block, or adding a
@@ -134,6 +148,44 @@ export function BlockCard({
   const showSubtotal = (block.content?.showSubtotal as boolean | undefined) === true;
   const imageId = (block.content?.imageId as string | undefined) ?? '';
   const imageCaption = (block.content?.caption as string | undefined) ?? '';
+
+  // ---- pricing-block collapse (line_items only) ----------------------------
+  // Component-local, default expanded, never persisted. Collapsed shows one
+  // compact header row (label + line count + block subtotal); the body stays
+  // MOUNTED (inert + aria-hidden, 0fr grid) so row-local field state, draft
+  // wiring and testids all survive a collapse — same shell as the per-line
+  // internal band. Dirty lines pin the block expanded (a collapse request only
+  // lands once the edits do), and a rail "missing cost" reveal that targets a
+  // line in this block force-expands it before the row's own reveal effect
+  // needs the cost input reachable. Non-pricing blocks (heading / rich text /
+  // image / contract) are NOT collapsible: their "header" is the content
+  // itself, so there's no uniform header row to collapse to.
+  const [blockOpen, setBlockOpen] = useState(true);
+  const blockExpanded = !isTable || blockOpen || hasDirtyLines;
+  useEffect(() => {
+    if (!revealRequest) return;
+    if (!lines.some((l) => l.id === revealRequest.lineId)) return;
+    setBlockOpen(true);
+    // Only the reveal identity should re-trigger — `lines` is read from the
+    // current closure when the nonce bumps (same contract as the row effect).
+  }, [revealRequest?.nonce, revealRequest?.lineId]);
+  // Collapsed-summary subtotal: the sum of the block's per-line totals (the
+  // same persisted lineTotal figures the rows render), in cents.
+  const blockSubtotalCents = lines.reduce((sum, l) => sum + toCents(l.lineTotal), 0);
+
+  // ---- row drag-to-reorder (HTML5 DnD, same vocabulary as blocks) ----------
+  // The drag state lives here (one drag per table); drop gaps render between
+  // rows only while a drag is active, and the drop commits through onDropLine
+  // → the parent's single line-reorder path. Cross-block moves stay menu-only.
+  const [dragLineId, setDragLineId] = useState<string | null>(null);
+  const [lineDropIndex, setLineDropIndex] = useState<number | null>(null);
+  const endLineDrag = useCallback(() => { setDragLineId(null); setLineDropIndex(null); }, []);
+  const commitLineDrop = useCallback((targetIdx: number) => {
+    const id = dragLineId;
+    endLineDrag();
+    if (!id) return;
+    onDropLine(id, targetIdx);
+  }, [dragLineId, endLineDrag, onDropLine]);
 
   // Inline drafts for editable block content; resync if the persisted value
   // changes (e.g. after a refresh) so server normalization wins.
@@ -307,19 +359,56 @@ export function BlockCard({
 
         {isTable && (
           <div className="space-y-3">
-            {canWrite && (
-              <input
-                type="text"
-                value={labelDraft}
-                aria-label={t('quotes.editor.table.labelAria')}
-                onChange={(e) => setLabelDraft(e.target.value)}
-                onBlur={() => void commitLabel()}
-                disabled={blockBusy}
-                placeholder={t('quotes.editor.table.labelPlaceholder')}
-                data-testid={`quote-block-table-label-input-${block.id}`}
-                className={`h-9 w-full rounded-md border bg-transparent px-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved))}`}
-              />
-            )}
+            {/* Header row: the collapse disclosure plus (expanded, writers) the
+                label input. Collapsed, the whole strip is the toggle — label +
+                line count + block subtotal in one compact row (mirroring the
+                internal band's whole-strip trigger). */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setBlockOpen((v) => !v)}
+                aria-expanded={blockExpanded}
+                aria-label={blockExpanded ? t('quotes.editor.actions.collapseSection') : undefined}
+                title={blockExpanded ? t('quotes.editor.actions.collapseSection') : t('quotes.editor.actions.expandSection')}
+                data-testid={`quote-block-collapse-${block.id}`}
+                className={`flex items-center gap-2 rounded text-left focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${blockExpanded ? 'h-6 w-6 shrink-0 justify-center text-muted-foreground hover:bg-muted' : 'min-w-0 flex-1 py-0.5'}`}
+              >
+                <ChevronRight
+                  className={`h-4 w-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none ${blockExpanded ? 'rotate-90' : 'text-muted-foreground'}`}
+                  aria-hidden="true"
+                />
+                {!blockExpanded && (
+                  <span
+                    className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5"
+                    data-testid={`quote-block-collapsed-summary-${block.id}`}
+                  >
+                    <span className="truncate text-sm font-semibold">
+                      {tableLabel.trim() || t('quotes.editor.blockTypes.pricingTable')}
+                    </span>
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {t('quotes.editor.table.collapsedSummary', { count: lines.length, amount: formatMoney(fromCents(blockSubtotalCents), currency) })}
+                    </span>
+                  </span>
+                )}
+              </button>
+              {blockExpanded && canWrite && (
+                <div className="min-w-0 flex-1">
+                  <input
+                    type="text"
+                    value={labelDraft}
+                    aria-label={t('quotes.editor.table.labelAria')}
+                    onChange={(e) => setLabelDraft(e.target.value)}
+                    onBlur={() => void commitLabel()}
+                    disabled={blockBusy}
+                    placeholder={t('quotes.editor.table.labelPlaceholder')}
+                    data-testid={`quote-block-table-label-input-${block.id}`}
+                    className={`h-9 w-full rounded-md border bg-transparent px-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved))}`}
+                  />
+                </div>
+              )}
+            </div>
+            <BlockCollapse expanded={blockExpanded} testId={`quote-block-body-${block.id}`}>
+            <div className="space-y-3">
             {canWrite && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input
@@ -359,28 +448,55 @@ export function BlockCard({
                 ) : (
                   lines.map((l, idx) =>
                     canWrite ? (
-                      <EditableLineRow
-                        key={l.id}
-                        line={l}
-                        quoteId={quoteId}
-                        currency={currency}
-                        taxRate={taxRate}
-                        isPending={isPending}
-                        isFirst={idx === 0}
-                        isLast={idx === lines.length - 1}
-                        showInternal={showInternal}
-                        depositSelectMode={depositSelectMode}
-                        onEdit={onEditLine}
-                        onMove={onMoveLine}
-                        onRemove={onRemoveLine}
-                        onDraft={onLineDraft}
-                        moveTargets={moveTargets}
-                        onMoveTo={onMoveLineToBlock}
-                      />
+                      <Fragment key={l.id}>
+                        {/* Drop gap above each row — only mounted mid-drag, so
+                            the table's resting rhythm is untouched. */}
+                        {dragLineId !== null && (
+                          <LineDropGap
+                            colSpan={5}
+                            active={lineDropIndex === idx}
+                            onDragOver={(e) => { e.preventDefault(); setLineDropIndex(idx); }}
+                            onDrop={(e) => { e.preventDefault(); commitLineDrop(idx); }}
+                            testId={`quote-line-drop-gap-${block.id}-${idx}`}
+                          />
+                        )}
+                        <EditableLineRow
+                          line={l}
+                          quoteId={quoteId}
+                          currency={currency}
+                          taxRate={taxRate}
+                          isPending={isPending}
+                          isFirst={idx === 0}
+                          isLast={idx === lines.length - 1}
+                          showInternal={showInternal}
+                          mixedCadence={mixedCadence}
+                          depositSelectMode={depositSelectMode}
+                          onEdit={onEditLine}
+                          onMove={onMoveLine}
+                          onRemove={onRemoveLine}
+                          onDraft={onLineDraft}
+                          moveTargets={moveTargets}
+                          onMoveTo={onMoveLineToBlock}
+                          revealRequest={revealRequest}
+                          dragging={dragLineId === l.id}
+                          onDragStartRow={() => setDragLineId(l.id)}
+                          onDragEndRow={endLineDrag}
+                        />
+                      </Fragment>
                     ) : (
-                      <ReadonlyLineRow key={l.id} line={l} quoteId={quoteId} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} />
+                      <ReadonlyLineRow key={l.id} line={l} quoteId={quoteId} currency={currency} taxRate={taxRate} isFirst={idx === 0} showInternal={showInternal} mixedCadence={mixedCadence} revealRequest={revealRequest} />
                     ),
                   )
+                )}
+                {/* Final drop gap (below the last row) while a drag is active. */}
+                {canWrite && dragLineId !== null && lines.length > 0 && (
+                  <LineDropGap
+                    colSpan={5}
+                    active={lineDropIndex === lines.length}
+                    onDragOver={(e) => { e.preventDefault(); setLineDropIndex(lines.length); }}
+                    onDrop={(e) => { e.preventDefault(); commitLineDrop(lines.length); }}
+                    testId={`quote-line-drop-gap-${block.id}-${lines.length}`}
+                  />
                 )}
                 {/* Ghost row: the fast lane for manual entry — always ready at
                     the table foot, Enter commits and refocuses for the next. */}
@@ -388,6 +504,7 @@ export function BlockCard({
                   <GhostRow
                     blockId={block.id}
                     busy={addLineBusy}
+                    currency={currency}
                     onAdd={(form) => onAddManual(block.id, form)}
                     colSpan={5}
                   />
@@ -399,17 +516,44 @@ export function BlockCard({
             {/* The full add-line picker (catalog / AI lookup / distributor /
                 SKU + cost fields) collapses behind a disclosure — the ghost row
                 covers the fast manual path, so this chrome only renders when a
-                tech asks for the heavier modes. */}
+                tech asks for the heavier modes. Three explicit, separately-
+                labeled entry points (rather than one "more ways to add (…)"
+                catch-all) so catalog search reads as a first-class action, not
+                a buried extra — each jumps straight to its mode instead of
+                requiring an open-then-pick-a-tab detour. */}
             {canWrite && (
-              <button
-                type="button"
-                onClick={() => setPickerOpen((v) => !v)}
-                aria-expanded={pickerOpen}
-                data-testid={`quote-block-add-line-toggle-${block.id}`}
-                className="mt-2 inline-flex items-center gap-1 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
-              >
-                <span aria-hidden="true">{pickerOpen ? '−' : '+'}</span> {t('quotes.editor.addLine.moreWays')}
-              </button>
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setMode('catalog'); setPickerOpen(true); }}
+                  aria-expanded={pickerOpen && mode === 'catalog'}
+                  data-testid={`quote-block-add-catalog-${block.id}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
+                >
+                  <Package className="h-3.5 w-3.5" aria-hidden="true" /> {t('quotes.editor.addLine.addFromCatalog')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMode('manual'); setPickerOpen(true); }}
+                  aria-expanded={pickerOpen && mode === 'manual'}
+                  data-testid={`quote-block-add-ai-lookup-${block.id}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
+                >
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> {t('quotes.editor.addLine.aiLookupAction')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!pickerOpen) setMode('manual');
+                    setPickerOpen((v) => !v);
+                  }}
+                  aria-expanded={pickerOpen}
+                  data-testid={`quote-block-add-line-toggle-${block.id}`}
+                  className="inline-flex items-center gap-1 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground hover:border-border hover:text-foreground"
+                >
+                  <span aria-hidden="true">{pickerOpen ? '−' : '+'}</span> {t('quotes.editor.addLine.moreDetails')}
+                </button>
+              </div>
             )}
             {canWrite && pickerOpen && (
             <div className="mt-1 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
@@ -512,6 +656,8 @@ export function BlockCard({
                     {(name.trim() || desc.trim()) && (
                       <PolishButton
                         idSuffix={`quote-manual-${block.id}`}
+                        label={t('quotes.editor.line.tidyWithAi')}
+                        icon={<Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}
                         getText={() => ({ name, description: desc })}
                         onApply={(r) => {
                           if (r.name !== null) setName(r.name);
@@ -675,10 +821,55 @@ export function BlockCard({
               )}
             </div>
             )}
+            </div>
+            </BlockCollapse>
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+// Animated expand/collapse shell for a pricing block's body (subtotal toggle +
+// lines table + add-line picker). Same contract as the per-line internal band's
+// collapse: a 0fr→1fr grid animation (200ms ease-out, instant under
+// motion-reduce) with the collapsed content kept MOUNTED but inert +
+// aria-hidden, so row-local field state, drafts and testids survive a collapse
+// and the reveal-request focus retry can wait out the `[inert]` attribute.
+function BlockCollapse({ expanded, testId, children }: { expanded: boolean; testId: string; children: ReactNode }) {
+  return (
+    <div
+      className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+      inert={!expanded || undefined}
+      aria-hidden={!expanded}
+      data-testid={testId}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+// A thin drop target between two line rows, mounted only while a row drag is
+// active (same role the editor's InsertGap plays for block drags). Highlights
+// while dragged over; drop commits through the parent's single reorder path.
+function LineDropGap({ colSpan, active, onDragOver, onDrop, testId }: {
+  colSpan: number;
+  active: boolean;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+  testId: string;
+}) {
+  return (
+    <tr className="border-0">
+      <td colSpan={colSpan} className="p-0">
+        <div
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          className={`h-2 rounded transition-colors duration-150 ease-out motion-reduce:transition-none ${active ? 'bg-primary/30' : ''}`}
+          data-testid={testId}
+        />
+      </td>
+    </tr>
   );
 }
 

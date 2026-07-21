@@ -32,8 +32,11 @@ import { computeQuoteTotals, computeQuoteProfit, toQuoteDepositConfig, type Quot
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { showToast } from '../../shared/Toast';
 import RichTextEditor from '../../common/RichTextEditor';
+import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
+import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
@@ -116,6 +119,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, []);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
+  // Rows only repeat the '/mo' | '/yr' cadence suffix when the quote actually
+  // mixes cadences — on a uniform quote the suffix is per-line noise (the rail
+  // totals and each editable row's recurrence select still carry the cadence).
+  const mixedCadence = useMemo(() => new Set(lines.map((l) => l.recurrence)).size > 1, [lines]);
   // Focus anchor: after a confirmed block/line removal the triggering button is
   // gone, so we move focus here instead of letting it fall to <body> (which dumps
   // a keyboard user to the top of the page).
@@ -202,6 +209,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
   }, [blockMenu]);
+
+  // "Tidy all descriptions" (block kebab menu, pricing blocks only): queues the
+  // SAME per-line PolishButton preview+fact-guard flow across every line with a
+  // description, one dialog at a time — never applies without the user
+  // approving each preview. `tidyQueue` holds the remaining line ids for
+  // `tidyBlockId`; the invisible driver below (autoRun + hideTrigger, remounted
+  // per line via `key`) fires the next preview and `onSettled` advances the
+  // queue once the user approves or cancels.
+  const [tidyBlockId, setTidyBlockId] = useState<string | null>(null);
+  const [tidyQueue, setTidyQueue] = useState<string[]>([]);
 
   const [headingText, setHeadingText] = useState('');
   const [richText, setRichText] = useState('');
@@ -659,6 +676,146 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       ),
     [lines, lineOrder, lineBlockOverride],
   );
+
+  // Kicks off the "Tidy all descriptions" queue for one block. Only lines that
+  // currently have a description are queued — an empty description would just
+  // hit PolishButton's "enter text first" guard for nothing. `tidyTotalRef`
+  // remembers how many were queued so the completion toast can report a count
+  // after `tidyQueue` has drained to empty.
+  const tidyTotalRef = useRef(0);
+  const startTidyAll = useCallback((blockId: string) => {
+    const ids = linesForBlock(blockId)
+      .filter((l) => (l.description ?? '').trim())
+      .map((l) => l.id);
+    if (ids.length === 0) {
+      showToast({ message: t('quotes.editor.tidyAll.noDescriptions'), type: 'warning' });
+      return;
+    }
+    tidyTotalRef.current = ids.length;
+    setTidyBlockId(blockId);
+    setTidyQueue(ids);
+  }, [linesForBlock, t]);
+
+  // Drop a queued line id that no longer exists (e.g. removed mid-tidy) without
+  // opening a preview for it.
+  useEffect(() => {
+    if (tidyQueue.length === 0) return;
+    if (!lines.some((l) => l.id === tidyQueue[0])) setTidyQueue((q) => q.slice(1));
+  }, [tidyQueue, lines]);
+
+  // Completion toast once the queue fully drains.
+  useEffect(() => {
+    if (tidyBlockId !== null && tidyQueue.length === 0) {
+      setTidyBlockId(null);
+      showToast({ message: t('quotes.editor.tidyAll.complete', { count: tidyTotalRef.current }), type: 'success' });
+    }
+  }, [tidyBlockId, tidyQueue, t]);
+
+  // ---- document outline (rail "Contents") ---------------------------------
+  // A quiet block-level nav for long quotes: each entry jumps to (and focuses)
+  // its block. Labels mirror what the canvas shows — the author's own text
+  // where one exists (table label, heading text, contract label), else the
+  // block-type default the add menu uses. Only rendered with 2+ blocks: a
+  // one-block quote has nothing to navigate.
+  const blockContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const setBlockContainerRef = useCallback((blockId: string, el: HTMLDivElement | null) => {
+    if (el) blockContainerRefs.current.set(blockId, el);
+    else blockContainerRefs.current.delete(blockId);
+  }, []);
+  const outlineLabel = useCallback((b: QuoteBlock): string => {
+    if (b.blockType === 'line_items') return pricingBlockLabel(b);
+    if (b.blockType === 'heading') {
+      const text = ((b.content?.text as string | undefined) ?? '').trim();
+      return text || t('quotes.editor.blockTypes.heading');
+    }
+    if (b.blockType === 'contract') {
+      const label = ((b.content?.label as string | undefined) ?? '').trim();
+      return label || t('quotes.editor.blockTypes.contract');
+    }
+    if (b.blockType === 'image') return t('quotes.editor.blockTypes.image');
+    return t('quotes.editor.blockTypes.richText');
+  }, [pricingBlockLabel, t]);
+  // Scroll-position highlight: the outline marks the topmost block currently in
+  // the viewport. IntersectionObserver is feature-detected — in jsdom (and any
+  // environment without it) the outline simply renders with no active entry.
+  const [activeOutlineId, setActiveOutlineId] = useState<string | null>(null);
+  const visibleBlockIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return; // graceful no-op (jsdom)
+    const idsInOrder = sortedBlocks.map((b) => b.id);
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.outlineBlockId;
+        if (!id) continue;
+        if (entry.isIntersecting) visibleBlockIds.current.add(id);
+        else visibleBlockIds.current.delete(id);
+      }
+      setActiveOutlineId(idsInOrder.find((id) => visibleBlockIds.current.has(id)) ?? null);
+    });
+    for (const id of idsInOrder) {
+      const el = blockContainerRefs.current.get(id);
+      if (el) io.observe(el);
+    }
+    return () => { io.disconnect(); visibleBlockIds.current.clear(); };
+  }, [sortedBlocks]);
+  // Jump: smooth-scroll the block into view (instant under reduced motion) and
+  // move focus to the block container (tabIndex=-1) so a keyboard/SR user's
+  // reading position follows the visual jump.
+  const jumpToBlock = useCallback((blockId: string) => {
+    const el = blockContainerRefs.current.get(blockId);
+    if (!el) return;
+    const reduceMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView?.({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  }, []);
+
+  // Orphan lines: `block_id` is nullable, and `linesForBlock` can never surface
+  // them (a null blockId matches no block id, ever). They are NOT invisible to
+  // the customer — the PDF, the portal and the Preview all render them, and
+  // quoteMath counts them in every total — so the editor renders them in a
+  // dedicated bucket below the document (see UnassignedLines). An optimistic
+  // move writes a real block id into lineBlockOverride, which drops the line
+  // out of this list on the same tick it lands in its target panel.
+  const orphanLines = useMemo(
+    () =>
+      lines
+        .filter((l) => (lineBlockOverride[l.id] ?? l.blockId) === null)
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    [lines, lineBlockOverride],
+  );
+
+  // Reveal-on-demand plumbing for the rail's actionable "missing cost" notice
+  // (MarginPanel → here → QuoteLineRows): line ids missing a cost, filtered to
+  // customerVisible (mirroring computeQuoteProfit's own inclusion rule, so the
+  // reveal target is always one of the lines the count actually describes) and
+  // walked in the SAME document order the canvas renders — each pricing block
+  // in sortOrder, then that block's own line order. Orphan lines (rendered by
+  // UnassignedLines, a separate surface) are deliberately excluded: there is no
+  // reveal target there, so a click that lands on one just no-ops rather than
+  // throwing.
+  const missingCostLineIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const block of pricingBlocks) {
+      for (const l of linesForBlock(block.id)) {
+        if (!l.customerVisible) continue;
+        const cost = lineDrafts[l.id]?.unitCost ?? l.unitCost;
+        if (cost === null || cost === undefined || cost === '') ids.push(l.id);
+      }
+    }
+    return ids;
+  }, [pricingBlocks, linesForBlock, lineDrafts]);
+  // Bumps on every click so the SAME first offender can be re-revealed (e.g.
+  // the user scrolled away) — a repeated lineId alone wouldn't re-trigger the
+  // row's reveal effect.
+  const revealNonceRef = useRef(0);
+  const [revealRequest, setRevealRequest] = useState<{ lineId: string; nonce: number } | null>(null);
+  const revealFirstMissingCost = useCallback(() => {
+    const id = missingCostLineIds[0];
+    if (!id) return;
+    revealNonceRef.current += 1;
+    setRevealRequest({ lineId: id, nonce: revealNonceRef.current });
+  }, [missingCostLineIds]);
 
   // ---- add contract block --------------------------------------------------
   // Lazy-load the template library the first time the Contract add type opens,
@@ -1247,13 +1404,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   }, [dragBlockId, sortedBlocks, quote.id, refresh, t]);
 
 
-  const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
-    const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
-    const idx = currentIds.indexOf(line.id);
-    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
-    if (idx < 0 || swapIdx < 0 || swapIdx >= currentIds.length) return;
-    const ids = [...currentIds];
-    [ids[idx], ids[swapIdx]] = [ids[swapIdx], ids[idx]];
+  // The ONE line-reorder persistence path: optimistic order + a debounced
+  // trailing PATCH per block (the server renumbers 0..n-1 from the full id
+  // list). Both the ⋯ menu's Move up/down (single-slot swap) and the row drag
+  // handle's drop (arbitrary splice) commit through here, so a failed reorder
+  // reverts identically regardless of which affordance drove it.
+  const commitLineOrder = useCallback((blockId: string, ids: string[]) => {
     lineReorderBase.current = { ...lineReorderBase.current, [blockId]: ids };
     setLineOrder((m) => ({ ...m, [blockId]: ids })); // optimistic, instant
     const existing = lineReorderTimers.current[blockId];
@@ -1276,7 +1432,32 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         }
       })();
     }, 250);
-  }, [linesForBlock, quote.id, refresh, t]);
+  }, [quote.id, refresh, t]);
+
+  const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
+    const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
+    const idx = currentIds.indexOf(line.id);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= currentIds.length) return;
+    const ids = [...currentIds];
+    [ids[idx], ids[swapIdx]] = [ids[swapIdx], ids[idx]];
+    commitLineOrder(blockId, ids);
+  }, [linesForBlock, commitLineOrder]);
+
+  // Drag-to-reorder within one pricing table (HTML5 DnD on the row grip).
+  // `targetIdx` is the gap index the row was dropped into (0..n). Same splice
+  // arithmetic as commitBlockDrop; a no-op drop (same slot) sends nothing.
+  const dropLineInBlock = useCallback((blockId: string, dragLineId: string, targetIdx: number) => {
+    const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
+    const from = currentIds.indexOf(dragLineId);
+    if (from < 0) return;
+    const ids = [...currentIds];
+    ids.splice(from, 1);
+    const to = targetIdx > from ? targetIdx - 1 : targetIdx;
+    ids.splice(Math.min(to, ids.length), 0, dragLineId);
+    if (ids.join() === currentIds.join()) return;
+    commitLineOrder(blockId, ids);
+  }, [linesForBlock, commitLineOrder]);
 
   // Cross-panel move: optimistic on both panels at once (the line leaves its
   // source table and appends to the target, bundle children in tow), committed
@@ -1284,32 +1465,48 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // is one discrete action. Failure reverts both panels and re-pulls the
   // authoritative server order (same recovery shape as moveBlock/moveLine).
   const moveLineTo = useCallback((line: QuoteLine, targetBlockId: string) => {
-    const sourceBlockId = line.blockId;
-    if (!sourceBlockId || sourceBlockId === targetBlockId) return;
+    // Null source = an ORPHAN line (block_id NULL) being adopted out of the
+    // Unassigned bucket. It has no source panel to re-order, so every
+    // source-side step below is skipped — but the target-side optimism, the
+    // PATCH and the revert path are identical, which is why this is the same
+    // handler rather than a parallel one that could drift from it.
+    const sourceBlockId = lineBlockOverride[line.id] ?? line.blockId;
+    if (sourceBlockId === targetBlockId) return;
     // A pending chevron-reorder PATCH for either panel would fire with a stale
     // id list that still contains the moved line — the server rejects it
     // (REORDER_IDS_MISMATCH) and its catch handler would then wipe this move's
     // optimistic order. Cancel those timers; the move's refresh() re-syncs
     // order from the server anyway.
     for (const bid of [sourceBlockId, targetBlockId]) {
+      if (!bid) continue;
       const t = lineReorderTimers.current[bid];
       if (t) { clearTimeout(t); delete lineReorderTimers.current[bid]; }
     }
     const movedIds = [line.id, ...lines.filter((l) => l.parentLineId === line.id).map((l) => l.id)];
-    const sourceIds = (lineReorderBase.current[sourceBlockId] ?? linesForBlock(sourceBlockId).map((l) => l.id))
-      .filter((id) => !movedIds.includes(id));
+    const sourceIds = sourceBlockId
+      ? (lineReorderBase.current[sourceBlockId] ?? linesForBlock(sourceBlockId).map((l) => l.id))
+        .filter((id) => !movedIds.includes(id))
+      : null;
     const targetIds = [
       ...(lineReorderBase.current[targetBlockId] ?? linesForBlock(targetBlockId).map((l) => l.id))
         .filter((id) => !movedIds.includes(id)),
       ...movedIds,
     ];
-    lineReorderBase.current = { ...lineReorderBase.current, [sourceBlockId]: sourceIds, [targetBlockId]: targetIds };
+    lineReorderBase.current = {
+      ...lineReorderBase.current,
+      ...(sourceBlockId && sourceIds ? { [sourceBlockId]: sourceIds } : {}),
+      [targetBlockId]: targetIds,
+    };
     setLineBlockOverride((m) => {
       const n = { ...m };
       for (const id of movedIds) n[id] = targetBlockId;
       return n;
     });
-    setLineOrder((m) => ({ ...m, [sourceBlockId]: sourceIds, [targetBlockId]: targetIds }));
+    setLineOrder((m) => ({
+      ...m,
+      ...(sourceBlockId && sourceIds ? { [sourceBlockId]: sourceIds } : {}),
+      [targetBlockId]: targetIds,
+    }));
     void (async () => {
       try {
         await runAction({
@@ -1326,13 +1523,18 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           for (const id of movedIds) delete n[id];
           return n;
         });
-        setLineOrder((m) => { const n = { ...m }; delete n[sourceBlockId]; delete n[targetBlockId]; return n; });
-        delete lineReorderBase.current[sourceBlockId];
+        setLineOrder((m) => {
+          const n = { ...m };
+          if (sourceBlockId) delete n[sourceBlockId];
+          delete n[targetBlockId];
+          return n;
+        });
+        if (sourceBlockId) delete lineReorderBase.current[sourceBlockId];
         delete lineReorderBase.current[targetBlockId];
         refresh();
       }
     })();
-  }, [lines, linesForBlock, quote.id, refresh, t]);
+  }, [lines, lineBlockOverride, linesForBlock, quote.id, refresh, t]);
 
   const hasRecurring = Number(railMonthly) > 0 || Number(railAnnual) > 0;
 
@@ -1565,7 +1767,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   (addType === 'contract' && !contractVersion)
                 }
                 data-testid="quote-add-block-submit"
-                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
                 {addType === 'image'
                   ? (imageSource === 'url' ? t('quotes.editor.actions.fetchAddImage') : t('quotes.editor.actions.uploadAddImage'))
@@ -1735,7 +1937,17 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                     />
                   )}
                   {canWrite && insertAt === idx && addSectionForm}
-                  <div className={`group/block relative ${dragBlockId === block.id ? 'opacity-40' : ''}`}>
+                  {/* tabIndex=-1 + ref: the rail outline's jump target — focus
+                      lands here so keyboard/SR reading position follows the
+                      scroll. data-outline-block-id feeds the outline's
+                      IntersectionObserver highlight. */}
+                  <div
+                    ref={(el) => setBlockContainerRef(block.id, el)}
+                    tabIndex={-1}
+                    data-outline-block-id={block.id}
+                    data-testid={`quote-block-container-${block.id}`}
+                    className={`group/block relative rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${dragBlockId === block.id ? 'opacity-40' : ''}`}
+                  >
                     {canWrite && (
                       <div className="absolute -left-7 top-0.5 flex flex-col items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/block:opacity-100">
                         <button
@@ -1746,7 +1958,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                           aria-label={t('quotes.editor.actions.dragSection')}
                           title={t('quotes.editor.actions.dragSection')}
                           data-testid={`quote-block-drag-${block.id}`}
-                          className="inline-flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                          className="inline-flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
                         >
                           <GripVertical className="h-4 w-4" aria-hidden />
                         </button>
@@ -1763,7 +1975,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                           aria-expanded={blockMenu?.id === block.id}
                           aria-label={t('quotes.editor.actions.sectionActions')}
                           data-testid={`quote-block-actions-${block.id}`}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                          className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           <MoreHorizontal className="h-4 w-4" aria-hidden />
                         </button>
@@ -1796,6 +2008,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                           >
                             {t('quotes.editor.actions.moveSectionDown')}
                           </button>
+                          {block.blockType === 'line_items' && (
+                            <div className="mt-1 border-t pt-1">
+                              <button
+                                type="button" role="menuitem" tabIndex={-1}
+                                disabled={tidyQueue.length > 0}
+                                onClick={() => { setBlockMenu(null); blockMenuTriggerRef.current?.focus(); startTidyAll(block.id); }}
+                                data-testid={`quote-block-tidy-all-${block.id}`}
+                                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-40"
+                              >
+                                {t('quotes.editor.actions.tidyAllDescriptions')}
+                              </button>
+                            </div>
+                          )}
                           <div className="mt-1 border-t pt-1">
                             <button
                               type="button" role="menuitem" tabIndex={-1}
@@ -1821,6 +2046,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 isPending={isPending}
                 canWrite={canWrite}
                 showInternal={showInternal}
+                mixedCadence={mixedCadence}
                 depositSelectMode={depositSelectMode}
                 ecActive={ecActive}
                 pax8Active={pax8Active}
@@ -1840,6 +2066,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 }
                 onRemoveLine={setPendingLineRemove}
                 onLineDraft={setLineDraft}
+                revealRequest={revealRequest}
+                hasDirtyLines={block.blockType === 'line_items' && linesForBlock(block.id).some((l) => l.id in lineDrafts)}
+                onDropLine={(dragLineId, targetIdx) => dropLineInBlock(block.id, dragLineId, targetIdx)}
               />
                   </div>
                 </Fragment>
@@ -1855,6 +2084,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   onDrop={(e) => { e.preventDefault(); commitBlockDrop(sortedBlocks.length); }}
                 />
               )}
+              {/* Orphan bucket — lines with no pricing section. Rendered LAST,
+                  where the customer's document puts them ("Additional items" in
+                  the Preview / portal / PDF), and self-suppressing when empty. */}
+              <UnassignedLines
+                lines={orphanLines}
+                moveTargets={pricingBlocks.map((b) => ({ id: b.id, label: pricingBlockLabel(b) }))}
+                currency={currency}
+                canWrite={canWrite}
+                onMoveLineToBlock={moveLineTo}
+              />
             </div>
           </div>
 
@@ -1921,7 +2160,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 ))}
               </div>
             )}
-            {canSeeMargin && showInternal && <MarginPanel profit={profit} currency={currency} />}
+            {canSeeMargin && showInternal && (
+              <MarginPanel
+                profit={profit}
+                currency={currency}
+                onMissingCostClick={missingCostLineIds.length > 0 ? revealFirstMissingCost : undefined}
+              />
+            )}
             {/* Read-only: the rate is resolved at quote creation (org tax settings,
                 falling back to the partner default) and isn't editable per-quote. */}
             <div className="mt-2 border-t pt-2">
@@ -2027,6 +2272,37 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             )}
           </div>
 
+          {/* Contents outline — a quiet nav under the totals (the rail's primary
+              content). Only renders once there are 2+ blocks to navigate. */}
+          {sortedBlocks.length >= 2 && (
+            <nav
+              aria-label={t('quotes.editor.outline.aria')}
+              data-testid="quote-outline"
+              className="rounded-lg border bg-card p-3 shadow-xs"
+            >
+              <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.outline.title')}</h2>
+              <ul className="space-y-0.5">
+                {sortedBlocks.map((b) => (
+                  <li key={b.id}>
+                    <button
+                      type="button"
+                      onClick={() => jumpToBlock(b.id)}
+                      aria-current={activeOutlineId === b.id ? 'true' : undefined}
+                      data-testid={`quote-outline-item-${b.id}`}
+                      className={`block w-full truncate rounded px-1.5 py-0.5 text-left text-xs transition-colors duration-150 ease-out focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none ${
+                        activeOutlineId === b.id
+                          ? 'bg-muted font-medium text-foreground'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      }`}
+                    >
+                      {outlineLabel(b)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          )}
+
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.terms.title')}</h2>
@@ -2080,6 +2356,32 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           </span>
         )}
       </div>
+
+      {/* The "Tidy all descriptions" queue driver: an unattended PolishButton
+          instance (no visible trigger of its own) that fires its preview dialog
+          for the head of `tidyQueue`. Reusing PolishButton means the SAME
+          fact-guard + approve/cancel preview a tech gets from the per-line
+          button — nothing here applies AI output without that manual review.
+          Keyed by line id so each queue advance is a fresh mount (resets
+          PolishButton's internal state) and its mount-effect (`autoRun`) kicks
+          off the next request automatically. */}
+      {tidyQueue.length > 0 && (() => {
+        const tidyLine = lines.find((l) => l.id === tidyQueue[0]);
+        if (!tidyLine) return null;
+        return (
+          <PolishButton
+            key={tidyLine.id}
+            idSuffix={`quote-tidy-all-${tidyLine.id}`}
+            hideTrigger
+            autoRun
+            getText={() => ({ description: tidyLine.description })}
+            onApply={(r) => {
+              if (r.description !== null) void editLine(tidyLine.id, { description: r.description || null }, pendingKey.line(tidyLine.id));
+            }}
+            onSettled={() => setTidyQueue((q) => q.slice(1))}
+          />
+        );
+      })()}
 
       <ConfirmDialog
         open={pendingRemove !== null}

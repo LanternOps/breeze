@@ -96,7 +96,9 @@ describe('QuoteEditor — inline line editing', () => {
     // Quantity shows its bare form ('1', not the stored '1.00') — matching the
     // input's step="1" and the customer-facing rendering.
     expect((screen.getByTestId('quote-line-qty-line-1') as HTMLInputElement).value).toBe('1');
-    expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('50.00');
+    // Unfocused, the price renders currency-formatted (same as the read-only
+    // Total/summary cells) — the raw "50.00" only shows once the field is focused.
+    expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('$50.00');
     expect(screen.getByTestId('quote-line-recurrence-line-1')).toBeInTheDocument();
     expect(screen.getByTestId('quote-line-taxable-line-1')).toBeInTheDocument();
     // the description editor is a multi-line textarea
@@ -162,6 +164,87 @@ describe('QuoteEditor — inline line editing', () => {
     await waitFor(() => {
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support.' });
     });
+  });
+
+  it('the per-line polish button carries the explicit "Tidy with AI" AI affordance', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+
+    expect(screen.getByTestId('polish-btn-quote-line-line-1')).toHaveTextContent('Tidy with AI');
+  });
+
+  it('"Tidy all descriptions" (block ⋯ menu) opens the per-line polish preview and applies it via updateLine on approval', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
+    expect(screen.getByTestId('quote-block-actions-menu-blk-1')).toHaveTextContent('Tidy all descriptions');
+    fireEvent.click(screen.getByTestId('quote-block-tidy-all-blk-1'));
+
+    // Same preview/apply testids the per-line PolishButton uses (idSuffix
+    // `quote-tidy-all-<lineId>`) — this reuses the real preview + fact-guard
+    // mechanics rather than bypassing them.
+    await waitFor(() => expect(screen.getByTestId('polish-apply-quote-tidy-all-line-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('polish-apply-quote-tidy-all-line-1'));
+
+    await waitFor(() => {
+      expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { description: 'Premium managed support.' });
+    });
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringContaining('1') })));
+  });
+
+  it('"Tidy all descriptions" steps through every described line one preview at a time, and cancelling one skips it without applying', async () => {
+    const lineB: QuoteDetailData['lines'][number] = { ...line, id: 'line-2', description: 'Backup service' };
+    const twoLineDetail: QuoteDetailData = { ...detail, lines: [line, lineB] };
+    render(<QuoteEditor detail={twoLineDetail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-block-tidy-all-blk-1'));
+
+    // First line's preview opens — cancel it: no PATCH, and the queue must
+    // still advance to the second line rather than stalling.
+    await waitFor(() => expect(screen.getByTestId('polish-cancel-quote-tidy-all-line-1')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('polish-cancel-quote-tidy-all-line-1'));
+    expect(updateLineMock).not.toHaveBeenCalledWith('q-1', 'line-1', expect.anything());
+
+    await waitFor(() => expect(screen.getByTestId('polish-apply-quote-tidy-all-line-2')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('polish-apply-quote-tidy-all-line-2'));
+
+    await waitFor(() => {
+      expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-2', { description: 'Premium managed support.' });
+    });
+  });
+
+  it('"Tidy all descriptions" toasts instead of opening a preview when the block has no described lines', async () => {
+    const noDescDetail: QuoteDetailData = { ...detail, lines: [{ ...line, description: null }] };
+    render(<QuoteEditor detail={noDescDetail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-block-tidy-all-blk-1'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+    expect(screen.queryByTestId('polish-apply-quote-tidy-all-line-1')).not.toBeInTheDocument();
+  });
+
+  it('the block footer offers three explicit, separately-labeled add affordances instead of one mystery-meat disclosure', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    // Catalog search is a first-class, one-click action — no open-then-pick-a-tab detour.
+    expect(screen.getByTestId('quote-block-add-catalog-blk-1')).toHaveTextContent('Add from catalog');
+    expect(screen.getByTestId('quote-block-add-ai-lookup-blk-1')).toHaveTextContent('AI lookup');
+    expect(screen.getByTestId('quote-block-add-line-toggle-blk-1')).toHaveTextContent('More details');
+
+    fireEvent.click(screen.getByTestId('quote-block-add-catalog-blk-1'));
+    // One click reaches the catalog mode directly (mode defaults to 'catalog').
+    expect(screen.getByTestId('quote-line-mode-blk-1-catalog')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('quote-block-add-ai-lookup-blk-1'));
+    // "AI lookup" jumps straight to the manual tab, where the AI enrich input lives.
+    expect(screen.getByTestId('quote-line-mode-blk-1-manual')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('changing quantity sends a numeric quantity', async () => {
@@ -242,8 +325,10 @@ describe('QuoteEditor — inline line editing', () => {
     };
     rerender(<QuoteEditor detail={normalized} onChanged={vi.fn()} />);
 
+    // Unfocused after the blur/rerender, so the re-adopted value renders
+    // currency-formatted.
     await waitFor(() =>
-      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('10.00'),
+      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('$10.00'),
     );
     // Row total reflects the authoritative server value, not the raw 9.999 entry.
     expect(screen.getByTestId('quote-line-tax-line-1')).toBeInTheDocument();

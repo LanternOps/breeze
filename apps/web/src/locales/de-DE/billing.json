@@ -447,7 +447,11 @@
         "addSection": "Abschnitt hinzufügen",
         "adding": "Hinzufügen…",
         "cancel": "Abbrechen",
+        "collapseSection": "Abschnitt einklappen",
+        "dragLine": "Ziehen, um die Position neu zu ordnen",
+        "dragLineTitle": "Ziehen, um innerhalb dieser Tabelle neu zu ordnen. Tastatur: „Nach oben/unten verschieben“ im Zeilenmenü verwenden.",
         "dragSection": "Ziehen, um den Abschnitt neu zu ordnen",
+        "expandSection": "Abschnitt ausklappen",
         "fetch": "Holen",
         "fetchAddImage": "Bild abrufen und hinzufügen",
         "fromUrl": "Ab URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Bild ersetzen",
         "sectionActions": "Abschnittsaktionen",
         "showCostMargin": "Kosten und Marge anzeigen",
+        "tidyAllDescriptions": "Alle Beschreibungen überarbeiten",
         "uploadAddImage": "Bild hochladen und hinzufügen",
         "uploading": "Hochladen…"
       },
       "addLine": {
+        "addFromCatalog": "Aus dem Katalog hinzufügen",
+        "aiLookupAction": "KI-Suche",
         "catalogItem": "Katalogartikel",
         "manualLine": "Manuelle Position",
-        "moreWays": "Weitere Wege zum Hinzufügen (Katalog, KI-Suche, Details)",
+        "moreDetails": "Weitere Details",
         "searchDistributor": "Händler suchen",
         "searchPax8": "Pax8 durchsuchen"
       },
@@ -605,6 +612,7 @@
         "billing": "Abrechnung",
         "billingFrequencyAria": "Abrechnungshäufigkeit",
         "cost": "Kosten",
+        "costMissingAria": "Keine Kosten eingegeben – diese Position wird bei der Gewinnschätzung nicht berücksichtigt.",
         "descriptionAria": "Positionsbeschreibung",
         "descriptionOptional": "Beschreibung (optional)",
         "enterCostFirstMarkup": "Geben Sie zunächst Kosten ein, um den Aufschlag in % festzulegen.",
@@ -619,8 +627,11 @@
         "profit": "Gewinn",
         "quantityAria": "Menge",
         "saveToCatalog": "Im Katalog speichern",
+        "showLess": "Weniger anzeigen",
+        "showMore": "Mehr anzeigen",
         "sku": "SKU",
         "skuOptional": "SKU (optional)",
+        "tidyWithAi": "Mit KI überarbeiten",
         "unitCost": "Stückkosten"
       },
       "liveTotals": {
@@ -635,6 +646,10 @@
         "taxRate": "Steuersatz",
         "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Wird in den Steuereinstellungen der Organisation festgelegt.",
         "title": "Live-Summen"
+      },
+      "outline": {
+        "aria": "Inhalt des Angebots",
+        "title": "Inhalt"
       },
       "recurrence": {
         "annual": "Jährlich",
@@ -662,6 +677,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} Positionen · {{amount}}",
+        "collapsedSummary_one": "{{count}} Position · {{amount}}",
+        "collapsedSummary_other": "{{count}} Positionen · {{amount}}",
         "emptyLines": "Noch keine Positionen. Fügen Sie unten einen Katalogartikel oder eine manuelle Position hinzu.",
         "fallbackName": "Preistabelle {{number}}",
         "item": "Artikel",
@@ -682,6 +700,10 @@
       "terms": {
         "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
         "title": "Allgemeine Geschäftsbedingungen"
+      },
+      "tidyAll": {
+        "complete": "{{count}} Beschreibung(en) überprüft.",
+        "noDescriptions": "Keine Positionsbeschreibungen in diesem Abschnitt zum Überarbeiten."
       },
       "title": {
         "label": "Angebotstitel",
@@ -728,6 +750,14 @@
         "add": "Hinzufügen",
         "nameAria": "Name der neuen Zeile",
         "placeholder": "Artikelnamen eingeben…"
+      },
+      "unassigned": {
+        "explainer": "Diese Positionen gehören zu keinem Preisabschnitt, erscheinen aber trotzdem im Angebot des Kunden und zählen zu dessen Summen. Verschieben Sie jede Position in einen Preisabschnitt, um zu bestimmen, wo sie erscheint.",
+        "moveAria": "{{line}} in einen Preisabschnitt verschieben",
+        "movePlaceholder": "Verschieben nach…",
+        "noTargets": "Fügen Sie einen Preisabschnitt hinzu und verschieben Sie diese Positionen dann dorthin.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Nicht zugeordnete Positionen"
       }
     },
     "actions": {
@@ -1044,7 +1074,7 @@
       "tabs": {
         "editor": "Herausgeber",
         "preview": "Vorschau",
-        "detail": "Detailliert"
+        "detail": "Detailansicht"
       }
     }
   },

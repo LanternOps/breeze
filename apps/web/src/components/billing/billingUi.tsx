@@ -62,15 +62,21 @@ export function MarginPanel({
   profit,
   currency,
   idPrefix = 'quote',
+  onMissingCostClick,
 }: {
   profit: QuoteProfit;
   currency: string;
   idPrefix?: string;
+  /** Optional: makes the missing-cost notice an actionable button (e.g. the
+   *  quote editor wires this to scroll/expand/focus the first offending line).
+   *  Callers with nothing to jump to (QuoteDetail, InvoiceDetail/Editor) omit
+   *  it and keep the plain static notice — MarginPanel itself stays generic. */
+  onMissingCostClick?: () => void;
 }) {
   const { t } = useTranslation('billing');
   return (
     <div className="mt-3 rounded-md bg-muted/40 p-2 text-sm" data-testid={`${idPrefix}-margin`}>
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {t('billingUi.margin.title')}
       </div>
       <dl className="space-y-1 tabular-nums">
@@ -80,12 +86,26 @@ export function MarginPanel({
         {Number(profit.annualRecurringNet) !== 0 && <div className="flex justify-between"><dt className="text-muted-foreground">{t('billingUi.margin.profitAnnual')}</dt><dd data-testid={`${idPrefix}-margin-net-annual`}>{formatMoney(profit.annualRecurringNet, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perYear')}</span></dd></div>}
       </dl>
       {profit.linesMissingCost > 0 && (
-        <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground dark:text-warning" data-testid={`${idPrefix}-margin-missing-cost`}>
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
-          <span>
-            {t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}
-          </span>
-        </p>
+        onMissingCostClick ? (
+          <button
+            type="button"
+            onClick={onMissingCostClick}
+            className="mt-1 flex w-full items-start gap-1 rounded text-left text-xs text-warning-foreground hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring dark:text-warning"
+            data-testid={`${idPrefix}-margin-missing-cost`}
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>
+              {t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}
+            </span>
+          </button>
+        ) : (
+          <p className="mt-1 flex items-start gap-1 text-xs text-warning-foreground dark:text-warning" data-testid={`${idPrefix}-margin-missing-cost`}>
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>
+              {t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}
+            </span>
+          </p>
+        )
       )}
     </div>
   );

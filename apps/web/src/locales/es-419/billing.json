@@ -447,7 +447,11 @@
         "addSection": "Agregar sección",
         "adding": "Añadiendo…",
         "cancel": "Cancelar",
+        "collapseSection": "Contraer sección",
+        "dragLine": "Arrastra para reordenar la línea",
+        "dragLineTitle": "Arrastra para reordenar dentro de esta tabla. Con teclado: usa Mover arriba/abajo en el menú de la línea.",
         "dragSection": "Arrastra para reordenar la sección",
+        "expandSection": "Expandir sección",
         "fetch": "Buscar",
         "fetchAddImage": "Buscar y agregar imagen",
         "fromUrl": "De URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Reemplazar imagen",
         "sectionActions": "Acciones de la sección",
         "showCostMargin": "Mostrar costo y margen",
+        "tidyAllDescriptions": "Pulir todas las descripciones",
         "uploadAddImage": "Subir y agregar imagen",
         "uploading": "Subiendo…"
       },
       "addLine": {
+        "addFromCatalog": "Agregar desde el catálogo",
+        "aiLookupAction": "Búsqueda con IA",
         "catalogItem": "Artículo del catálogo",
         "manualLine": "linea manual",
-        "moreWays": "Más formas de agregar (catálogo, búsqueda con IA, detalles)",
+        "moreDetails": "Más detalles",
         "searchDistributor": "Buscar distribuidor",
         "searchPax8": "Buscar Pax8"
       },
@@ -605,6 +612,7 @@
         "billing": "Facturación",
         "billingFrequencyAria": "Frecuencia de facturación",
         "cost": "Costo",
+        "costMissingAria": "No se ingresó el costo — esta línea queda excluida de la estimación de ganancias.",
         "descriptionAria": "Descripción de línea",
         "descriptionOptional": "Descripción (opcional)",
         "enterCostFirstMarkup": "Ingrese un costo primero para establecer el porcentaje de margen",
@@ -619,8 +627,11 @@
         "profit": "Ganancia",
         "quantityAria": "Cantidad",
         "saveToCatalog": "Guardar en catálogo",
+        "showLess": "Mostrar menos",
+        "showMore": "Mostrar más",
         "sku": "SKU",
         "skuOptional": "SKU (opcional)",
+        "tidyWithAi": "Pulir con IA",
         "unitCost": "Costo unitario"
       },
       "liveTotals": {
@@ -635,6 +646,10 @@
         "taxRate": "Tasa impositiva",
         "taxRateHelp": "Aplica a líneas marcadas como sujetas a impuestos. Establecido en la configuración fiscal de la organización.",
         "title": "Totales en vivo"
+      },
+      "outline": {
+        "aria": "Contenido de la cotización",
+        "title": "Contenido"
       },
       "recurrence": {
         "annual": "Anual",
@@ -662,6 +677,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} líneas · {{amount}}",
+        "collapsedSummary_one": "{{count}} línea · {{amount}}",
+        "collapsedSummary_other": "{{count}} líneas · {{amount}}",
         "emptyLines": "Aún no hay líneas. Agregue un artículo del catálogo o una línea manual a continuación.",
         "fallbackName": "Tabla de precios {{number}}",
         "item": "Artículo",
@@ -682,6 +700,10 @@
       "terms": {
         "placeholder": "Condiciones de pago, cláusulas de garantía, etc.",
         "title": "Términos y condiciones"
+      },
+      "tidyAll": {
+        "complete": "Se revisaron {{count}} descripción(es).",
+        "noDescriptions": "No hay descripciones de línea que pulir en esta sección."
       },
       "title": {
         "label": "Título de la cita",
@@ -728,6 +750,14 @@
         "add": "Agregar",
         "nameAria": "Nombre de la nueva línea",
         "placeholder": "Escribe el nombre del ítem…"
+      },
+      "unassigned": {
+        "explainer": "Estas líneas no están en ninguna sección de precios, pero aun así aparecen en la cotización del cliente y se suman a sus totales. Mueve cada una a una sección de precios para controlar dónde aparece.",
+        "moveAria": "Mover {{line}} a una sección de precios",
+        "movePlaceholder": "Mover a…",
+        "noTargets": "Agrega una sección de precios y luego mueve estas líneas a ella.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Líneas sin asignar"
       }
     },
     "actions": {
@@ -1044,7 +1074,7 @@
       "tabs": {
         "editor": "Editor",
         "preview": "Vista previa",
-        "detail": "Detalle"
+        "detail": "Detalles"
       }
     }
   },

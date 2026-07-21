@@ -1,9 +1,9 @@
 // The pricing-table rows: GhostRow (fast manual entry), EditableLineRow,
 // ReadonlyLineRow, and the per-line thumbnails. Split from QuoteEditor.tsx —
 // see quoteEditorShared.tsx for the shared save-language plumbing.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, MoreHorizontal } from 'lucide-react';
+import { AlertTriangle, ChevronRight, GripVertical, Loader2, MoreHorizontal, Sparkles } from 'lucide-react';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
@@ -23,16 +23,198 @@ import {
   lineTitle,
   lineBlurb,
 } from './quoteTypes';
-import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quoteEditorShared';
+import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, seamless, unsavedHintId, UnsavedFieldHint } from './quoteEditorShared';
+
+/** A line's reveal-on-demand target for the rail's actionable "missing cost"
+ *  notice (MarginPanel → QuoteEditor → here): `nonce` bumps on every click so
+ *  the SAME first-offending line can be re-revealed after the user scrolls
+ *  away, since a repeated `lineId` alone wouldn't re-trigger the effect. */
+export interface LineRevealRequest {
+  lineId: string;
+  nonce: number;
+}
+
+/** Joins conditional aria-describedby ids (error + unsaved can co-occur). */
+function describedByIds(...ids: (string | null | undefined | false)[]): string | undefined {
+  const list = ids.filter((x): x is string => Boolean(x));
+  return list.length ? list.join(' ') : undefined;
+}
+
+// ── Money-input helpers (unit price / internal cost / ghost price) ────────
+// These fields show a currency-formatted value ("$1,234.56") while blurred and
+// the raw editable decimal while focused — the adjacent read-only cells (Total,
+// Cost/Markup/Profit summary) already render via formatMoney, so a plain
+// "1234.56" in the editable twin read as a formatting bug. Values keep
+// committing off the RAW decimal string (unchanged commit* functions below);
+// only the rendered `value` and the onChange filter live here.
+
+// Keystroke filter: keep digits and at most one decimal point. These fields are
+// all min=0 (price/cost never go negative), so stripping everything else means
+// a garbage/non-numeric commit is structurally impossible from typing — no "."-
+// only edge case aside, which the existing commit-time Number.isFinite guard
+// already rejects without losing the user's entry.
+function filterMoneyChars(raw: string): string {
+  let out = '';
+  let seenDot = false;
+  for (const ch of raw) {
+    if (ch >= '0' && ch <= '9') out += ch;
+    else if (ch === '.' && !seenDot) { out += ch; seenDot = true; }
+  }
+  return out;
+}
+
+// ch-based width so a 7-digit price or a "155.1" markup is never clipped by the
+// old fixed w-20/w-24/w-16 — grows with the displayed value, clamped so a
+// single keystroke can't make the row jump wildly and floored so short values
+// keep the prior visual width (row rhythm unchanged).
+function growWidth(value: string, minCh: number, maxCh: number): string {
+  const ch = Math.min(maxCh, Math.max(minCh, value.length + 2));
+  return `${ch}ch`;
+}
+
+// ── Internal-band progressive disclosure (shared by both row variants) ────
+// The cost/markup band defaults to a compact one-line summary per line
+// ("Cost $45.00 · Markup 20% · Profit $108.00"); the full micro-form only
+// appears after a per-line expand. Ten controls per line across a long quote
+// was a wall of forms — the summary keeps the glanceable numbers without it.
+
+// Compact summary shown while a line's band is collapsed. Values arrive as
+// pre-formatted strings so the editable variant can reflect live (uncommitted)
+// field state and the readonly variant the persisted line.
+function InternalBandSummary({ lineId, sku, costStr, costMissing, markupStr, profitStr }: {
+  lineId: string; sku: string; costStr: string;
+  /** True when the line has no cost — flags the "Cost —" figure warning-colored
+   *  (with an icon + aria-label) so the gap is visible even collapsed, not just
+   *  once the band is expanded. */
+  costMissing: boolean;
+  markupStr: string; profitStr: string;
+}) {
+  const { t } = useTranslation('billing');
+  const dot = <span aria-hidden="true">·</span>;
+  return (
+    <span
+      className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-left font-normal normal-case tracking-normal"
+      data-testid={`quote-line-internal-summary-${lineId}`}
+    >
+      {sku && (
+        <>
+          <span className="max-w-40 truncate">{t('quotes.editor.line.sku')} {sku}</span>
+          {dot}
+        </>
+      )}
+      {costMissing ? (
+        <span
+          className="inline-flex items-center gap-1 tabular-nums text-warning-foreground dark:text-warning"
+          aria-label={t('quotes.editor.line.costMissingAria')}
+          data-testid={`quote-line-cost-missing-${lineId}`}
+        >
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+          {t('quotes.editor.line.cost')} {costStr}
+        </span>
+      ) : (
+        <span className="tabular-nums">{t('quotes.editor.line.cost')} {costStr}</span>
+      )}
+      {dot}
+      <span className="tabular-nums">{t('quotes.editor.line.markup')} {markupStr}</span>
+      {dot}
+      <span>{t('quotes.editor.line.profit')}{' '}
+        <span className="font-medium tabular-nums text-foreground">{profitStr}</span>
+      </span>
+    </span>
+  );
+}
+
+// Animated expand/collapse shell for the band's full detail. A <tr> can't
+// height-animate, so the inner grid does (rows 0fr→1fr), 200ms ease-out with
+// an instant motion-reduce variant. Collapsed content stays MOUNTED — local
+// field state, draft wiring and testids survive — but is inert + aria-hidden
+// so it leaves the tab order and the a11y tree.
+function InternalBandCollapse({ expanded, testId, children }: { expanded: boolean; testId: string; children: ReactNode }) {
+  return (
+    <div
+      className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+      inert={!expanded || undefined}
+      aria-hidden={!expanded}
+      data-testid={testId}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+// The band's disclosure trigger: chevron + "Internal" tag + (when collapsed)
+// the summary. The whole strip is the button — a bigger target than a lone
+// chevron — with the focus-visible ring pattern used across the editor.
+function InternalBandToggle({ lineId, isFirst, expanded, onToggle, summary }: {
+  lineId: string; isFirst: boolean; expanded: boolean; onToggle: () => void; summary: ReactNode;
+}) {
+  const { t } = useTranslation('billing');
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      title={t('quotes.editor.internal.full')}
+      data-testid={`quote-line-internal-toggle-${lineId}`}
+      className="flex w-full items-center gap-2 rounded text-left focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <ChevronRight
+        className={`h-3 w-3 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`}
+        aria-hidden="true"
+      />
+      {/* Full disclaimer on the first row, the subtle "Internal" tag on the
+          rest (the title tooltip carries the full wording everywhere). */}
+      <span className="shrink-0 font-medium uppercase tracking-wide">
+        {isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}
+      </span>
+      {!expanded && summary}
+    </button>
+  );
+}
+
+// Read-only long-description clamp: > ~4 lines collapses behind a Show more /
+// Show less affordance. Pure presentation — the full text always renders into
+// the DOM. jsdom reports zero heights, so unit tests exercise the unclamped path.
+function ClampedBlurb({ lineId, text }: { lineId: string; text: string }) {
+  const { t } = useTranslation('billing');
+  const ref = useRef<HTMLDivElement>(null);
+  const [long, setLong] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  // Measure overflow only while clamped (expanded content never overflows);
+  // once `long` latches the toggle persists so the user can re-collapse.
+  useEffect(() => {
+    if (showAll) return;
+    const el = ref.current;
+    if (el) setLong(el.scrollHeight > el.clientHeight + 1);
+  }, [text, showAll]);
+  return (
+    <>
+      <div ref={ref} className={`whitespace-pre-line text-xs text-muted-foreground ${showAll ? '' : 'line-clamp-4'}`}>{text}</div>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          aria-expanded={showAll}
+          data-testid={`quote-line-blurb-toggle-${lineId}`}
+          className="mt-0.5 inline-flex items-center rounded text-xs font-medium text-muted-foreground hover:text-foreground focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {showAll ? t('quotes.editor.line.showLess') : t('quotes.editor.line.showMore')}
+        </button>
+      )}
+    </>
+  );
+}
 
 // The ghost row: an always-ready entry row at the foot of every pricing table.
 // Type a name, Tab through qty/price/cadence, press Enter — the line commits
 // and focus returns to the name for the next one. This is the fast lane for the
 // daily compose loop; the full picker (catalog / AI lookup / distributor / SKU
-// and cost fields) stays available behind the "More ways to add" disclosure.
-export function GhostRow({ blockId, busy, onAdd, colSpan }: {
+// and cost fields) stays available behind the explicit "Add from catalog" /
+// "AI lookup" / "More details" entry points (QuoteBlockCard).
+export function GhostRow({ blockId, busy, currency, onAdd, colSpan }: {
   blockId: string;
   busy: boolean;
+  currency: string;
   onAdd: (form: { name: string; description: string; quantity: string; unitPrice: string; cost: string; sku: string; partNumber: string; taxable: boolean; recurrence: QuoteLineRecurrence; saveToCatalog: boolean }) => Promise<boolean>;
   colSpan: number;
 }) {
@@ -40,6 +222,7 @@ export function GhostRow({ blockId, busy, onAdd, colSpan }: {
   const [name, setName] = useState('');
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('');
+  const [priceFocused, setPriceFocused] = useState(false);
   const [rec, setRec] = useState<QuoteLineRecurrence>('one_time');
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -80,9 +263,25 @@ export function GhostRow({ blockId, busy, onAdd, colSpan }: {
   };
   const ghostField = 'h-9 rounded-md border border-transparent bg-transparent transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60';
 
+  // An untouched ghost row is a single quiet affordance: only the name field
+  // shows until the user types a name or focuses into the row — then the
+  // qty/price/cadence chrome appears. Focus is tracked on the row (bubbling
+  // focus/blur) so tabbing between the row's own fields never hides them.
+  const [focusWithin, setFocusWithin] = useState(false);
+  const active = name.trim() !== '' || focusWithin;
+  // Width is sized off whichever string is actually on screen — the formatted
+  // display ("$1,234.56") is longer than the raw decimal, so basing width on
+  // the raw value alone would clip the currency symbol/separators once unfocused.
+  const ghostPriceDisplay = priceFocused || price.trim() === '' ? price : formatMoney(price, currency);
+
   return (
     <>
-      <tr className="border-t" data-testid={`quote-ghost-row-${blockId}`}>
+      <tr
+        className="border-t"
+        data-testid={`quote-ghost-row-${blockId}`}
+        onFocus={() => setFocusWithin(true)}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false); }}
+      >
         <td className="px-1.5 py-1.5">
           <input
             ref={nameRef}
@@ -106,20 +305,23 @@ export function GhostRow({ blockId, busy, onAdd, colSpan }: {
             disabled={busy}
             aria-label={t('quotes.editor.line.quantityAria')}
             data-testid={`quote-ghost-qty-${blockId}`}
-            className={`${ghostField} w-14 px-2 text-right text-sm tabular-nums`}
+            className={`${ghostField} w-14 px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
           />
         </td>
         <td className="px-1.5 py-1.5 text-right">
           <input
-            type="number" min="0" step="0.01"
-            value={price}
-            onChange={(e) => { setPrice(e.target.value); setError(null); }}
+            type="text" inputMode="decimal"
+            value={ghostPriceDisplay}
+            onFocus={() => setPriceFocused(true)}
+            onChange={(e) => { setPrice(filterMoneyChars(e.target.value)); setError(null); }}
+            onBlur={() => setPriceFocused(false)}
             onKeyDown={onKeyDown}
             disabled={busy}
             placeholder="0.00"
             aria-label={t('quotes.editor.table.unitPrice')}
             data-testid={`quote-ghost-price-${blockId}`}
-            className={`${ghostField} w-24 px-2 text-right text-sm tabular-nums`}
+            style={{ width: growWidth(ghostPriceDisplay, 8, 16) }}
+            className={`${ghostField} px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
           />
           <select
             value={rec}
@@ -128,7 +330,7 @@ export function GhostRow({ blockId, busy, onAdd, colSpan }: {
             disabled={busy}
             aria-label={t('quotes.editor.line.billingFrequencyAria')}
             data-testid={`quote-ghost-recurrence-${blockId}`}
-            className="ml-auto mt-1 block h-7 w-24 rounded-md border border-transparent bg-transparent py-0 pl-2 pr-6 text-xs text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60"
+            className={`ml-auto mt-1 h-7 w-24 rounded-md border border-transparent bg-transparent py-0 pl-2 pr-6 text-xs text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60 ${active ? 'block' : 'hidden'}`}
           >
             <option value="one_time">{t('quotes.editor.recurrence.one_time')}</option>
             <option value="monthly">{t('quotes.editor.recurrence.monthly')}</option>
@@ -165,19 +367,37 @@ export function GhostRow({ blockId, busy, onAdd, colSpan }: {
 // ── A single read-only pricing-table line (no write permission) ───────────
 // Mirrors EditableLineRow's two-row shape — the customer-facing cells plus the
 // internal cost/markup/net band — but renders everything as plain text.
-export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInternal }: { line: QuoteLine; quoteId: string; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean }) {
+export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, showInternal, mixedCadence, revealRequest }: { line: QuoteLine; quoteId: string; currency: string; taxRate: string | null; isFirst: boolean; showInternal: boolean; mixedCadence: boolean; revealRequest?: LineRevealRequest | null }) {
   const { t } = useTranslation('billing');
+  const na = t('quotes.editor.symbols.notAvailable');
   const mk = markupPct(l.unitPrice, l.unitCost);
-  const markupStr = mk === null ? t('quotes.editor.symbols.notAvailable') : formatPercent(mk / 100, { maximumFractionDigits: 2 });
+  const markupStr = mk === null ? na : formatPercent(mk / 100, { maximumFractionDigits: 2 });
   const netCents = l.unitCost === null
     ? null
     : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));
   const tax = lineTaxAmount(l.lineTotal, l.taxable, taxRate);
-  // Billing cadence rides in the money cells ('/mo', '/yr'); one-time is unmarked.
-  const suffix = l.recurrence === 'monthly' ? t('quotes.editor.units.perMonth') : l.recurrence === 'annual' ? t('quotes.editor.units.perYear') : '';
+  // Billing cadence rides in the money cells ('/mo', '/yr'); one-time is
+  // unmarked. When every line on the quote shares one cadence the suffix is
+  // pure repetition, so it only renders when cadences are actually mixed.
+  const suffix = !mixedCadence ? '' : l.recurrence === 'monthly' ? t('quotes.editor.units.perMonth') : l.recurrence === 'annual' ? t('quotes.editor.units.perYear') : '';
+  const blurb = lineBlurb(l);
+  // Collapsed summary by default; expanding shows the full SKU/PN/cost detail.
+  const [internalOpen, setInternalOpen] = useState(false);
+  // Reveal-on-demand: the rail's "missing cost" notice can request this exact
+  // line be scrolled into view + expanded (see EditableLineRow for the fuller
+  // writer-side version, which also focuses the cost input). Read-only rows
+  // have no cost input to focus, so this is scroll + expand only.
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    if (!revealRequest || revealRequest.lineId !== l.id) return;
+    setInternalOpen(true);
+    const reduceMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    rowRef.current?.scrollIntoView?.({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+  }, [revealRequest?.nonce, revealRequest?.lineId, l.id]);
   return (
     <>
-      <tr className="border-t [&>td]:pt-4" data-testid={`quote-line-${l.id}`}>
+      <tr ref={rowRef} className="border-t [&>td]:pt-4" data-testid={`quote-line-${l.id}`}>
         <td className="px-1.5 py-2">
           <div className="flex items-start gap-2">
             {l.imageId
@@ -185,7 +405,7 @@ export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, 
               : l.catalogItemId && <CatalogLineThumb catalogItemId={l.catalogItemId} />}
             <div>
               <div className="font-medium">{lineTitle(l)}</div>
-              {lineBlurb(l) && <div className="whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+              {blurb && <ClampedBlurb lineId={l.id} text={blurb} />}
             </div>
           </div>
         </td>
@@ -204,18 +424,36 @@ export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, 
       </tr>
       <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${l.id}`}>
         <td colSpan={4} className="px-2 pb-2">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground/70 dark:text-muted-foreground">
-            {/* Full disclaimer on the first row, a subtle "Internal" tag on the rest. */}
-            <span className="font-medium uppercase tracking-wide">{isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}</span>
-            <span data-testid={`quote-line-sku-${l.id}`}>{t('quotes.editor.line.sku')} {l.sku || t('quotes.editor.symbols.notAvailable')}</span>
-            <span data-testid={`quote-line-partnumber-${l.id}`}>{t('quotes.editor.line.partNumberAbbr')} {l.partNumber || t('quotes.editor.symbols.notAvailable')}</span>
-            <span data-testid={`quote-line-cost-${l.id}`}>{t('quotes.editor.line.cost')} {l.unitCost === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(l.unitCost, currency)}</span>
-            <span data-testid={`quote-line-markup-${l.id}`}>{t('quotes.editor.line.markup')} {markupStr}</span>
-            <span className="ml-auto">{t('quotes.editor.line.profit')}{' '}
-              <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${l.id}`}>
-                {netCents === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(fromCents(netCents), currency)}
-              </span>
-            </span>
+          <div className="rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground/70 dark:text-muted-foreground">
+            <InternalBandToggle
+              lineId={l.id}
+              isFirst={isFirst}
+              expanded={internalOpen}
+              onToggle={() => setInternalOpen((v) => !v)}
+              summary={
+                <InternalBandSummary
+                  lineId={l.id}
+                  sku={l.sku ?? ''}
+                  costStr={l.unitCost === null ? na : formatMoney(l.unitCost, currency)}
+                  costMissing={l.unitCost === null}
+                  markupStr={markupStr}
+                  profitStr={netCents === null ? na : formatMoney(fromCents(netCents), currency)}
+                />
+              }
+            />
+            <InternalBandCollapse expanded={internalOpen} testId={`quote-line-internal-detail-${l.id}`}>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-0.5 pt-1.5">
+                <span data-testid={`quote-line-sku-${l.id}`}>{t('quotes.editor.line.sku')} {l.sku || na}</span>
+                <span data-testid={`quote-line-partnumber-${l.id}`}>{t('quotes.editor.line.partNumberAbbr')} {l.partNumber || na}</span>
+                <span data-testid={`quote-line-cost-${l.id}`}>{t('quotes.editor.line.cost')} {l.unitCost === null ? na : formatMoney(l.unitCost, currency)}</span>
+                <span data-testid={`quote-line-markup-${l.id}`}>{t('quotes.editor.line.markup')} {markupStr}</span>
+                <span className="ml-auto">{t('quotes.editor.line.profit')}{' '}
+                  <span className="font-medium tabular-nums text-foreground" data-testid={`quote-line-net-${l.id}`}>
+                    {netCents === null ? na : formatMoney(fromCents(netCents), currency)}
+                  </span>
+                </span>
+              </div>
+            </InternalBandCollapse>
           </div>
         </td>
       </tr>
@@ -232,8 +470,8 @@ export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, 
 // state to the incoming prop so server-side normalization (e.g. recomputed
 // totals, clamped quantity) wins.
 export function EditableLineRow({
-  line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, depositSelectMode, onEdit, onMove, onRemove, onDraft,
-  moveTargets, onMoveTo,
+  line, quoteId, currency, taxRate, isPending, isFirst, isLast, showInternal, mixedCadence, depositSelectMode, onEdit, onMove, onRemove, onDraft,
+  moveTargets, onMoveTo, revealRequest, dragging, onDragStartRow, onDragEndRow,
 }: {
   line: QuoteLine;
   quoteId: string;
@@ -243,6 +481,9 @@ export function EditableLineRow({
   isFirst: boolean;
   isLast: boolean;
   showInternal: boolean;
+  /** True when the quote's lines span more than one billing cadence — only then
+   *  does the Total cell repeat the '/mo' | '/yr' suffix. */
+  mixedCadence: boolean;
   /** Show the deposit-eligible checkbox (quote deposit = 'selected_lines'). */
   depositSelectMode: boolean;
   onEdit: (lineId: string, body: LineUpdate, scopeKey?: string) => Promise<boolean>;
@@ -252,6 +493,17 @@ export function EditableLineRow({
   /** Other pricing panels (empty → the Move-to control is hidden). */
   moveTargets: { id: string; label: string }[];
   onMoveTo: (line: QuoteLine, targetBlockId: string) => void;
+  /** Set (with a bumped nonce) when the rail's "missing cost" notice targets
+   *  THIS line: scrolls it into view, expands the internal band, and focuses
+   *  the cost input. See the effect below and LineRevealRequest's doc. */
+  revealRequest?: LineRevealRequest | null;
+  /** True while THIS row is being dragged (dims the row, like block drags). */
+  dragging?: boolean;
+  /** Wired by BlockCard when within-block drag-reorder is available: the grip
+   *  handle renders only when this is set. Keyboard users keep the ⋯ menu's
+   *  Move up/down as the accessible alternative (noted in the handle's title). */
+  onDragStartRow?: () => void;
+  onDragEndRow?: () => void;
 }) {
   const { t } = useTranslation('billing');
   // Per-field pending: only the in-flight control disables, so a slow qty save
@@ -271,6 +523,13 @@ export function EditableLineRow({
   // input matches its own step="1" and the customer-facing rendering.
   const [qty, setQty] = useState(formatQuantity(line.quantity));
   const [price, setPrice] = useState(line.unitPrice);
+  // Money-input focus tracking: formatted (currency, thousands-separated) while
+  // blurred, raw editable decimal while focused — see the filterMoneyChars /
+  // growWidth helpers above. An in-flight field error keeps the RAW string
+  // visible even unfocused, so a rejected entry stays legible to correct rather
+  // than collapsing into a misleading "$0.00".
+  const [priceFocused, setPriceFocused] = useState(false);
+  const [costFocused, setCostFocused] = useState(false);
   // recurrence/taxable are committed on change (not blur); keep them in local
   // state so the control updates instantly rather than lagging until the
   // refresh() round-trip lands, and revert if the save fails.
@@ -320,13 +579,17 @@ export function EditableLineRow({
   const descEdited = useRef(false);
   // Auto-grow the (full-width) description textarea to fit its content, while
   // still allowing the user to drag the resize handle for a bigger/smaller box.
+  // Long descriptions (> ~4 lines) clamp to a fixed cap while the field is
+  // neither focused nor explicitly expanded — a Show more/less affordance and
+  // focus both lift the cap. Presentation only: the full text always stays in
+  // the field value. (jsdom reports scrollHeight 0, so unit tests always take
+  // the unclamped path unless they stub the metric.)
+  const DESC_CLAMP_PX = 88; // ≈ 4 lines of text-sm (20px line-height) + padding
   const descRef = useRef<HTMLTextAreaElement>(null);
-  const autoGrowDesc = () => {
-    const el = descRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  };
+  const [descFocused, setDescFocused] = useState(false);
+  const [descShowAll, setDescShowAll] = useState(false);
+  const [descLong, setDescLong] = useState(false);
+  const descClamped = descLong && !descFocused && !descShowAll;
   const qtyEdited = useRef(false);
   const priceEdited = useRef(false);
   const costEdited = useRef(false);
@@ -334,8 +597,17 @@ export function EditableLineRow({
   const partEdited = useRef(false);
   useEffect(() => { if (!nameEdited.current) setName(line.name ?? ''); }, [line.name]);
   useEffect(() => { if (!descEdited.current) setDesc(line.description ?? ''); }, [line.description]);
-  // Re-fit the description box after any value change (typing or server resync).
-  useEffect(() => { autoGrowDesc(); }, [desc]);
+  // Re-fit the description box after any value change (typing or server resync)
+  // or clamp-state flip: measure the full height at auto, latch whether the
+  // content is long, then apply either the cap or the full height.
+  useEffect(() => {
+    const el = descRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const full = el.scrollHeight;
+    setDescLong(full > DESC_CLAMP_PX + 8);
+    el.style.height = `${descClamped ? Math.min(full, DESC_CLAMP_PX) : full}px`;
+  }, [desc, descClamped, descOpen]);
   useEffect(() => { if (!qtyEdited.current) setQty(formatQuantity(line.quantity)); }, [line.quantity]);
   useEffect(() => { if (!priceEdited.current) setPrice(line.unitPrice); }, [line.unitPrice]);
   useEffect(() => { if (!costEdited.current) setCost(line.unitCost ?? ''); }, [line.unitCost]);
@@ -493,8 +765,57 @@ export function EditableLineRow({
     ? null
     : toCents(computeLineTotal(effQty, effPrice)) - toCents(computeLineTotal(effQty, cost));
   const costDirty = cost.trim() === '' ? line.unitCost !== null : Number(cost) !== Number(line.unitCost);
+  // Independent of `costDirty` (unsaved-vs-persisted): true whenever the FIELD
+  // is currently empty, saved or not — drives the warning treatment (Task 2)
+  // that flags a genuinely missing cost, as opposed to an in-flight edit.
+  const costMissing = cost.trim() === '';
+  // Displayed strings for the price/cost inputs — currency-formatted while
+  // blurred (matching the adjacent read-only Total/summary cells), the raw
+  // decimal while focused or mid-error (so a rejected entry stays legible to
+  // correct). Width is sized off these — the formatted form ("$1,234.56") is
+  // longer than the raw decimal, so basing width on the raw value alone would
+  // clip the currency symbol/separators once unfocused.
+  const priceDisplay = priceFocused || fieldErrors.price ? price : formatMoney(price, currency);
+  const costDisplay = costFocused || fieldErrors.cost ? cost : (cost.trim() === '' ? '' : formatMoney(cost, currency));
   const skuDirty = sku.trim() !== (line.sku ?? '');
   const partDirty = partNumber.trim() !== (line.partNumber ?? '');
+
+  // Per-line internal-band disclosure: collapsed (summary-only) by default,
+  // component-local, never persisted. An unsaved cost/SKU/PN edit (or an inline
+  // cost error) pins the band open — a collapse request only takes effect once
+  // the edit lands and the server prop resync clears the dirty flag, so unsaved
+  // internal edits are never hidden mid-flight.
+  const [internalOpen, setInternalOpen] = useState(false);
+  const internalDirty = costDirty || skuDirty || partDirty;
+  const internalExpanded = internalOpen || internalDirty || Boolean(fieldErrors.cost);
+
+  // Reveal-on-demand (Task 3 UX pass): the rail's actionable "missing cost"
+  // notice can target THIS line — scroll it into view, force the internal band
+  // open, and focus the cost input. `rowRef` anchors the scroll; `costInputRef`
+  // is the focus target.
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  const costInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!revealRequest || revealRequest.lineId !== line.id) return;
+    setInternalOpen(true);
+    const reduceMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    rowRef.current?.scrollIntoView?.({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    // The band can still be `inert` for one render right after setInternalOpen
+    // (React hasn't committed yet) — retry across a few frames until the input
+    // is actually reachable, the same idiom as GhostRow's post-save refocus
+    // above. Checked via the DOM attribute directly rather than relying on
+    // `inert`'s focus-blocking behavior, which jsdom doesn't implement.
+    const tryFocus = (tries: number) => {
+      const el = costInputRef.current;
+      if (el && !el.closest('[inert]')) { el.focus(); return; }
+      if (tries > 0) requestAnimationFrame(() => tryFocus(tries - 1));
+    };
+    requestAnimationFrame(() => tryFocus(10));
+    // Only the reveal request identity should re-trigger this — line.id is
+    // stable per row instance, and re-running on every internalOpen/dirty
+    // change would fight the user's own toggle.
+  }, [revealRequest?.nonce, revealRequest?.lineId, line.id]);
 
   // Report this row's effective values to the parent so the rail "Live totals"
   // recompute uses the same inputs. Emit null once nothing diverges, so the rail
@@ -596,7 +917,7 @@ export function EditableLineRow({
 
   return (
     <>
-    <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
+    <tr ref={rowRef} className={`border-t align-top [&>td]:pt-4 ${dragging ? 'opacity-40' : ''}`} data-testid={`quote-line-${line.id}`}>
       {/* Column min-width (min-w-[12rem]) is declared on the cell so table
           auto-layout reserves the name column instead of squeezing it below the
           input's width (which used to overflow into the qty cell). */}
@@ -614,9 +935,11 @@ export function EditableLineRow({
               onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
               onBlur={commitName}
               disabled={fieldBusy('name')}
+              aria-describedby={nameDirty ? unsavedHintId(line.id, 'name') : undefined}
               data-testid={`quote-line-name-${line.id}`}
               className={`h-9 w-full rounded-md border bg-transparent px-2 py-1 text-sm font-medium transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(nameDirty, saved))}`}
             />
+            <UnsavedFieldHint id={unsavedHintId(line.id, 'name')} show={nameDirty} />
           </div>
         </div>
       </td>
@@ -629,24 +952,28 @@ export function EditableLineRow({
           onBlur={commitQty}
           disabled={fieldBusy('qty')}
           aria-invalid={fieldErrors.qty ? true : undefined}
-          aria-describedby={fieldErrors.qty ? `quote-line-qty-error-${line.id}` : undefined}
+          aria-describedby={describedByIds(fieldErrors.qty && `quote-line-qty-error-${line.id}`, qtyDirty && unsavedHintId(line.id, 'qty'))}
           data-testid={`quote-line-qty-${line.id}`}
           className={`h-9 w-14 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.qty ? 'border-destructive' : seamless(fieldRing(qtyDirty, saved))}`}
         />
+        <UnsavedFieldHint id={unsavedHintId(line.id, 'qty')} show={qtyDirty} />
       </td>
       <td className="px-1.5 py-2 text-right">
         <input
-          type="number" min="0" step="0.01"
-          value={price}
+          type="text" inputMode="decimal"
+          value={priceDisplay}
           aria-label={t('quotes.editor.table.unitPrice')}
-          onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; setFieldError('price', null); }}
-          onBlur={commitPrice}
+          onFocus={() => setPriceFocused(true)}
+          onChange={(e) => { setPrice(filterMoneyChars(e.target.value)); priceEdited.current = true; setFieldError('price', null); }}
+          onBlur={() => { setPriceFocused(false); commitPrice(); }}
           disabled={fieldBusy('price')}
           aria-invalid={fieldErrors.price ? true : undefined}
-          aria-describedby={fieldErrors.price ? `quote-line-price-error-${line.id}` : undefined}
+          aria-describedby={describedByIds(fieldErrors.price && `quote-line-price-error-${line.id}`, priceDirty && unsavedHintId(line.id, 'price'))}
           data-testid={`quote-line-price-${line.id}`}
-          className={`h-9 w-24 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.price ? 'border-destructive' : seamless(fieldRing(priceDirty, saved))}`}
+          style={{ width: growWidth(priceDisplay, 8, 16) }}
+          className={`h-9 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.price ? 'border-destructive' : seamless(fieldRing(priceDirty, saved))}`}
         />
+        <UnsavedFieldHint id={unsavedHintId(line.id, 'price')} show={priceDirty} />
         {/* Billing cadence belongs with the price ("$1,499.00 /mo"), so its
             select rides directly under the price input instead of claiming a
             table column of its own. */}
@@ -669,7 +996,9 @@ export function EditableLineRow({
       </td>
       <td className="whitespace-nowrap px-1.5 py-2 text-right tabular-nums">
         <span data-testid={`quote-line-total-${line.id}`}>{formatMoney(displayTotal, currency)}</span>
-        {rec !== 'one_time' && (
+        {/* Cadence suffix only when the quote actually mixes cadences — on a
+            uniform quote it's repetition (the recurrence select still shows it). */}
+        {mixedCadence && rec !== 'one_time' && (
           <span className="text-xs text-muted-foreground">{rec === 'monthly' ? t('quotes.editor.units.perMonth') : t('quotes.editor.units.perYear')}</span>
         )}
         <div className="text-xs font-normal text-muted-foreground" data-testid={`quote-line-tax-${line.id}`}>
@@ -679,14 +1008,36 @@ export function EditableLineRow({
         </div>
         <SrSaved show={saved} testId={`quote-line-saved-${line.id}`} />
       </td>
-      <td className="px-1.5 py-2 text-right">
+      <td className="whitespace-nowrap px-1.5 py-2 text-right">
+        {/* Drag-to-reorder grip (writers, within this table only). Mouse/touch
+            affordance — keyboard users reorder via the ⋯ menu's Move up/down,
+            which the title spells out. Cross-block moves stay menu-only. */}
+        {onDragStartRow && (
+          <button
+            type="button"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', line.id);
+              onDragStartRow();
+            }}
+            onDragEnd={() => onDragEndRow?.()}
+            disabled={removeBusy}
+            aria-label={t('quotes.editor.actions.dragLine')}
+            title={t('quotes.editor.actions.dragLineTitle')}
+            data-testid={`quote-line-drag-${line.id}`}
+            className="mr-0.5 inline-flex h-7 w-7 cursor-grab items-center justify-center rounded align-middle text-muted-foreground hover:bg-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:opacity-30"
+          >
+            <GripVertical className="h-4 w-4" aria-hidden />
+          </button>
+        )}
         {/* ALL row-level actions live behind one overflow menu, so tabbing
             through a line is data-entry only — one stop instead of four, and
             no destructive button sitting mid-path between the price fields and
             the description. Same menu grammar as the header kebab
             (useMenuKeyboard: focus-on-open + arrow cycling; Esc-to-trigger is
             the local document-level handler above). */}
-        <div ref={moveMenuRef} className="inline-block">
+        <div ref={moveMenuRef} className="inline-block align-middle">
           <button
             ref={moveTriggerRef}
             type="button"
@@ -703,7 +1054,7 @@ export function EditableLineRow({
             aria-haspopup="menu"
             aria-expanded={movePos !== null}
             data-testid={`quote-line-actions-${line.id}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
           >
             <MoreHorizontal className="h-4 w-4" aria-hidden />
           </button>
@@ -814,7 +1165,7 @@ export function EditableLineRow({
     </tr>
     {/* Full-width description row, so writers get a roomy, expandable box instead
         of a cramped textarea squeezed into the narrow Description column. */}
-    <tr className="border-0" data-testid={`quote-line-desc-row-${line.id}`}>
+    <tr className={`border-0 ${dragging ? 'opacity-40' : ''}`} data-testid={`quote-line-desc-row-${line.id}`}>
       <td colSpan={5} className="px-2 pb-2">
         {/* Inline errors for the row's qty/price inputs — rendered full-width
             directly under the row (the narrow cells above can't hold a message);
@@ -834,19 +1185,37 @@ export function EditableLineRow({
           </div>
         )}
         {descOpen && (
-          <textarea
-            ref={descRef}
-            value={desc}
-            aria-label={t('quotes.editor.line.descriptionAria')}
-            placeholder={t('quotes.editor.line.descriptionOptional')}
-            onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
-            onBlur={commitDesc}
-            rows={2}
-            autoFocus={!(line.description ?? '').trim()}
-            disabled={fieldBusy('desc')}
-            data-testid={`quote-line-desc-${line.id}`}
-            className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-transparent px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(descDirty, saved))}`}
-          />
+          <>
+            <textarea
+              ref={descRef}
+              value={desc}
+              aria-label={t('quotes.editor.line.descriptionAria')}
+              placeholder={t('quotes.editor.line.descriptionOptional')}
+              onChange={(e) => { setDesc(e.target.value); descEdited.current = true; }}
+              onFocus={() => setDescFocused(true)}
+              onBlur={() => { setDescFocused(false); commitDesc(); }}
+              rows={2}
+              autoFocus={!(line.description ?? '').trim()}
+              disabled={fieldBusy('desc')}
+              aria-describedby={descDirty ? unsavedHintId(line.id, 'desc') : undefined}
+              data-testid={`quote-line-desc-${line.id}`}
+              className={`min-h-9 w-full resize-y overflow-hidden rounded-md border bg-transparent px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(descDirty, saved))}`}
+            />
+            <UnsavedFieldHint id={unsavedHintId(line.id, 'desc')} show={descDirty} />
+            {/* Show more/less for a clamped long description. Focusing the
+                textarea also expands it, so this is mainly the mouse/AT path. */}
+            {descLong && (
+              <button
+                type="button"
+                onClick={() => setDescShowAll((v) => !v)}
+                aria-expanded={!descClamped}
+                data-testid={`quote-line-desc-clamp-toggle-${line.id}`}
+                className="mt-0.5 inline-flex items-center rounded text-xs font-medium text-muted-foreground hover:text-foreground focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {descClamped ? t('quotes.editor.line.showMore') : t('quotes.editor.line.showLess')}
+              </button>
+            )}
+          </>
         )}
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {/* Taxable moved out of its own table column: it's an editing control,
@@ -899,6 +1268,8 @@ export function EditableLineRow({
               disabled={fieldBusy('polish')}
               idSuffix={`quote-line-${line.id}`}
               compact
+              label={t('quotes.editor.line.tidyWithAi')}
+              icon={<Sparkles className="h-3 w-3" aria-hidden="true" />}
               getText={() => ({ name, description: desc })}
               onApply={(r) => {
                 const patch: { name?: string | null; description?: string | null } = {};
@@ -970,15 +1341,35 @@ export function EditableLineRow({
       </td>
     </tr>
     {/* Internal-only cost/markup/profit band — never shown to the customer.
-        Collapsed by default via the editor's "Show cost & margin" toggle; kept in
-        the DOM (hidden) rather than unmounted so totals/draft wiring stays live. */}
-    <tr className={`border-0 ${showInternal ? '' : 'hidden'}`} data-testid={`quote-line-internal-${line.id}`}>
+        Hidden entirely via the editor's "Show cost & margin" toggle; kept in
+        the DOM (hidden) rather than unmounted so totals/draft wiring stays live.
+        When shown, each line defaults to the compact summary; the full editing
+        micro-form appears behind the per-line disclosure. */}
+    <tr className={`border-0 ${showInternal ? '' : 'hidden'} ${dragging ? 'opacity-40' : ''}`} data-testid={`quote-line-internal-${line.id}`}>
       <td colSpan={5} className="px-2 pb-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground/70 dark:text-muted-foreground">
-          {/* Full disclaimer on the first row; a subtle "Internal" tag persists on
-              every following row so a writer scanning mid-table never mistakes the
-              cost/markup band for customer-facing copy. */}
-          <span className="font-medium uppercase tracking-wide">{isFirst ? t('quotes.editor.internal.full') : t('quotes.editor.internal.short')}</span>
+        <div className="rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground/70 dark:text-muted-foreground">
+          {/* The toggle carries the disclaimer (full wording on the first row, the
+              subtle "Internal" tag on the rest) so a writer scanning mid-table
+              never mistakes the cost/markup band for customer-facing copy. The
+              summary reflects LIVE field state, not just the persisted line. */}
+          <InternalBandToggle
+            lineId={line.id}
+            isFirst={isFirst}
+            expanded={internalExpanded}
+            onToggle={() => setInternalOpen((v) => !v)}
+            summary={
+              <InternalBandSummary
+                lineId={line.id}
+                sku={sku.trim()}
+                costStr={cost.trim() === '' ? t('quotes.editor.symbols.notAvailable') : formatMoney(cost, currency)}
+                costMissing={costMissing}
+                markupStr={markupStr === '' ? t('quotes.editor.symbols.notAvailable') : `${markupStr}${t('quotes.editor.symbols.percent')}`}
+                profitStr={netCents === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(fromCents(netCents), currency)}
+              />
+            }
+          />
+          <InternalBandCollapse expanded={internalExpanded} testId={`quote-line-internal-detail-${line.id}`}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-0.5 pt-1.5">
           <label className="flex items-center gap-1">{t('quotes.editor.line.sku')}
             <input
               type="text"
@@ -986,9 +1377,11 @@ export function EditableLineRow({
               onChange={(e) => { setSku(e.target.value); skuEdited.current = true; }}
               onBlur={commitSku}
               disabled={fieldBusy('sku')}
+              aria-describedby={skuDirty ? unsavedHintId(line.id, 'sku') : undefined}
               data-testid={`quote-line-sku-${line.id}`}
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(skuDirty, saved)}`}
             />
+            <UnsavedFieldHint id={unsavedHintId(line.id, 'sku')} show={skuDirty} />
           </label>
           <label className="flex items-center gap-1">{t('quotes.editor.line.partNumberAbbr')}
             <input
@@ -997,22 +1390,44 @@ export function EditableLineRow({
               onChange={(e) => { setPartNumber(e.target.value); partEdited.current = true; }}
               onBlur={commitPartNumber}
               disabled={fieldBusy('pn')}
+              aria-describedby={partDirty ? unsavedHintId(line.id, 'pn') : undefined}
               data-testid={`quote-line-partnumber-${line.id}`}
               className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(partDirty, saved)}`}
             />
+            <UnsavedFieldHint id={unsavedHintId(line.id, 'pn')} show={partDirty} />
           </label>
           <label className="flex items-center gap-1">{t('quotes.editor.line.cost')}
             <input
-              type="number" min="0" step="0.01"
-              value={cost}
-              onChange={(e) => { setCost(e.target.value); costEdited.current = true; setFieldError('cost', null); }}
-              onBlur={commitCost}
+              ref={costInputRef}
+              type="text" inputMode="decimal"
+              value={costDisplay}
+              onFocus={() => setCostFocused(true)}
+              onChange={(e) => { setCost(filterMoneyChars(e.target.value)); costEdited.current = true; setFieldError('cost', null); }}
+              onBlur={() => { setCostFocused(false); commitCost(); }}
               disabled={fieldBusy('cost')}
               aria-invalid={fieldErrors.cost ? true : undefined}
-              aria-describedby={fieldErrors.cost ? `quote-line-cost-error-${line.id}` : undefined}
+              aria-describedby={describedByIds(
+                fieldErrors.cost && `quote-line-cost-error-${line.id}`,
+                costDirty && unsavedHintId(line.id, 'cost'),
+              )}
               data-testid={`quote-line-cost-${line.id}`}
-              className={`h-6 w-20 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${fieldErrors.cost ? 'border-destructive ring-1 ring-destructive' : fieldRing(costDirty, saved)}`}
+              style={{ width: growWidth(costDisplay, 6, 14) }}
+              // Priority: validation error (destructive) > unsaved edit (amber
+              // dirty ring) > a genuinely missing cost (warning tint — Task 2's
+              // "distinct from the amber dirty ring" treatment, using the same
+              // warning token family at lower opacity so it reads as related but
+              // not identical) > saved flash / rest.
+              className={`h-6 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${
+                fieldErrors.cost
+                  ? 'border-destructive ring-1 ring-destructive'
+                  : costDirty
+                    ? fieldRing(costDirty, saved)
+                    : costMissing
+                      ? 'border-warning/50'
+                      : fieldRing(false, saved)
+              }`}
             />
+            <UnsavedFieldHint id={unsavedHintId(line.id, 'cost')} show={costDirty} />
           </label>
           {fieldErrors.cost && (
             <p id={`quote-line-cost-error-${line.id}`} className="w-full text-xs font-normal normal-case tracking-normal text-destructive" data-testid={`quote-line-cost-error-${line.id}`}>
@@ -1032,7 +1447,8 @@ export function EditableLineRow({
               title={cost.trim() === '' ? t('quotes.editor.line.enterCostFirstMarkup') : undefined}
               aria-describedby={cost.trim() === '' ? `quote-line-markup-hint-${line.id}` : undefined}
               data-testid={`quote-line-markup-${line.id}`}
-              className="h-6 w-16 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
+              style={{ width: growWidth(markupInput, 5, 10) }}
+              className="h-6 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
             />{t('quotes.editor.symbols.percent')}
             {cost.trim() === '' && <span id={`quote-line-markup-hint-${line.id}`} className="sr-only">{t('quotes.editor.line.enterCostFirstMarkupSentence')}</span>}
           </label>
@@ -1041,6 +1457,8 @@ export function EditableLineRow({
               {netCents === null ? t('quotes.editor.symbols.notAvailable') : formatMoney(fromCents(netCents), currency)}
             </span>
           </span>
+          </div>
+          </InternalBandCollapse>
         </div>
       </td>
     </tr>

@@ -447,7 +447,11 @@
         "addSection": "Ajouter une section",
         "adding": "Ajout…",
         "cancel": "Annuler",
+        "collapseSection": "Réduire la section",
+        "dragLine": "Glisser pour réordonner la ligne",
+        "dragLineTitle": "Glisser pour réordonner dans ce tableau. Au clavier : utilisez Monter/Descendre dans le menu de la ligne.",
         "dragSection": "Glisser pour réordonner la section",
+        "expandSection": "Développer la section",
         "fetch": "Récupérer",
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Remplacer l'image",
         "sectionActions": "Actions de la section",
         "showCostMargin": "Afficher coût et marge",
+        "tidyAllDescriptions": "Peaufiner toutes les descriptions",
         "uploadAddImage": "Téléverser et ajouter l'image",
         "uploading": "Téléversement…"
       },
       "addLine": {
+        "addFromCatalog": "Ajouter depuis le catalogue",
+        "aiLookupAction": "Recherche IA",
         "catalogItem": "Article du catalogue",
         "manualLine": "Ligne manuelle",
-        "moreWays": "Plus de façons d'ajouter (catalogue, recherche IA, détails)",
+        "moreDetails": "Plus de détails",
         "searchDistributor": "Rechercher un distributeur",
         "searchPax8": "Rechercher Pax8"
       },
@@ -605,6 +612,7 @@
         "billing": "Facturation",
         "billingFrequencyAria": "Fréquence de facturation",
         "cost": "Coût",
+        "costMissingAria": "Coût non renseigné — cette ligne est exclue de l'estimation du profit.",
         "descriptionAria": "Description de la ligne",
         "descriptionOptional": "Description (facultatif)",
         "enterCostFirstMarkup": "Saisissez d'abord un coût pour définir le % de marge",
@@ -619,8 +627,11 @@
         "profit": "Profit",
         "quantityAria": "Quantité",
         "saveToCatalog": "Enregistrer dans le catalogue",
+        "showLess": "Afficher moins",
+        "showMore": "Afficher plus",
         "sku": "SKU",
         "skuOptional": "SKU (facultatif)",
+        "tidyWithAi": "Peaufiner avec l'IA",
         "unitCost": "Coût unitaire"
       },
       "liveTotals": {
@@ -635,6 +646,10 @@
         "taxRate": "Taux de taxe",
         "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
         "title": "Totaux en direct"
+      },
+      "outline": {
+        "aria": "Sommaire du devis",
+        "title": "Sommaire"
       },
       "recurrence": {
         "annual": "Annuel",
@@ -662,6 +677,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} lignes · {{amount}}",
+        "collapsedSummary_one": "{{count}} ligne · {{amount}}",
+        "collapsedSummary_other": "{{count}} lignes · {{amount}}",
         "emptyLines": "Aucune ligne pour le moment. Ajoutez un article du catalogue ou une ligne manuelle ci-dessous.",
         "fallbackName": "Tableau de prix {{number}}",
         "item": "Article",
@@ -682,6 +700,10 @@
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
         "title": "Conditions générales"
+      },
+      "tidyAll": {
+        "complete": "{{count}} description(s) passée(s) en revue.",
+        "noDescriptions": "Aucune description de ligne à peaufiner dans cette section."
       },
       "title": {
         "label": "Titre du devis",
@@ -728,6 +750,14 @@
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
         "placeholder": "Saisissez le nom de l'article…"
+      },
+      "unassigned": {
+        "explainer": "Ces lignes ne figurent dans aucune section tarifaire, mais elles apparaissent malgré tout sur le devis du client et sont comptées dans ses totaux. Déplacez chacune d'elles dans une section tarifaire pour maîtriser l'endroit où elle apparaît.",
+        "moveAria": "Déplacer {{line}} vers une section tarifaire",
+        "movePlaceholder": "Déplacer vers…",
+        "noTargets": "Ajoutez une section tarifaire, puis déplacez-y ces lignes.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Lignes non affectées"
       }
     },
     "actions": {
@@ -1044,7 +1074,7 @@
       "tabs": {
         "editor": "Éditeur",
         "preview": "Aperçu",
-        "detail": "Détail"
+        "detail": "Détails"
       }
     }
   },

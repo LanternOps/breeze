@@ -93,3 +93,23 @@ export function fieldRing(dirty: boolean, saved: boolean): string {
 export function seamless(state: string): string {
   return state || 'border-transparent hover:border-border focus:border-border';
 }
+
+// The amber dirty ring (fieldRing) is a COLOR-only signal — a screen-reader
+// user tabbing through a pricing-table row gets no equivalent cue that a field
+// holds an unsaved edit. `unsavedHintId` builds a stable id for a field's
+// SR-only "Unsaved" description; wire it to the field's `aria-describedby`
+// while dirty and render `<UnsavedFieldHint id={that id} show={dirty} />`
+// immediately after the field. Deliberately NOT a visible badge (per-field
+// badges across a long pricing table were noisy) and NOT an aria-live
+// announcement (a live region would fire on every keystroke) — just parity for
+// AT users at the moment they land on the field, same as sighted users see the
+// border the moment they look at it.
+export function unsavedHintId(lineId: string, field: string): string {
+  return `quote-line-${field}-unsaved-${lineId}`;
+}
+
+export function UnsavedFieldHint({ id, show }: { id: string; show: boolean }) {
+  const { t } = useTranslation('billing');
+  if (!show) return null;
+  return <span id={id} className="sr-only">{t('billingUi.unsaved')}</span>;
+}
