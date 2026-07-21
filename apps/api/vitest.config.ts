@@ -106,6 +106,13 @@ export default defineConfig({
       // fail it on connect. Belongs to vitest.integration.config.ts
       // (registered in its include list).
       'src/services/actionIntents/resultSecrets.integration.test.ts',
+      // Real-Redis integration test for the #2707 approver-device register
+      // grant chain: imports `__tests__/integration/setup` (real Redis via
+      // ioredis), so the no-Redis unit runner would fail it on connect.
+      // Belongs to vitest.integration.config.ts (registered in its include
+      // list). NOT the same file as the co-located mocked unit suite
+      // `mfaStepUpGrant.test.ts`, which stays on this runner.
+      'src/services/mfaStepUpGrant.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

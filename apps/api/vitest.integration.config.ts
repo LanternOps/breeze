@@ -136,6 +136,12 @@ export default defineConfig({
       // this config's globalSetup provides. Belongs here, not the unit
       // runner (no DB, no child-process fork target).
       'src/extensions/twoReplicaReconcile.integration.test.ts',
+      // Co-located real-Redis integration test for the #2707 approver-device
+      // register grant chain (mint -> validate -> consume -> replay rejected,
+      // cross-operation isolation, TTL): imports `__tests__/integration/setup`
+      // (real Redis; no Postgres fixtures used). Belongs to
+      // vitest.integration.config.ts, not the no-Redis unit runner.
+      'src/services/mfaStepUpGrant.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
