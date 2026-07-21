@@ -128,6 +128,14 @@ authenticatorRoutes.post(
     const { currentPassword } = c.req.valid('json');
 
     if (await userHasStrongerReauthFactor(auth.user.id)) {
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.authenticator.register_grant.denied',
+        result: 'failure',
+        reason: 'stronger_factor_required',
+        userId: auth.user.id,
+        email: auth.user.email,
+      });
       return c.json({ error: 'stronger_factor_required' }, 403);
     }
 
@@ -141,6 +149,14 @@ authenticatorRoutes.post(
 
     const epochs = await getUserEpochs(auth.user.id);
     if (!epochs || !auth.token.sid) {
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.authenticator.register_grant.mint_failed',
+        result: 'failure',
+        reason: 'epochs_unavailable',
+        userId: auth.user.id,
+        email: auth.user.email,
+      });
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
     const registerGrantId = await mintStepUpGrant({
@@ -151,6 +167,14 @@ authenticatorRoutes.post(
       sid: auth.token.sid,
     });
     if (!registerGrantId) {
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.authenticator.register_grant.mint_failed',
+        result: 'failure',
+        reason: 'mint_failed',
+        userId: auth.user.id,
+        email: auth.user.email,
+      });
       return c.json({ error: 'Service temporarily unavailable' }, 503);
     }
 
@@ -272,13 +296,16 @@ authenticatorRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const grantError = await enforceApproverRegisterStepUp(c, auth, body.registerGrantId, { consume: true });
-    if (grantError) return grantError;
-
-    // Re-validate the authoritative fields through the shared strict schema; the
-    // client-asserted kind/isPlatformBound discriminators are ignored (the server
-    // forces kind='mobile_hw_key' + is_platform_bound=true). A bad/missing
-    // publicKey or label is a 400 here, never an insert.
+    // Re-validate the authoritative fields through the shared strict schema
+    // BEFORE consuming the single-use grant: the client-asserted
+    // kind/isPlatformBound discriminators are ignored (the server forces
+    // kind='mobile_hw_key' + is_platform_bound=true). A bad/missing publicKey
+    // or label is a 400 here, never an insert — and parsing first means a
+    // malformed payload never burns a caller's valid grant (unlike the
+    // consume-first ordering, which is correct for /devices/webauthn/verify
+    // because that route's body has no comparable pre-consume validation to
+    // do — the WebAuthn response itself is verified cryptographically, not
+    // schema-parsed).
     const parsed = mobileHwKeyRegisterSchema.safeParse({
       publicKey: (body as { publicKey?: unknown }).publicKey,
       label: (body as { label?: unknown }).label,
@@ -287,6 +314,9 @@ authenticatorRoutes.post(
       return c.json({ error: 'invalid_registration', detail: parsed.error.issues }, 400);
     }
     const { publicKey, label } = parsed.data;
+
+    const grantError = await enforceApproverRegisterStepUp(c, auth, body.registerGrantId, { consume: true });
+    if (grantError) return grantError;
 
     // Per-install device id is a UX/migration hint only (client-controlled,
     // SR-001) — null when the header is absent.

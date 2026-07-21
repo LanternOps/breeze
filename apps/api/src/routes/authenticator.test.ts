@@ -523,6 +523,25 @@ describe('approver device routes', () => {
     expect(dbState.insertValues).toHaveLength(0);
   });
 
+  // A3 (review finding): the payload must be schema-validated BEFORE the
+  // single-use grant is consumed, so a malformed request never burns a
+  // caller's valid grant. A valid grant is supplied here to isolate the
+  // ordering — if consume-then-parse regresses, enforceApproverRegisterStepUp
+  // would be called (and "consumed") even though the request 400s.
+  it('a malformed publicKey with a valid grant 400s WITHOUT ever consuming the grant', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
+
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-5',
+      publicKey: 12345, // not a string — fails mobileHwKeyRegisterSchema
+      label: 'iPhone',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbState.insertValues).toHaveLength(0);
+    expect(helperMocks.enforceApproverRegisterStepUp).not.toHaveBeenCalled();
+  });
+
   describe('POST /register-grant', () => {
     it('mints a grant after password step-up when no stronger factor exists', async () => {
       helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
@@ -544,6 +563,15 @@ describe('approver device routes', () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: 'stronger_factor_required' });
       expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+      // A4: the deny must be audited (failure result, reason on the details).
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.denied',
+          result: 'failure',
+          reason: 'stronger_factor_required',
+        }),
+      );
     });
 
     it('propagates password step-up failures (401/429/503)', async () => {
@@ -561,6 +589,38 @@ describe('approver device routes', () => {
       epochsMock.getUserEpochs.mockResolvedValue(null);
       const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
       expect(res.status).toBe(503);
+      // A4: the mint-failure 503 must be audited too.
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.mint_failed',
+          result: 'failure',
+          reason: 'epochs_unavailable',
+        }),
+      );
+    });
+
+    // A5 (previously untested): mintStepUpGrant itself resolving null (e.g.
+    // Redis down) — distinct from the epochs/sid-unavailable 503 above — must
+    // also 503 and be audited.
+    it('503 when mintStepUpGrant resolves null even though epochs/sid are present', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
+      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
+      epochsMock.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
+      grantMocks.mintStepUpGrant.mockResolvedValue(null);
+
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+      expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.authenticator.register_grant.mint_failed',
+          result: 'failure',
+          reason: 'mint_failed',
+        }),
+      );
     });
   });
 

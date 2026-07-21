@@ -1318,6 +1318,31 @@ describe('authenticatorRegisterGrantId login mint (#2707)', () => {
     expect(body.tokens).toBeDefined();
   });
 
+  // A1 (review finding): mintStepUpGrant REJECTING (not just resolving null)
+  // must not propagate — mintLoginRegisterGrant's doc comment promises
+  // "NEVER throws", but pre-fix there was no try/catch around the mint call,
+  // so a Redis error thrown mid-await would 500 an otherwise-successful,
+  // already-authenticated login. Login must degrade to "no grant", not fail.
+  it('mintStepUpGrant REJECTING still returns 200 with tokens and no grant field', async () => {
+    grantMocks.mintStepUpGrant.mockRejectedValue(new Error('redis connection reset'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await successfulLoginRequest({ headers: { 'X-Breeze-Mobile-Device-Id': 'install-1' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('authenticatorRegisterGrantId');
+    expect(body.tokens).toBeDefined();
+    // A2: an operator-visible error must be logged for a mobile-header mint
+    // decline, but it must NEVER include the grant value (there is none here).
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mock.calls.forEach((call) => {
+      expect(String(call[0])).not.toContain('login-grant-1');
+    });
+
+    errSpy.mockRestore();
+  });
+
   it('POST /auth/refresh NEVER includes the field, even with the mobile header', async () => {
     grantMocks.mintStepUpGrant.mockResolvedValue('should-never-appear');
 

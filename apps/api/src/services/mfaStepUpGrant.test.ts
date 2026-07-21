@@ -122,10 +122,9 @@ describe('mfaStepUpGrant operation isolation', () => {
     await expect(validateStepUpGrant(addFactor!, bind('register_approver_device'))).resolves.toBe(false);
     await expect(consumeStepUpGrant(addFactor!, bind('register_approver_device'))).resolves.toBe(false);
     await expect(validateStepUpGrant(register!, bind('add_factor'))).resolves.toBe(false);
-    // cross-operation consume must NOT burn the grant: getdel deletes, so assert
-    // the register grant was destroyed by the failed add_factor consume attempt
-    // ONLY IF the service deletes on mismatch — current behavior: getdel removes
-    // the key regardless. Pin current behavior:
+    // getdel deletes on mismatch — pinning current behavior: the failed
+    // cross-operation consume attempt above still destroys the register
+    // grant, so even a subsequent same-operation validate below also fails.
     await expect(consumeStepUpGrant(register!, bind('add_factor'))).resolves.toBe(false);
     await expect(validateStepUpGrant(register!, bind('register_approver_device'))).resolves.toBe(false);
   });

@@ -37,7 +37,8 @@ import {
   CSRF_HEADER_NAME,
   CSRF_COOKIE_NAME,
   CSRF_COOKIE_PATH,
-  ANONYMOUS_ACTOR_ID
+  ANONYMOUS_ACTOR_ID,
+  ENABLE_2FA
 } from './schemas';
 
 const { db } = dbModule;
@@ -322,6 +323,18 @@ export async function enforceExistingFactorStepUp(
  * this returns true, keeping the server tiering identical to the UI tiering.
  */
 export async function userHasStrongerReauthFactor(userId: string): Promise<boolean> {
+  // #2707 review: with 2FA disabled cluster-wide (ENABLE_2FA=false), the
+  // step-up endpoint (POST /auth/mfa/step-up) that would normally satisfy a
+  // "stronger factor" is dead — every requireMfa() gate in the API is
+  // disabled along with it (see the ENABLE_2FA warning in ./schemas). If this
+  // still reported true for a user with a leftover TOTP secret or passkey
+  // row, the password-fallback mint (POST /authenticator/register-grant)
+  // would refuse them with no route left to satisfy the alternative,
+  // permanently locking that account out of approver-device registration.
+  // Fail open on the gate (not the grant itself — the grant is still
+  // required) by always reporting no stronger factor when 2FA is off.
+  if (!ENABLE_2FA) return false;
+
   const [row] = await runWithSystemDbAccess(() =>
     db
       .select({
@@ -368,6 +381,20 @@ export async function enforceApproverRegisterStepUp(
     : false;
 
   if (!ok) {
+    // Registration is deferred-proof-of-possession with no other write-time
+    // check — a denial here is the only signal an operator gets that someone
+    // tried to register an approver key without a valid grant (stolen
+    // token, replayed/expired grant, etc). NEVER include the grant value —
+    // only whether one was presented.
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.authenticator.register.denied',
+      result: 'failure',
+      reason: 'register_step_up_required',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { hadGrantId: Boolean(grantId) },
+    });
     return c.json({ error: 'register_step_up_required' }, 403);
   }
   return null;
@@ -379,9 +406,20 @@ export async function enforceApproverRegisterStepUp(
  * can register its approver key promptlessly right after login.
  *
  * Gated on the mobile device-id header: web logins hit the same endpoints and
- * must NEVER receive a live register grant (300s XSS-readable window for a
- * grant the page can't use). Returns null on any failure — login must not
- * break because Redis is down; the phone simply registers on a later login.
+ * must NEVER receive a live register grant — an XSS on the web app COULD
+ * redeem it directly against `POST /authenticator/devices` (arbitrary SPKI,
+ * no further ceremony) to register an attacker-controlled approver key. Only
+ * a genuine mobile client (proven by the device-id header) is ever handed
+ * one.
+ *
+ * NEVER throws: every failure mode (missing epochs, Redis down, or any other
+ * unexpected rejection from a collaborator) is caught here and mapped to
+ * null, so a mint failure can never 500 an otherwise-successful login — the
+ * phone simply registers on a later login. When the mobile header IS
+ * present and the mint declines for any reason, an operator-visible error is
+ * logged (the grant value itself is NEVER logged) so a systemic failure
+ * (e.g. Redis down) is observable instead of silently degrading every mobile
+ * login.
  *
  * NEVER call this from the /auth/refresh handler: a stolen refresh token
  * would then mint a fresh register grant on every rotation, defeating the
@@ -393,15 +431,27 @@ export async function mintLoginRegisterGrant(
   sid: string
 ): Promise<string | null> {
   if (!readMobileDeviceId(c)) return null;
-  const epochs = await getUserEpochs(userId);
-  if (!epochs) return null;
-  return mintStepUpGrant({
-    userId,
-    operation: 'register_approver_device',
-    authEpoch: epochs.authEpoch,
-    mfaEpoch: epochs.mfaEpoch,
-    sid,
-  });
+  try {
+    const epochs = await getUserEpochs(userId);
+    if (!epochs) {
+      console.error(`[auth] mintLoginRegisterGrant: epochs unavailable for user ${userId}; login proceeds without a grant`);
+      return null;
+    }
+    const grantId = await mintStepUpGrant({
+      userId,
+      operation: 'register_approver_device',
+      authEpoch: epochs.authEpoch,
+      mfaEpoch: epochs.mfaEpoch,
+      sid,
+    });
+    if (!grantId) {
+      console.error(`[auth] mintLoginRegisterGrant: mint declined (Redis unavailable?) for user ${userId}; login proceeds without a grant`);
+    }
+    return grantId;
+  } catch (err) {
+    console.error(`[auth] mintLoginRegisterGrant: unexpected failure minting register grant for user ${userId}; login proceeds without a grant:`, err);
+    return null;
+  }
 }
 
 export function isSecureCookieEnvironment(): boolean {

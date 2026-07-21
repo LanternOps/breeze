@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { envFlag } from '../../utils/envFlag';
+import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // ============================================
 // Feature flags
@@ -121,8 +122,16 @@ const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
 // Which grant the proven factor mints. Defaults to the original add_factor so
 // existing clients are untouched; register_approver_device gates the
 // /authenticator register routes (#2707).
+//
+// `satisfies readonly StepUpOperation[]` compile-time-links this literal
+// array to the service's StepUpOperation union — if the two ever diverge
+// (a new operation added to one but not the other), this fails typecheck
+// instead of silently letting a grant type this schema doesn't know about
+// slip through validation, or letting a value this schema accepts fail to
+// match any real operation.
+const STEP_UP_OPERATIONS = ['add_factor', 'register_approver_device'] as const satisfies readonly StepUpOperation[];
 const stepUpOperation = z
-  .enum(['add_factor', 'register_approver_device'])
+  .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('totp'), code: stepUpSixDigit, operation: stepUpOperation }),
