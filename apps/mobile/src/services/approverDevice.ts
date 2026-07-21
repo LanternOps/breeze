@@ -8,10 +8,10 @@
  *
  * All functions are best-effort and FAIL OPEN: a technician with no registered
  * device (or no biometric hardware) simply approves without a proof (recorded
- * as L1). Registration now happens silently at login via
- * {@link ensureApproverDevice} — there is no manual setup step and no PIN. The
- * key activates server-side on its first approval signature (deferred
- * proof-of-possession).
+ * as L1). Registration now happens silently at login, using the login-minted
+ * grant, via {@link ensureApproverDevice} — there is no manual setup step and
+ * no PIN. The key activates server-side on its first approval signature
+ * (deferred proof-of-possession).
  */
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
@@ -57,57 +57,69 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 export type ApproverRegistrationOutcome =
   | { status: 'registered' }
   | { status: 'already_registered' }
+  | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
   | { status: 'failed'; reason: string };
 
+// Single-flight: RootNavigator's effect can re-fire while a registration is in
+// flight (checkAuth double-dispatches setCredentials on cold start). The grant
+// is single-use, so a duplicate attempt would burn a consumed grant into a 403
+// and overwrite a successful outcome. Concurrent callers share one attempt.
+let inFlight: Promise<ApproverRegistrationOutcome> | null = null;
+
 /**
  * Idempotent: ensure this phone has a registered approver key. Called after
- * auth lands (fresh login or restored session). FAILS OPEN — any error
- * (no hardware, offline) leaves the device unregistered; it provisions on a
- * later call. The biometric prompt is NOT triggered here (createKeys is
- * silent); the first approval signature is the first prompt and also activates
- * the device server-side.
+ * auth lands. FAILS OPEN — never throws, never blocks login.
  *
- * Fail-open is deliberate and unchanged: this never throws and never blocks
- * login. What changed is that it no longer fails *silently* — it reports the
- * outcome so the caller can surface it. The server currently requires a
- * `currentPassword` step-up on this endpoint that the app does not send, so the
- * common failure here is an HTTP 400, which used to be swallowed and left every
- * approval from this phone stuck at L1 with no indication to the user.
+ * #2707: registration requires a `register_approver_device` grant minted at
+ * login (`authenticatorRegisterGrantId` in the login/mfa-verify response) —
+ * proof of a fresh interactive login, independent of the bearer token. With no
+ * grant (cold-start restored session) there is nothing to prove with: return
+ * `deferred` WITHOUT touching the network; the device registers on the next
+ * real login. The #2683 banner surfaces this state with actionable copy.
  */
 export async function ensureApproverDevice(
   signer: HardwareSigner = getHardwareSigner(),
+  registerGrant?: string,
 ): Promise<ApproverRegistrationOutcome> {
+  if (inFlight) return inFlight;
+  inFlight = (async (): Promise<ApproverRegistrationOutcome> => {
+    try {
+      if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
+        return { status: 'already_registered' };
+      }
+      if (!(await signer.isAvailable())) {
+        return { status: 'unsupported', reason: 'no_hardware' };
+      }
+      if (!registerGrant) {
+        return { status: 'deferred', reason: 'no_reauth_grant' };
+      }
+      const { publicKey } = await signer.createKeys();              // silent, no biometric
+      const res = await authedFetch('/api/v1/authenticator/devices', {
+        method: 'POST',
+        body: JSON.stringify({
+          publicKey,
+          label: 'This device',
+          registerGrantId: registerGrant,
+        }),
+      });
+      if (!res.ok) {
+        return { status: 'failed', reason: `http_${res.status}` };
+      }
+      const { device } = await res.json();
+      if (!device?.id) {
+        return { status: 'failed', reason: 'missing_device_id' };
+      }
+      await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
+      return { status: 'registered' };
+    } catch {
+      return { status: 'failed', reason: 'exception' };
+    }
+  })();
   try {
-    if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
-      return { status: 'already_registered' };
-    }
-    if (!(await signer.isAvailable())) {
-      return { status: 'unsupported', reason: 'no_hardware' };
-    }
-    const { publicKey } = await signer.createKeys();                // silent, no biometric
-    const res = await authedFetch('/api/v1/authenticator/devices', {
-      method: 'POST',
-      body: JSON.stringify({
-        kind: 'mobile_hw_key',
-        publicKey,
-        label: 'This device',
-        isPlatformBound: true,
-      }),
-    });
-    if (!res.ok) {
-      // Still fail open (we retry on a later call) — but say so.
-      return { status: 'failed', reason: `http_${res.status}` };
-    }
-    const { device } = await res.json();
-    if (!device?.id) {
-      return { status: 'failed', reason: 'missing_device_id' };
-    }
-    await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
-    return { status: 'registered' };
-  } catch {
-    // fail open — never block login on approver provisioning
-    return { status: 'failed', reason: 'exception' };
+    return await inFlight;
+  } finally {
+    inFlight = null;
   }
 }
 

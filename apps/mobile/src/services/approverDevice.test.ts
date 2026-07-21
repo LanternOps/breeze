@@ -68,18 +68,60 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-1' } }));
 
-    await expect(ensureApproverDevice(signer)).resolves.toEqual({ status: 'registered' });
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({ status: 'registered' });
 
-    // No password step-up — passwordless registration body.
+    // Grant-based registration body — no kind/isPlatformBound/currentPassword.
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
-      kind: 'mobile_hw_key',
+      registerGrantId: 'grant-1',
       publicKey: 'SPKI-PUBKEY-B64',
-      isPlatformBound: true,
+      label: 'This device',
     });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('currentPassword');
     expect(signer.createKeys).toHaveBeenCalledTimes(1);
     // credential id persisted for later assertions
     expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_credential_id', 'dev-1');
+  });
+
+  it('returns deferred and does NOT POST when no grant is available', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'deferred',
+      reason: 'no_reauth_grant',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(signer.createKeys).not.toHaveBeenCalled();
+  });
+
+  it('POSTs registerGrantId (and neither kind nor isPlatformBound) when a grant is provided', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-1' } }));
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({ status: 'registered' });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({ registerGrantId: 'grant-1', publicKey: 'SPKI-PUBKEY-B64', label: 'This device' });
+    expect(body).not.toHaveProperty('kind');
+    expect(body).not.toHaveProperty('isPlatformBound');
+    expect(body).not.toHaveProperty('currentPassword');
+  });
+
+  it('concurrent calls share one in-flight attempt (single POST, one grant burn)', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    let release!: (v: unknown) => void;
+    fetchMock.mockReturnValueOnce(new Promise((r) => { release = r; }));
+    const first = ensureApproverDevice(signer, 'grant-1');
+    const second = ensureApproverDevice(signer, 'grant-1');
+    release(json({ device: { id: 'dev-1' } }));
+    await expect(first).resolves.toEqual({ status: 'registered' });
+    await expect(second).resolves.toEqual({ status: 'registered' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op when a credential id already exists', async () => {
@@ -116,7 +158,7 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ error: 'nope' }, 500));
 
-    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
       status: 'failed',
       reason: 'http_500',
     });
@@ -138,7 +180,7 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ error: 'Validation failed' }, 400));
 
-    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
       status: 'failed',
       reason: 'http_400',
     });
@@ -155,7 +197,7 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ device: {} }));
 
-    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
       status: 'failed',
       reason: 'missing_device_id',
     });
@@ -169,7 +211,7 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockRejectedValueOnce(new Error('offline'));
 
-    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
       status: 'failed',
       reason: 'exception',
     });
