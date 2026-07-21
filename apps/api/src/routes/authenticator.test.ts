@@ -11,6 +11,8 @@ const {
   approverMocks,
   mobileHwKeyMocks,
   helperMocks,
+  grantMocks,
+  epochsMock,
   authState,
 } = vi.hoisted(() => {
   const makeSelectChain = (rows: unknown[]) => {
@@ -52,6 +54,14 @@ const {
     helperMocks: {
       requireCurrentPasswordStepUp: vi.fn(),
       writeAuthAudit: vi.fn(),
+      enforceApproverRegisterStepUp: vi.fn(),
+      userHasStrongerReauthFactor: vi.fn(),
+    },
+    grantMocks: {
+      mintStepUpGrant: vi.fn(),
+    },
+    epochsMock: {
+      getUserEpochs: vi.fn(),
     },
     authState: {
       requireAuthorizationHeader: true,
@@ -72,8 +82,13 @@ vi.mock('./auth/helpers', () => ({
   ...helperMocks,
 }));
 
+vi.mock('../services/mfaStepUpGrant', () => ({
+  ...grantMocks,
+}));
+
 vi.mock('../services', () => ({
   getRedis: vi.fn(() => redisMock),
+  getUserEpochs: epochsMock.getUserEpochs,
 }));
 
 vi.mock('../db', () => ({
@@ -135,7 +150,7 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       orgId: 'org-123',
       partnerId: 'partner-123',
-      token: { mfa: true },
+      token: { mfa: true, sid: 'sid-123' },
     });
     return next();
   }),
@@ -190,6 +205,10 @@ describe('approver device routes', () => {
     authState.denyPermission = false;
     helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
     helperMocks.writeAuthAudit.mockReturnValue(undefined);
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
+    helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
+    epochsMock.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+    grantMocks.mintStepUpGrant.mockResolvedValue('grant-uuid');
     approverMocks.generateApproverRegistrationOptions.mockResolvedValue({
       challenge: 'register-challenge',
       rp: { name: 'Breeze' },
@@ -210,61 +229,69 @@ describe('approver device routes', () => {
     app.route('/me/approver-devices', approverDevicesRoutes);
   });
 
-  it('requires authentication for registration options', async () => {
-    const res = await app.request('/authenticator/devices/webauthn/options', {
+  // Shared request-builder for the authenticator routes — mirrors the file's
+  // existing app.request(...) style, defaulting to an authenticated caller.
+  async function postJson(path: string, body: unknown, opts: { authorized?: boolean } = {}) {
+    const authorized = opts.authorized ?? true;
+    return app.request(`/authenticator${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentPassword: 'pw' }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authorized ? { Authorization: 'Bearer access-token' } : {}),
+      },
+      body: JSON.stringify(body),
     });
+  }
+
+  it('requires authentication for registration options', async () => {
+    const res = await postJson('/devices/webauthn/options', { registerGrantId: 'g-1' }, { authorized: false });
     expect(res.status).toBe(401);
     expect(approverMocks.generateApproverRegistrationOptions).not.toHaveBeenCalled();
   });
 
-  it('returns registration options after the current-password step-up', async () => {
-    const res = await app.request('/authenticator/devices/webauthn/options', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ currentPassword: 'correct-password' }),
-    });
+  it('returns registration options after grant validation (non-consuming)', async () => {
+    const res = await postJson('/devices/webauthn/options', { registerGrantId: 'g-1' });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ options: { challenge: 'register-challenge' } });
-    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+    expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
       expect.anything(),
-      'user-123',
-      'correct-password',
-      expect.any(String),
+      expect.anything(),
+      'g-1',
+      { consume: false },
     );
     expect(approverMocks.generateApproverRegistrationOptions).toHaveBeenCalledWith(
       expect.objectContaining({ user: expect.objectContaining({ id: 'user-123' }) }),
     );
   });
 
-  it('blocks registration options when the password step-up fails', async () => {
-    helperMocks.requireCurrentPasswordStepUp.mockResolvedValueOnce(
+  it('blocks registration options when grant enforcement fails', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(
       // a Response from the helper signals failure
-      new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 }),
+      new Response(JSON.stringify({ error: 'register_step_up_required' }), { status: 403 }),
     );
 
-    const res = await app.request('/authenticator/devices/webauthn/options', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ currentPassword: 'wrong-password' }),
-    });
+    const res = await postJson('/devices/webauthn/options', { registerGrantId: 'bad-grant' });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(approverMocks.generateApproverRegistrationOptions).not.toHaveBeenCalled();
   });
 
   it('verifies registration and inserts a webauthn_platform device row', async () => {
-    const res = await app.request('/authenticator/devices/webauthn/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ label: 'My Laptop', response: { id: 'credential-1', response: {} } }),
+    const res = await postJson('/devices/webauthn/verify', {
+      registerGrantId: 'g-1',
+      label: 'My Laptop',
+      response: { id: 'credential-1', response: {} },
     });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ success: true, device: { id: 'device-1' } });
+    expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'g-1',
+      { consume: true },
+    );
 
     const inserted = dbState.insertValues[0];
     expect(inserted).toMatchObject({
@@ -341,9 +368,9 @@ describe('approver device routes', () => {
     expect(dbState.updateSets).toContainEqual(expect.objectContaining({ label: 'New Name' }));
   });
 
-  // --- Mobile hardware-key registration (POST /devices) — password step-up required, activates on first signature ---
+  // --- Mobile hardware-key registration (POST /devices) — register-grant required, activates on first signature ---
 
-  it('registers a mobile_hw_key after the current-password step-up and stores it pending', async () => {
+  it('registers a mobile_hw_key after grant consumption and stores it pending', async () => {
     dbState.insertReturning = [
       {
         ...deviceRow,
@@ -356,10 +383,12 @@ describe('approver device routes', () => {
       },
     ];
 
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-1',
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
     });
 
     expect(res.status).toBe(201);
@@ -367,13 +396,14 @@ describe('approver device routes', () => {
     expect(body.device.id).toBe('mobile-pending-1');
     expect(body.device.label).toBe('iPhone');
 
-    // Step-up must have been called before insert, matching the sibling's key prefix.
-    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+    // Grant must be consumed before insert, matching the sibling's contract.
+    expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
       expect.anything(),
-      'user-123',
-      'correct-password',
-      'authenticator:pwd',
+      expect.anything(),
+      'g-mobile-1',
+      { consume: true },
     );
+    expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
 
     const inserted = dbState.insertValues[0];
     expect(inserted).toMatchObject({
@@ -396,36 +426,50 @@ describe('approver device routes', () => {
     );
   });
 
-  it('rejects mobile_hw_key registration when currentPassword is missing (400)', async () => {
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
+  it('rejects mobile_hw_key registration when grant enforcement fails, including a missing registerGrantId (403)', async () => {
+    // registerGrantId is optional at the schema layer (mirrors the existing
+    // stepUpGrantId fields) — a missing grant reaches the security helper and
+    // gets the uniform 403, not a generic validation 400.
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'register_step_up_required' }), { status: 403 }),
+    );
+    const missingGrantRes = await postJson('/devices', {
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
     });
-    expect(res.status).toBe(400);
-    expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    expect(missingGrantRes.status).toBe(403);
+    expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      { consume: true },
+    );
     expect(dbState.insertValues).toHaveLength(0);
   });
 
-  it('rejects mobile_hw_key registration when the password step-up fails (401)', async () => {
-    helperMocks.requireCurrentPasswordStepUp.mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 }),
+  it('rejects mobile_hw_key registration when grant enforcement fails (403)', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'register_step_up_required' }), { status: 403 }),
     );
 
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'wrong-password' }),
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-bad',
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
     });
 
-    expect(res.status).toBe(401);
-    expect(helperMocks.requireCurrentPasswordStepUp).toHaveBeenCalledWith(
+    expect(res.status).toBe(403);
+    expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenCalledWith(
       expect.anything(),
-      'user-123',
-      'wrong-password',
-      'authenticator:pwd',
+      expect.anything(),
+      'g-bad',
+      { consume: true },
     );
-    // No insert should happen when the step-up is rejected.
+    // No insert should happen when the grant is rejected.
     expect(dbState.insertValues).toHaveLength(0);
   });
 
@@ -448,7 +492,7 @@ describe('approver device routes', () => {
         Authorization: 'Bearer access-token',
         'X-Breeze-Mobile-Device-Id': '11111111-2222-3333-4444-555555555555',
       },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
+      body: JSON.stringify({ registerGrantId: 'g-mobile-2', kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
     });
 
     expect(res.status).toBe(201);
@@ -457,23 +501,114 @@ describe('approver device routes', () => {
   });
 
   it('requires authentication for mobile_hw_key registration', async () => {
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
-    });
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-3',
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
+    }, { authorized: false });
     expect(res.status).toBe(401);
     expect(dbState.insertValues).toHaveLength(0);
   });
 
   it('rejects mobile_hw_key registration with a missing publicKey (400)', async () => {
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ kind: 'mobile_hw_key', label: 'iPhone', isPlatformBound: true, currentPassword: 'correct-password' }),
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-4',
+      kind: 'mobile_hw_key',
+      label: 'iPhone',
+      isPlatformBound: true,
     });
     expect(res.status).toBe(400);
     expect(dbState.insertValues).toHaveLength(0);
+  });
+
+  describe('POST /register-grant', () => {
+    it('mints a grant after password step-up when no stronger factor exists', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
+      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
+      epochsMock.getUserEpochs.mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
+      grantMocks.mintStepUpGrant.mockResolvedValue('grant-uuid');
+
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ registerGrantId: 'grant-uuid' });
+      expect(grantMocks.mintStepUpGrant).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'register_approver_device' }),
+      );
+    });
+
+    it('403 stronger_factor_required when the account has TOTP or a passkey', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(true);
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'stronger_factor_required' });
+      expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    });
+
+    it('propagates password step-up failures (401/429/503)', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
+      helperMocks.requireCurrentPasswordStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'Invalid credentials' }, 401),
+      );
+      const res = await postJson('/register-grant', { currentPassword: 'wrong' });
+      expect(res.status).toBe(401);
+    });
+
+    it('503 when sid/epochs unavailable', async () => {
+      helperMocks.userHasStrongerReauthFactor.mockResolvedValue(false);
+      helperMocks.requireCurrentPasswordStepUp.mockResolvedValue(null);
+      epochsMock.getUserEpochs.mockResolvedValue(null);
+      const res = await postJson('/register-grant', { currentPassword: 'hunter2!' });
+      expect(res.status).toBe(503);
+    });
+  });
+
+  describe('register routes take registerGrantId', () => {
+    it('options validates (consume:false); verify consumes (consume:true)', async () => {
+      helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
+      approverMocks.generateApproverRegistrationOptions.mockResolvedValue({ challenge: 'c' });
+      await postJson('/devices/webauthn/options', { registerGrantId: 'g-1' });
+      expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenLastCalledWith(
+        expect.anything(), expect.anything(), 'g-1', { consume: false },
+      );
+
+      approverMocks.verifyApproverRegistration.mockResolvedValue({
+        publicKey: 'pk', credentialId: 'cid', counter: 0, aaguid: null, transports: null, isPlatformBound: true,
+      });
+      dbState.insertReturning = [{ id: 'dev-1', label: 'x', kind: 'webauthn_platform', isPlatformBound: true, transports: [] }];
+      await postJson('/devices/webauthn/verify', { registerGrantId: 'g-1', response: { id: 'att' } });
+      expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenLastCalledWith(
+        expect.anything(), expect.anything(), 'g-1', { consume: true },
+      );
+    });
+
+    it('mobile POST /devices consumes the grant and no longer reads currentPassword', async () => {
+      helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
+      dbState.insertReturning = [{ id: 'dev-2', label: 'This device', kind: 'mobile_hw_key', isPlatformBound: true, transports: [] }];
+      const res = await postJson('/devices', { registerGrantId: 'g-2', publicKey: 'SPKI', label: 'This device' });
+      // The mobile route returns 201 on insert (unchanged by #2707 — only the
+      // step-up mechanism moved from currentPassword to a register grant).
+      expect(res.status).toBe(201);
+      expect(helperMocks.enforceApproverRegisterStepUp).toHaveBeenLastCalledWith(
+        expect.anything(), expect.anything(), 'g-2', { consume: true },
+      );
+      expect(helperMocks.requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    });
+
+    it('403s all three routes when enforcement rejects — including a missing grant', async () => {
+      helperMocks.enforceApproverRegisterStepUp.mockImplementation(async (c: any) =>
+        c.json({ error: 'register_step_up_required' }, 403),
+      );
+      for (const [path, body] of [
+        ['/devices/webauthn/options', {}],
+        ['/devices/webauthn/verify', { response: { id: 'att' } }],
+        ['/devices', { publicKey: 'SPKI', label: 'x' }],
+      ] as const) {
+        const res = await postJson(path, body);
+        expect(res.status, path).toBe(403);
+      }
+    });
   });
 });
 

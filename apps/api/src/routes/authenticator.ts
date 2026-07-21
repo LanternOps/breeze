@@ -12,7 +12,14 @@ import {
 } from '../services/approverWebAuthn';
 import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
-import { requireCurrentPasswordStepUp, writeAuthAudit } from './auth/helpers';
+import {
+  requireCurrentPasswordStepUp,
+  writeAuthAudit,
+  enforceApproverRegisterStepUp,
+  userHasStrongerReauthFactor,
+} from './auth/helpers';
+import { mintStepUpGrant } from '../services/mfaStepUpGrant';
+import { getUserEpochs } from '../services';
 import { authenticatorPolicySchema, mobileHwKeyRegisterSchema } from '@breeze/shared';
 
 // Attestation payload is a large nested object validated structurally by
@@ -27,33 +34,35 @@ const attestationResponseSchema = z
 
 const deviceLabelSchema = z.string().trim().min(1).max(255);
 
+// #2707: registration is grant-gated (enforceApproverRegisterStepUp), not
+// re-validated password-by-password on every call. `registerGrantId` is
+// optional at the wire/schema layer — same pattern as the existing
+// `stepUpGrantId` fields (auth/passkeys.ts, auth/mfa.ts, auth/phone.ts) — so a
+// missing grant still reaches the security helper and gets the uniform
+// `register_step_up_required` 403 instead of a generic validation 400.
+const registerGrantIdSchema = z.string().min(1).max(128).optional();
+
 const registerOptionsSchema = z.object({
-  currentPassword: z.string().min(1).max(256),
+  registerGrantId: registerGrantIdSchema,
 });
 const registerVerifySchema = z.object({
+  registerGrantId: registerGrantIdSchema,
   response: attestationResponseSchema,
   label: deviceLabelSchema.optional(),
 });
+const registerGrantMintSchema = z.object({
+  currentPassword: z.string().min(1).max(256),
+});
 
-// Mobile hardware-key registration — requires a current-password step-up.
-// The phone POSTs its freshly generated Secure-Enclave / Keystore SPKI public
-// key + a label, plus the account password to prove the caller controls the
-// account (not merely a stolen access token). No registration-time signature —
-// the key is stored PENDING (last_used_at null) and ACTIVATES on its first
-// approval signature, which is verified in the assurance path.
-//
-// The wire body also carries client-asserted `kind` / `isPlatformBound`
-// discriminators (the mobile client sends them); we tolerate but do NOT trust
-// them — the server forces kind='mobile_hw_key' and is_platform_bound=true. The
-// authoritative `publicKey` + `label` are re-validated through the shared
-// `mobileHwKeyRegisterSchema` (`.strict()`) before insert; `currentPassword` is
-// intentionally stripped prior to that parse so the strict schema doesn't reject
-// the field.
+// Mobile hardware-key registration — requires a register_approver_device grant
+// (minted at login, returned as authenticatorRegisterGrantId). The old
+// client-asserted kind/isPlatformBound discriminators are ignored entirely; the
+// server forces kind='mobile_hw_key' and is_platform_bound=true. publicKey +
+// label are re-validated through the shared mobileHwKeyRegisterSchema
+// (`.strict()`) before insert; registerGrantId is stripped prior to that parse.
 const mobileRegisterSchema = z
   .object({
-    currentPassword: z.string().min(1).max(256),
-    kind: z.literal('mobile_hw_key').optional(),
-    isPlatformBound: z.boolean().optional(),
+    registerGrantId: registerGrantIdSchema,
   })
   .passthrough();
 const revokeSchema = z.object({
@@ -106,16 +115,22 @@ function findOwnedDevice(id: string, userId: string): Promise<ApproverDeviceRow[
 // the /me/* group (mirrors users/me + auth/passkeys conventions).
 export const authenticatorRoutes = new Hono();
 
+// #2707: password-fallback grant mint for the browser register flow. Gated:
+// accounts holding a stronger factor (TOTP or a passkey) must mint via
+// POST /auth/mfa/step-up instead — otherwise a stolen session + phished
+// password could register an approver key on an MFA-protected account.
 authenticatorRoutes.post(
-  '/devices/webauthn/options',
+  '/register-grant',
   authMiddleware,
-  zValidator('json', registerOptionsSchema),
+  zValidator('json', registerGrantMintSchema),
   async (c) => {
     const auth = c.get('auth');
     const { currentPassword } = c.req.valid('json');
 
-    // Password step-up mirrors routes/auth/passkeys.ts — registering an approver
-    // device is a security-sensitive action and must reconfirm the password.
+    if (await userHasStrongerReauthFactor(auth.user.id)) {
+      return c.json({ error: 'stronger_factor_required' }, 403);
+    }
+
     const passwordError = await requireCurrentPasswordStepUp(
       c,
       auth.user.id,
@@ -123,6 +138,51 @@ authenticatorRoutes.post(
       'authenticator:pwd'
     );
     if (passwordError) return passwordError;
+
+    const epochs = await getUserEpochs(auth.user.id);
+    if (!epochs || !auth.token.sid) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    const registerGrantId = await mintStepUpGrant({
+      userId: auth.user.id,
+      operation: 'register_approver_device',
+      authEpoch: epochs.authEpoch,
+      mfaEpoch: epochs.mfaEpoch,
+      sid: auth.token.sid,
+    });
+    if (!registerGrantId) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.authenticator.register_grant.minted',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: { method: 'password' },
+    });
+
+    return c.json({ registerGrantId });
+  }
+);
+
+// Registration is grant-gated (#2707): the browser mints a register grant via
+// POST /register-grant (password fallback) or POST /auth/mfa/step-up (stronger
+// factor), then presents it here as registerGrantId. The SAME grant validated
+// here (non-consuming) is consumed at /devices/webauthn/verify.
+authenticatorRoutes.post(
+  '/devices/webauthn/options',
+  authMiddleware,
+  zValidator('json', registerOptionsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { registerGrantId } = c.req.valid('json');
+
+    // Non-consuming validate — the SAME grant is consumed at /verify. A
+    // missing/expired/mismatched grant 403s before any challenge is issued.
+    const grantError = await enforceApproverRegisterStepUp(c, auth, registerGrantId, { consume: false });
+    if (grantError) return grantError;
 
     const existing = await listActiveDevices(auth.user.id);
     const options = await generateApproverRegistrationOptions({
@@ -146,7 +206,12 @@ authenticatorRoutes.post(
   zValidator('json', registerVerifySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { response, label } = c.req.valid('json');
+    const { registerGrantId, response, label } = c.req.valid('json');
+
+    // Terminal write — consume the grant (single-use, closes the previously
+    // unguarded verify step: pre-#2707 this route had NO step-up at all).
+    const grantError = await enforceApproverRegisterStepUp(c, auth, registerGrantId, { consume: true });
+    if (grantError) return grantError;
 
     const fields = await verifyApproverRegistration({
       userId: auth.user.id,
@@ -189,12 +254,13 @@ authenticatorRoutes.post(
   }
 );
 
-// Mobile hardware-key registration — password step-up required, then deferred PoP.
-// The phone POSTs its Secure-Enclave / Keystore public key plus the account
-// password (step-up), which proves the caller controls the account and not merely
-// a stolen access token. There is NO registration-time proof-of-possession
-// signature — the row is inserted PENDING (`last_used_at` null) and is ACTIVATED
-// on its first real approval signature, verified in
+// Mobile hardware-key registration — register-grant required (minted at
+// login), then deferred PoP. The phone POSTs its Secure-Enclave / Keystore
+// public key plus the register_approver_device grant, which proves the caller
+// completed the login-time step-up and not merely holds a stolen access
+// token. There is NO registration-time proof-of-possession signature — the
+// row is inserted PENDING (`last_used_at` null) and is ACTIVATED on its first
+// real approval signature, verified in
 // `authenticatorAssurance.verifyMobileFactor` (which sets `last_used_at`). The
 // deferred-PoP design means a registered-but-never-used key can never satisfy an
 // approval until it has signed at least once.
@@ -206,18 +272,8 @@ authenticatorRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    // Password step-up mirrors /devices/webauthn/options — registering an
-    // approver device with a stolen access token is the attack this guards
-    // against. The caller proves they know the account password before any SPKI
-    // key is stored. `currentPassword` is validated by the outer
-    // `mobileRegisterSchema` (required, non-empty) before reaching here.
-    const passwordError = await requireCurrentPasswordStepUp(
-      c,
-      auth.user.id,
-      body.currentPassword,
-      'authenticator:pwd'
-    );
-    if (passwordError) return passwordError;
+    const grantError = await enforceApproverRegisterStepUp(c, auth, body.registerGrantId, { consume: true });
+    if (grantError) return grantError;
 
     // Re-validate the authoritative fields through the shared strict schema; the
     // client-asserted kind/isPlatformBound discriminators are ignored (the server
