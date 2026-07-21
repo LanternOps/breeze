@@ -1184,11 +1184,10 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     },
   );
 
-  // #2630: Reboot is a QUEUED command, not a live session — it used to carry
-  // Remote Terminal's `!== "online"` gate, which meant the same offline device
-  // showed Reboot disabled in list view and enabled in grid view (DeviceCard).
-  // Both surfaces now use isCommandQueueable, so decommissioned is the only
-  // status that disables it.
+  // Reboot is a QUEUED command, not a live session: list view and grid view
+  // (DeviceCard) both gate it with isCommandQueueable, so decommissioned is the
+  // only status that disables it — an offline device keeps Reboot enabled and
+  // the command runs on reconnect.
   it.each(['offline', 'maintenance', 'quarantined', 'updating', 'pending'] as const)(
     'keeps Reboot enabled for a %s device and dispatches (runs on reconnect)',
     (status) => {

@@ -1069,12 +1069,11 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
-  // #2630: loosening the row-menu/grid Reboot gate means these commands now fire
-  // at devices with no connected agent. A 201 there means "a row was inserted",
-  // NOT "the machine rebooted" — there is no dispatch step, and staleCommandReaper
-  // flips it to failed ~30min later with nothing notifying the user. A flat
-  // "sent" toast would therefore be a false success, which is strictly worse than
-  // the over-strict gate it replaced. The copy must name the queue.
+  // Queued commands can fire at devices with no connected agent. A 201 there
+  // means "a row was inserted", NOT "the machine rebooted" — there is no dispatch
+  // step, and staleCommandReaper flips it to failed ~30min later with nothing
+  // notifying the user. A flat "sent" toast would therefore be a false success,
+  // so the copy must name the queue.
   describe('single-device command toast tells the truth about delivery (#2630)', () => {
     async function rebootDeviceWithStatus(status: string) {
       const { sendDeviceCommand } = await import('../../services/deviceActions');

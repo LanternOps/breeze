@@ -76,11 +76,10 @@ describe('DeviceCard action gating (#2488)', () => {
     expect(onAction).not.toHaveBeenCalledWith('terminal', expect.anything());
   });
 
-  // PR #2630: the first cut of this gate (earlier commit in this PR) reused a
-  // blanket "deviceActions.unavailable.notOnline" for Remote Terminal — the one
-  // live-session action on this card — so a quarantined or maintenance device got
-  // a tooltip naming the wrong reason. It now uses the shared per-status map in
-  // bulkActionGating.ts, so this asserts the wiring, not just the strings.
+  // Remote Terminal is the one live-session action on this card, so a disabled
+  // device must get a tooltip naming its ACTUAL status (not a blanket "not
+  // online"). This asserts the wiring to the shared per-status map in
+  // bulkActionGating.ts, not just the strings.
   it.each([
     ['offline', 'Device is offline'],
     ['maintenance', 'Device is in maintenance mode'],
@@ -92,9 +91,8 @@ describe('DeviceCard action gating (#2488)', () => {
     'Remote Terminal on a %s device is disabled and names the actual status',
     (status, expectedTitle) => {
       openCardMenu(status);
-      // `disabled` and `title` come from independent expressions, so asserting
-      // the tooltip alone does NOT imply the gate — narrowing the gate to just
-      // offline+decommissioned left this suite green until this line existed.
+      // `disabled` and `title` come from independent expressions, so assert
+      // both — the tooltip alone does NOT imply the gate is actually applied.
       expect(terminalBtn()).toBeDisabled();
       expect(terminalBtn()).toHaveAttribute('title', expectedTitle);
     },

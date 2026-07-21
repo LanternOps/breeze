@@ -52,15 +52,13 @@ import "../../lib/i18n";
 // reboot, reboot_safe_mode, shutdown, and the Power dropdown trigger — are
 // therefore stricter than the API requires.
 //
-// STATUS (PR #2630): the maintainer decision issue #2486 asked for has now been
-// made, and it went the loosening way — the DeviceList row menu and the grid
-// card both moved to `isCommandQueueable`. This action bar was deliberately NOT
-// included in that PR to keep it reviewable, so it is now the ONLY surface still
-// gating queued commands on `!online`: an offline device shows Reboot enabled in
-// the list and grid, and disabled here. Aligning it is tracked as follow-up work
-// — when you do, use `isCommandQueueable`/`notQueueableTitle` from
-// bulkActionGating.ts rather than re-deriving the rule a fourth time, and drop
-// the private `unavailableTitle` switch below in favour of `notOnlineTitle`.
+// Known inconsistency: the DeviceList row menu and the grid card gate queued
+// commands on `isCommandQueueable` (decommissioned-only), while this action bar
+// still gates them on `!online` — so an offline device shows Reboot enabled in
+// the list and grid but disabled here. This is stricter, not broken. When
+// aligning it, use `isCommandQueueable`/`notQueueableTitle` from
+// bulkActionGating.ts rather than re-deriving the rule, and drop the private
+// `unavailableTitle` switch below in favour of `notOnlineTitle`.
 //
 // The `!online` gates on Connect Desktop and Remote Tools are correct — those
 // are live sessions.

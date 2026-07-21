@@ -334,12 +334,9 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
 //   → gate on `status === 'decommissioned'` (an agent-less machine that can
 //     never claim the command).
 //
-// Reboot carried the stricter `!== 'online'` gate until PR #2630. It is a queued
-// command like Run Script, so it now uses `isCommandQueueable` too: rebooting an
-// offline box on reconnect is a working feature. Before that PR the grid card had
-// NO gate at all, so the same offline device showed Reboot enabled in grid view
-// and disabled here. Issue #2486 flagged the equivalent split between this row
-// menu and the bulk bar; PR #2630 is the decision it asked for.
+// Reboot is a queued command like Run Script, so it uses `isCommandQueueable`
+// too: rebooting an offline box on reconnect is a working feature, not a doomed
+// request.
 //
 // NOT yet aligned: DeviceActions.tsx (device detail page) still gates Reboot on
 // `!== 'online'`, so the detail page remains stricter than this menu.
@@ -2328,8 +2325,7 @@ export default function DeviceList({
                                   {/* Reboot is ALSO a queued command, so it is
                                       gated like Run Script: the API refuses only
                                       decommissioned, and an offline box reboots
-                                      on reconnect. Loosened in PR #2630, which is
-                                      the policy decision issue #2486 asked for. */}
+                                      on reconnect. */}
                                   <button
                                     type="button"
                                     disabled={!isCommandQueueable(device.status)}
