@@ -2,6 +2,12 @@
 
 Thanks for your interest in contributing to Breeze! This guide will help you get started.
 
+> **Want to write code?** Breeze uses a plan-driven workflow: work is captured as
+> plan documents, and an approved plan is your green light to build. Read
+> [Coding with Claude Code](https://docs.breezermm.com/contributing/coding-with-claude-code/)
+> for how to pick up work, propose your own, and hand it back ready to merge.
+> The rest of this file covers bug reports, dev setup, and the mechanical PR gate.
+
 ## Reporting Bugs
 
 Found a bug? [Open an issue](https://github.com/lanternops/breeze/issues) with:

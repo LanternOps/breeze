@@ -32,6 +32,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'deploy' } }],
         },
         {
+          label: 'Contributing',
+          items: [{ autogenerate: { directory: 'contributing' } }],
+        },
+        {
           label: 'Agent',
           items: [{ autogenerate: { directory: 'agents' } }],
         },
