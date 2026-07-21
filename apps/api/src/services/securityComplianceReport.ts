@@ -103,7 +103,9 @@ function emptySummary(
       anyAvCoveragePct: null,
       unprotectedCount: 0,
       encryptionPct: null,
+      encryptionUnknownCount: 0,
       firewallPct: null,
+      firewallUnknownCount: 0,
       patchCurrentPct: null,
       patchUnknownCount: 0,
       passwordComplexityPct: null,
@@ -214,7 +216,8 @@ export async function generateSecurityCompliancePostureReport(
       encryptionStatus: securityStatus.encryptionStatus,
       firewallEnabled: securityStatus.firewallEnabled,
       passwordPolicySummary: securityStatus.passwordPolicySummary,
-      localAdminSummary: securityStatus.localAdminSummary
+      localAdminSummary: securityStatus.localAdminSummary,
+      updatedAt: securityStatus.updatedAt
     })
     .from(securityStatus)
     .where(and(eq(securityStatus.orgId, orgId), inArray(securityStatus.deviceId, deviceIds)));
@@ -382,12 +385,19 @@ export async function generateSecurityCompliancePostureReport(
     if (isManaged || hasNativeAv) anyAv += 1;
     if (!protectedDevice) unprotected += 1;
 
+    // Firewall/encryption are live device states that stop updating when a device
+    // goes offline, so a row older than the cutoff is treated as unknown rather
+    // than counted as a current pass/fail. (updatedAt is NOT NULL in schema; a
+    // null age can only be a legacy/edge row, which we fail-open as fresh.)
+    const ssAgeDays = ss ? daysAgo(ss.updatedAt) : null;
+    const ssFresh = Boolean(ss) && (ssAgeDays == null || ssAgeDays <= cfg.maxSecurityStatusAgeDays);
+
     const enc = ss?.encryptionStatus ?? 'unknown';
-    if (ss && enc !== 'unknown') {
+    if (ssFresh && enc !== 'unknown') {
       encAssessed += 1;
       if (enc === 'encrypted') encrypted += 1;
     }
-    if (ss && ss.firewallEnabled != null) {
+    if (ss && ssFresh && ss.firewallEnabled != null) {
       fwAssessed += 1;
       if (ss.firewallEnabled === true) firewall += 1;
     }
@@ -428,8 +438,8 @@ export async function generateSecurityCompliancePostureReport(
       protectionManaged: isManaged,
       realTimeProtection: rtp,
       avDefinitionsAgeDays: avAge,
-      encryption: ss ? enc : 'no data',
-      firewall: ss ? ss.firewallEnabled : null,
+      encryption: ssFresh ? enc : 'no data',
+      firewall: ss && ssFresh ? ss.firewallEnabled : null,
       localAdmins: admins,
       patchAssessed: patchScannedDevices.has(d.id),
       pendingPatches: pend.total,
@@ -493,7 +503,9 @@ export async function generateSecurityCompliancePostureReport(
         anyAvCoveragePct: pctOrNull(anyAv, deviceCount),
         unprotectedCount: unprotected,
         encryptionPct: pctOrNull(encrypted, encAssessed),
+        encryptionUnknownCount: deviceCount - encAssessed,
         firewallPct: pctOrNull(firewall, fwAssessed),
+        firewallUnknownCount: deviceCount - fwAssessed,
         patchCurrentPct: pctOrNull(patchCurrent, patchScanned),
         patchUnknownCount: deviceCount - patchScanned,
         passwordComplexityPct: pctOrNull(pwPass, pwAssessed),

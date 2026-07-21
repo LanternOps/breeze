@@ -35,7 +35,11 @@ export type PostureControls = {
   unprotectedCount?: number;
   avDefinitionsCurrentPct?: number | null;
   encryptionPct?: number | null;
+  /** In-scope devices whose encryption state was unknown or too stale to assess. */
+  encryptionUnknownCount?: number;
   firewallPct?: number | null;
+  /** In-scope devices whose firewall state was unknown or too stale to assess. */
+  firewallUnknownCount?: number;
   patchCurrentPct?: number | null;
   patchUnknownCount?: number;
   passwordComplexityPct?: number | null;

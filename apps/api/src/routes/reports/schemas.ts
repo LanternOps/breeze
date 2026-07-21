@@ -22,6 +22,10 @@ export const securityCompliancePostureConfigSchema = z.object({
   maxLocalAdmins: z.number().int().min(0).max(50).optional().default(2),
   // AV definitions older than this many days count as stale.
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7),
+  // A device's security_status row (firewall/encryption) older than this many
+  // days is treated as "unknown", not scored as a current pass or fail — an
+  // offline device's stale last-known posture shouldn't count either way.
+  maxSecurityStatusAgeDays: z.number().int().min(1).max(365).optional().default(30),
   // Include the CIS hardening section. Defaults on; renders "Not yet assessed"
   // until baseline scans exist, or is omitted entirely when set false.
   includeCis: z.boolean().optional().default(true),
@@ -41,6 +45,7 @@ export const securityCompliancePostureConfigFields = {
   minPasswordLength: z.number().int().min(1).max(64).optional(),
   maxLocalAdmins: z.number().int().min(0).max(50).optional(),
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional(),
+  maxSecurityStatusAgeDays: z.number().int().min(1).max(365).optional(),
   includeCis: z.boolean().optional(),
   backupRequired: z.boolean().optional()
 };
