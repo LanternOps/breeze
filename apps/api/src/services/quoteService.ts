@@ -305,6 +305,37 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
     toQuoteDepositConfig(source.depositType, source.depositPercent),
   );
 
+  // A clone must never mint a NEW orphan. Two source shapes produce one:
+  //  - the source line is itself an orphan (block_id NULL — pre-#2553 rows, and
+  //    prod quote 50a25127 cloned its orphan straight into becd81f4), or
+  //  - its block is missing from `blockIds` (the old `?? null` silently nulled
+  //    the line instead of failing loudly).
+  // Both re-parent onto ONE fallback pricing section: the clone of the source's
+  // earliest line_items block, or a fresh line_items block created in the SAME
+  // transaction as the rest of the clone. resolveLineBlockId is deliberately NOT
+  // reused here — it runs on the module-level `db`, outside this tx.
+  const orphanedLines = lines.filter((line) => !line.blockId || !blockIds.has(line.blockId));
+  // `blocks` comes back from getQuote ordered by sortOrder, so the first
+  // line_items block IS the earliest one.
+  const sourceDefaultBlock = blocks.find((block) => block.blockType === 'line_items');
+  let fallbackBlockId: string | null = null;
+  let fallbackBlock: typeof quoteBlocks.$inferInsert | null = null;
+  if (orphanedLines.length > 0) {
+    if (sourceDefaultBlock) {
+      fallbackBlockId = blockIds.get(sourceDefaultBlock.id)!;
+    } else {
+      fallbackBlockId = randomUUID();
+      fallbackBlock = {
+        id: fallbackBlockId,
+        quoteId,
+        orgId: targetOrgId,
+        blockType: 'line_items',
+        content: {},
+        sortOrder: blocks.reduce((max, block) => Math.max(max, block.sortOrder), -1) + 1,
+      };
+    }
+  }
+
   return db.transaction(async (tx) => {
     const [cloned] = await tx.insert(quotes).values({
       id: quoteId,
@@ -366,8 +397,8 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       })));
     }
 
-    if (blocks.length > 0) {
-      await tx.insert(quoteBlocks).values(blocks.map((block) => {
+    if (blocks.length > 0 || fallbackBlock) {
+      const clonedBlocks = blocks.map((block) => {
         let content = block.content;
         if (block.blockType === 'image' && content && typeof content === 'object' && !Array.isArray(content)) {
           const sourceImageId = (content as Record<string, unknown>).imageId;
@@ -385,14 +416,16 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
           content,
           sortOrder: block.sortOrder,
         };
-      }));
+      });
+      if (fallbackBlock) clonedBlocks.push(fallbackBlock as (typeof clonedBlocks)[number]);
+      await tx.insert(quoteBlocks).values(clonedBlocks);
     }
 
     if (lines.length > 0) {
       await tx.insert(quoteLines).values(lines.map((line) => ({
         id: lineIds.get(line.id)!,
         quoteId,
-        blockId: line.blockId ? blockIds.get(line.blockId) ?? null : null,
+        blockId: (line.blockId ? blockIds.get(line.blockId) : undefined) ?? fallbackBlockId!,
         orgId: targetOrgId,
         sourceType: line.sourceType,
         catalogItemId: line.catalogItemId,

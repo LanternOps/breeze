@@ -29,6 +29,7 @@ vi.mock('./quoteService', () => ({
   addCatalogLine: vi.fn().mockResolvedValue({ id: 'line-2', catalogItemId: 'catalog-1' }),
   updateLine: vi.fn().mockResolvedValue({ id: 'line-1', quantity: '2' }),
   removeLine: vi.fn().mockResolvedValue(undefined),
+  moveLineToBlock: vi.fn().mockResolvedValue({ id: 'line-1', blockId: 'block-2', sortOrder: 0 }),
   reorderLines: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -196,6 +197,35 @@ describe('manage_quotes', () => {
     expect(JSON.parse(out)).toEqual({ id: 'line-2', catalogItemId: 'catalog-1' });
   });
 
+  it('move_line re-parents a line via moveLineToBlock (the orphan repair path, #2553)', async () => {
+    const out = await getTool().handler(
+      { action: 'move_line', quoteId: 'quote-1', lineId: 'line-1', blockId: 'block-2' },
+      auth,
+    );
+
+    // Reuses the same service the PATCH /:id/lines/:lineId/move route calls, so
+    // its guards (block belongs to the quote, block is line_items, bundle
+    // children ride with their parent) all apply to the AI path too.
+    expect(quoteService.moveLineToBlock).toHaveBeenCalledWith('quote-1', 'line-1', 'block-2', actor);
+    expect(JSON.parse(out)).toEqual({ id: 'line-1', blockId: 'block-2', sortOrder: 0 });
+  });
+
+  it('move_line surfaces a service rejection (e.g. non-pricing target block) as a structured error', async () => {
+    vi.mocked(quoteService.moveLineToBlock).mockRejectedValueOnce(
+      new QuoteServiceError('Target block is not a pricing table', 400, 'BLOCK_NOT_LINE_ITEMS'),
+    );
+
+    const out = await getTool().handler(
+      { action: 'move_line', quoteId: 'quote-1', lineId: 'line-1', blockId: 'block-2' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'Target block is not a pricing table',
+      code: 'BLOCK_NOT_LINE_ITEMS',
+    });
+  });
+
   it('returns a JSON error when a service action rejects with QuoteServiceError', async () => {
     vi.mocked(quoteLifecycle.sendQuote).mockRejectedValueOnce(
       new QuoteServiceError('Cannot send a quote in status sent', 409, 'INVALID_STATE'),
@@ -337,6 +367,30 @@ describe('manage_quotes input validation (#2362)', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(parsed.error).toContain('block.');
     expect(quoteService.addBlock).not.toHaveBeenCalled();
+  });
+
+  it('move_line without blockId returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      { action: 'move_line', quoteId: 'quote-1', lineId: 'line-1' },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('blockId');
+    expect(quoteService.moveLineToBlock).not.toHaveBeenCalled();
+  });
+
+  it('move_line without lineId returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      { action: 'move_line', quoteId: 'quote-1', blockId: 'block-2' },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('lineId');
+    expect(quoteService.moveLineToBlock).not.toHaveBeenCalled();
   });
 
   it('remove_line without lineId returns a structured VALIDATION_ERROR', async () => {

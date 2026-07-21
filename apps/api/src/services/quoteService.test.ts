@@ -316,6 +316,95 @@ describe('quoteService deposits', () => {
     expect((valuesMock.mock.calls.at(-1)![0] as { blockId?: string }).blockId).toBe('newblk');
   });
 
+  // -------------------------------------------------------------------------
+  // cloneQuote orphan re-parenting: a source line with block_id NULL (or one
+  // whose block failed to map) must NEVER be copied into the clone as another
+  // orphan — it lands in the clone's default pricing section instead.
+  // -------------------------------------------------------------------------
+
+  /** Queue every read cloneQuote issues before its transaction. */
+  function queueCloneReads(blocks: unknown[], lines: unknown[]) {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null, billToName: null, billToAddress: null, billToTaxId: null }]); // getQuote: quote
+    queueResult(blocks); // getQuote: blocks
+    queueResult(lines); // getQuote: lines
+    queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([{ name: 'Org Inc' }]); // getQuote: draft bill-to org lookup
+    queueResult([]); // cloneQuote: quote images
+    queueResult([{ counter: 2 }]); // allocateQuoteCounter
+    queueResult([{ id: 'q2', orgId: 'org1' }]); // tx: quotes insert returning
+  }
+
+  const cloneLine = (over: Record<string, unknown>) => ({
+    id: 'lx', blockId: null, parentLineId: null, sourceType: 'manual', catalogItemId: null,
+    name: 'Widget', description: null, quantity: '1', unitPrice: '100.00', taxable: false,
+    customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+    billingFrequency: null, unitCost: null, depositEligible: false, itemType: null,
+    sku: null, partNumber: null, imageId: null, sortOrder: 0, ...over,
+  });
+
+  /** The array passed to `.values()` for a given insert (quote insert passes an object). */
+  function insertedArrays() {
+    const valuesMock = (db as unknown as Chain).values;
+    return valuesMock.mock.calls.map((c) => c[0]).filter(Array.isArray) as Record<string, unknown>[][];
+  }
+
+  it('cloneQuote re-parents a source orphan line onto the cloned default pricing section', async () => {
+    queueCloneReads(
+      [{ id: 'b1', blockType: 'line_items', content: {}, sortOrder: 0 }],
+      [cloneLine({ id: 'l1', blockId: null }), cloneLine({ id: 'l2', blockId: 'b1', sortOrder: 1 })],
+    );
+    queueResult([]); // tx: blocks insert
+    queueResult([]); // tx: lines insert
+
+    await svc.cloneQuote('q1', actor);
+
+    const [clonedBlocks, clonedLines] = insertedArrays();
+    // Exactly the one source block was cloned — no extra section spawned.
+    expect(clonedBlocks).toHaveLength(1);
+    const defaultBlockId = clonedBlocks![0]!.id;
+    // The orphan lands in the cloned pricing section; the mapped line is untouched.
+    expect(clonedLines!.every((l) => l.blockId === defaultBlockId)).toBe(true);
+    expect(clonedLines!.every((l) => l.blockId != null)).toBe(true);
+  });
+
+  it('cloneQuote creates ONE fallback pricing section for multiple orphans when the source has none', async () => {
+    queueCloneReads(
+      [{ id: 'b1', blockType: 'heading', content: { text: 'Intro', level: 2 }, sortOrder: 0 }],
+      [
+        cloneLine({ id: 'l1', blockId: null }),
+        cloneLine({ id: 'l2', blockId: null, sortOrder: 1 }),
+        // A line pointing at a block that never mapped is an orphan too — it used
+        // to be silently nulled by the `?? null` fallback.
+        cloneLine({ id: 'l3', blockId: 'missing-block', sortOrder: 2 }),
+      ],
+    );
+    queueResult([]); // tx: blocks insert
+    queueResult([]); // tx: lines insert
+
+    await svc.cloneQuote('q1', actor);
+
+    const [clonedBlocks, clonedLines] = insertedArrays();
+    const lineItemBlocks = clonedBlocks!.filter((b) => b.blockType === 'line_items');
+    // ONE fallback section shared by all three orphans — not one per line.
+    expect(lineItemBlocks).toHaveLength(1);
+    const fallbackId = lineItemBlocks[0]!.id;
+    expect(clonedLines!.map((l) => l.blockId)).toEqual([fallbackId, fallbackId, fallbackId]);
+  });
+
+  it('cloneQuote does not create a fallback section when no line is orphaned', async () => {
+    queueCloneReads(
+      [{ id: 'b1', blockType: 'line_items', content: {}, sortOrder: 0 }],
+      [cloneLine({ id: 'l1', blockId: 'b1' })],
+    );
+    queueResult([]); // tx: blocks insert
+    queueResult([]); // tx: lines insert
+
+    await svc.cloneQuote('q1', actor);
+
+    const [clonedBlocks] = insertedArrays();
+    expect(clonedBlocks).toHaveLength(1); // only the source block's clone
+  });
+
   it('getQuote returns depositDueTotal and categoryBreakdown', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.10000', depositType: 'percent', depositPercent: '30.00' }]); // quote
     queueResult([]); // blocks

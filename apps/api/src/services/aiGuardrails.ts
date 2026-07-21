@@ -222,6 +222,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     add_catalog_line: { resource: 'quotes', action: 'write' },
     update_line: { resource: 'quotes', action: 'write' },
     remove_line: { resource: 'quotes', action: 'write' },
+    move_line: { resource: 'quotes', action: 'write' },
     reorder_lines: { resource: 'quotes', action: 'write' },
     send: { resource: 'quotes', action: 'send' },
     decline: { resource: 'quotes', action: 'write' },
