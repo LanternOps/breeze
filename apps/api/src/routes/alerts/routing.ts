@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { db } from '../../db';
-import { notificationRoutingRules } from '../../db/schema';
-import { eq, and, asc, inArray, isNull, or } from 'drizzle-orm';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { notificationRoutingRules, organizations, sites } from '../../db/schema';
+import { eq, and, asc, inArray, isNull, or, sql } from 'drizzle-orm';
+import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
 import {
@@ -48,7 +48,44 @@ const updateRoutingRuleSchema = z.object({
 
 export const routingRoutes = new Hono();
 
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+type RoutingSiteAuth = { allowedSiteIds?: string[] };
+type RoutingRuleOwner = { orgId: string | null; partnerId: string | null };
+
+function routingSiteIds(conditions: unknown): string[] {
+  if (!conditions || typeof conditions !== 'object' || Array.isArray(conditions)) return [];
+  const value = (conditions as Record<string, unknown>).siteIds;
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+}
+
+async function canAccessRoutingSites(
+  auth: RoutingSiteAuth,
+  owner: RoutingRuleOwner,
+  siteIds: string[],
+  validateOwnership: boolean
+): Promise<boolean> {
+  const uniqueSiteIds = [...new Set(siteIds)];
+  if (uniqueSiteIds.length === 0) return auth.allowedSiteIds === undefined;
+  if (!validateOwnership && auth.allowedSiteIds === undefined) return true;
+
+  const ownershipCondition = owner.orgId !== null
+    ? eq(sites.orgId, owner.orgId)
+    : owner.partnerId
+      ? sql`${sites.orgId} IN (SELECT ${organizations.id} FROM ${organizations} WHERE ${organizations.partnerId} = ${owner.partnerId})`
+      : undefined;
+  if (!ownershipCondition) return false;
+
+  const rows = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(inArray(sites.id, uniqueSiteIds), ownershipCondition));
+  if (rows.length !== uniqueSiteIds.length) return false;
+
+  const canAccessSite = siteAccessCheck(auth.allowedSiteIds);
+  return rows.every((row) => canAccessSite(row.id));
+}
 
 // Dual-axis by-id lookup (#2130): org-owned rules via org access; partner-wide
 // rules (orgId NULL) via the caller's own partner (or system scope). Writes are
@@ -76,6 +113,7 @@ async function getRoutingRuleWithAccess(
 routingRoutes.get(
   '/routing-rules',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listRoutingRulesSchema),
   async (c) => {
     try {
@@ -124,7 +162,19 @@ routingRoutes.get(
         .where(orgFilter)
         .orderBy(asc(notificationRoutingRules.priority));
 
-      return c.json({ data: rules });
+      const visibleRules = auth.allowedSiteIds === undefined
+        ? rules
+        : (await Promise.all(rules.map(async (rule) => ({
+          rule,
+          visible: await canAccessRoutingSites(
+            auth,
+            { orgId: rule.orgId, partnerId: rule.partnerId },
+            routingSiteIds(rule.conditions),
+            false
+          ),
+        })))).filter(({ visible }) => visible).map(({ rule }) => rule);
+
+      return c.json({ data: visibleRules });
     } catch (error) {
       console.error('[RoutingRules] Failed to list routing rules', error);
       return c.json({ error: 'Failed to list routing rules' }, 500);
@@ -157,6 +207,16 @@ routingRoutes.post(
           return c.json({ error: resolved.error }, resolved.status ?? 400);
         }
         owner = { orgId: resolved.orgId!, partnerId: null };
+      }
+
+      const canAccessSites = await canAccessRoutingSites(
+        auth,
+        owner,
+        routingSiteIds(data.conditions),
+        true
+      );
+      if (!canAccessSites) {
+        return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
       }
 
       const [rule] = await db
@@ -212,6 +272,28 @@ routingRoutes.patch(
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
 
+      const owner = { orgId: existing.orgId, partnerId: existing.partnerId };
+      const canAccessExistingSites = await canAccessRoutingSites(
+        auth,
+        owner,
+        routingSiteIds(existing.conditions),
+        true
+      );
+      if (!canAccessExistingSites) {
+        return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
+      }
+      if (updates.conditions !== undefined) {
+        const canAccessUpdatedSites = await canAccessRoutingSites(
+          auth,
+          owner,
+          routingSiteIds(updates.conditions),
+          true
+        );
+        if (!canAccessUpdatedSites) {
+          return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
+        }
+      }
+
       const setValues: Record<string, unknown> = { updatedAt: new Date() };
       if (updates.name !== undefined) setValues.name = updates.name;
       if (updates.priority !== undefined) setValues.priority = updates.priority;
@@ -261,6 +343,16 @@ routingRoutes.delete(
       // partner-wide capability (#2130).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+
+      const canAccessExistingSites = await canAccessRoutingSites(
+        auth,
+        { orgId: existing.orgId, partnerId: existing.partnerId },
+        routingSiteIds(existing.conditions),
+        true
+      );
+      if (!canAccessExistingSites) {
+        return c.json({ error: 'Routing rule sites are outside your permitted sites' }, 403);
       }
 
       await db.delete(notificationRoutingRules).where(

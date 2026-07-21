@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { AuthContext } from '../middleware/auth';
 
@@ -89,6 +89,7 @@ import {
 import { normalizeSoftwarePolicyRules } from '../services/softwarePolicyService';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 
 function makeOrgAuth(orgId: string): AuthContext {
@@ -397,6 +398,184 @@ describe('POST /:id/remediate — site scope', () => {
     expect(vi.mocked(scheduleSoftwareRemediation)).toHaveBeenCalledTimes(1);
     const targeted = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1];
     expect(targeted).toEqual(expect.arrayContaining([DEVICE_ALLOWED, DEVICE_DENIED]));
+  });
+});
+
+// ───────────────── POST /:id/check — authorization scope ─────────────────
+// Compliance evaluation can automatically enqueue uninstall work. The route
+// must therefore resolve the same org/site/partner-wide boundary as remediate
+// before it hands a job to the system-scoped worker.
+describe('POST /:id/check — authorization scope', () => {
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+  const PARTNER_ID = '99999999-9999-4999-8999-999999999999';
+  const POLICY_ID = '22222222-2222-2222-2222-222222222222';
+  const SITE_ALLOWED = 'aaaaaaaa-0000-0000-0000-000000000001';
+  const SITE_DENIED = 'bbbbbbbb-0000-0000-0000-000000000002';
+  const DEVICE_ALLOWED = '33333333-3333-3333-3333-333333333333';
+  const DEVICE_DENIED = '55555555-5555-5555-5555-555555555555';
+
+  let app: Hono;
+
+  function setOrgAuth(allowedSiteIds?: string[]) {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: PARTNER_ID,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      if (allowedSiteIds) c.set('permissions', { allowedSiteIds });
+      return next();
+    });
+  }
+
+  function setPartnerAuth(partnerOrgAccess: 'all' | 'selected' | 'none') {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        partnerOrgAccess,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        user: { id: 'user-123', email: 'test@example.com' },
+      });
+      return next();
+    });
+  }
+
+  function mockPolicyLookup(orgId: string | null) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: POLICY_ID,
+            orgId,
+            partnerId: orgId === null ? PARTNER_ID : null,
+            mode: 'blocklist',
+            name: 'Block X',
+          }]),
+        }),
+      }),
+    } as any);
+  }
+
+  function mockDeviceRows(rows: Array<{ id: string; siteId?: string | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
+      }),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(scheduleSoftwareComplianceCheck).mockResolvedValue('job-1');
+    app = new Hono();
+    app.route('/software-policies', softwarePoliciesRoutes);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('narrows an omitted device list to the caller site allowlist', async () => {
+    setOrgAuth([SITE_ALLOWED]);
+    mockPolicyLookup(ORG_ID);
+    mockDeviceRows([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(scheduleSoftwareComplianceCheck).toHaveBeenCalledWith(POLICY_ID, [DEVICE_ALLOWED]);
+  });
+
+  it('denies an explicit device batch containing a denied site before queueing', async () => {
+    setOrgAuth([SITE_ALLOWED]);
+    mockPolicyLookup(ORG_ID);
+    mockDeviceRows([
+      { id: DEVICE_ALLOWED, siteId: SITE_ALLOWED },
+      { id: DEVICE_DENIED, siteId: SITE_DENIED },
+    ]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: [DEVICE_ALLOWED, DEVICE_DENIED] }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(scheduleSoftwareComplianceCheck).not.toHaveBeenCalled();
+  });
+
+  it('does not queue an all-devices check when a restricted caller has no allowed devices', async () => {
+    setOrgAuth([SITE_ALLOWED]);
+    mockPolicyLookup(ORG_ID);
+    mockDeviceRows([{ id: DEVICE_DENIED, siteId: SITE_DENIED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(scheduleSoftwareComplianceCheck).not.toHaveBeenCalled();
+  });
+
+  it('denies explicit devices outside the caller organization scope', async () => {
+    setOrgAuth();
+    mockPolicyLookup(ORG_ID);
+    // The org-scoped device query resolves only the in-org target.
+    mockDeviceRows([{ id: DEVICE_ALLOWED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: [DEVICE_ALLOWED, DEVICE_DENIED] }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(scheduleSoftwareComplianceCheck).not.toHaveBeenCalled();
+  });
+
+  it('denies a partner-wide check to selected-org partner access before queueing', async () => {
+    setPartnerAuth('selected');
+    mockPolicyLookup(null);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(403);
+    expect(scheduleSoftwareComplianceCheck).not.toHaveBeenCalled();
+  });
+
+  it('allows a partner-wide check for full partner access', async () => {
+    setPartnerAuth('all');
+    mockPolicyLookup(null);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(scheduleSoftwareComplianceCheck).toHaveBeenCalledWith(POLICY_ID, undefined);
   });
 });
 

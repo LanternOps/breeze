@@ -8,7 +8,7 @@ vi.mock('./discovery', () => ({
       migrationsDir: null,
       manifest: {
         name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-        migrationsDir: 'migrations',
+        migrationsDir: 'migrations', helperRoutes: false,
         tenancy: {
           orgCascadeDeleteTables: ['sample_items', 'memory_blocks'],
           deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
@@ -54,7 +54,7 @@ describe('tenancyRegistry', () => {
         migrationsDir: null,
         manifest: {
           name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-          migrationsDir: 'migrations',
+          migrationsDir: 'migrations', helperRoutes: false,
           tenancy: {
             orgCascadeDeleteTables: ['organizations', 'sample_items', 'organizations'],
             deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
@@ -100,7 +100,7 @@ describe('tenancyRegistry', () => {
   it('dedupes a shared table declared by two extensions in device-cascade lists', () => {
     const sampleManifest = {
       name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-      migrationsDir: 'migrations',
+      migrationsDir: 'migrations', helperRoutes: false,
       tenancy: {
         orgCascadeDeleteTables: [],
         deviceCascadeDeleteTables: ['memory_blocks', 'sample_child'],

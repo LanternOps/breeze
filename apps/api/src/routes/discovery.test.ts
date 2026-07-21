@@ -6,6 +6,8 @@ import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
+import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
+import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 
 vi.mock('../services', () => ({}));
@@ -90,8 +92,17 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'discoveryProfiles.id', orgId: 'discoveryProfiles.orgId', siteId: 'discoveryProfiles.siteId' },
-  discoveryJobs: { id: 'discoveryJobs.id' },
-  discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId', siteId: 'discoveredAssets.siteId' },
+  discoveryJobs: {
+    id: 'discoveryJobs.id',
+    orgId: 'discoveryJobs.orgId',
+    siteId: 'discoveryJobs.siteId',
+  },
+  discoveredAssets: {
+    id: 'discoveredAssets.id',
+    orgId: 'discoveredAssets.orgId',
+    siteId: 'discoveredAssets.siteId',
+    linkedDeviceId: 'discoveredAssets.linkedDeviceId',
+  },
   networkTopology: { orgId: 'orgId' },
   topologyLayout: {
     orgId: 'topologyLayout.orgId',
@@ -125,7 +136,9 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
     agentId: 'devices.agentId',
-    status: 'devices.status'
+    status: 'devices.status',
+    hostname: 'devices.hostname',
+    displayName: 'devices.displayName',
   },
   patchPolicies: {},
   alertRules: {},
@@ -173,6 +186,24 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
+
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
 
 describe('discovery routes', () => {
   let app: Hono;
@@ -647,6 +678,80 @@ describe('discovery routes', () => {
       expect(body.data[0].typeSource).toBe('manual');
       expect(body.data[0].detectedAssetType).toBe('switch');
     });
+
+    it('does not expose a stale linked device from a sibling site', async () => {
+      const now = new Date();
+      const staleDeviceId = '00000000-0000-0000-0000-000000000099';
+      const row = {
+        asset: {
+          id: 'asset-stale-link',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          assetType: 'workstation',
+          approvalStatus: 'approved',
+          isOnline: true,
+          hostname: 'site-a-host',
+          label: null,
+          ipAddress: '192.168.1.25',
+          macAddress: 'aa:bb:cc:dd:ee:ff',
+          manufacturer: null,
+          model: null,
+          openPorts: [],
+          snmpData: null,
+          responseTimeMs: null,
+          linkedDeviceId: staleDeviceId,
+          linkSource: 'auto',
+          discoveryMethods: ['arp'],
+          notes: null,
+          tags: [],
+          typeSource: 'auto',
+          detectedAssetType: 'workstation',
+          firstSeenAt: now,
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        linkedDeviceId: null,
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        linkedDeviceHostname: null,
+        linkedDeviceDisplayName: null,
+        profileId: null,
+        profileName: null,
+        profileSubnets: null,
+      };
+      let deviceJoinCondition: unknown;
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: (_table: unknown, condition: unknown) => {
+            deviceJoinCondition = condition;
+            return {
+              leftJoin: () => ({
+                leftJoin: () => ({
+                  where: () => ({ orderBy: () => Promise.resolve([row]) }),
+                }),
+              }),
+            };
+          },
+        }),
+      });
+
+      const res = await app.request('/discovery/assets', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({
+        linkedDeviceId: null,
+        linkedDeviceName: null,
+        linkSource: null,
+      });
+      const joinLeaves = collectSqlLeafStrings(deviceJoinCondition);
+      expect(joinLeaves).toContain('devices.siteId');
+      expect(joinLeaves).toContain('discoveredAssets.siteId');
+    });
   });
 
   describe('GET /discovery/assets/:id', () => {
@@ -722,7 +827,7 @@ describe('discovery routes', () => {
       const row = buildRow();
       row.asset.linkedDeviceId = '00000000-0000-0000-0000-000000000021';
       row.asset.linkSource = 'manual';
-      mockSingleAsset([row]);
+      mockSingleAsset([{ ...row, linkedDeviceId: row.asset.linkedDeviceId }]);
 
       const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
         headers: { Authorization: 'Bearer token' },
@@ -731,6 +836,25 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.linkSource).toBe('manual');
+    });
+
+    it('does not expose a stale linked device from a sibling site', async () => {
+      const row = buildRow();
+      row.asset.linkedDeviceId = '00000000-0000-0000-0000-000000000099';
+      row.asset.linkSource = 'auto';
+      mockSingleAsset([{ ...row, linkedDeviceId: null }]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toMatchObject({
+        linkedDeviceId: null,
+        linkedDeviceName: null,
+        linkSource: null,
+      });
     });
 
     it('returns 404 when the asset does not exist in the caller org', async () => {
@@ -818,6 +942,63 @@ describe('discovery routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toContain('same site');
+    });
+  });
+
+  describe('GET /discovery/jobs/:id asset link safety', () => {
+    it('does not expose a stale cross-site link in the job asset collection', async () => {
+      const jobId = '00000000-0000-0000-0000-000000000071';
+      const orgId = '00000000-0000-0000-0000-000000000000';
+      const siteId = '00000000-0000-0000-0000-000000000001';
+      const now = new Date('2026-07-20T00:00:00.000Z');
+      const staleAsset = {
+        id: '00000000-0000-0000-0000-000000000072',
+        orgId,
+        siteId,
+        lastJobId: jobId,
+        linkedDeviceId: '00000000-0000-0000-0000-000000000099',
+        linkSource: 'auto',
+      };
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: jobId,
+                orgId,
+                siteId,
+                status: 'completed',
+                createdAt: now,
+                scheduledAt: now,
+                startedAt: now,
+                completedAt: now,
+              }]),
+            }),
+          }),
+        } as any)
+        .mockImplementationOnce((selection?: unknown) => {
+          const rows = selection
+            ? [{ asset: staleAsset, linkedDeviceId: null }]
+            : [staleAsset];
+          const chain: any = {};
+          chain.from = vi.fn(() => chain);
+          chain.leftJoin = vi.fn(() => chain);
+          chain.where = vi.fn(() => Promise.resolve(rows));
+          return chain;
+        });
+
+      const res = await app.request(`/discovery/jobs/${jobId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.assets).toHaveLength(1);
+      expect(body.assets[0]).toMatchObject({
+        linkedDeviceId: null,
+        linkSource: null,
+      });
     });
   });
 
@@ -953,6 +1134,13 @@ describe('discovery routes', () => {
 
   describe('POST /discovery/profiles', () => {
     it('should create a discovery profile with schedule configuration', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+          }),
+        }),
+      } as any);
       const res = await app.request('/discovery/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -974,6 +1162,13 @@ describe('discovery routes', () => {
     });
 
     it('encrypts and masks SNMP profile secrets', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+          }),
+        }),
+      } as any);
       const insertValues = vi.fn(() => ({
         returning: vi.fn(() => Promise.resolve([{
           id: 'profile-001',
@@ -1016,6 +1211,29 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.snmpCommunities).toEqual(['********']);
       expect(body.snmpCredentials.authPassphrase).toBe('********');
+    });
+
+    it('rejects a profile site that does not belong to the resolved organization', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Foreign Site',
+          siteId: '00000000-0000-0000-0000-000000000099',
+          subnets: ['10.0.2.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('should validate schedule details', async () => {
@@ -1128,6 +1346,11 @@ describe('discovery routes', () => {
     it('scopes the bulk approve to the supplied orgId for a multi-org partner', async () => {
       usePartnerAuth();
 
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_A, siteId: 'site-1' }]),
+        }),
+      } as any);
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -1257,6 +1480,176 @@ describe('discovery routes', () => {
           }),
         } as any);
     }
+
+    it('omits profiles outside the caller site allowlist', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const now = new Date('2026-07-20T00:00:00.000Z');
+      const profile = (id: string, siteId: string | null) => ({
+        profile: {
+          id,
+          orgId: ORG,
+          siteId,
+          name: id,
+          description: null,
+          enabled: true,
+          subnets: ['10.0.0.0/24'],
+          methods: ['ping'],
+          schedule: { type: 'manual' },
+          deepScan: false,
+          resolveHostnames: true,
+          alertSettings: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        lastRunAt: null,
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              profile('profile-in', SITE_IN),
+              profile('profile-out', SITE_OUT),
+              profile('profile-null', null),
+            ]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/profiles', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((entry: any) => entry.id)).toEqual(['profile-in']);
+    });
+
+    it('denies scanning a profile outside the caller site before job creation', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '00000000-0000-0000-0000-000000000099',
+              orgId: ORG,
+              siteId: SITE_OUT,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/discovery/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ profileId: '00000000-0000-0000-0000-000000000099' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(createDiscoveryJobIfIdle).not.toHaveBeenCalled();
+      expect(enqueueDiscoveryScan).not.toHaveBeenCalled();
+    });
+
+    it('rejects a mixed-site bulk approve atomically before any update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const allowedAssetId = '00000000-0000-0000-0000-0000000000a1';
+      const deniedAssetId = '00000000-0000-0000-0000-0000000000a2';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { id: allowedAssetId, orgId: ORG, siteId: SITE_IN },
+            { id: deniedAssetId, orgId: ORG, siteId: SITE_OUT },
+          ]),
+        }),
+      } as any);
+      const res = await app.request('/discovery/assets/bulk-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ assetIds: [allowedAssetId, deniedAssetId] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for a null-site asset metadata update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: ASSET_IN, orgId: ORG, siteId: null }]),
+          }),
+        }),
+      } as any);
+      const res = await app.request(`/discovery/assets/${ASSET_IN}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ label: 'denied' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denies cancelling a job outside the caller site before any update', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const jobId = '00000000-0000-0000-0000-0000000000b1';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: jobId,
+              orgId: ORG,
+              siteId: SITE_OUT,
+              status: 'scheduled',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/discovery/jobs/${jobId}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('omits sibling-site and null-site assets from an authorized job detail', async () => {
+      setSiteRestrictedAuth([SITE_IN]);
+      const jobId = '00000000-0000-0000-0000-0000000000b2';
+      const now = new Date('2026-07-20T00:00:00.000Z');
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: jobId, orgId: ORG, siteId: SITE_IN, status: 'completed',
+                createdAt: now, scheduledAt: null, startedAt: null, completedAt: now,
+              }]),
+            }),
+          }),
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                { asset: { id: 'asset-in', orgId: ORG, siteId: SITE_IN, linkedDeviceId: null, linkSource: null }, linkedDeviceId: null },
+                { asset: { id: 'asset-out', orgId: ORG, siteId: SITE_OUT, linkedDeviceId: null, linkSource: null }, linkedDeviceId: null },
+                { asset: { id: 'asset-null', orgId: ORG, siteId: null, linkedDeviceId: null, linkSource: null }, linkedDeviceId: null },
+              ]),
+            }),
+          }),
+        } as any);
+
+      const res = await app.request(`/discovery/jobs/${jobId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.assets.map((asset: any) => asset.id)).toEqual(['asset-in']);
+    });
 
     describe('POST /assets/:id/link', () => {
       it('rejects when the asset is in a site outside the caller allowlist', async () => {
@@ -1645,6 +2038,40 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.assetType).toBe('router');
       expect(body.typeSource).toBe('manual');
+    });
+
+    it('does not expose a stale cross-site link in the update response', async () => {
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: ASSET_ID,
+              orgId: ORG,
+              siteId: '00000000-0000-0000-0000-000000000001',
+              assetType: 'workstation',
+              typeSource: 'auto',
+              hostname: 'site-a-host',
+              label: 'updated label',
+              ipAddress: '192.168.1.25',
+              linkedDeviceId: '00000000-0000-0000-0000-000000000099',
+              linkSource: 'auto',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ label: 'updated label' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        linkedDeviceId: null,
+        linkSource: null,
+      });
     });
 
     it('accepts label:null (empty Display Name) and clears the label (#2198)', async () => {

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
@@ -8,6 +8,8 @@ import { authMiddleware, requireScope, requirePermission } from '../middleware/a
 import { PERMISSIONS } from '../services/permissions';
 import { ticketCategoryInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { writeRouteAudit } from '../services/auditEvents';
 
 export const ticketCategoriesRoutes = new Hono();
 
@@ -16,6 +18,14 @@ export const ticketCategoriesRoutes = new Hono();
 ticketCategoriesRoutes.use('*', authMiddleware);
 
 const idParam = z.object({ id: z.string().guid() });
+const partnerGlobalDeniedMessage = 'Full partner organization access is required to manage partner-wide ticket categories';
+
+const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+  }
+  return next();
+};
 
 // GET /ticket-categories — list categories visible to the caller
 // RLS is the primary isolation; this adds defense-in-depth app-layer scoping.
@@ -27,6 +37,9 @@ ticketCategoriesRoutes.get(
     const auth = c.get('auth') as AuthContext;
 
     if (auth.scope === 'partner') {
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: partnerGlobalDeniedMessage }, 403);
+      }
       if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
       const data = await db
         .select()
@@ -105,6 +118,7 @@ ticketCategoriesRoutes.put(
   '/reorder',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  requirePartnerGlobalAccess,
   zValidator('json', reorderSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -130,6 +144,14 @@ ticketCategoriesRoutes.put(
         .set({ sortOrder: index, updatedAt: new Date() })
         .where(eq(ticketCategories.id, id));
     }
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_category.reorder',
+      resourceType: 'ticket_category',
+      resourceId: expectedPartner,
+      resourceName: 'Ticket category order',
+      details: { partnerId: expectedPartner, categoryIds: ids, changedFields: ['sortOrder'] }
+    });
     return c.json({ success: true });
   }
 );
@@ -139,6 +161,7 @@ ticketCategoriesRoutes.post(
   '/',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  requirePartnerGlobalAccess,
   zValidator('json', ticketCategoryInputSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -171,7 +194,16 @@ ticketCategoriesRoutes.post(
       defaultHourlyRate: body.defaultHourlyRate != null ? String(body.defaultHourlyRate) : null,
       partnerId: auth.partnerId
     }).returning();
-    return c.json({ data: inserted[0] }, 201);
+    const row = inserted[0]!;
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_category.create',
+      resourceType: 'ticket_category',
+      resourceId: row.id,
+      resourceName: row.name,
+      details: { partnerId: auth.partnerId, changedFields: Object.keys(body) }
+    });
+    return c.json({ data: row }, 201);
   }
 );
 
@@ -180,6 +212,7 @@ ticketCategoriesRoutes.patch(
   '/:id',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  requirePartnerGlobalAccess,
   zValidator('param', idParam),
   zValidator('json', ticketCategoryInputSchema.partial()),
   async (c) => {
@@ -233,7 +266,16 @@ ticketCategoriesRoutes.patch(
       .where(and(...conditions))
       .returning();
     if (!updated[0]) return c.json({ error: 'Category not found' }, 404);
-    return c.json({ data: updated[0] });
+    const row = updated[0];
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_category.update',
+      resourceType: 'ticket_category',
+      resourceId: row.id,
+      resourceName: row.name,
+      details: { partnerId: row.partnerId, changedFields: Object.keys(body) }
+    });
+    return c.json({ data: row });
   }
 );
 
@@ -242,6 +284,7 @@ ticketCategoriesRoutes.delete(
   '/:id',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  requirePartnerGlobalAccess,
   zValidator('param', idParam),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -260,6 +303,15 @@ ticketCategoriesRoutes.delete(
       .where(and(...conditions))
       .returning();
     if (!updated[0]) return c.json({ error: 'Category not found' }, 404);
+    const row = updated[0];
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_category.delete',
+      resourceType: 'ticket_category',
+      resourceId: row.id,
+      resourceName: row.name,
+      details: { partnerId: row.partnerId, changedFields: ['isActive'] }
+    });
     return c.json({ success: true });
   }
 );

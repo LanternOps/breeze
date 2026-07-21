@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -14,13 +14,27 @@ import {
   deferSchema
 } from './schemas';
 import { getPagination, resolvePatchApprovalPartnerIdForRing, upsertPatchApproval } from './helpers';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 
 export const approvalsRoutes = new Hono();
+
+const requirePartnerWideApprovalAccess = async (c: Context, next: Next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // GET /patches/approvals - List patch approvals for partner
 approvalsRoutes.get(
   '/approvals',
   requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  requirePartnerWideApprovalAccess,
   zValidator('query', listApprovalsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -71,6 +85,7 @@ approvalsRoutes.post(
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  requirePartnerWideApprovalAccess,
   zValidator('json', bulkApproveSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -99,7 +114,7 @@ approvalsRoutes.post(
           approvedBy: auth.user.id,
           approvedAt: new Date(),
           notes: data.note ?? null,
-        });
+        }, auth);
         approved.push(patchId);
       } catch {
         failed.push(patchId);
@@ -129,6 +144,7 @@ approvalsRoutes.post(
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  requirePartnerWideApprovalAccess,
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
@@ -165,7 +181,7 @@ approvalsRoutes.post(
       approvedBy: auth.user.id,
       approvedAt: new Date(),
       notes: data.note ?? null,
-    });
+    }, auth);
 
     writeRouteAudit(c, {
       orgId: null,
@@ -189,6 +205,7 @@ approvalsRoutes.post(
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  requirePartnerWideApprovalAccess,
   zValidator('param', patchIdParamSchema),
   zValidator('json', approvalActionSchema),
   async (c) => {
@@ -222,7 +239,7 @@ approvalsRoutes.post(
       ringId: data.ringId ?? null,
       status: 'rejected',
       notes: data.note ?? null,
-    });
+    }, auth);
 
     writeRouteAudit(c, {
       orgId: null,
@@ -246,6 +263,7 @@ approvalsRoutes.post(
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
+  requirePartnerWideApprovalAccess,
   zValidator('param', patchIdParamSchema),
   zValidator('json', deferSchema),
   async (c) => {
@@ -280,7 +298,7 @@ approvalsRoutes.post(
       status: 'deferred',
       deferUntil: new Date(data.deferUntil),
       notes: data.note ?? null,
-    });
+    }, auth);
 
     writeRouteAudit(c, {
       orgId: null,

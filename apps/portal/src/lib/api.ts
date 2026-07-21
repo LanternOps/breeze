@@ -366,7 +366,6 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
-  id: string;
   description: string;
   quantity: string;
   unitPrice: string;

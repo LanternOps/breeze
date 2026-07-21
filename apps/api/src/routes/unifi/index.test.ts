@@ -10,6 +10,7 @@ const { authState } = vi.hoisted(() => {
   const authState = {
     partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
     scope: 'partner' as 'partner' | 'organization' | 'system',
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
   };
   return { authState };
 });
@@ -19,6 +20,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.partnerId,
+      partnerOrgAccess: authState.partnerOrgAccess,
       orgId: null,
       canAccessOrg: vi.fn(() => true),
       user: { id: '55555555-5555-5555-5555-555555555555', email: 'admin@example.com' },
@@ -37,6 +39,7 @@ vi.mock('../../services/permissions', () => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -119,7 +122,7 @@ vi.mock('../../jobs/unifiWorker', () => ({
 import { unifiRoutes } from './index';
 import * as svc from '../../services/unifi/unifiConnectionService';
 import * as collectorSvc from '../../services/unifi/unifiCollectorService';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 
 describe('unifi routes', () => {
   beforeEach(() => {
@@ -138,6 +141,58 @@ describe('unifi routes', () => {
     vi.mocked(collectorSvc.deleteCollector).mockReset();
     authState.scope = 'partner';
     authState.partnerId = PARTNER_ID;
+    authState.partnerOrgAccess = 'all';
+  });
+
+  it.each([
+    ['GET', '/'],
+    ['POST', '/connect'],
+    ['POST', '/connect-self-hosted'],
+    ['POST', '/test'],
+    ['POST', '/disconnect'],
+    ['GET', '/hosts'],
+    ['PUT', '/mappings'],
+    ['GET', '/mappings'],
+    ['GET', '/collectors'],
+    ['PUT', '/collectors'],
+    ['PUT', '/controllers'],
+    ['DELETE', '/collectors/host-1'],
+    ['GET', '/telemetry'],
+    ['POST', '/sync'],
+    ['GET', '/sync-runs'],
+    ['GET', '/controller-sites'],
+  ])('rejects selected-org partner access before shared integration work: %s %s', async (method, path) => {
+    authState.partnerOrgAccess = 'selected';
+
+    const res = await unifiRoutes.request(path, { method });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(svc.getConnection).not.toHaveBeenCalled();
+  });
+
+  it('runs UniFi connection validation outside the request DB context', async () => {
+    vi.mocked(svc.upsertConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+
+    const res = await unifiRoutes.request('/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey: 'secret' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
   });
 
   it('GET / returns {connected:false} when no connection', async () => {
@@ -557,6 +612,7 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request('/test', { method: 'POST' });
     expect(res.status).toBe(502);
     await expect(res.json()).resolves.toMatchObject({ success: false });
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
   });
 
   // GET /hosts
@@ -593,6 +649,7 @@ describe('unifi routes', () => {
     await expect(res.json()).resolves.toMatchObject({
       hosts: [{ id: 'host-1', name: 'My Host', model: 'UDM Pro', sites: [{ id: 'usite-1', name: 'My Site' }] }],
     });
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
   });
 
   it('GET /hosts returns only mappable consoles — drops non-consoles and console without sites', async () => {
@@ -636,6 +693,7 @@ describe('unifi routes', () => {
       c.set('auth', {
         scope: 'partner' as const,
         partnerId: PARTNER_ID,
+        partnerOrgAccess: 'all' as const,
         orgId: null,
         canAccessOrg: vi.fn(() => false),
         user: { id: '55555555-5555-5555-5555-555555555555', email: 'admin@example.com' },
@@ -769,6 +827,7 @@ describe('unifi routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: PARTNER_ID,
+        partnerOrgAccess: 'all',
         orgId: null,
         canAccessOrg: vi.fn(() => false),
         user: { id: 'u1' },
@@ -802,7 +861,7 @@ describe('unifi routes', () => {
   it('GET /telemetry returns 403 when the site org is not accessible', async () => {
     const { authMiddleware } = await import('../../middleware/auth');
     vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
-      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, orgId: null, canAccessOrg: vi.fn(() => false), user: { id: 'u1' } });
+      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all', orgId: null, canAccessOrg: vi.fn(() => false), user: { id: 'u1' } });
       return next();
     });
     // site lookup resolves, but canAccessOrg=false must block before any telemetry read
@@ -819,7 +878,7 @@ describe('unifi routes', () => {
     const { authMiddleware } = await import('../../middleware/auth');
     // Org is accessible, but the caller's site allowlist excludes this site.
     vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
-      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, orgId: null, canAccessOrg: vi.fn(() => true), canAccessSite: vi.fn(() => false), user: { id: 'u1' } });
+      c.set('auth', { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all', orgId: null, canAccessOrg: vi.fn(() => true), canAccessSite: vi.fn(() => false), user: { id: 'u1' } });
       return next();
     });
     vi.mocked(db.select).mockReturnValueOnce({

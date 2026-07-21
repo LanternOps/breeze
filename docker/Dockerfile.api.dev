@@ -16,6 +16,10 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
+# devDependency of apps/api. This image installs devDependencies (bare
+# `pnpm install` below), so its manifest must be here or pnpm aborts with
+# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
+COPY packages/extension-cli/package.json ./packages/extension-cli/
 
 # Install all dependencies (including devDependencies for development)
 RUN pnpm install
@@ -25,6 +29,7 @@ COPY apps/api ./apps/api
 COPY packages/shared ./packages/shared
 COPY packages/extension-api ./packages/extension-api
 COPY packages/extension-sdk ./packages/extension-sdk
+COPY packages/extension-cli ./packages/extension-cli
 
 # Set working directory to api
 WORKDIR /app/apps/api

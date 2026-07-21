@@ -43,6 +43,20 @@ vi.mock('../../services/pdfMerge', async (importOriginal) => {
   return { ...actual, mergeUploadedContractPdfs: mergeMock };
 });
 
+const { acceptQuoteMock, emitAcceptInvoiceIssuedMock, declineQuoteByActorMock } = vi.hoisted(() => ({
+  acceptQuoteMock: vi.fn(),
+  emitAcceptInvoiceIssuedMock: vi.fn(),
+  declineQuoteByActorMock: vi.fn(),
+}));
+vi.mock('../../services/quoteAcceptService', () => ({
+  acceptQuote: acceptQuoteMock,
+  emitAcceptInvoiceIssued: emitAcceptInvoiceIssuedMock,
+}));
+vi.mock('../../services/quoteLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/quoteLifecycle')>();
+  return { ...actual, declineQuoteByActor: declineQuoteByActorMock };
+});
+
 import { quoteRoutes as portalQuoteRoutes } from './quotes';
 import { PdfMergeError } from '../../services/pdfMerge';
 
@@ -53,12 +67,12 @@ const TEMPLATE_ID = '44444444-4444-4444-4444-444444444444';
 const VERSION_ID = '55555555-5555-5555-5555-555555555555';
 const BLOCK_ID = '66666666-6666-6666-6666-666666666666';
 
-function app(orgId = ORG_ID) {
+function app(orgId = ORG_ID, options: { authMethod?: 'bearer' | 'cookie'; email?: string; csrf?: string } = {}) {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
-      user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', receiveNotifications: true, status: 'active' },
-      token: 't', authMethod: 'bearer',
+      user: { id: 'pu1', orgId, email: options.email ?? 'c@example.test', name: 'Cust', receiveNotifications: true, status: 'active' },
+      token: 't', authMethod: options.authMethod ?? 'bearer',
     });
     await next();
   });
@@ -220,6 +234,94 @@ describe('portal quotes GET /quotes/:id', () => {
     expect(contractBlock.content.sourceType).toBe('uploaded');
     expect(contractBlock.content.renderedHtml).toBeNull();
     expect(contractBlock.content.fileUrl).toBe(`/portal/quotes/${QUOTE_ID}/contract-file/${BLOCK_ID}`);
+  });
+});
+
+describe('portal quote mutation security', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    acceptQuoteMock.mockResolvedValue({ invoiceId: 'inv-1', quote: { status: 'converted' }, pax8OrderId: null });
+    emitAcceptInvoiceIssuedMock.mockResolvedValue(undefined);
+    declineQuoteByActorMock.mockResolvedValue({ status: 'declined' });
+  });
+
+  it.each([
+    ['/quotes/:id/accept', 'accept'],
+    ['/quotes/:id/decline', 'decline'],
+    ['/quotes/:id/pay', 'pay'],
+  ])('rejects cookie-authenticated POST %s without CSRF before handler side effects', async (_label, action) => {
+    const res = await app(ORG_ID, { authMethod: 'cookie' }).request(`/quotes/${QUOTE_ID}/${action}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'breeze_portal_session=t; breeze_portal_csrf_token=csrf-token',
+      },
+      body: action === 'pay' ? undefined : JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(403);
+    expect(acceptQuoteMock).not.toHaveBeenCalled();
+    expect(declineQuoteByActorMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched cookie CSRF token', async () => {
+    const res = await app(ORG_ID, { authMethod: 'cookie' }).request(`/quotes/${QUOTE_ID}/accept`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'breeze_portal_session=t; breeze_portal_csrf_token=cookie-token',
+        'X-Breeze-CSRF': 'header-token',
+      },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it.each(['accept', 'decline'])('rejects form-urlencoded %s even for bearer auth', async (action) => {
+    const res = await app().request(`/quotes/${QUOTE_ID}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'reason=forged',
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it('fails closed when a same-org contact is not an authorized quote recipient', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([]); // recipient authorization lookup
+
+    const res = await app(ORG_ID, { email: 'other@customer.example' }).request(`/quotes/${QUOTE_ID}/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signerName: 'Other Contact' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(acceptQuoteMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an authorized normalized recipient to accept', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([{ id: 'recipient-1' }]); // recipient authorization lookup
+    dbResults.push([]); // quote blocks
+
+    const res = await app(ORG_ID, { email: ' Buyer@Customer.Example ' }).request(`/quotes/${QUOTE_ID}/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signerName: 'Buyer' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(acceptQuoteMock).toHaveBeenCalledWith(expect.objectContaining({ quoteId: QUOTE_ID, signerEmail: ' Buyer@Customer.Example ' }));
+  });
+
+  it('fails closed when a same-org contact is not authorized to decline', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([]); // recipient authorization lookup
+
+    const res = await app(ORG_ID, { email: 'other@customer.example' }).request(`/quotes/${QUOTE_ID}/decline`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'No' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(declineQuoteByActorMock).not.toHaveBeenCalled();
   });
 });
 

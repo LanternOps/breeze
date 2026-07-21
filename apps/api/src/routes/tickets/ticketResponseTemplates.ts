@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, eq, asc } from 'drizzle-orm';
@@ -8,6 +8,7 @@ import { authMiddleware, requireScope, requireMfa, requirePermission } from '../
 import type { AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 
 export const ticketResponseTemplateRoutes = new Hono();
 
@@ -21,6 +22,13 @@ const requireTicketRead = requirePermission(PERMISSIONS.TICKETS_READ.resource, P
 const requireTicketWrite = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
 const scopes = requireScope('partner', 'system');
+const partnerGlobalDeniedMessage = 'Full partner organization access is required to manage partner-wide ticket response templates';
+const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: partnerGlobalDeniedMessage }, 403);
+  }
+  return next();
+};
 
 const createSchema = z.object({
   name: z.string().min(1).max(200),
@@ -33,7 +41,7 @@ const createSchema = z.object({
 const updateSchema = createSchema.partial();
 const idParam = z.object({ id: z.string().guid() });
 
-ticketResponseTemplateRoutes.get('/ticket-response-templates', authMiddleware, scopes, requireTicketRead, async (c) => {
+ticketResponseTemplateRoutes.get('/ticket-response-templates', authMiddleware, scopes, requireTicketRead, requirePartnerGlobalAccess, async (c) => {
   const auth = c.get('auth') as AuthContext;
   const partnerId = auth.partnerId;
   if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
@@ -54,6 +62,7 @@ ticketResponseTemplateRoutes.post(
   authMiddleware,
   scopes,
   requireTicketWrite,
+  requirePartnerGlobalAccess,
   requireMfa(),
   zValidator('json', createSchema),
   async (c) => {
@@ -77,6 +86,7 @@ ticketResponseTemplateRoutes.post(
       resourceType: 'ticket_response_template',
       resourceId: row.id,
       resourceName: row.name,
+      details: { partnerId, changedFields: Object.keys(data) },
     });
     return c.json({ data: row }, 201);
   },
@@ -87,6 +97,7 @@ ticketResponseTemplateRoutes.patch(
   authMiddleware,
   scopes,
   requireTicketWrite,
+  requirePartnerGlobalAccess,
   requireMfa(),
   zValidator('param', idParam),
   zValidator('json', updateSchema),
@@ -113,6 +124,7 @@ ticketResponseTemplateRoutes.patch(
       resourceType: 'ticket_response_template',
       resourceId: row.id,
       resourceName: row.name,
+      details: { partnerId, changedFields: Object.keys(data) },
     });
     return c.json({ data: row });
   },
@@ -123,6 +135,7 @@ ticketResponseTemplateRoutes.delete(
   authMiddleware,
   scopes,
   requireTicketWrite,
+  requirePartnerGlobalAccess,
   requireMfa(),
   zValidator('param', idParam),
   async (c) => {
@@ -140,6 +153,7 @@ ticketResponseTemplateRoutes.delete(
       resourceType: 'ticket_response_template',
       resourceId: id,
       resourceName: row.name,
+      details: { partnerId, changedFields: ['deleted'] },
     });
     return c.json({ success: true });
   },

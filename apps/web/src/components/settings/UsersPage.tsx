@@ -211,20 +211,13 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      // Name/status update — schema is .strict() so only declared keys are accepted.
-      const patchRes = await fetchWithAuth(`/users/${selectedUser.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: values.name })
-      });
-      if (!patchRes.ok) {
-        throw new Error(t('usersPage.errors.updateUser'));
-      }
-
       // Role lives on partner_users / organization_users; the dedicated
       // POST /users/:id/role endpoint writes it. selectedUser.role is the
       // role name (display string), not the id — resolve via the roles list.
+      // Global identity fields are intentionally read-only in this tenant-admin
+      // UI and must not be sent through the system-only PATCH /users/:id route.
       // Only POST when the role actually changed to avoid an unnecessary
-      // audit-log entry on name-only edits.
+      // audit-log entry on no-op saves.
       const currentRoleId = roles.find(r => r.name === selectedUser.role)?.id;
       if (values.roleId && values.roleId !== currentRoleId) {
         const roleRes = await fetchWithAuth(`/users/${selectedUser.id}/role`, {

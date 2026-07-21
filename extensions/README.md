@@ -1,12 +1,28 @@
 # Breeze Extensions
 
-This directory hosts optional extension packages. It is empty in the public
-repo — extensions are separate (possibly private) repos cloned in:
+> **DEPRECATED: source-directory (build-time) extension loading.**
+> The supported delivery path is a **signed runtime bundle**: declare the
+> artifact in `extensions.yaml` in this directory and the host verifies,
+> migrates, stages, and activates it at startup (see
+> `docs/extensions/build-time-transition.md` for the transition and its dated
+> removal gate). Source-directory loading described below still works for **one
+> compatibility window** and only when `BREEZE_LEGACY_SOURCE_EXTENSIONS=true`
+> is set; each loaded source extension emits a structured deprecation warning.
+> A source directory and a runtime artifact may **not** be enabled under the
+> same extension name — the boot fails rather than letting one silently shadow
+> the other. Stock images no longer build or bake in `extensions/*` sources.
+
+This directory hosts the runtime deployment config (`extensions.yaml`) and,
+during the compatibility window only, legacy source extension checkouts:
 
     git clone <extension-repo-url> extensions/<name>
-    pnpm install
 
-Each extension is a pnpm workspace package carrying a `breeze-extension.json`
+Note `extensions/*` is no longer a pnpm workspace glob: a cloned extension
+manages its own dependencies and build (`pnpm install && pnpm build` inside the
+checkout); the loader runs `dist/index.cjs` in production and the TS source
+entry in dev.
+
+Each legacy extension carries a `breeze-extension.json`
 manifest (validated by `@breeze/extension-api`) that declares:
 
 - `name` — lowercase slug; also the migration-ledger prefix (`<name>/<file>.sql`)
@@ -27,13 +43,33 @@ loading even when extensions are present.
 
 ## Lockfile policy
 
-Extension importers must NOT be committed to the public `pnpm-lock.yaml` — a
-private extension's dependency graph would leak. Running `pnpm install` with an
-extension present adds an `extensions/<name>` importer hunk locally; leave it
-out of commits (`git checkout pnpm-lock.yaml` before staging). Docker builds
-account for this: the builder stage runs a scoped
-`pnpm install --filter './extensions/*' --no-frozen-lockfile` before building
-extensions, so the committed lockfile stays extension-free.
+Extension importers must NOT appear in the public `pnpm-lock.yaml` — a private
+extension's dependency graph would leak. Since `extensions/*` is no longer a
+workspace glob this now holds automatically: `pnpm install` at the repo root
+ignores extension checkouts, and stock Docker images neither install nor build
+them. A legacy checkout installs and builds inside its own directory with its
+own lockfile.
+
+## SDK dependencies
+
+Core Breeze apps and packages consume the committed extension SDK packages
+under `packages/` through `workspace:*` dependencies. Keep that resolution
+inside the root workspace; do not add checkout-specific package paths or
+overrides to the root manifest or public lockfile.
+
+A legacy extension checkout remains a self-contained project. It declares,
+installs, locks, and builds its own SDK dependencies inside its checkout rather
+than relying on the Breeze root workspace to resolve them.
+
+For local dev environment variables and service overrides an extension
+needs when running against the dev stack (container env, secrets, extra
+mounts), the pattern is an untracked `docker-compose.*.override.yml` layered
+on top of `docker-compose.yml`, plus a gitignored `.env.*` file loaded via
+that override's `env_file:` key. Commit only a `.env.*.example` template
+with placeholder values — never a real secret, and never a real secret's
+value in the override YAML itself, even though the YAML file stays
+untracked (untracked files still sit in plaintext on disk and are easy to
+`git add -A` by accident).
 
 ## Seam v2: manifest flags and ExtensionContext
 

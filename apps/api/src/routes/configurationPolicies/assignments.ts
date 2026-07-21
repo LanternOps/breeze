@@ -43,7 +43,21 @@ assignmentRoutes.get(
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
     const assignments = await listAssignments(id);
-    return c.json({ data: assignments });
+    const authorizedAssignments = await Promise.all(
+      assignments.map(async (assignment) => ({
+        assignment,
+        authorization: await authorizeAssignmentTarget(
+          auth,
+          assignment.level as ConfigAssignmentLevel,
+          assignment.targetId,
+        ),
+      })),
+    );
+    return c.json({
+      data: authorizedAssignments
+        .filter(({ authorization }) => authorization.valid)
+        .map(({ assignment }) => assignment),
+    });
   }
 );
 
@@ -206,6 +220,10 @@ assignmentRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const query = c.req.valid('query');
+    const siteAuth = await authorizeAssignmentTarget(auth, query.level, query.targetId);
+    if (!siteAuth.valid) {
+      return c.json({ error: siteAuth.error }, 403);
+    }
     const result = await listAssignmentsForTarget(query.level, query.targetId);
 
     // Filter results to only include policies the caller can access

@@ -27,6 +27,13 @@ export const devices = pgTable('devices', {
   helperTokenIssuedAt: timestamp('helper_token_issued_at', { withTimezone: true }),
   previousHelperTokenHash: varchar('previous_helper_token_hash', { length: 64 }),
   previousHelperTokenExpiresAt: timestamp('previous_helper_token_expires_at', { withTimezone: true }),
+  // Issue #2621 — staged credentials for a two-phase rotation. These hashes are
+  // accepted for auth while pending, but only become current once the agent
+  // confirms it durably persisted the matching plaintext.
+  pendingTokenHash: varchar('pending_token_hash', { length: 64 }),
+  pendingWatchdogTokenHash: varchar('pending_watchdog_token_hash', { length: 64 }),
+  pendingHelperTokenHash: varchar('pending_helper_token_hash', { length: 64 }),
+  pendingTokenExpiresAt: timestamp('pending_token_expires_at', { withTimezone: true }),
   mtlsCertSerialNumber: varchar('mtls_cert_serial_number', { length: 128 }),
   mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
   mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),

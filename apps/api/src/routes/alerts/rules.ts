@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { alertRules, alertTemplates, alerts, devices, organizations } from '../../db/schema';
+import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -29,12 +29,76 @@ import {
 
 export const rulesRoutes = new Hono();
 
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+type RuleTargetAuth = {
+  allowedSiteIds?: string[];
+};
+
+type RuleTargetRow = { id: string; orgId: string; siteId?: string | null };
+
+function persistedRuleTargets(rule: {
+  targetType: string;
+  targetId: string;
+  overrideSettings?: unknown;
+}) {
+  const overrides = getOverrides(rule.overrideSettings);
+  const storedTargets = isRecord(overrides.targets) ? overrides.targets : {};
+  const targetType = typeof storedTargets.type === 'string' ? storedTargets.type : rule.targetType;
+  const ids = new Set<string>();
+  if (targetType !== 'all' && targetType !== 'org' && rule.targetId) ids.add(rule.targetId);
+  if (Array.isArray(storedTargets.ids)) {
+    for (const id of storedTargets.ids) if (typeof id === 'string' && id) ids.add(id);
+  }
+  if (Array.isArray(overrides.targetIds)) {
+    for (const id of overrides.targetIds) if (typeof id === 'string' && id) ids.add(id);
+  }
+  return { targetType, targetIds: [...ids] };
+}
+
+async function canAccessRuleTargets(
+  auth: RuleTargetAuth,
+  orgId: string,
+  targetType: string,
+  targetIds: string[],
+  validateOwnership: boolean,
+): Promise<boolean> {
+  const restricted = auth.allowedSiteIds !== undefined;
+  if (!restricted && !validateOwnership) return true;
+  if (targetType === 'all' || targetType === 'org') return !restricted;
+
+  const ids = [...new Set(targetIds.filter(Boolean))];
+  if (ids.length === 0) return false;
+
+  let rows: RuleTargetRow[];
+  if (targetType === 'site') {
+    rows = await db.select({ id: sites.id, orgId: sites.orgId })
+      .from(sites)
+      .where(and(inArray(sites.id, ids), eq(sites.orgId, orgId)));
+  } else if (targetType === 'device') {
+    rows = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(and(inArray(devices.id, ids), eq(devices.orgId, orgId)));
+  } else if (targetType === 'group') {
+    rows = await db.select({ id: deviceGroups.id, orgId: deviceGroups.orgId, siteId: deviceGroups.siteId })
+      .from(deviceGroups)
+      .where(and(inArray(deviceGroups.id, ids), eq(deviceGroups.orgId, orgId)));
+  } else {
+    return false;
+  }
+
+  if (rows.length !== ids.length || rows.some((row) => row.orgId !== orgId)) return false;
+  if (!restricted) return true;
+  const canAccessSite = siteAccessCheck(auth.allowedSiteIds);
+  return rows.every((row) => canAccessSite(targetType === 'site' ? row.id : row.siteId));
+}
 
 // GET /alerts/rules - List alert rules with pagination
 rulesRoutes.get(
   '/rules',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('query', listAlertRulesSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -111,6 +175,38 @@ rulesRoutes.get(
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
+    // Site authorization depends on the persisted target records, so it
+    // cannot be expressed by the alert_rules predicates alone. Filter the
+    // complete tenant-scoped candidate set before slicing the requested page;
+    // otherwise denied rows consume page slots and make later allowed rules
+    // undiscoverable while also producing an incorrect total.
+    if (auth.allowedSiteIds !== undefined) {
+      const candidateRules = await db
+        .select({
+          rule: alertRules,
+          template: alertTemplates
+        })
+        .from(alertRules)
+        .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
+        .where(whereCondition)
+        .orderBy(desc(alertRules.createdAt));
+
+      const accessibleRules = [];
+      for (const row of candidateRules) {
+        const targets = persistedRuleTargets(row.rule);
+        if (await canAccessRuleTargets(auth, row.rule.orgId!, targets.targetType, targets.targetIds, false)) {
+          accessibleRules.push(row);
+        }
+      }
+
+      return c.json({
+        data: accessibleRules
+          .slice(offset, offset + limit)
+          .map(({ rule, template }) => formatAlertRuleResponse(rule, template)),
+        pagination: { page, limit, total: accessibleRules.length }
+      });
+    }
+
     // Get total count
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
@@ -142,6 +238,7 @@ rulesRoutes.get(
 rulesRoutes.get(
   '/rules/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     const auth = c.get('auth');
     const ruleId = c.req.param('id')!;
@@ -149,6 +246,12 @@ rulesRoutes.get(
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
       return c.json({ error: 'Alert rule not found' }, 404);
+    }
+    if (rule.orgId !== null) {
+      const targets = persistedRuleTargets(rule);
+      if (!await canAccessRuleTargets(auth, rule.orgId, targets.targetType, targets.targetIds, false)) {
+        return c.json({ error: 'Alert rule not found' }, 404);
+      }
     }
 
     const [template] = await db
@@ -219,6 +322,9 @@ rulesRoutes.post(
 
     if (!targetId) {
       return c.json({ error: 'Target is required' }, 400);
+    }
+    if (!isPartnerWide && !await canAccessRuleTargets(auth, owner.orgId!, targetType, targetIds, true)) {
+      return c.json({ error: 'Access to one or more alert rule targets denied' }, 403);
     }
 
     // Notification channels and escalation policies are org-scoped (#2130);
@@ -362,6 +468,22 @@ rulesRoutes.put(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    if (!isPartnerWide) {
+      const persistedTargets = persistedRuleTargets(rule);
+      if (!await canAccessRuleTargets(auth, rule.orgId!, persistedTargets.targetType, persistedTargets.targetIds, true)) {
+        return c.json({ error: 'Access to one or more alert rule targets denied' }, 403);
+      }
+    }
+
+    const requestedTargets = data.targets || data.targetType || data.targetId
+      ? normalizeTargetsForRule({ targets: data.targets, targetType: data.targetType, targetId: data.targetId }, rule.orgId!)
+      : null;
+    if (requestedTargets && !isPartnerWide && !await canAccessRuleTargets(
+      auth, rule.orgId!, requestedTargets.targetType, requestedTargets.targetIds, true,
+    )) {
+      return c.json({ error: 'Access to one or more alert rule targets denied' }, 403);
+    }
+
     const updates: Record<string, unknown> = {};
     let templateOwned = getOverrides(rule.overrideSettings).templateOwned;
 
@@ -405,14 +527,7 @@ rulesRoutes.put(
       }
       const resolvedTargets = isPartnerWide
         ? { targetType: 'all', targetId: rule.partnerId!, targetIds: [], targets: { type: 'all', ids: [] } }
-        : normalizeTargetsForRule(
-            {
-              targets: data.targets,
-              targetType: data.targetType,
-              targetId: data.targetId
-            },
-            rule.orgId!
-          );
+        : requestedTargets!;
 
       if (!resolvedTargets.targetId) {
         return c.json({ error: 'Target is required' }, 400);
@@ -561,6 +676,20 @@ rulesRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    if (rule.orgId !== null) {
+      const { targetType, targetIds } = persistedRuleTargets(rule);
+      const canAccessTargets = await canAccessRuleTargets(
+        auth,
+        rule.orgId,
+        targetType,
+        targetIds,
+        true
+      );
+      if (!canAccessTargets) {
+        return c.json({ error: 'Alert rule targets are outside your permitted sites' }, 403);
+      }
+    }
+
     // Check for active alerts using this rule
     const activeAlerts = await db
       .select({ count: sql<number>`count(*)` })
@@ -603,6 +732,7 @@ rulesRoutes.delete(
 rulesRoutes.post(
   '/rules/:id/test',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('json', testAlertRuleSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -612,6 +742,20 @@ rulesRoutes.post(
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
     if (!rule) {
       return c.json({ error: 'Alert rule not found' }, 404);
+    }
+
+    if (rule.orgId !== null) {
+      const { targetType, targetIds } = persistedRuleTargets(rule);
+      const canAccessTargets = await canAccessRuleTargets(
+        auth,
+        rule.orgId,
+        targetType,
+        targetIds,
+        false
+      );
+      if (!canAccessTargets) {
+        return c.json({ error: 'Alert rule not found' }, 404);
+      }
     }
 
     // Verify device exists and is governed by this rule: same org for
@@ -627,6 +771,10 @@ rulesRoutes.post(
       .limit(1);
 
     if (!device) {
+      return c.json({ error: 'Device not found or belongs to different organization' }, 404);
+    }
+
+    if (!siteAccessCheck(auth.allowedSiteIds)(device.siteId)) {
       return c.json({ error: 'Device not found or belongs to different organization' }, 404);
     }
 

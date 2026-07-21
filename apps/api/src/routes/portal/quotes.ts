@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { quotes, quoteBlocks, quoteLines } from '../../db/schema/quotes';
+import { quotes, quoteBlocks, quoteLines, quoteRecipients } from '../../db/schema/quotes';
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
@@ -21,8 +21,10 @@ import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
 
 export const quoteRoutes = new Hono();
+quoteRoutes.use('*', portalFinancialMutationGuard);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
 const blockFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
@@ -174,6 +176,12 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
   const signerName = c.req.valid('json').signerName?.trim() || auth.user.name || auth.user.email;
   const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
+  const [recipient] = await db.select({ id: quoteRecipients.id }).from(quoteRecipients).where(and(
+    eq(quoteRecipients.quoteId, id),
+    eq(quoteRecipients.orgId, auth.user.orgId),
+    eq(quoteRecipients.email, normalizeEmail(auth.user.email)),
+  )).limit(1);
+  if (!recipient) return c.json({ error: 'You are not authorized to accept this quote' }, 403);
   try {
     // Pre-fetch the contract-block render data BEFORE the accept transaction:
     // loadContractBlockRenderData resolves the pinned template versions under a
@@ -213,6 +221,14 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
 // POST /quotes/:id/decline
 quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator('json', declineQuoteSchema), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param'); const { reason } = c.req.valid('json');
+  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
+  if (!quote) return c.json({ error: 'Quote not found' }, 404);
+  const [recipient] = await db.select({ id: quoteRecipients.id }).from(quoteRecipients).where(and(
+    eq(quoteRecipients.quoteId, id),
+    eq(quoteRecipients.orgId, auth.user.orgId),
+    eq(quoteRecipients.email, normalizeEmail(auth.user.email)),
+  )).limit(1);
+  if (!recipient) return c.json({ error: 'You are not authorized to decline this quote' }, 403);
   // Route through declineQuoteByActor so the portal shares the same status +
   // read-time expiry (410) guards as the public/internal decline paths — an
   // inline update here previously let an authed portal user decline an

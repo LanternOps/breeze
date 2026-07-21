@@ -1310,7 +1310,13 @@ describe('agent routes', () => {
       expect(res.status).toBe(200);
       // runOutsideDbContext is called 3 times: command lookup, command update, and audit policy queueing
       expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(3);
-      expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+      // withSystemDbAccessContext is called twice: once by the pre-existing
+      // path, and once wrapping the terminal device_commands compare-and-set.
+      // That second call is the #1375 fix (Sentry BREEZE-7) — this route is the
+      // REST twin of agentWs.processCommandResult and was writing
+      // device_commands with no access context. The count is load-bearing:
+      // dropping back to 1 means the write went contextless again.
+      expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(2);
       expect(vi.mocked(queueCommandForExecution)).toHaveBeenCalledWith(
         'device-123',
         'collect_audit_policy',

@@ -66,6 +66,7 @@ function makeApp() {
 }
 
 const RULE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
+const ALERTS_READ = 'alerts:read';
 const ALERTS_WRITE = 'alerts:write';
 
 describe('alert rules authz (Finding #6)', () => {
@@ -77,6 +78,24 @@ describe('alert rules authz (Finding #6)', () => {
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
       partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
     } as typeof authRef.current;
+  });
+
+  it.each(['/alerts/rules', `/alerts/rules/${RULE_ID}`])('403 on GET %s without ALERTS_READ', async (path) => {
+    const res = await makeApp().request(path);
+    expect(res.status).toBe(403);
+  });
+
+  it('403 on rule test simulation without ALERTS_READ', async () => {
+    const res = await makeApp().request(`/alerts/rules/${RULE_ID}/test`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('passes the list read gate when ALERTS_READ is granted', async () => {
+    grantedRef.current.add(ALERTS_READ);
+    const res = await makeApp().request('/alerts/rules');
+    expect(res.status).not.toBe(403);
   });
 
   it('403 on POST /alerts/rules without ALERTS_WRITE', async () => {

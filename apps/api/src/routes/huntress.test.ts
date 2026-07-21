@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
-  permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
+  permsState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined },
+  authState: {
+    scope: 'organization' as 'organization' | 'partner' | 'system',
+    orgId: '11111111-1111-1111-1111-111111111111' as string | null,
+    partnerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as string | null,
+    partnerOrgAccess: null as 'all' | 'selected' | 'none' | null,
+    accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[],
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -70,9 +77,11 @@ vi.mock('../db/schema', () => ({
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
-      scope: 'organization',
-      orgId: '11111111-1111-1111-1111-111111111111',
-      accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+      scope: authState.scope,
+      orgId: authState.orgId,
+      partnerId: authState.partnerId,
+      partnerOrgAccess: authState.partnerOrgAccess,
+      accessibleOrgIds: authState.accessibleOrgIds,
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
       orgCondition: vi.fn(() => undefined),
       user: { id: 'user-123', email: 'test@example.com' }
@@ -144,8 +153,77 @@ describe('huntress routes', () => {
     permissionGate.deny = false;
     mfaGate.deny = false;
     permsState.permissions = undefined;
+    authState.scope = 'organization';
+    authState.orgId = '11111111-1111-1111-1111-111111111111';
+    authState.partnerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    authState.partnerOrgAccess = null;
+    authState.accessibleOrgIds = ['11111111-1111-1111-1111-111111111111'];
     app = new Hono();
     app.route('/huntress', huntressRoutes);
+  });
+
+  it.each([
+    ['GET', '/huntress/integration', undefined],
+    ['POST', '/huntress/integration', { name: 'Primary Huntress', apiKey: 'secret' }],
+    ['POST', '/huntress/sync', {}],
+    ['GET', '/huntress/organizations', undefined],
+    ['POST', '/huntress/organizations/map', {
+      integrationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      huntressOrgId: 'huntress-org-1',
+      orgId: null,
+    }],
+  ])('rejects selected-org partner access before shared integration work: %s %s', async (method, path, body) => {
+    authState.scope = 'partner';
+    authState.orgId = null;
+    authState.partnerOrgAccess = 'selected';
+
+    const res = await app.request(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  describe('GET /status partner-wide authority', () => {
+    it.each(['selected', 'none'] as const)(
+      'rejects partner org access %s before partner-global reads',
+      async (orgAccess) => {
+        authState.scope = 'partner';
+        authState.orgId = null;
+        authState.partnerOrgAccess = orgAccess;
+
+        const res = await app.request('/huntress/status');
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows a full-partner caller to read status', async () => {
+      authState.scope = 'partner';
+      authState.orgId = null;
+      authState.partnerOrgAccess = 'all';
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => []),
+          })),
+        })),
+      } as any);
+
+      const res = await app.request('/huntress/status');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        integration: null,
+        coverage: { totalAgents: 0 },
+        incidents: { open: 0 },
+      });
+      expect(db.select).toHaveBeenCalledOnce();
+    });
   });
 
   it('rejects integration upsert when permission check fails', async () => {

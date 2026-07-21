@@ -24,3 +24,13 @@ release has shipped after SDK v2 first ships. Removing the v1 fixture or gate
 before that release is not supported. After the window closes, removal requires
 an intentional compatibility-policy change and release-note entry; it must not
 happen as incidental test cleanup.
+
+## Legacy source-directory (build-time) loading
+
+The v1 runtime host first shipped in v0.98.0; source-directory extension
+loading is deprecated and gated behind `BREEZE_LEGACY_SOURCE_EXTENSIONS=true`
+starting with the first stable release after v0.98.0 that contains the gate,
+for a one-release-series compatibility window recorded (with its removal
+conditions) in `build-time-transition.md`. That removal retires a delivery
+path only — it does not remove the public v1 SDK, the v1 manifest schema, or
+this document's CI gate, which are governed by the SDK v2 window above.

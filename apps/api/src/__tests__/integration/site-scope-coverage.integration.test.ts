@@ -137,6 +137,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // (requirePartnerApiScope) — no user permissions context; results are
   // clamped to the principal's partner-accessible orgs by the export query.
   'routes/partnerApi/devices.ts:GET /devices',
+  // Helper-token path (helperAuth on all helperRoutes): no user permissions
+  // context, and the session lookup is pinned to the token's own device row
+  // (eq(aiSessions.deviceId, device.id)) before any write. (W7 #2637.)
+  'routes/helper/index.ts:POST /chat/sessions/:id/tool-results',
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
@@ -156,6 +160,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/helper/index.ts:GET /chat/sessions',
   'routes/helper/index.ts:GET /chat/sessions/:id/messages',
   'routes/helper/index.ts:POST /chat/sessions/:id/flag',
+  // helperAuth device-token path; query pinned to the caller's own device via
+  // eq(aiSessions.deviceId, device.id) (#2637 client-declared tool results).
+  'routes/helper/index.ts:POST /chat/sessions/:id/tool-results',
   'routes/tunnels.ts:GET /desktop-access',
   'routes/tunnels.ts:POST /downgrade-to-vnc',
   'routes/tunnels.ts:POST /upgrade-to-webrtc',
@@ -179,7 +186,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/huntress.ts:GET /status',
   'routes/metrics.ts:GET /',
   'routes/metrics.ts:GET /trends',
-  'routes/reports/data.ts:GET /data/compliance',
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
@@ -216,7 +222,6 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/huntress.ts:GET /status',
   'routes/metrics.ts:GET /',
   'routes/metrics.ts:GET /trends',
-  'routes/reports/data.ts:GET /data/compliance',
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',

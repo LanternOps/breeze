@@ -27,7 +27,10 @@ const BLOCKED_TOOLS = new Set<string>([
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
-const TIER2_ACTIONS: Record<string, string[]> = {
+// Exported for contract tests only (tier-table disjointness + the web
+// tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
+// resolution always goes through checkGuardrails().
+export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -39,13 +42,26 @@ const TIER2_ACTIONS: Record<string, string[]> = {
     'unlink_alert',
     'create_from_alert',
     'edit_comment',
-    'delete_comment'
+    'delete_comment',
+    // Time-tracking downgraded from Tier 3 (2026-07-20): starting/stopping a
+    // timer or logging time is org-internal bookkeeping, consistent with
+    // create/comment above. move_org stays Tier 3 (tenant-shape mutation).
+    'log_time_entry',
+    'start_timer',
+    'stop_timer'
   ],
   manage_services: ['list'],
+  // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
+  // filenames leak far less than contents — so it auto-executes with audit.
+  // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
+  // unapproved read can exfiltrate any file's contents.
+  file_operations: ['list'],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
-  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve'],
+  // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
+  // consistent with approve/decline/defer here. install/rollback stay Tier 3.
+  manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
@@ -64,18 +80,21 @@ const TIER2_ACTIONS: Record<string, string[]> = {
 };
 
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
-const TIER1_ACTIONS: Record<string, string[]> = {
+// Exported for contract tests only — see the note on TIER2_ACTIONS.
+export const TIER1_ACTIONS: Record<string, string[]> = {
   security_scan: ['vulnerabilities'],
   manage_tags: ['list'],
 };
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
-const TIER3_ACTIONS: Record<string, string[]> = {
-  // SR5-01: filesystem READ/LIST are privileged. The endpoint agent runs as
+// Exported for contract tests only — see the note on TIER2_ACTIONS.
+export const TIER3_ACTIONS: Record<string, string[]> = {
+  // SR5-01: filesystem READ is privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
-  // Require interactive approval (Tier 3) for read/list, same as the mutations.
-  file_operations: ['read', 'list', 'write', 'delete', 'mkdir', 'rename'],
+  // Require interactive approval (Tier 3) for read, same as the mutations.
+  // `list` was deliberately downgraded to Tier 2 (2026-07-20) — recon-only.
+  file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
@@ -84,7 +103,7 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 3 actions (require user approval)
   manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
-  manage_patches: ['scan', 'install', 'rollback'],
+  manage_patches: ['install', 'rollback'],
   manage_groups: ['create', 'update', 'delete'],
   manage_automations: ['run'],
   manage_processes: ['kill'],
@@ -95,8 +114,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_hyperv_checkpoints: ['delete', 'apply'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_monitors: ['create', 'update', 'delete'],
-  // Ticketing time-tracking — writes at Tier 3 (spec §4)
-  manage_tickets: ['log_time_entry', 'start_timer', 'stop_timer', 'move_org'],
+  // Ticketing — move_org is a tenant-shape mutation and requires approval.
+  // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
+  manage_tickets: ['move_org'],
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],

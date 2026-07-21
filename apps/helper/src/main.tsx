@@ -1,3 +1,4 @@
+import '@fontsource-variable/inter';
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { listen } from '@tauri-apps/api/event';
@@ -7,6 +8,10 @@ import App from './App';
 import { ConsentDialog } from './windows/ConsentDialog';
 import type { ConsentRequest } from './windows/ConsentDialog';
 import { SessionBanner } from './windows/SessionBanner';
+import { initTheme } from './lib/theme';
+
+// Initialize theme before rendering
+initTheme();
 
 // ── Consent window ──────────────────────────────────────────────────────────
 

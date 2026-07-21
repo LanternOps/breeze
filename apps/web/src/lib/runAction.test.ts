@@ -115,6 +115,30 @@ describe('runAction', () => {
     expect(showToast).not.toHaveBeenCalled();
   });
 
+  it('treatUnauthorizedAsError: a 401 is toasted with its real reason instead of swallowed', async () => {
+    // For routes that proxy a downstream 401 (approvals decide answers 401 for
+    // `assertion_failed` / `reauth_required`), the session-expiry branch would
+    // throw with no feedback at all.
+    const onUnauthorized = vi.fn();
+    await expect(runAction({
+      request: async () => res({ error: 'assertion_failed' }, 401),
+      errorFallback: 'fb',
+      onUnauthorized,
+      treatUnauthorizedAsError: true,
+    })).rejects.toMatchObject({ status: 401, message: 'assertion_failed' });
+    expect(showToast).toHaveBeenCalledWith({ message: 'assertion_failed', type: 'error' });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('friendly falls back to body.error when the body carries no code', async () => {
+    await expect(runAction({
+      request: async () => res({ error: 'step_up_required', requiredLevel: 3 }, 403),
+      errorFallback: 'fb',
+      friendly: (token) => (token === 'step_up_required' ? 'Use Touch ID to approve' : undefined),
+    })).rejects.toMatchObject({ status: 403, message: 'Use Touch ID to approve' });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Use Touch ID to approve', type: 'error' });
+  });
+
   it('parseSuccess throws -> toasted failure with errorFallback', async () => {
     await expect(runAction({
       request: async () => res({ val: 1 }, 200),

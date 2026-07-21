@@ -1,4 +1,4 @@
-import type { Context } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { getTrustedClientIp } from '../../services/clientIp';
@@ -467,6 +467,36 @@ export function validatePortalCookieCsrfRequest(c: Context): string | null {
 
   return null;
 }
+
+/**
+ * Shared boundary guard for the portal quote/invoice mutation routers.
+ * Cookie sessions must prove the double-submit CSRF token, while bearer-token
+ * API clients remain exempt. Mutations with a JSON body must also reject form
+ * submissions before Hono's JSON validator attempts to parse them.
+ */
+export const portalFinancialMutationGuard: MiddlewareHandler = async (c, next) => {
+  if (c.req.method !== 'POST') {
+    await next();
+    return;
+  }
+
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) {
+    return c.json({ error: csrfError }, 403);
+  }
+
+  const requiresJsonBody =
+    /\/quotes\/[^/]+\/(?:accept|decline)$/.test(c.req.path)
+    || /\/invoices\/[^/]+\/settle$/.test(c.req.path);
+  if (requiresJsonBody) {
+    const contentType = c.req.header('content-type')?.toLowerCase() ?? '';
+    if (!contentType.startsWith('application/json')) {
+      return c.json({ error: 'Content-Type must be application/json' }, 415);
+    }
+  }
+
+  await next();
+};
 
 function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
   const headerBuffer = Buffer.from(headerToken, 'utf8');

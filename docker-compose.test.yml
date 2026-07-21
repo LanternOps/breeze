@@ -5,7 +5,9 @@
 services:
   # PostgreSQL Database for Tests
   postgres-test:
-    image: postgres:16-alpine
+    # pgvector/pgvector is the official postgres image + the vector extension
+    # (drop-in superset of postgres:16).
+    image: pgvector/pgvector:pg16
     container_name: breeze-postgres-test
     environment:
       POSTGRES_USER: breeze_test

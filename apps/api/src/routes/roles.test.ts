@@ -78,6 +78,7 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'partner',
       partnerId: 'partner-123',
+      partnerOrgAccess: 'all',
       orgId: null,
       user: { id: 'user-123', email: 'test@example.com' }
     });
@@ -107,6 +108,7 @@ describe('role routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' }
       });
@@ -115,6 +117,28 @@ describe('role routes', () => {
     app = new Hono();
     app.route('/roles', roleRoutes);
   });
+
+  it.each(['selected', 'none'] as const)(
+    'rejects partner orgAccess=%s before querying partner-global roles',
+    async (partnerOrgAccess) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess,
+          orgId: null,
+          accessibleOrgIds: [],
+          user: { id: 'user-123', email: 'test@example.com' },
+        });
+        return next();
+      });
+
+      const res = await app.request('/roles');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    },
+  );
 
   describe('GET /roles', () => {
     it('should list partner roles with user counts', async () => {

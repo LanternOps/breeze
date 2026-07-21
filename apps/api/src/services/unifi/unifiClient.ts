@@ -1,3 +1,5 @@
+import { safeFetch } from '../urlSafety';
+
 export class UnifiApiError extends Error {
   status: number;
   code?: string;
@@ -38,11 +40,13 @@ export interface UnifiClient {
   getIspMetrics(siteId: string): Promise<UnifiIspMetrics | null>;
 }
 
-interface UnifiClientConfig { baseUrl: string; apiKey: string; fetchImpl?: typeof fetch; sleepImpl?: (ms: number) => Promise<void> }
+interface UnifiClientConfig { baseUrl: string; apiKey: string; fetchImpl?: typeof safeFetch; sleepImpl?: (ms: number) => Promise<void> }
 
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_RETRY_DELAY_MS = 1000;
+const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -66,7 +70,7 @@ function firmwareUpdatable(d: Record<string, unknown>): boolean | null {
 const ISP_METRIC_TYPE = '5m';
 
 export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
-  const fetchImpl = cfg.fetchImpl ?? fetch;
+  const fetchImpl = cfg.fetchImpl ?? safeFetch;
   const sleepImpl = cfg.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = cfg.baseUrl.replace(/\/+$/, '');
 
@@ -74,6 +78,8 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
     const fetchGet = () => fetchImpl(`${base}${path}`, {
       method: 'GET',
       headers: { 'X-API-KEY': cfg.apiKey, accept: 'application/json' },
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      maxBytes: MAX_RESPONSE_BYTES,
     });
     let res = await fetchGet();
     for (let attempt = 0; res.status === 429 && attempt < MAX_RETRIES; attempt += 1) {

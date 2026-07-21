@@ -26,6 +26,7 @@ import type { IpAllowlistStatus, SupportedLocale } from '@breeze/shared';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
@@ -1111,6 +1112,9 @@ orgRoutes.patch(
   zValidator('json', reorderOrganizationsSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: 'Full partner access required' }, 403);
+    }
     const { orderedIds } = c.req.valid('json');
     const partnerId = auth.partnerId as string;
 

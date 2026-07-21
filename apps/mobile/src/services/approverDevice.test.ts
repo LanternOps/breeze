@@ -68,7 +68,7 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-1' } }));
 
-    await ensureApproverDevice(signer);
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({ status: 'registered' });
 
     // No password step-up — passwordless registration body.
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
@@ -88,17 +88,23 @@ describe('ensureApproverDevice', () => {
       k === 'breeze_approver_credential_id' ? 'dev-1' : 'test-token',
     );
 
-    await ensureApproverDevice(signer);
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'already_registered',
+    });
 
     expect(signer.createKeys).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('no-ops silently when no biometric hardware (no throw on the login path)', async () => {
+  it('reports unsupported (not failed) when there is no biometric hardware', async () => {
     const signer = fakeSigner({ isAvailable: vi.fn().mockResolvedValue(false) });
     secureStore.getItemAsync.mockResolvedValue(null);
 
-    await expect(ensureApproverDevice(signer)).resolves.toBeUndefined();
+    // 'unsupported' is a normal resting state — the UI must NOT warn about it.
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'unsupported',
+      reason: 'no_hardware',
+    });
     expect(signer.createKeys).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -110,11 +116,63 @@ describe('ensureApproverDevice', () => {
     );
     fetchMock.mockResolvedValueOnce(json({ error: 'nope' }, 500));
 
-    await expect(ensureApproverDevice(signer)).resolves.toBeUndefined();
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'failed',
+      reason: 'http_500',
+    });
     expect(secureStore.setItemAsync).not.toHaveBeenCalledWith(
       'breeze_approver_credential_id',
       expect.anything(),
     );
+  });
+
+  it('REGRESSION: reports the 400 the server returns for the missing currentPassword step-up', async () => {
+    // The server's mobileRegisterSchema requires `currentPassword` (deliberately
+    // — passwordless enrollment was reverted as a HIGH security finding), and
+    // this client does not send it, so zValidator 400s before the handler runs.
+    // That used to be swallowed by `if (!res.ok) return;`, leaving every
+    // approval from this phone silently capped at L1. It must be reported.
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ error: 'Validation failed' }, 400));
+
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'failed',
+      reason: 'http_400',
+    });
+    expect(secureStore.setItemAsync).not.toHaveBeenCalledWith(
+      'breeze_approver_credential_id',
+      expect.anything(),
+    );
+  });
+
+  it('reports failure when the server 200s without a device id (no silent success)', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ device: {} }));
+
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'failed',
+      reason: 'missing_device_id',
+    });
+    expect(secureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('never throws on the login path when the network blows up', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(ensureApproverDevice(signer)).resolves.toEqual({
+      status: 'failed',
+      reason: 'exception',
+    });
   });
 });
 

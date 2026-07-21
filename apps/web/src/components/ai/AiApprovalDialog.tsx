@@ -1,7 +1,18 @@
-import { useState, useEffect } from "react";
-import { ShieldAlert, Check, X, Clock, Monitor, Hourglass } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import {
+  ShieldAlert,
+  Check,
+  X,
+  Clock,
+  Monitor,
+  Hourglass,
+  Fingerprint,
+} from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
+import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
+import { ActionError } from "@/lib/runAction";
+import { navigateTo } from "@/lib/navigation";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
 const AUTO_DENY_MS = 5 * 60 * 1000;
@@ -32,14 +43,29 @@ interface AiApprovalDialogProps {
   onApprove: () => void;
   onReject: () => void;
   /**
-   * True for Tier-3 durable action-intents (spec §6.1). Intent-backed
-   * executions are decided via the /approvals surface (mobile push or the
-   * Approvals queue) — a four-eyes model where the requester is usually NOT
-   * an eligible approver of their own intent. This card must NEVER offer a
-   * self-approve button for one (whole-branch review CRITICAL-3: the
-   * sessions-approve route silently no-op'd for these before this fix).
+   * True for Tier-3 durable action-intents (spec §6.1), decided on
+   * action_intents via the approvals decide API — never via the legacy
+   * sessions-approve endpoint (whole-branch review CRITICAL-3). When the
+   * requester is NOT an eligible approver (multi-approver org), this card
+   * shows a waiting state only. When the server fanned the approval row out
+   * to the requester (sole-operator branch), selfApprovalRequestId is set
+   * and the card offers an inline L3 self-approve: WebAuthn ceremony
+   * (Touch ID / Windows Hello) + proof POST — satisfying, not bypassing,
+   * the decide handler's assurance-level >= 3 gate.
    */
   intentBacked?: boolean;
+  /** The viewer's own fanned-out approval row (sole-operator case). */
+  selfApprovalRequestId?: string;
+  /**
+   * The intent's real server-side expiry (ISO). When present, the countdown is
+   * anchored to it rather than a mount-relative constant — so the card cannot
+   * silently disagree with the server's actual deadline (CHAT_EXPIRY_MS).
+   * Absent on the legacy (non-intent) path, which keeps the mount-relative
+   * AUTO_DENY_MS behavior.
+   */
+  intentExpiresAt?: string;
+  /** Called after a successful inline decide so the parent clears pendingApproval. */
+  onIntentDecided?: () => void;
 }
 
 function filterInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -152,29 +178,169 @@ export default function AiApprovalDialog({
   onApprove,
   onReject,
   intentBacked,
+  selfApprovalRequestId,
+  intentExpiresAt,
+  onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
-  const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
+  // Seed from the intent's real deadline when we have one, clamped to the
+  // AUTO_DENY_MS window so the progress bar (denominator AUTO_DENY_MS) can't
+  // exceed 100%. Falls back to the mount-relative constant for the legacy path.
+  const [remainingMs, setRemainingMs] = useState(() =>
+    intentExpiresAt
+      ? Math.max(0, Math.min(AUTO_DENY_MS, new Date(intentExpiresAt).getTime() - Date.now()))
+      : AUTO_DENY_MS,
+  );
+  const [intentDecideState, setIntentDecideState] = useState<
+    "idle" | "deciding" | "needs_device" | "decided" | "unavailable"
+  >("idle");
+  const [decidedAs, setDecidedAs] = useState<"approve" | "deny" | null>(null);
+  const [intentError, setIntentError] = useState<string | null>(null);
 
-  // Intent-backed executions are decided durably via the /approvals surface,
-  // not this card (see the prop doc above) — there is nothing here to
-  // auto-reject on a client-side timer, and doing so would just fire a
-  // self-approval-shaped request the backend now correctly refuses. Skip the
-  // countdown entirely for that case.
+  const canSelfDecide = Boolean(intentBacked && selfApprovalRequestId);
+  // The card is only passive (no time signal, nothing to act on) in the
+  // four-eyes case. The sole-operator card is actionable and its intent still
+  // expires after CHAT_EXPIRY_MS, so it gets the countdown too.
+  const showCountdown = !intentBacked || canSelfDecide;
+
+  // Read inside the interval callback without listing the state in the
+  // effect's deps — doing so would restart the timer (and reset `start`) on
+  // every decide-state transition.
+  const decideStateRef = useRef(intentDecideState);
   useEffect(() => {
-    if (intentBacked) return;
-    const start = Date.now();
+    decideStateRef.current = intentDecideState;
+  }, [intentDecideState]);
+
+  const handleIntentDecision = async (decision: "approve" | "deny") => {
+    // Deny must stay reachable from `needs_device` (it needs no WebAuthn
+    // proof — the helper skips the ceremony and the server's L3 gate only
+    // guards `approved`). Only an in-flight or already-settled decision
+    // blocks a new one.
+    if (!selfApprovalRequestId) return;
+    if (
+      intentDecideState === "deciding" ||
+      intentDecideState === "decided" ||
+      intentDecideState === "unavailable"
+    )
+      return;
+    if (decision === "approve" && intentDecideState === "needs_device") return;
+    const priorState = intentDecideState;
+    setIntentDecideState("deciding");
+    setIntentError(null);
+    try {
+      const outcome = await decideIntentApproval(selfApprovalRequestId, decision);
+      if (outcome === "needs_device") {
+        setIntentDecideState("needs_device");
+        return;
+      }
+      // The org gained another eligible approver since this intent was created
+      // (#2685), so the viewer may no longer decide their own request — an
+      // outcome no retry can change. Settle into the same terminal `unavailable`
+      // presentation a 409/410 produces so no button is left offering an action
+      // guaranteed to fail. Deliberately does NOT call onIntentDecided: unlike
+      // 409/410 the intent is still pending — it now waits on somebody else —
+      // and clearing it would unmount the card before this line is read.
+      if (outcome === "not_sole_approver") {
+        setIntentError(t("aiApprovalDialog.notSoleApprover"));
+        setIntentDecideState("unavailable");
+        return;
+      }
+      // Terminal: the parent normally unmounts this card via onIntentDecided,
+      // but don't depend on that — settle into a decided state so the button
+      // never sits frozen on "Waiting for verification…" if the clear lags.
+      // Still non-idle, so the double-submit guard above holds.
+      setDecidedAs(decision);
+      setIntentDecideState("decided");
+      onIntentDecided?.();
+    } catch (err) {
+      // 409 (already decided elsewhere / content changed) and 410 (expired) are
+      // TERMINAL for this row. Falling back to `idle` would re-offer a button
+      // whose only possible outcome is another WebAuthn prompt followed by the
+      // same rejection. The server overloads 409 for two distinct reasons, so
+      // discriminate on the token: `digest_mismatch` is a tamper tripwire (the
+      // action's arguments changed after fan-out, approvals.ts) — surfacing that
+      // as the benign "already decided" would hide a security-relevant refusal.
+      if (err instanceof ActionError && (err.status === 409 || err.status === 410)) {
+        const token = (err.body as { error?: unknown } | null | undefined)?.error;
+        if (err.status === 410) setIntentError(t("aiApprovalDialog.expired"));
+        else if (token === "digest_mismatch")
+          setIntentError(t("aiApprovalDialog.contentChanged"));
+        else setIntentError(t("aiApprovalDialog.alreadyDecided"));
+        setIntentDecideState("unavailable");
+        onIntentDecided?.();
+        return;
+      }
+      // Never surface err.message: a failed WebAuthn ceremony throws a
+      // browser/library-authored (untranslated) error, and server rejections
+      // were already toasted by runAction. Show a localized line instead.
+      // Discriminate on WHERE it failed (CeremonyError ⇒ nothing was POSTed),
+      // not on the error class — @simplewebauthn wraps a user-cancelled prompt
+      // in a plain `WebAuthnError extends Error`, never a DOMException.
+      setIntentError(
+        err instanceof CeremonyError
+          ? t("aiApprovalDialog.verificationFailed")
+          : t("aiApprovalDialog.decideFailed"),
+      );
+      // Restore the pre-attempt state: a failed deny from `needs_device` must
+      // not fall back to `idle`, which would re-offer an Approve button that
+      // cannot succeed (no registered authenticator).
+      setIntentDecideState(priorState === "needs_device" ? "needs_device" : "idle");
+    }
+  };
+
+  // Four-eyes intent-backed cards are passive — somebody else decides them on
+  // the /approvals surface, so there is no deadline worth showing here. The
+  // sole-operator card DOES get the countdown: the underlying intent expires
+  // after CHAT_EXPIRY_MS and without a timer the user only learns that by
+  // completing a Touch ID prompt and collecting a 410.
+  //
+  // onReject() stays suppressed for EVERY intent-backed card at zero: the
+  // client-side auto-deny is a legacy-Tier-2 mechanism and firing it against a
+  // durable intent would just POST a self-approval-shaped request the backend
+  // correctly refuses. The self-approve card instead settles into the same
+  // terminal "expired" presentation a server 410 produces.
+  useEffect(() => {
+    if (intentBacked && !canSelfDecide) return;
+    // Anchor to the intent's real server-side expiry when we have it, so the
+    // countdown matches the deadline the server will actually enforce. The
+    // legacy path has none, so it counts down the mount-relative window.
+    const deadline = intentExpiresAt
+      ? new Date(intentExpiresAt).getTime()
+      : Date.now() + AUTO_DENY_MS;
     const interval = setInterval(() => {
-      const remaining = AUTO_DENY_MS - (Date.now() - start);
+      // Card already settled (decided / unavailable — via the decide handler's
+      // not_sole_approver or a server 409/410) — stop ticking so the countdown
+      // doesn't keep counting down beneath a terminal message.
+      if (
+        decideStateRef.current === "decided" ||
+        decideStateRef.current === "unavailable"
+      ) {
+        clearInterval(interval);
+        return;
+      }
+      const remaining = Math.min(AUTO_DENY_MS, deadline - Date.now());
       if (remaining <= 0) {
         clearInterval(interval);
-        onReject();
+        setRemainingMs(0);
+        if (!intentBacked) {
+          onReject();
+          return;
+        }
+        // Don't clobber an in-flight ceremony or an already-settled row — the
+        // server's own 409/410 is authoritative for those.
+        if (
+          decideStateRef.current === "idle" ||
+          decideStateRef.current === "needs_device"
+        ) {
+          setIntentError(t("aiApprovalDialog.expired"));
+          setIntentDecideState("unavailable");
+        }
       } else {
         setRemainingMs(remaining);
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject, intentBacked]);
+  }, [onReject, intentBacked, canSelfDecide, t, intentExpiresAt]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
@@ -184,7 +350,7 @@ export default function AiApprovalDialog({
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
 
-  const isUrgent = !intentBacked && remainingMs < 30_000;
+  const isUrgent = showCountdown && remainingMs < 30_000;
 
   return (
     <div
@@ -194,16 +360,23 @@ export default function AiApprovalDialog({
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {intentBacked ? (
+          {/* Four-eyes intents wait on somebody else (hourglass). When the
+              viewer is the sole eligible approver the card is actionable, so
+              it must not read "waiting" above the user's own buttons. */}
+          {intentBacked && !canSelfDecide ? (
             <Hourglass className="h-4 w-4 text-amber-400" />
           ) : (
             <ShieldAlert className="h-4 w-4 text-amber-400" />
           )}
           <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-            {intentBacked ? t("aiApprovalDialog.pendingApproverTitle") : t("aiApprovalDialog.title")}
+            {canSelfDecide
+              ? t("aiApprovalDialog.selfApproveTitle")
+              : intentBacked
+                ? t("aiApprovalDialog.pendingApproverTitle")
+                : t("aiApprovalDialog.title")}
           </span>
         </div>
-        {!intentBacked && (
+        {showCountdown && (
           <div
             className="flex items-center gap-1.5 text-xs text-gray-500"
             role="timer"
@@ -221,7 +394,7 @@ export default function AiApprovalDialog({
       )}
 
       {/* Countdown progress bar */}
-      {!intentBacked && (
+      {showCountdown && (
         <div
           className="mt-2 h-0.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800"
           role="progressbar"
@@ -243,7 +416,7 @@ export default function AiApprovalDialog({
         {description}
       </p>
 
-      {intentBacked && (
+      {intentBacked && !canSelfDecide && (
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           {t("aiApprovalDialog.pendingApproverDescription")}
         </p>
@@ -262,10 +435,7 @@ export default function AiApprovalDialog({
         </details>
       )}
 
-      {/* Intent-backed executions never show a self-approve button here — the
-          four-eyes model means the requester is usually not an eligible
-          approver of their own action intent (whole-branch review
-          CRITICAL-3). Deciding happens on the /approvals surface instead. */}
+      {/* Legacy (non-intent) Tier-2 path — unchanged. */}
       {!intentBacked && (
         <div className="mt-3 flex gap-2">
           <button
@@ -283,6 +453,89 @@ export default function AiApprovalDialog({
           >
             <X className="h-3.5 w-3.5" />
             {t("aiApprovalDialog.reject")}
+          </button>
+        </div>
+      )}
+
+      {/* Sole-operator inline self-approve: the server fanned the approval
+          row out to the requester, so deciding it here is legitimate — the
+          approve path attaches a WebAuthn L3 proof (Touch ID / Windows
+          Hello), which is exactly what the decide handler's self-approve
+          gate requires. Multi-approver intents never get these buttons
+          (selfApprovalRequestId is undefined — four-eyes preserved).
+
+          Hidden once the row is settled (`decided`) or terminally unusable
+          (`unavailable` — a 409/410 from the server), so a doomed retry is
+          never offered.
+
+          Gated on "not yet decided" rather than on idle|deciding: in the
+          `needs_device` state only APPROVE is impossible (no registered
+          authenticator ⇒ no L3 proof). Deny needs no proof at all, so it must
+          survive — otherwise the user's only exits from `needs_device` are
+          registering an authenticator or waiting out the 5-minute expiry. */}
+      {canSelfDecide &&
+        intentDecideState !== "decided" &&
+        intentDecideState !== "unavailable" && (
+        <div className="mt-3 flex gap-2">
+          {intentDecideState !== "needs_device" && (
+            <button
+              type="button"
+              disabled={intentDecideState === "deciding"}
+              onClick={() => handleIntentDecision("approve")}
+              className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
+            >
+              <Fingerprint className="h-3.5 w-3.5" />
+              {intentDecideState === "deciding"
+                ? t("aiApprovalDialog.verifying")
+                : t("aiApprovalDialog.approveVerify")}
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={intentDecideState === "deciding"}
+            onClick={() => handleIntentDecision("deny")}
+            className="flex items-center gap-1.5 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("aiApprovalDialog.deny")}
+          </button>
+        </div>
+      )}
+
+      {/* Terminal confirmation — the parent normally unmounts the card here,
+          but if that clear lags the user sees a settled result rather than a
+          permanently disabled "Waiting for verification…" button. */}
+      {canSelfDecide && intentDecideState === "decided" && (
+        <p
+          role="status"
+          className="mt-3 flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300"
+        >
+          {decidedAs === "deny" ? (
+            <X className="h-3.5 w-3.5 text-gray-500" />
+          ) : (
+            <Check className="h-3.5 w-3.5 text-green-500" />
+          )}
+          {decidedAs === "deny"
+            ? t("aiApprovalDialog.deniedToast")
+            : t("aiApprovalDialog.approvedToast")}
+        </p>
+      )}
+
+      {canSelfDecide && intentError && (
+        <p role="alert" className="mt-2 text-xs text-red-500">
+          {intentError}
+        </p>
+      )}
+
+      {canSelfDecide && intentDecideState === "needs_device" && (
+        <div className="mt-3 rounded-md bg-gray-100/60 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/60 dark:text-gray-300">
+          {t("aiApprovalDialog.noApproverDevice")}{" "}
+          <button
+            type="button"
+            onClick={() => navigateTo("/settings/profile")}
+            className="font-medium text-blue-500 underline hover:text-blue-400"
+          >
+            {t("aiApprovalDialog.registerDevice")}
           </button>
         </div>
       )}

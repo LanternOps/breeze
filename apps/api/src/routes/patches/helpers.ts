@@ -2,6 +2,8 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { organizations, patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
+import type { AuthContext as MiddlewareAuthContext } from '../../middleware/auth';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
 
 // Max rows a patches list endpoint will return in a single page. Raised from
 // 100 to 200 so the web patches table's "200" page-size option is actually
@@ -85,7 +87,11 @@ export async function upsertPatchApproval(values: {
   approvedAt?: Date | null;
   deferUntil?: Date | null;
   notes?: string | null;
-}) {
+}, auth: Pick<MiddlewareAuthContext, 'scope' | 'partnerOrgAccess'>) {
+  if (!canManagePartnerWidePolicies(auth)) {
+    throw new PartnerWideWriteDeniedError();
+  }
+
   // Use raw SQL for upsert because the unique index uses COALESCE expression.
   // Dates must be serialized to ISO strings before binding. postgres-js's
   // template-literal driver path (db.execute(sql`...`)) doesn't auto-coerce

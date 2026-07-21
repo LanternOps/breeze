@@ -9,6 +9,7 @@ const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
     scope: 'organization' as string,
     orgId: '11111111-1111-4111-8111-111111111111' as string | undefined,
     partnerId: 'a0000000-0000-4000-8000-000000000001' as string | undefined,
+    partnerOrgAccess: null as 'all' | 'selected' | 'none' | null,
     accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
     canAccessOrg: ((orgId: string) => orgId === '11111111-1111-4111-8111-111111111111') as (orgId: string) => boolean,
     orgCondition: () => undefined as any,
@@ -94,6 +95,7 @@ vi.mock('../middleware/auth', () => ({
       scope: authState.scope,
       orgId: authState.orgId,
       partnerId: authState.partnerId,
+      partnerOrgAccess: authState.partnerOrgAccess,
       accessibleOrgIds: authState.accessibleOrgIds,
       canAccessOrg: authState.canAccessOrg,
       orgCondition: authState.orgCondition,
@@ -178,6 +180,7 @@ describe('sentinel one routes', () => {
     authState.scope = 'organization';
     authState.orgId = ORG_ID;
     authState.partnerId = PARTNER_ID;
+    authState.partnerOrgAccess = 'all';
     authState.accessibleOrgIds = [ORG_ID];
     authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
     authState.orgCondition = () => undefined as any;
@@ -187,6 +190,35 @@ describe('sentinel one routes', () => {
     app.route('/s1', sentinelOneRoutes);
   });
 
+  it.each([
+    ['GET', '/s1/integration', undefined],
+    ['POST', '/s1/integration', {
+      name: 'SentinelOne',
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'secret',
+    }],
+    ['POST', '/s1/sync', {}],
+    ['GET', '/s1/sites', undefined],
+    ['POST', '/s1/organizations/map', {
+      integrationId: INTEGRATION_ID,
+      s1SiteId: S1_SITE_ID,
+      orgId: null,
+    }],
+  ])('rejects selected-org partner access before shared integration work: %s %s', async (method, path, body) => {
+    authState.scope = 'partner';
+    authState.orgId = undefined;
+    authState.partnerOrgAccess = 'selected';
+
+    const res = await app.request(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   // ───────────────────── B1: Helper unit tests ─────────────────────
   describe('requirePartnerManager', () => {
     it('rejects organization scope', () => {
@@ -194,8 +226,12 @@ describe('sentinel one routes', () => {
       expect(r).toEqual({ error: 'SentinelOne credentials and mappings are managed at partner scope', status: 403 });
     });
     it('pins partner scope to its partnerId', () => {
-      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1' } as any);
+      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1', partnerOrgAccess: 'all' } as any);
       expect(r).toEqual({ partnerId: 'p1' });
+    });
+    it('rejects partner scope without full partner organization access', () => {
+      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1', partnerOrgAccess: 'selected' } as any);
+      expect(r).toMatchObject({ status: 403 });
     });
     it('system scope requires explicit partnerId', () => {
       const r = requirePartnerManager({ scope: 'system' } as any);
@@ -206,7 +242,7 @@ describe('sentinel one routes', () => {
       expect(r).toEqual({ partnerId: 'p1' });
     });
     it('rejects partner trying to access another partner', () => {
-      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1' } as any, 'p2');
+      const r = requirePartnerManager({ scope: 'partner', partnerId: 'p1', partnerOrgAccess: 'all' } as any, 'p2');
       expect(r).toEqual({ error: 'Access to this partner denied', status: 403 });
     });
   });

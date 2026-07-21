@@ -61,11 +61,12 @@ import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import type { UserPermissions } from './permissions';
-import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { siteScopeRequestAllowed } from './reportGenerationService';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -213,7 +214,10 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
       if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
       if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
-      return JSON.stringify({ error: `Operation failed: ${message}` });
+      // Fail closed: anything else may embed the query/column list (#2603).
+      return JSON.stringify({
+        error: sanitizeThrownToolError(`fleet:${toolName}`, err, { action: input.action }),
+      });
     }
   };
 }
@@ -477,6 +481,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      if (
+        (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve')
+        && !canManagePartnerWidePolicies(auth)
+      ) {
+        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
       if (action === 'setup_auto_approval') {
         return JSON.stringify({
           error: 'Action "setup_auto_approval" is disabled. Patch policies must be managed through configuration policies. Use manage_policy_feature_link with featureType "patch" to configure auto-approval rules on a policy.',
@@ -621,7 +632,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           approvedBy: auth.user.id,
           approvedAt: new Date(),
           notes: (input.notes as string) ?? null,
-        });
+        }, auth);
 
         return JSON.stringify({ success: true, message: `Patch ${action}d` });
       }
@@ -642,7 +653,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           approvedBy: auth.user.id,
           deferUntil,
           notes: (input.notes as string) ?? null,
-        });
+        }, auth);
 
         return JSON.stringify({ success: true, message: `Patch deferred${deferUntil ? ` until ${deferUntil.toISOString()}` : ''}` });
       }
@@ -666,7 +677,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               approvedBy: auth.user.id,
               approvedAt: new Date(),
               notes: (input.notes as string) ?? null,
-            });
+            }, auth);
             approved++;
           } catch (err) {
             console.error(`[fleet:manage_patches] bulk_approve failed for ${patchId}:`, err);

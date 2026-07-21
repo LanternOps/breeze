@@ -79,12 +79,19 @@ export function isSentryEnabled(): boolean {
   return initialized;
 }
 
-export function captureException(err: unknown, c?: Context): void {
+export function captureException(
+  err: unknown,
+  c?: Context,
+  tags?: Record<string, string>,
+): void {
   if (!initialized) {
     return;
   }
 
   Sentry.withScope((scope) => {
+    if (tags) {
+      for (const [key, value] of Object.entries(tags)) scope.setTag(key, value);
+    }
     if (c) {
       scope.setTag('method', c.req.method);
       scope.setTag('path', c.req.path);

@@ -103,6 +103,12 @@ export const actionIntents = pgTable(
     // CHECK here; `.$type` keeps the inferred read type aligned.
     decidedAssuranceLevel: smallint('decided_assurance_level').$type<AssuranceLevel>(),
     decidedVia: text('decided_via'),
+    // Stamped by the release worker when it CASes the intent
+    // approved -> executing (Task 5). Stale-execution detection keys off
+    // this (COALESCE'd to decidedAt for rows that predate the column or
+    // were never stamped) rather than decidedAt, which can precede
+    // execution start when approval->execution lags.
+    executionStartedAt: timestamp('execution_started_at', { withTimezone: true }),
     executedAt: timestamp('executed_at', { withTimezone: true }),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),

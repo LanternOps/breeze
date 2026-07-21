@@ -91,6 +91,7 @@ const TARGET_GLOBS = [
   'src/components/settings/TdSynnexSftpPanel.tsx',
   'src/lib/edr.ts',
   'src/lib/incidents.ts',
+  'src/lib/intentApprovals.ts',
   'src/components/devices/DeviceEdrPanel.tsx',
   'src/components/security/S1ThreatList.tsx',
   'src/components/security/HuntressIncidentList.tsx',
@@ -300,7 +301,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(75);
+    expect(absoluteFiles.length).toBe(76);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -288,6 +288,19 @@ export class ExtensionContributionRegistry {
     return this.active.get(name);
   }
 
+  /**
+   * Every currently-ENABLED active snapshot. Drives the job host's schedule
+   * reconciliation and any other "enumerate what's live" consumer; withdrawn
+   * (disabled) snapshots are excluded so their jobs stop being scheduled.
+   */
+  listActive(): StagedExtensionContributions[] {
+    const active: StagedExtensionContributions[] = [];
+    for (const snapshot of this.active.values()) {
+      if (snapshot.enabled) active.push(snapshot);
+    }
+    return active;
+  }
+
   getByRouteNamespace(routeNamespace: string): StagedExtensionContributions | undefined {
     let disabledFallback: StagedExtensionContributions | undefined;
     for (const snapshot of this.active.values()) {
@@ -303,6 +316,26 @@ export class ExtensionContributionRegistry {
       if (!snapshot.enabled) continue;
       const tool = snapshot.aiTools.get(name);
       if (tool) return tool;
+    }
+    return undefined;
+  }
+
+  /**
+   * The name of the extension that owns `name`, using the SAME resolution order
+   * and enabled-filter as {@link getAiTool} — so a caller that resolved a tool
+   * here is guaranteed to be naming that tool's owner.
+   *
+   * Exists so `executeTool` can re-check the OWNER's durable `enabled` flag in
+   * the database before running an extension handler. This in-memory `enabled`
+   * flag is replica-local: a disable that lands on another replica never
+   * invalidates it, so it must not be the only gate on extension code
+   * execution. Returning just the owner name (rather than widening `getAiTool`'s
+   * return type) keeps every existing call site untouched.
+   */
+  findAiToolOwner(name: string): string | undefined {
+    for (const snapshot of this.active.values()) {
+      if (!snapshot.enabled) continue;
+      if (snapshot.aiTools.has(name)) return snapshot.name;
     }
     return undefined;
   }

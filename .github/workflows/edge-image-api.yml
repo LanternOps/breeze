@@ -1,0 +1,66 @@
+# Publishes an EDGE stock API image from every main push so downstream
+# extension repos (breeze-workspace, issue breeze-workspace#13) can pin a
+# stock image carrying the v1 extension host by commit sha before a stable
+# release ships it. Consumers pin `:sha-<commit>` and bump deliberately;
+# `:edge` is a moving convenience tag. Release images remain release.yml's
+# job (same Dockerfile, same GHCR path) — once v0.98.0 ships, consumers
+# should pin the release tag instead.
+name: Edge API Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.json'
+      - '.github/workflows/edge-image-api.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: edge-image-api
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api
+          tags: |
+            type=raw,value=edge
+            type=sha,format=long,prefix=sha-
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=edge-api
+          cache-to: type=gha,scope=edge-api,mode=max

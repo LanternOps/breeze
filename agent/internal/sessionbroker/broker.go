@@ -1474,7 +1474,7 @@ func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Dur
 	)
 	if err != nil {
 		if quiesced != nil {
-			return zero, &PamDismissUncertainError{Cause: err, Quiesced: quiesced}
+			return zero, &PamDismissUncertainError{Cause: err, Quiesced: pamDismissQuiescence(quiesced)}
 		}
 		return zero, err
 	}
@@ -1487,6 +1487,40 @@ func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Dur
 		return zero, fmt.Errorf("decode PAM consent dismissal result: %w", err)
 	}
 	return result, nil
+}
+
+// pamDismissQuiescence decodes the late helper envelope into a typed outcome so
+// the fail-closed gate can distinguish "the dismissal succeeded" from "the
+// dismissal definitively failed" and from "the helper died and we never found
+// out".
+//
+// The returned channel yields AT MOST one outcome, then closes. It yields
+// nothing at all while the helper is hung but its session stays connected,
+// because the upstream envelope channel is only resolved by a correlated
+// response or session teardown. Readers must bound their receive.
+func pamDismissQuiescence(envelopes <-chan *ipc.Envelope) <-chan PamDismissOutcome {
+	out := make(chan PamDismissOutcome, 1)
+	go func() {
+		defer close(out)
+		env, ok := <-envelopes
+		if !ok || env == nil {
+			// Session died before any correlated response. The helper may still
+			// be driving input at the consent desktop.
+			out <- PamDismissOutcome{Proven: false}
+			return
+		}
+		outcome := PamDismissOutcome{Proven: true}
+		switch {
+		case env.Error != "":
+			outcome.Err = fmt.Errorf("PAM consent dismissal helper error: %s", env.Error)
+		default:
+			if err := json.Unmarshal(env.Payload, &outcome.Result); err != nil {
+				outcome.Err = fmt.Errorf("decode PAM consent dismissal result: %w", err)
+			}
+		}
+		out <- outcome
+	}()
+	return out
 }
 
 // pamDismissConsentDeadline reserves enough of the broker timeout for the

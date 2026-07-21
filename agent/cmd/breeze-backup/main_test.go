@@ -155,8 +155,16 @@ func TestHandleBackupCommand_AsyncBackupRunSendsAckThenUnsolicitedResult(t *test
 	if !final.Success {
 		t.Fatalf("expected backup to succeed, got stderr %q", final.Stderr)
 	}
-	if final.DurationMs <= 0 {
-		t.Fatalf("expected a positive DurationMs on the final result, got %d", final.DurationMs)
+	// DurationMs is only checked for sanity here, NOT for a positive lower
+	// bound: this backup copies one 11-byte file to a local temp dir and
+	// legitimately completes in under a millisecond, and DurationMs is
+	// time.Since(start).Milliseconds(), which truncates — so 0 is a correct
+	// result, not a bug. Asserting > 0 here made this test red at random on
+	// fast CI runners (same flake class as the script runner's, PR #2464).
+	// The real timing teeth live in
+	// TestHandleBackupCommand_AsyncResultDurationTracksElapsed below.
+	if final.DurationMs < 0 {
+		t.Fatalf("expected a non-negative DurationMs on the final result, got %d", final.DurationMs)
 	}
 
 	<-done
@@ -271,4 +279,89 @@ func TestExecuteCommand_BackupStopNilManagerNothingRunning(t *testing.T) {
 	if result.Stdout != `{"stopped":false}` {
 		t.Fatalf("stdout = %q, want {\"stopped\":false}", result.Stdout)
 	}
+}
+
+// slowUploadProvider wraps a BackupProvider and delays every Upload, so a
+// test can force a backup run whose wall-clock time is safely above
+// DurationMs's one-millisecond truncation granularity.
+type slowUploadProvider struct {
+	providers.BackupProvider
+	delay time.Duration
+}
+
+func (p *slowUploadProvider) Upload(localPath, remotePath string) error {
+	time.Sleep(p.delay)
+	return p.BackupProvider.Upload(localPath, remotePath)
+}
+
+// TestHandleBackupCommand_AsyncResultDurationTracksElapsed is the timing
+// counterpart to the async protocol test above: that test can't assert a
+// positive DurationMs (a sub-millisecond local backup truncates to 0), so
+// the guarantee that DurationMs actually reflects elapsed run time is
+// pinned here, against a provider slow enough that truncation can't hide a
+// broken measurement.
+func TestHandleBackupCommand_AsyncResultDurationTracksElapsed(t *testing.T) {
+	const uploadDelay = 60 * time.Millisecond
+
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	provider := &slowUploadProvider{
+		BackupProvider: providers.NewLocalProvider(t.TempDir()),
+		delay:          uploadDelay,
+	}
+	// Paths live on the manager (not the command payload) on purpose: a
+	// payload carrying provider+providerConfig makes executeCommand build its
+	// OWN manager via managerFromBackupRunPayload, which would discard the
+	// slow provider this test depends on. Omitting them keeps the
+	// agent.yaml-configured manager in play.
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, Paths: []string{srcDir}})
+
+	agentSide, helperSide := net.Pipe()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = helperSide.Close() }()
+
+	agentConn := ipc.NewConn(agentSide)
+	helperConn := ipc.NewConn(helperSide)
+
+	req := backupipc.BackupCommandRequest{
+		CommandID:   "async-duration-cmd",
+		CommandType: "backup_run",
+		Payload:     json.RawMessage(`{}`),
+		Async:       true,
+	}
+	reqPayload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	env := &ipc.Envelope{ID: "async-duration-cmd", Type: backupipc.TypeBackupCommand, Payload: reqPayload}
+
+	ch := startEnvelopeReader(agentConn)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleBackupCommand(helperConn, env, mgr, nil, newActiveCommandCanceller())
+	}()
+
+	// Skip the ack; the terminal result is the one carrying DurationMs.
+	_ = nextBackupResult(t, ch)
+	finalEnv := nextBackupResult(t, ch)
+
+	var final backupipc.BackupCommandResult
+	if err := json.Unmarshal(finalEnv.Payload, &final); err != nil {
+		t.Fatalf("unmarshal final result: %v", err)
+	}
+	if !final.Success {
+		t.Fatalf("expected backup to succeed, got stderr %q", final.Stderr)
+	}
+	// Lower bound is deliberately below uploadDelay to absorb timer
+	// granularity, not so low that a zeroed/unset DurationMs would pass.
+	if final.DurationMs < 40 {
+		t.Fatalf("expected DurationMs >= 40 for a backup that slept %s uploading, got %d", uploadDelay, final.DurationMs)
+	}
+
+	<-done
 }

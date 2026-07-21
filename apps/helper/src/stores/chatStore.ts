@@ -1,19 +1,17 @@
 import { create } from 'zustand';
-
-declare global {
-  interface Window {
-    __TAURI_INTERNALS__?: unknown;
-  }
-}
-
-interface AgentConfig {
-  api_url: string;
-  token?: string;
-  agent_id: string;
-  has_mtls?: boolean;
-  os_username?: string;
-  helper_version?: string;
-}
+import {
+  getTauriInvoke,
+  helperRequest,
+  requireDevBearerToken,
+  type AgentConfig,
+  type HelperFetchResponse,
+} from '../lib/helperFetch';
+import {
+  WORKSPACE_CHAT_TOOLS,
+  executeWorkspaceChatTool,
+  type ClientToolDeclaration,
+} from '../lib/workspaceChatTools';
+import { useWorkspaceStore } from './workspaceStore';
 
 interface ChatMessage {
   id: string;
@@ -89,32 +87,6 @@ interface ChatState {
 // Tauri bridge helpers
 // ---------------------------------------------------------------------------
 
-/** Cached reference to the Tauri invoke function, or null if not in Tauri. */
-let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
-let _tauriInvokeResolved = false;
-
-/**
- * Dynamically import Tauri invoke -- returns null in non-Tauri environments.
- */
-async function getTauriInvoke(): Promise<
-  ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null
-> {
-  if (_tauriInvokeResolved) return _tauriInvoke;
-  try {
-    if (!window.__TAURI_INTERNALS__) {
-      _tauriInvokeResolved = true;
-      return null;
-    }
-    const mod = await import('@tauri-apps/api/core');
-    _tauriInvoke = mod.invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-    _tauriInvokeResolved = true;
-    return _tauriInvoke;
-  } catch {
-    _tauriInvokeResolved = true;
-    return null;
-  }
-}
-
 /** Cached reference to the Tauri event listen function. */
 let _tauriListen: ((
   event: string,
@@ -143,75 +115,14 @@ async function getTauriListen() {
 }
 
 // ---------------------------------------------------------------------------
-// helper_fetch response types (match Rust structs)
+// helper_fetch stream event type (matches Rust struct)
 // ---------------------------------------------------------------------------
-
-interface HelperFetchResponse {
-  status: number;
-  headers: Record<string, string>;
-  body: string;
-  stream_id: string | null;
-}
 
 interface StreamChunkEvent {
   stream_id: string;
   chunk: string | null;
   done: boolean;
   error: string | null;
-}
-
-function requireDevBearerToken(config: AgentConfig): string {
-  if (!config.token) {
-    throw new Error('Browser dev mode requires VITE_AGENT_TOKEN');
-  }
-  return config.token;
-}
-
-// ---------------------------------------------------------------------------
-// Unified HTTP helpers that use helper_fetch in Tauri, plain fetch otherwise
-// ---------------------------------------------------------------------------
-
-/**
- * Make a non-streaming HTTP request. In Tauri, uses the Rust backend
- * (which attaches the mTLS client cert). In browser dev mode, uses fetch().
- */
-async function helperRequest(
-  config: AgentConfig,
-  url: string,
-  options: { method?: string; headers?: Record<string, string>; body?: string },
-): Promise<{ ok: boolean; status: number; body: string }> {
-  const invoke = await getTauriInvoke();
-
-  if (invoke) {
-    const resp = (await invoke('helper_fetch', {
-      request: {
-        url,
-        method: options.method ?? 'GET',
-        headers: options.headers ?? {},
-        body: options.body,
-        stream: false,
-      },
-    })) as HelperFetchResponse;
-
-    return {
-      ok: resp.status >= 200 && resp.status < 300,
-      status: resp.status,
-      body: resp.body,
-    };
-  }
-
-  // Dev fallback: use native fetch
-  const res = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: {
-      Authorization: `Bearer ${requireDevBearerToken(config)}`,
-      ...(options.headers ?? {}),
-    },
-    body: options.body,
-  });
-
-  const body = await res.text();
-  return { ok: res.ok, status: res.status, body };
 }
 
 /**
@@ -361,12 +272,85 @@ async function helperStreamRequest(
 // SSE line parser (shared between Tauri and browser paths)
 // ---------------------------------------------------------------------------
 
-function processSSELines(
+/**
+ * Handle a `client_tool_request` SSE event: execute the named workspace tool
+ * client-side and POST the result back to `/tool-results`. A known tool's
+ * output is posted under `output` (including a degradable `{ error }` payload
+ * from a failed executor, which the model reads as tool output); an unknown
+ * tool name is posted under `error` so the model sees a hard tool failure.
+ *
+ * For a known tool, the executed result is ALSO appended to the store's
+ * messages as a `tool_result` entry — the server does not echo one for
+ * client-declared tools, and ChatView needs that transcript entry to render
+ * citation chips and result cards.
+ */
+async function handleClientToolRequest(event: {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}): Promise<void> {
+  const { agentConfig, sessionId } = useChatStore.getState();
+  if (!agentConfig || !sessionId) return;
+
+  const known = WORKSPACE_CHAT_TOOLS.some((t) => t.name === event.toolName);
+
+  let body: { toolUseId: string; output?: unknown; error?: string };
+  if (known) {
+    const output = await executeWorkspaceChatTool(event.toolName, event.input ?? {});
+    // The server never emits a `tool_result` SSE event for client-declared
+    // tools (its post-tool-use hook isn't wired into the bridged-MCP path), so
+    // the client — which executed the tool — records its own transcript entry.
+    // ChatView's buildFileResolutionMap (citation chips) and its result-card
+    // render both scan `role === 'tool_result'` messages and duck-type on
+    // `toolOutput.files`/`toolOutput.passages`; the raw executor return is that
+    // exact shape. Appended for KNOWN tools only, regardless of whether the POST
+    // below succeeds — resolution/cards reflect what was actually executed.
+    const resultMsg: ChatMessage = {
+      id: `result-${event.toolUseId}`,
+      role: 'tool_result',
+      content: typeof output === 'string' ? output : JSON.stringify(output, null, 2),
+      toolName: event.toolName,
+      toolOutput: output,
+      toolUseId: event.toolUseId,
+      createdAt: new Date(),
+    };
+    useChatStore.setState((s) => ({ messages: [...s.messages, resultMsg] }));
+    body = { toolUseId: event.toolUseId, output };
+  } else {
+    body = { toolUseId: event.toolUseId, error: `Unknown tool: ${event.toolName}` };
+  }
+
+  try {
+    // helperRequest resolves (does not throw) on a non-2xx response, so a
+    // rejected/failed tool-result POST would otherwise be silently swallowed.
+    const res = await helperRequest(
+      agentConfig,
+      `${agentConfig.api_url}/api/v1/helper/chat/sessions/${sessionId}/tool-results`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      console.error(
+        '[Helper] tool-results POST failed:',
+        res.status,
+        res.body?.slice(0, 200),
+      );
+    }
+  } catch (err) {
+    console.error('[Helper] Failed to post client tool result:', err);
+  }
+}
+
+export async function processSSELines(
   lines: string[],
   currentAssistantId: { value: string | null },
   set: (fn: (s: ChatState) => Partial<ChatState>) => void,
   setDirect: (partial: Partial<ChatState>) => void,
-) {
+): Promise<void> {
+  const pending: Promise<void>[] = [];
   for (const line of lines) {
     if (!line.startsWith('data:')) continue;
     const jsonStr = line.slice(5).trim();
@@ -462,6 +446,19 @@ function processSSELines(
           break;
         }
 
+        case 'client_tool_request': {
+          // Fire the executor + POST asynchronously; awaited via `pending`
+          // below so the synchronous UI updates above are never blocked.
+          pending.push(
+            handleClientToolRequest({
+              toolUseId: event.toolUseId,
+              toolName: event.toolName,
+              input: event.input,
+            }),
+          );
+          break;
+        }
+
         case 'done': {
           setDirect({ isStreaming: false });
           break;
@@ -480,6 +477,8 @@ function processSSELines(
       console.error('[Helper] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
     }
   }
+
+  await Promise.all(pending);
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +486,46 @@ function processSSELines(
 // ---------------------------------------------------------------------------
 
 const USERNAME_KEY = 'breeze-helper-username';
+
+/** Max time to wait on a cold-start capabilities probe before creating a session. */
+const WORKSPACE_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Await the workspace capabilities probe, bounded. On timeout or failure the
+ * session simply proceeds without client tools (today's degraded behavior).
+ * Used to close the cold-start race: client-tool declarations are fixed at
+ * session create, so a first message that beats the startup probe would
+ * otherwise permanently degrade the session.
+ */
+async function awaitWorkspaceProbe(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      useWorkspaceStore.getState().probe(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WORKSPACE_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    // Probe is silent by design; proceed without tools.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Client-tool declarations to send at session create, gated on the estate's
+ * REAL capabilities: file-search needs the estate reachable (`available`);
+ * passage retrieval additionally needs content preview (`contentEnabled`),
+ * else get_file_passages would 404 forever while the prompt still prefers it.
+ */
+function selectWorkspaceChatTools(): ClientToolDeclaration[] {
+  const { available, contentEnabled } = useWorkspaceStore.getState();
+  if (available !== true) return [];
+  return WORKSPACE_CHAT_TOOLS.filter(
+    (t) => t.name !== 'get_file_passages' || contentEnabled === true,
+  );
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   connectionState: 'disconnected',
@@ -641,14 +680,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
         content: string | null;
         toolName: string | null;
+        toolOutput?: unknown;
         createdAt: string;
       }>;
 
+      // Persisted tool_result rows carry toolOutput (the executed tool's return),
+      // so ChatView's citation-resolution map and result cards work on reload —
+      // otherwise citations render as raw [file:<id>|<path>] tokens and cards vanish.
       const messages: ChatMessage[] = rawMessages.map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content ?? '',
         toolName: m.toolName ?? undefined,
+        ...(m.role === 'tool_result' ? { toolOutput: m.toolOutput } : {}),
         createdAt: new Date(m.createdAt),
       }));
 
@@ -687,6 +731,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Create session if needed
       let currentSessionId = sessionId;
       if (!currentSessionId) {
+        // Cold-start race: `available` is null until the startup probe finishes.
+        // Declarations are fixed at create, so if a first message beats the
+        // probe we briefly await it — otherwise the session is permanently
+        // degraded (no tools). On timeout/failure we proceed without tools.
+        if (useWorkspaceStore.getState().available === null) {
+          await awaitWorkspaceProbe();
+        }
+        // Declare the workspace chat tools that the estate can actually serve;
+        // core builds the bridged MCP server from them and drives file-search /
+        // cited-RAG through the client executors.
+        const clientTools = selectWorkspaceChatTools();
         const createRes = await helperRequest(
           agentConfig,
           `${agentConfig.api_url}/api/v1/helper/chat/sessions`,
@@ -695,6 +750,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...(username ? { helperUser: username } : {}),
+              ...(clientTools.length > 0 ? { clientTools } : {}),
             }),
           },
         );

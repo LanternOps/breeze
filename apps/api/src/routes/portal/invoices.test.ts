@@ -9,6 +9,13 @@ const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
 vi.mock('../../services/invoiceService', () => ({
   getCustomerInvoice: getCustomerInvoiceMock,
   markViewed: markViewedMock,
+  toCustomerInvoiceLine: (line: Record<string, unknown>) => ({
+    description: line.description,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    taxable: line.taxable,
+    lineTotal: line.lineTotal,
+  }),
 }));
 
 const { getInvoicePdfMock, renderInvoicePdfMock } = vi.hoisted(() => ({
@@ -84,12 +91,12 @@ const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const INV_ID = '11111111-1111-1111-1111-111111111111';
 
 // Wrap the route with a portalAuth-injecting middleware (mirrors portalAuthMiddleware).
-function app(orgId = ORG_ID) {
+function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', receiveNotifications: true, status: 'active' },
-      token: 't', authMethod: 'bearer',
+      token: 't', authMethod,
     });
     await next();
   });
@@ -99,6 +106,30 @@ function app(orgId = ORG_ID) {
 
 describe('portal invoices routes', () => {
   beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
+
+  it.each(['pay', 'settle'])('rejects cookie-authenticated POST /invoices/:id/%s without CSRF before side effects', async (action) => {
+    const res = await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/${action}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: 'breeze_portal_session=t; breeze_portal_csrf_token=csrf-token',
+      },
+      body: action === 'settle' ? JSON.stringify({ sessionId: 'cs_test' }) : undefined,
+    });
+    expect(res.status).toBe(403);
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a form-urlencoded settle body for bearer auth', async () => {
+    const res = await app().request(`/invoices/${INV_ID}/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'sessionId=cs_test',
+    });
+    expect(res.status).toBe(415);
+    expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
+  });
 
   it('GET /invoices lists this org non-draft invoices', async () => {
     dbResults.push([{ count: 2 }]);             // count query
@@ -119,6 +150,24 @@ describe('portal invoices routes', () => {
     expect(body.lines).toHaveLength(1);
     expect(getCustomerInvoiceMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
     expect(markViewedMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
+  });
+
+  it('GET /invoices/:id serializes the exact safe line keyset even if the service row has internal fields', async () => {
+    getCustomerInvoiceMock.mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent', invoiceNumber: 'INV-1' },
+      lines: [{
+        id: 'internal-line-id', sourceType: 'time_entry', sourceId: 'source-1',
+        costBasis: '10.00', revenueAllocation: { labor: '25.00' }, isUnapprovedTime: true,
+        description: 'Support', quantity: '1.00', unitPrice: '25.00', taxable: true, lineTotal: '25.00',
+      }],
+    });
+
+    const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Object.keys(body.lines[0]).sort()).toEqual([
+      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+    ]);
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {

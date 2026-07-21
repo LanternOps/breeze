@@ -36,21 +36,25 @@ vi.mock('../services/filterEngine', () => ({
 
 vi.mock('../services/groupMembership', () => ({
   evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
-  pinDeviceToGroup: vi.fn().mockResolvedValue(undefined)
+  pinDeviceToGroup: vi.fn().mockResolvedValue(undefined),
+  pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue({ removed: 0 })
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const mockDb: Record<string, unknown> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
-  }
-,
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+  };
+  mockDb.transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockDb));
+  return {
+    db: mockDb,
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   deviceGroups: {
@@ -115,6 +119,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
+import { evaluateGroupMembership, pruneGroupMembershipsOutsideSite } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -154,10 +159,44 @@ describe('groups routes', () => {
     app.route('/groups', groupRoutes);
   });
 
+  function restrictToSite() {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', { allowedSiteIds: [SITE_ID] });
+      return next();
+    });
+  }
+
   // ----------------------------------------------------------------
   // PATCH /:id - Update group
   // ----------------------------------------------------------------
   describe('PATCH /groups/:id', () => {
+    it('rejects mutating an org-wide group for a site-restricted caller', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({ siteId: null })])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Denied' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
     it('should update a group name', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -180,7 +219,6 @@ describe('groups routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 2 }])
         })
       } as any);
-
       const res = await app.request(`/groups/${GROUP_ID}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -276,12 +314,145 @@ describe('groups routes', () => {
       expect(body.error).toContain('Site not found');
       expect(db.update).not.toHaveBeenCalled();
     });
+
+    it('prunes old-site memberships and re-evaluates a dynamic group when its site changes', async () => {
+      const filterConditions = { operator: 'AND', conditions: [] };
+      const oldSiteId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+      const group = makeGroup({
+        siteId: oldSiteId,
+        type: 'dynamic',
+        filterConditions
+      });
+      const updated = makeGroup({
+        siteId: SITE_ID,
+        type: 'dynamic',
+        filterConditions
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([group])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: SITE_ID }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([updated])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ siteId: SITE_ID })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(pruneGroupMembershipsOutsideSite).toHaveBeenCalledWith(
+        GROUP_ID,
+        SITE_ID,
+        ORG_ID,
+        expect.anything()
+      );
+      expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('rolls back a site reassignment when membership pruning fails', async () => {
+      const oldSiteId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+      const group = makeGroup({ siteId: oldSiteId });
+      const updated = makeGroup({ siteId: SITE_ID });
+      let transactionCommitted = false;
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([group])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: SITE_ID }])
+            })
+          })
+        } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([updated])
+          })
+        })
+      } as any);
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => {
+        const tx = {
+          select: db.select,
+          insert: db.insert,
+          update: db.update,
+          delete: db.delete,
+        };
+        try {
+          const result = await fn(tx);
+          transactionCommitted = true;
+          return result;
+        } catch (error) {
+          transactionCommitted = false;
+          throw error;
+        }
+      });
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockRejectedValueOnce(new Error('prune failed'));
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ siteId: SITE_ID })
+      });
+
+      expect(res.status).toBe(500);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(transactionCommitted).toBe(false);
+    });
   });
 
   // ----------------------------------------------------------------
   // DELETE /:id - Delete group
   // ----------------------------------------------------------------
   describe('DELETE /groups/:id', () => {
+    it('rejects deleting an org-wide group for a site-restricted caller', async () => {
+      restrictToSite();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup({ siteId: null })])
+          })
+        })
+      } as any);
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
     it('should delete a group', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({

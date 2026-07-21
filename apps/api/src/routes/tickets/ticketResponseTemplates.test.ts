@@ -8,6 +8,7 @@ const { authRef, storeRef, dbMocks, writeRouteAuditMock } = vi.hoisted(() => ({
       user: { id: 'user-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
       userId: 'user-1',
       partnerId: 'partner-1' as string | null,
+      partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
       orgId: null as string | null,
       accessibleOrgIds: null as string[] | null,
       orgCondition: () => undefined,
@@ -77,6 +78,7 @@ const DEFAULT_AUTH = {
   user: { id: 'user-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
   userId: 'user-1',
   partnerId: 'partner-1' as string | null,
+  partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
   orgId: null as string | null,
   accessibleOrgIds: null as string[] | null,
   orgCondition: () => undefined,
@@ -186,6 +188,57 @@ beforeEach(() => {
   }));
 });
 
+describe('partner-global authorization', () => {
+  const cases: Array<[string, string, unknown?]> = [
+    ['GET', '/ticket-response-templates'],
+    ['POST', '/ticket-response-templates', { name: 'Saved reply', body: 'Private response body' }],
+    ['PATCH', `/ticket-response-templates/${TEMPLATE_ID}`, { name: 'Updated' }],
+    ['DELETE', `/ticket-response-templates/${TEMPLATE_ID}`],
+  ];
+
+  it.each(
+    (['selected', 'none'] as const).flatMap((partnerOrgAccess) =>
+      cases.map(([method, path, body]) => [partnerOrgAccess, method, path, body] as const)
+    )
+  )(
+    'rejects %s-org partner access before %s %s DB or audit work',
+    async (partnerOrgAccess, method, path, body) => {
+      authRef.current = {
+        ...DEFAULT_AUTH,
+        partnerOrgAccess,
+        user: { ...DEFAULT_AUTH.user, isPlatformAdmin: true },
+        canAccessOrg: () => true,
+      };
+      const res = await makeApp().request(path, {
+        method,
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(403);
+      expect(dbMocks.select).not.toHaveBeenCalled();
+      expect(dbMocks.insert).not.toHaveBeenCalled();
+      expect(dbMocks.update).not.toHaveBeenCalled();
+      expect(dbMocks.delete).not.toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows system scope with an explicit partner context', async () => {
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'system',
+      partnerOrgAccess: null,
+      canAccessOrg: () => true,
+    };
+
+    const res = await makeApp().request('/ticket-response-templates');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.select).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('GET /ticket-response-templates', () => {
   it('returns only the caller partner active rows ordered by category, sortOrder, then name', async () => {
     storeRef.current = [
@@ -243,6 +296,15 @@ describe('POST /ticket-response-templates', () => {
       createdBy: 'user-1',
     });
     expect(storeRef.current).toHaveLength(1);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_response_template.create',
+      resourceId: TEMPLATE_ID,
+      details: expect.objectContaining({
+        partnerId: 'partner-1',
+        changedFields: expect.arrayContaining(['name', 'body']),
+      }),
+    }));
+    expect(JSON.stringify(writeRouteAuditMock.mock.calls[0]?.[1])).not.toContain('Thanks for contacting us.');
   });
 });
 
@@ -276,6 +338,15 @@ describe('PATCH /ticket-response-templates/:id', () => {
       sortOrder: 4,
       isActive: false,
     });
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_response_template.update',
+      resourceId: TEMPLATE_ID,
+      details: {
+        partnerId: 'partner-1',
+        changedFields: ['name', 'body', 'category', 'sortOrder', 'isActive'],
+      },
+    }));
+    expect(JSON.stringify(writeRouteAuditMock.mock.calls[0]?.[1])).not.toContain('New body');
   });
 
   it('404 when the row is not in the caller partner', async () => {
@@ -293,6 +364,11 @@ describe('DELETE /ticket-response-templates/:id', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(storeRef.current).toEqual([]);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_response_template.delete',
+      resourceId: TEMPLATE_ID,
+      details: { partnerId: 'partner-1', changedFields: ['deleted'] },
+    }));
   });
 
   it('404 when the row is not in the caller partner', async () => {

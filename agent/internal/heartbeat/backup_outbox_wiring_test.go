@@ -103,6 +103,12 @@ func TestSetWebSocketClient_ReconnectFlushesBackupOutbox(t *testing.T) {
 	if ws.OnConnected == nil {
 		t.Fatal("SetWebSocketClient did not wire OnConnected")
 	}
+	flushDone := make(chan struct{})
+	onConnected := ws.OnConnected
+	ws.OnConnected = func() {
+		onConnected()
+		close(flushDone)
+	}
 
 	go ws.Start()
 	defer ws.Stop()
@@ -115,9 +121,13 @@ func TestSetWebSocketClient_ReconnectFlushesBackupOutbox(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the outboxed backup result to be flushed on reconnect")
 	}
+	select {
+	case <-flushDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reconnect outbox flush callback to complete")
+	}
 
-	// Successful flush removes the persisted entry (removal happens before the
-	// frame is written, so by the time the server receives it the dir is drained).
+	// Successful flush removes the persisted entry before the callback returns.
 	if entries, err := os.ReadDir(outbox.dir); err != nil || len(entries) != 0 {
 		t.Fatalf("expected outbox drained after successful flush, got %v (err=%v)", entries, err)
 	}

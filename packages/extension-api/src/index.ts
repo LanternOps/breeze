@@ -6,6 +6,7 @@ export {
   type LegacyExtensionContext as ExtensionContext,
   type AiToolLike,
   type ExtensionAgentContext,
+  type ExtensionHelperDevice,
   type ExtensionAuditEvent,
   type ExtensionSecrets,
   type ExtensionDatabase,

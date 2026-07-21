@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { alerts, devices, scripts } from '../db/schema';
@@ -87,6 +87,11 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       ? inArray(devices.siteId, allowedSiteIds)
       : sql`false`
     : undefined;
+  const alertSiteCondition = allowedSiteIds
+    ? allowedSiteIds.length > 0
+      ? or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds))
+      : isNull(alerts.deviceId)
+    : undefined;
 
   const deviceQuery = or(
     ilike(devices.hostname, searchTerm),
@@ -137,7 +142,19 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
           .limit(perCategoryLimit)
       : Promise.resolve([]),
     canReadAlerts
-      ? db
+      ? allowedSiteIds
+        ? db
+          .select({
+            id: alerts.id,
+            title: alerts.title,
+            message: alerts.message,
+            severity: alerts.severity
+          })
+          .from(alerts)
+          .leftJoin(devices, eq(alerts.deviceId, devices.id))
+          .where(and(orgConditionFor(alerts.orgId), alertSiteCondition, alertQuery))
+          .limit(perCategoryLimit)
+        : db
           .select({
             id: alerts.id,
             title: alerts.title,

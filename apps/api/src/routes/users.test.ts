@@ -271,6 +271,23 @@ import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarS
 describe('user routes', () => {
   let app: Hono;
 
+  function authAsSystem() {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'system',
+        partnerId: null,
+        partnerOrgAccess: null,
+        orgId: null,
+        user: {
+          id: 'platform-admin',
+          email: 'platform@example.com',
+          isPlatformAdmin: true,
+        },
+      });
+      return next();
+    });
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     avatarStore.clear();
@@ -320,6 +337,7 @@ describe('user routes', () => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' }
       });
@@ -1564,6 +1582,106 @@ describe('user routes', () => {
   });
 
   describe('PATCH /users/:id (admin update)', () => {
+    it.each([
+      { field: 'name', value: 'Cross-tenant rename' },
+      { field: 'status', value: 'disabled' },
+    ])('rejects organization-scoped global identity update for $field before lookup', async ({ field, value }) => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          partnerOrgAccess: null,
+          orgId: 'org-a',
+          user: { id: 'org-admin', email: 'admin-a@example.com' },
+        });
+        return next();
+      });
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ [field]: value }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
+    });
+
+    it.each(['selected', 'all'] as const)(
+      'rejects a partner admin with orgAccess=%s before any global identity lookup or side effect',
+      async (partnerOrgAccess) => {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'partner',
+            partnerId: 'partner-123',
+            partnerOrgAccess,
+            orgId: null,
+            user: { id: 'partner-admin', email: 'admin@example.com' },
+          });
+          return next();
+        });
+
+        const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Cross-partner rename' }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.transaction).not.toHaveBeenCalled();
+        expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+        expect(runPostCommitCleanup).not.toHaveBeenCalled();
+      }
+    );
+
+    it('allows system authority to update a global identity', async () => {
+      authAsSystem();
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-1111-1111-111111111111',
+              email: 'u@example.com',
+              name: 'User',
+              status: 'active',
+            }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn(() => ({
+              returning: vi.fn().mockResolvedValue([{
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'Renamed by platform admin',
+                status: 'active',
+              }]),
+            })),
+          })),
+        })),
+      }));
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed by platform admin' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        id: '11111111-1111-1111-1111-111111111111',
+        name: 'Renamed by platform admin',
+      });
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
+    });
+
     it('rejects unknown top-level fields including roleId (strict schema)', async () => {
       // The Edit dialog historically sent { email, name, roleId } and roleId was
       // silently dropped because updateUserSchema lacked .strict(). After the
@@ -1590,25 +1708,18 @@ describe('user routes', () => {
     // the lifecycle service's post-commit cleanup running exactly once after
     // it commits (epoch).
     it('advances the auth epoch and revokes refresh-token families in the same transaction, then runs post-commit cleanup (epoch)', async () => {
+      authAsSystem();
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: '11111111-1111-1111-1111-111111111111',
-                    email: 'u@example.com',
-                    name: 'User',
-                    status: 'active',
-                    roleId: 'role-1',
-                    roleName: 'Admin',
-                    orgAccess: 'all',
-                    orgIds: null,
-                  },
-                ]),
-              }),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'User',
+                status: 'active',
+              },
+            ]),
           }),
         }),
       } as any);
@@ -1903,6 +2014,8 @@ describe('user routes', () => {
   describe('PATCH /users/:id remote session teardown on deactivation', () => {
     const teardownMock = vi.mocked(terminateUserRemoteSessions);
 
+    beforeEach(() => authAsSystem());
+
     // The status PATCH mutation now runs update(users) + advanceUserEpochs +
     // revokeAllRefreshFamilies in ONE db.transaction. Build a minimal `tx`
     // stub whose `update` routes .returning() by the SET shape: an
@@ -1928,8 +2041,8 @@ describe('user routes', () => {
       return { txUpdate, capturedUpdates };
     }
 
-    // getScopedUser (partner scope) → select().from().innerJoin().innerJoin().where().limit()
-    // returns the existing record. seedPatch also wires the transaction to
+    // The system-authority identity lookup returns the existing record.
+    // seedPatch also wires the transaction to
     // return the post-mutation row so the becameInactive branch runs.
     function seedPatch(
       recordStatus: 'active' | 'invited' | 'disabled',
@@ -1937,23 +2050,15 @@ describe('user routes', () => {
     ) {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: '11111111-1111-1111-1111-111111111111',
-                    email: 'u@example.com',
-                    name: 'User',
-                    status: recordStatus,
-                    roleId: 'role-1',
-                    roleName: 'Admin',
-                    orgAccess: 'all',
-                    orgIds: null,
-                  },
-                ]),
-              }),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'User',
+                status: recordStatus,
+              },
+            ]),
           }),
         }),
       } as any);
@@ -1997,23 +2102,15 @@ describe('user routes', () => {
     it('does NOT tear down sessions on a no-op update (name only, still active)', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: '11111111-1111-1111-1111-111111111111',
-                    email: 'u@example.com',
-                    name: 'User',
-                    status: 'active',
-                    roleId: 'role-1',
-                    roleName: 'Admin',
-                    orgAccess: 'all',
-                    orgIds: null,
-                  },
-                ]),
-              }),
-            }),
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'u@example.com',
+                name: 'User',
+                status: 'active',
+              },
+            ]),
           }),
         }),
       } as any);

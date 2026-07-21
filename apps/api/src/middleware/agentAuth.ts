@@ -38,6 +38,8 @@ declare module 'hono' {
   interface ContextVariableMap {
     agent: AgentAuthContext;
     agentTokenRotationRequired: boolean;
+    /** Issue #2621 — caller authenticated with a staged (pending) rotation credential. */
+    agentPendingTokenPresented: boolean;
   }
 }
 
@@ -81,19 +83,38 @@ export function matchAgentTokenHash(params: {
   agentTokenHash: string | null | undefined;
   previousTokenHash: string | null | undefined;
   previousTokenExpiresAt: Date | null | undefined;
+  pendingTokenHash?: string | null | undefined;
+  pendingTokenExpiresAt?: Date | null | undefined;
   tokenHash: string;
   now?: Date;
-}): { tokenRotationRequired: boolean } | null {
+}): { tokenRotationRequired: boolean; pendingTokenPresented: boolean } | null {
   const {
     agentTokenHash,
     previousTokenHash,
     previousTokenExpiresAt,
+    pendingTokenHash,
+    pendingTokenExpiresAt,
     tokenHash,
     now = new Date(),
   } = params;
 
   if (agentTokenHash && tokenHashMatches(agentTokenHash, tokenHash)) {
-    return { tokenRotationRequired: false };
+    return { tokenRotationRequired: false, pendingTokenPresented: false };
+  }
+
+  // Issue #2621 — a staged (pending) credential authenticates for real while the
+  // rotation is unconfirmed. This is what makes two-phase rotation crash-safe:
+  // between the agent's durable disk write and its confirm call, EITHER
+  // credential on disk is accepted, so a crash at any point in that window
+  // cannot strand the endpoint. Presenting it is also proof the agent holds the
+  // new token, which /rotate-token/confirm converts into a promotion.
+  if (
+    pendingTokenHash &&
+    pendingTokenExpiresAt &&
+    pendingTokenExpiresAt > now &&
+    tokenHashMatches(pendingTokenHash, tokenHash)
+  ) {
+    return { tokenRotationRequired: false, pendingTokenPresented: true };
   }
 
   if (
@@ -102,7 +123,7 @@ export function matchAgentTokenHash(params: {
     previousTokenExpiresAt > now &&
     tokenHashMatches(previousTokenHash, tokenHash)
   ) {
-    return { tokenRotationRequired: true };
+    return { tokenRotationRequired: true, pendingTokenPresented: false };
   }
 
   return null;
@@ -115,9 +136,12 @@ export function matchRoleScopedAgentTokenHash(params: {
   watchdogTokenHash: string | null | undefined;
   previousWatchdogTokenHash: string | null | undefined;
   previousWatchdogTokenExpiresAt: Date | null | undefined;
+  pendingTokenHash?: string | null | undefined;
+  pendingWatchdogTokenHash?: string | null | undefined;
+  pendingTokenExpiresAt?: Date | null | undefined;
   tokenHash: string;
   now?: Date;
-}): ({ role: AgentCredentialRole; tokenRotationRequired: boolean }) | null {
+}): ({ role: AgentCredentialRole; tokenRotationRequired: boolean; pendingTokenPresented: boolean }) | null {
   const {
     agentTokenHash,
     previousTokenHash,
@@ -125,6 +149,9 @@ export function matchRoleScopedAgentTokenHash(params: {
     watchdogTokenHash,
     previousWatchdogTokenHash,
     previousWatchdogTokenExpiresAt,
+    pendingTokenHash,
+    pendingWatchdogTokenHash,
+    pendingTokenExpiresAt,
     tokenHash,
     now = new Date(),
   } = params;
@@ -133,22 +160,36 @@ export function matchRoleScopedAgentTokenHash(params: {
     agentTokenHash,
     previousTokenHash,
     previousTokenExpiresAt,
+    pendingTokenHash,
+    pendingTokenExpiresAt,
     tokenHash,
     now,
   });
   if (agentMatch) {
-    return { role: 'agent', tokenRotationRequired: agentMatch.tokenRotationRequired };
+    return {
+      role: 'agent',
+      tokenRotationRequired: agentMatch.tokenRotationRequired,
+      pendingTokenPresented: agentMatch.pendingTokenPresented,
+    };
   }
 
   const watchdogMatch = matchAgentTokenHash({
     agentTokenHash: watchdogTokenHash,
     previousTokenHash: previousWatchdogTokenHash,
     previousTokenExpiresAt: previousWatchdogTokenExpiresAt,
+    // The watchdog's staged credential shares the agent rotation's expiry —
+    // both are minted and promoted by the same two-phase rotation.
+    pendingTokenHash: pendingWatchdogTokenHash,
+    pendingTokenExpiresAt,
     tokenHash,
     now,
   });
   if (watchdogMatch) {
-    return { role: 'watchdog', tokenRotationRequired: watchdogMatch.tokenRotationRequired };
+    return {
+      role: 'watchdog',
+      tokenRotationRequired: watchdogMatch.tokenRotationRequired,
+      pendingTokenPresented: watchdogMatch.pendingTokenPresented,
+    };
   }
 
   return null;
@@ -250,6 +291,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         watchdogTokenHash: devices.watchdogTokenHash,
         previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
         previousWatchdogTokenExpiresAt: devices.previousWatchdogTokenExpiresAt,
+        pendingTokenHash: devices.pendingTokenHash,
+        pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
+        pendingTokenExpiresAt: devices.pendingTokenExpiresAt,
         status: devices.status,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         hostname: devices.hostname,
@@ -292,6 +336,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     watchdogTokenHash: device.watchdogTokenHash,
     previousWatchdogTokenHash: device.previousWatchdogTokenHash,
     previousWatchdogTokenExpiresAt: device.previousWatchdogTokenExpiresAt,
+    pendingTokenHash: device.pendingTokenHash,
+    pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
+    pendingTokenExpiresAt: device.pendingTokenExpiresAt,
     tokenHash,
   });
   if (!match) {
@@ -425,6 +472,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     c.header('x-token-rotation-required', 'true');
   }
   c.set('agentTokenRotationRequired', match.tokenRotationRequired);
+  // Issue #2621 — true when the caller authenticated with the STAGED credential
+  // of an unconfirmed rotation. /rotate-token/confirm treats this as proof the
+  // agent holds a durable copy of the new token and promotes pending->current.
+  c.set('agentPendingTokenPresented', match.pendingTokenPresented);
 
   c.set('agent', {
     deviceId: device.id,

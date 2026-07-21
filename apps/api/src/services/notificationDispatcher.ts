@@ -212,10 +212,16 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // so routing/channel/escalation lookups can match partner-wide rows too.
   const orgPartnerId = await partnerIdForOrg(alert.orgId);
 
-  // Phase 5: Notification routing rules (currently evaluates severity; conditionTypes/deviceTags/siteIds matching planned)
+  // Phase 5: Notification routing rules. Site-restricted rules fail closed if
+  // the firing device or its site cannot be resolved.
   // Check routing rules before falling back to all channels
   if (channelIds.length === 0) {
-    const routedChannelIds = await resolveRoutingRules(alert.orgId, alert.severity, orgPartnerId);
+    const routedChannelIds = await resolveRoutingRules(
+      alert.orgId,
+      alert.severity,
+      orgPartnerId,
+      device?.siteId ?? null
+    );
     if (routedChannelIds.length > 0) {
       channelIds = routedChannelIds;
     }
@@ -867,7 +873,12 @@ async function sendPushoverChannelNotification(
  * Returns channel IDs from the first matching routing rule (by priority).
  * Returns empty array if no routing rules match (falls through to default behavior).
  */
-async function resolveRoutingRules(orgId: string, severity: string, orgPartnerId: string | null): Promise<string[]> {
+export async function resolveRoutingRules(
+  orgId: string,
+  severity: string,
+  orgPartnerId: string | null,
+  deviceSiteId: string | null
+): Promise<string[]> {
   // Dual-axis (#2130): the org's own rules AND its partner's partner-wide
   // rules compete in one priority ordering; the first match wins regardless
   // of axis, so an org can pre-empt a partner-wide rule with a
@@ -894,6 +905,12 @@ async function resolveRoutingRules(orgId: string, severity: string, orgPartnerId
     // Check severity match
     if (conditions.severities && conditions.severities.length > 0) {
       if (!conditions.severities.includes(severity)) {
+        continue;
+      }
+    }
+
+    if (conditions.siteIds && conditions.siteIds.length > 0) {
+      if (!deviceSiteId || !conditions.siteIds.includes(deviceSiteId)) {
         continue;
       }
     }

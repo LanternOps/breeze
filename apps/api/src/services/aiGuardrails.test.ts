@@ -22,7 +22,8 @@ vi.mock('./aiTools', () => ({
       // Non-fleet tools for baseline tests
       query_devices: 1,
       query_change_log: 1,
-      // file_operations base tier 1; guardrails escalate every action to Tier 3 (SR5-01)
+      // file_operations base tier 1; guardrails escalate read/write/delete/mkdir/rename to
+      // Tier 3 (SR5-01) and downgrade list to Tier 2 (recon only)
       file_operations: 1,
       execute_command: 3,
       run_backup_verification: 2,
@@ -52,7 +53,15 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails, checkToolPermission, checkPermissionRequirement, checkPermissionRequirements } from './aiGuardrails';
+import {
+  checkGuardrails,
+  checkToolPermission,
+  checkPermissionRequirement,
+  checkPermissionRequirements,
+  TIER1_ACTIONS,
+  TIER2_ACTIONS,
+  TIER3_ACTIONS,
+} from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
@@ -126,6 +135,11 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['generate_report', 'update'],
       ['generate_report', 'delete'],
       ['generate_report', 'generate'],
+      ['manage_patches', 'scan'],
+      ['manage_tickets', 'log_time_entry'],
+      ['manage_tickets', 'start_timer'],
+      ['manage_tickets', 'stop_timer'],
+      ['file_operations', 'list'],
     ];
 
     it.each(t2Cases)('%s:%s → Tier 2, no approval', (tool, action) => {
@@ -146,7 +160,6 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       ['manage_deployments', 'create'],
       ['manage_deployments', 'start'],
       ['manage_deployments', 'cancel'],
-      ['manage_patches', 'scan'],
       ['manage_patches', 'install'],
       ['manage_patches', 'rollback'],
       ['manage_groups', 'create'],
@@ -429,19 +442,25 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
     }
   });
 
-  it('log_time_entry/start_timer/stop_timer escalate to Tier 3 (approval required)', () => {
+  it('log_time_entry/start_timer/stop_timer resolve to Tier 2 (auto-execute + audit)', () => {
     for (const action of ['log_time_entry', 'start_timer', 'stop_timer']) {
       const result = checkGuardrails('manage_tickets', { action });
-      expect(result.tier).toBe(3);
+      expect(result.tier).toBe(2);
       expect(result.allowed).toBe(true);
-      expect(result.requiresApproval).toBe(true);
+      expect(result.requiresApproval).toBe(false);
     }
   });
 
-  it('update_status remains Tier 2 after adding time-entry actions to TIER3_ACTIONS', () => {
+  it('update_status remains Tier 2 alongside the time-entry actions in TIER2_ACTIONS', () => {
     const result = checkGuardrails('manage_tickets', { action: 'update_status' });
     expect(result.tier).toBe(2);
     expect(result.requiresApproval).toBe(false);
+  });
+
+  it('move_org remains Tier 3 (tenant-shape mutation)', () => {
+    const result = checkGuardrails('manage_tickets', { action: 'move_org' });
+    expect(result.tier).toBe(3);
+    expect(result.requiresApproval).toBe(true);
   });
 });
 
@@ -570,25 +589,29 @@ describe('checkToolPermission — action-multiplexed tools require action arg', 
   });
 });
 
-// ─── SR5-01: filesystem read/list are privileged (execute + Tier 3) ─────
+// ─── SR5-01: filesystem read/write are privileged (execute + Tier 3) ────
 
-describe('checkGuardrails — file_operations read/list escalate to Tier 3 (SR5-01)', () => {
-  it('read and list require interactive approval, not auto-execute', () => {
-    for (const action of ['read', 'list']) {
-      const result = checkGuardrails('file_operations', { action, path: '/etc/shadow' });
+// SR5-01 (agent runs as root / LocalSystem) plus this branch's partial
+// relaxation, asserted once: `list` is recon-only and was deliberately
+// downgraded to Tier 2, everything that touches file CONTENT — `read`
+// included — stays Tier 3.
+describe('file_operations tier boundary (SR5-01 + partial relaxation)', () => {
+  it('list is Tier 2 (auto-execute + audit) — recon only, deliberate downgrade', () => {
+    const result = checkGuardrails('file_operations', { action: 'list', deviceId: 'd1', path: '/tmp' });
+    expect(result.tier).toBe(2);
+    expect(result.requiresApproval).toBe(false);
+    expect(result.allowed).toBe(true);
+  });
+
+  it.each(['read', 'write', 'delete', 'mkdir', 'rename'])(
+    '%s stays Tier 3 (root-context content access requires approval)',
+    (action) => {
+      const result = checkGuardrails('file_operations', { action, deviceId: 'd1', path: '/tmp/x' });
       expect(result.tier).toBe(3);
       expect(result.allowed).toBe(true);
       expect(result.requiresApproval).toBe(true);
-    }
-  });
-
-  it('write/delete/mkdir/rename remain Tier 3', () => {
-    for (const action of ['write', 'delete', 'mkdir', 'rename']) {
-      const result = checkGuardrails('file_operations', { action, path: '/tmp/x' });
-      expect(result.tier).toBe(3);
-      expect(result.requiresApproval).toBe(true);
-    }
-  });
+    },
+  );
 });
 
 describe('checkToolPermission — file_operations requires devices.execute (SR5-01)', () => {
@@ -641,5 +664,65 @@ describe('checkToolPermission — file_operations requires devices.execute (SR5-
 
     expect(result).toBeNull();
     expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+  });
+});
+
+// ─── Tier-table disjointness (#2686) ────────────────────────────────────
+
+describe('tier action tables are pairwise disjoint per tool', () => {
+  // checkGuardrails resolves first-match in the order TIER1 → TIER3 → TIER2, so
+  // an action listed in two tables silently wins by table position instead of
+  // erroring. The dangerous direction is a leftover entry in TIER1_ACTIONS: it
+  // de-escalates a Tier-3 action to auto-execute with NO approval, and nothing
+  // else catches it unless that exact action happens to be enumerated in the
+  // case tables above. Moving actions between tiers is exactly when a stale
+  // duplicate gets left behind.
+  const TABLES: Array<[string, Record<string, string[]>]> = [
+    ['TIER1_ACTIONS', TIER1_ACTIONS],
+    ['TIER2_ACTIONS', TIER2_ACTIONS],
+    ['TIER3_ACTIONS', TIER3_ACTIONS],
+  ];
+
+  it('no tool/action pair appears in more than one tier table', () => {
+    const collisions: string[] = [];
+
+    for (let i = 0; i < TABLES.length; i++) {
+      for (let j = i + 1; j < TABLES.length; j++) {
+        const [nameA, tableA] = TABLES[i]!;
+        const [nameB, tableB] = TABLES[j]!;
+        for (const [tool, actionsA] of Object.entries(tableA)) {
+          const actionsB = tableB[tool];
+          if (!actionsB) continue;
+          for (const action of actionsA) {
+            if (actionsB.includes(action)) {
+              collisions.push(`${tool} action "${action}" is in both ${nameA} and ${nameB}`);
+            }
+          }
+        }
+      }
+    }
+
+    expect(
+      collisions,
+      `Duplicate guardrail tier entries — resolution is first-match ` +
+      `(TIER1 → TIER3 → TIER2), so the duplicate silently wins by table ` +
+      `position. A stale TIER1_ACTIONS entry de-escalates an approval-required ` +
+      `action to auto-execute.\n` +
+      collisions.map((c) => `  • ${c}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('no tier table lists the same action twice for one tool', () => {
+    const dupes: string[] = [];
+    for (const [tableName, table] of TABLES) {
+      for (const [tool, actions] of Object.entries(table)) {
+        const seen = new Set<string>();
+        for (const action of actions) {
+          if (seen.has(action)) dupes.push(`${tableName}.${tool} lists "${action}" twice`);
+          seen.add(action);
+        }
+      }
+    }
+    expect(dupes).toEqual([]);
   });
 });

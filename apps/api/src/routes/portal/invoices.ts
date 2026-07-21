@@ -10,8 +10,9 @@ import {
   buildWeakEtag,
   getPagination,
   isEtagFresh,
+  portalFinancialMutationGuard,
 } from './helpers';
-import { getCustomerInvoice, markViewed } from '../../services/invoiceService';
+import { getCustomerInvoice, markViewed, toCustomerInvoiceLine } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
@@ -28,6 +29,7 @@ const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
 
 export const invoiceRoutes = new Hono();
+invoiceRoutes.use('*', portalFinancialMutationGuard);
 
 // GET /portal/invoices — this org's issued (status != 'draft') invoices.
 // Drafts are MSP-internal and must never surface to the customer.
@@ -101,7 +103,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal] markViewed failed', { invoiceId: id, orgId: auth.user.orgId, err });
   }
 
-  return c.json({ invoice: result.invoice, lines: result.lines });
+  return c.json({ invoice: result.invoice, lines: result.lines.map(toCustomerInvoiceLine) });
 });
 
 // GET /portal/invoices/:id/pdf — stream the stored PDF (render on demand if absent).

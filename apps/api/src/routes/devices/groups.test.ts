@@ -9,11 +9,13 @@ const {
   mockInsert,
   mockUpdate,
   mockDelete,
+  mockTransaction,
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
+  mockTransaction: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -28,12 +30,13 @@ vi.mock('../../db', () => ({
     insert: mockInsert,
     update: mockUpdate,
     delete: mockDelete,
+    transaction: mockTransaction,
   },
 }));
 
 vi.mock('../../db/schema', () => ({
-  devices: { id: 'id', orgId: 'orgId' },
-  deviceGroups: { id: 'id', orgId: 'orgId', name: 'name' },
+  devices: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
+  deviceGroups: { id: 'id', orgId: 'orgId', siteId: 'siteId', name: 'name' },
   deviceGroupMemberships: { groupId: 'groupId', deviceId: 'deviceId' },
   sites: { id: 'id', orgId: 'orgId' },
 }));
@@ -58,6 +61,10 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../../services/groupMembership', () => ({
+  pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue({ removed: 0 }),
 }));
 
 // Let ensureOrgAccess run for real; only mock getPagination
@@ -89,6 +96,7 @@ vi.mock('@hono/zod-validator', () => ({
 
 import { groupsRoutes } from './groups';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -99,6 +107,7 @@ const GROUP_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_1 = 'dddd0001-dddd-dddd-dddd-dddddddddddd';
 const DEVICE_2 = 'dddd0002-dddd-dddd-dddd-dddddddddddd';
 const SITE_ID = 'ssss0001-ssss-ssss-ssss-ssssssssssss';
+const SITE_ID_2 = 'ssss0002-ssss-ssss-ssss-ssssssssssss';
 const PARENT_ID = 'pppp0001-pppp-pppp-pppp-pppppppppppp';
 
 // ---------------------------------------------------------------------------
@@ -185,10 +194,11 @@ function chainDelete() {
 // ---------------------------------------------------------------------------
 // Build app helper
 // ---------------------------------------------------------------------------
-function buildApp(auth: any): Hono {
+function buildApp(auth: any, permissions?: { allowedSiteIds?: string[] }): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', auth);
+    if (permissions) c.set('permissions', permissions as any);
     await next();
   });
   app.route('/devices', groupsRoutes);
@@ -203,6 +213,12 @@ describe('Device Groups routes — multi-tenant isolation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: mockSelect,
+      insert: mockInsert,
+      update: mockUpdate,
+      delete: mockDelete,
+    }));
     app = buildApp(makeAuth());
   });
 
@@ -277,6 +293,32 @@ describe('Device Groups routes — multi-tenant isolation', () => {
   // POST /devices/groups
   // ========================================================================
   describe('POST /devices/groups', () => {
+    it('rejects an org-wide group for a site-restricted caller before insert', async () => {
+      app = buildApp(makeAuth(), { allowedSiteIds: [SITE_ID] });
+
+      const res = await app.request('/devices/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_A, name: 'Org-wide', type: 'static' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a sibling-site group for a site-restricted caller before insert', async () => {
+      app = buildApp(makeAuth(), { allowedSiteIds: [SITE_ID] });
+      mockSelect.mockReturnValueOnce(chainSelect([{ id: 'site-other' }]));
+
+      const res = await app.request('/devices/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_A, name: 'Sibling', siteId: 'site-other', type: 'static' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
     const validBody = { orgId: ORG_A, name: 'Workstations', type: 'static' };
 
     it('creates a group in the authed org (happy path)', async () => {
@@ -487,6 +529,66 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       expect(mockUpdate).not.toHaveBeenCalled();
     });
 
+    it('prunes memberships from the previous site when the group site changes', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = { ...groupInOrgA, siteId: oldSiteId };
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      expect(pruneGroupMembershipsOutsideSite).toHaveBeenCalledWith(
+        GROUP_ID,
+        SITE_ID,
+        ORG_A,
+        expect.anything(),
+      );
+    });
+
+    it('rolls back a legacy site reassignment when membership pruning fails', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = { ...groupInOrgA, siteId: oldSiteId };
+      let transactionCommitted = false;
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+      mockTransaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => {
+        try {
+          const result = await fn({
+            select: mockSelect,
+            insert: mockInsert,
+            update: mockUpdate,
+            delete: mockDelete,
+          });
+          transactionCommitted = true;
+          return result;
+        } catch (error) {
+          transactionCommitted = false;
+          throw error;
+        }
+      });
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockRejectedValueOnce(new Error('prune failed'));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      expect(transactionCommitted).toBe(false);
+    });
+
     it('returns 400 when updated parentId does not belong to the group org', async () => {
       mockSelect
         .mockReturnValueOnce(chainSelect([groupInOrgA]))
@@ -627,6 +729,29 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       expect(writeRouteAudit).toHaveBeenCalled();
     });
 
+    it('rejects a mixed group-site batch before inserting any membership', async () => {
+      app = buildApp(makeAuth(), { allowedSiteIds: [SITE_ID, SITE_ID_2] });
+      const group = { ...groupInOrgA, siteId: SITE_ID };
+      let selectCall = 0;
+      mockSelect.mockImplementation(() => {
+        selectCall++;
+        if (selectCall === 1) return chainSelect([group]);
+        return chainSelect([
+          { id: DEVICE_1, siteId: SITE_ID },
+          { id: DEVICE_2, siteId: SITE_ID_2 },
+        ]);
+      });
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_1, DEVICE_2] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
     it('returns 400 when deviceIds is missing or empty', async () => {
       const res = await app.request(`/devices/groups/${GROUP_ID}/members`, {
         method: 'POST',
@@ -747,6 +872,29 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(writeRouteAudit).toHaveBeenCalled();
+    });
+
+    it('rejects a mixed group-site batch before deleting any membership', async () => {
+      app = buildApp(makeAuth(), { allowedSiteIds: [SITE_ID, SITE_ID_2] });
+      const group = { ...groupInOrgA, siteId: SITE_ID };
+      let selectCall = 0;
+      mockSelect.mockImplementation(() => {
+        selectCall++;
+        if (selectCall === 1) return chainSelect([group]);
+        return chainSelect([
+          { id: DEVICE_1, siteId: SITE_ID },
+          { id: DEVICE_2, siteId: SITE_ID_2 },
+        ]);
+      });
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}/members`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_1, DEVICE_2] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(mockDelete).not.toHaveBeenCalled();
     });
 
     it('returns 400 when deviceIds is missing or empty', async () => {

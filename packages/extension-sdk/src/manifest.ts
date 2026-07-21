@@ -14,27 +14,43 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
   'web.slots.v1',
 ] as const;
 
-/** Route namespaces already owned by the Breeze API. */
+/**
+ * Route namespaces already owned by the Breeze API.
+ *
+ * Mirrored verbatim in packages/extension-api/src/legacy.ts; the two sets are
+ * asserted equal by packages/extension-api/src/index.test.ts, which also
+ * derives the core mounts from apps/api/src/index.ts at test time so a new
+ * core mount that isn't reserved here fails the build automatically.
+ *
+ * Exception: `api.route('/', subRouter)` mounts declare their segments in
+ * another file and are reserved by hand; a tripwire test pins how many exist.
+ * See the fuller note in packages/extension-api/src/legacy.ts.
+ */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
-  'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
+  'backup', 'billing', 'browser-security', 'c2c', 'catalog', 'changes',
+  'cis',
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-  'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
+  'events', 'ext', 'extensions', 'filters', 'google', 'groups', 'helper',
+  'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
   'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
   'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
-  'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
+  'pam', 'partner', 'partner-api', 'partner-service-principals', 'partners',
+  'patch-policies', 'patches', 'pax8',
   'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
   'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
-  'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
-  'software-inventory', 'software-policies', 'sso', 'system',
-  'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
-  'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
+  'search', 'security', 'sensitive-data', 'service-principals', 'settings',
+  'snmp', 'software',
+  'software-inventory', 'software-policies', 'sso', 'support',
+  'system', 'system-tools', 'tags', 'third-party-catalog',
+  'ticket-categories', 'ticket-config', 'ticket-forms',
+  'ticket-response-templates', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
   'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
 ]);
@@ -180,6 +196,8 @@ const manifestSchemaV1 = z.object({
       }),
   ).optional(),
   agentRoutes: z.boolean().optional(),
+  // TODO(runtime-platform): carry legacy helperRoutes forward as capability
+  // 'server.helper-routes.v1' (see internal/plans/2026-07-18-workspace-finder-phase3-plan.md).
   jobs: z.array(jobSchema),
   aiTools: z.array(aiToolSchema),
   tenancy: tenancySchema.default({
@@ -241,4 +259,15 @@ export function parseExtensionManifestV1(raw: unknown): ExtensionManifestV1 {
     if (error instanceof z.ZodError) throw new Error(z.prettifyError(error));
     throw error;
   }
+}
+
+/**
+ * Non-throwing counterpart to {@link parseExtensionManifestV1}. Returns the raw
+ * Zod result so callers (e.g. the conformance testkit) can enumerate every issue
+ * with its structured `path`/`code`, rather than a flattened, prettified string.
+ */
+export function safeParseExtensionManifestV1(
+  raw: unknown,
+): z.ZodSafeParseResult<ExtensionManifestV1> {
+  return manifestSchemaV1.safeParse(raw);
 }

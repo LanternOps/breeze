@@ -123,6 +123,118 @@ describe('invoiceService guards', () => {
     ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
   });
 
+  it('getCustomerInvoice returns the exact customer-safe invoice header keyset', async () => {
+    queueResult([{
+      id: 'i1',
+      partnerId: 'internal-partner-id',
+      orgId: 'org1',
+      siteId: 'internal-site-id',
+      invoiceNumber: 'INV-1',
+      status: 'sent',
+      currencyCode: 'USD',
+      issueDate: '2026-07-01',
+      dueDate: '2026-07-31',
+      subtotal: '150.00',
+      taxRate: '0.05000',
+      taxTotal: '7.50',
+      total: '157.50',
+      amountPaid: '25.00',
+      balance: '132.50',
+      depositDue: '50.00',
+      billToName: 'Customer, Inc.',
+      billToAddress: { line1: 'internal-address-field' },
+      billToTaxId: 'internal-tax-id',
+      billToTaxExempt: false,
+      notes: 'Customer-visible note',
+      terms: 'implementation-only legacy terms',
+      sellerSnapshot: { name: 'MSP, Inc.' },
+      termsAndConditions: 'Net 30',
+      sentAt: new Date('2026-07-01T00:00:00Z'),
+      firstViewedAt: null,
+      viewedAt: null,
+      paidAt: null,
+      markedOverdueAt: null,
+      voidedAt: null,
+      voidReason: null,
+      replacesInvoiceId: 'internal-replaced-invoice-id',
+      replacedByInvoiceId: 'internal-replacement-id',
+      pdfDocumentRef: 'internal/invoices/i1.pdf',
+      pdfSha256: 'internal-pdf-hash',
+      createdBy: 'internal-user-id',
+      createdAt: new Date('2026-06-30T00:00:00Z'),
+      updatedAt: new Date('2026-07-01T00:00:00Z'),
+    }]);
+    queueResult([]);
+
+    const { invoice } = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(Object.keys(invoice).sort()).toEqual([
+      'amountPaid',
+      'balance',
+      'billToName',
+      'currencyCode',
+      'depositDue',
+      'dueDate',
+      'id',
+      'invoiceNumber',
+      'issueDate',
+      'notes',
+      'sellerSnapshot',
+      'status',
+      'subtotal',
+      'taxRate',
+      'taxTotal',
+      'termsAndConditions',
+      'total',
+    ].sort());
+    expect(invoice).not.toHaveProperty('createdBy');
+    expect(invoice).not.toHaveProperty('replacesInvoiceId');
+    expect(invoice).not.toHaveProperty('replacedByInvoiceId');
+    expect(invoice).not.toHaveProperty('pdfDocumentRef');
+    expect(invoice).not.toHaveProperty('pdfSha256');
+    expect(invoice).not.toHaveProperty('partnerId');
+    expect(invoice).not.toHaveProperty('orgId');
+    expect(invoice).not.toHaveProperty('siteId');
+    expect(invoice).not.toHaveProperty('createdAt');
+    expect(invoice).not.toHaveProperty('updatedAt');
+  });
+
+  it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{
+      id: 'internal-line-id',
+      invoiceId: 'i1',
+      orgId: 'org1',
+      sourceType: 'time_entry',
+      sourceId: 'internal-source-id',
+      catalogItemId: 'internal-catalog-id',
+      ticketId: 'internal-ticket-id',
+      description: 'Customer-facing work',
+      quantity: '2.00',
+      unitPrice: '75.00',
+      costBasis: '20.00',
+      revenueAllocation: { labor: '150.00' },
+      taxable: true,
+      lineTotal: '150.00',
+      isUnapprovedTime: true,
+      customerVisible: true,
+      sortOrder: 0,
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(Object.keys(result.lines[0]!).sort()).toEqual([
+      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+    ]);
+    expect(result.lines[0]).toEqual({
+      description: 'Customer-facing work',
+      quantity: '2.00',
+      unitPrice: '75.00',
+      taxable: true,
+      lineTotal: '150.00',
+    });
+  });
+
   it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', firstViewedAt: null }]);
     await expect(

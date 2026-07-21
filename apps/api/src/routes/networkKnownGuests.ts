@@ -5,6 +5,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db';
 import { networkKnownGuests } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { PERMISSIONS } from '../services/permissions';
 
 export const networkKnownGuestsRoutes = new Hono();
@@ -12,6 +13,12 @@ const requireKnownGuestRead = requirePermission(PERMISSIONS.ORGS_READ.resource, 
 const requireKnownGuestWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
 networkKnownGuestsRoutes.use('*', authMiddleware);
+networkKnownGuestsRoutes.use('*', async (c, next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth'))) {
+    return c.json({ error: 'Full partner scope is required to manage the shared known-guest list' }, 403);
+  }
+  return next();
+});
 
 // MAC must be colon-separated hex pairs, case-insensitive
 const macRegex = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;

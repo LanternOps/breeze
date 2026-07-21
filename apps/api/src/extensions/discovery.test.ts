@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverExtensions } from './discovery';
+import { discoverExtensions, listSourceExtensionCandidates } from './discovery';
 
 const MANIFEST = {
   name: 'sample',
@@ -85,5 +85,37 @@ describe('discoverExtensions', () => {
     expect(discoverExtensions(root).map((e) => e.manifest.routeNamespace)).toEqual([
       'alpha-routes', 'beta-routes',
     ]);
+  });
+});
+
+describe('listSourceExtensionCandidates', () => {
+  it('returns [] for a missing or empty root', () => {
+    expect(listSourceExtensionCandidates(join(root, 'nope'))).toEqual([]);
+    expect(listSourceExtensionCandidates(root)).toEqual([]);
+  });
+
+  it('lists directories carrying a manifest file, ignoring everything else', () => {
+    scaffold('sample', MANIFEST);
+    mkdirSync(join(root, 'node_modules'));
+    writeFileSync(join(root, 'README.md'), 'seam docs');
+    symlinkSync(join(root, 'missing-target'), join(root, 'dangling'));
+    expect(listSourceExtensionCandidates(root)).toEqual(['sample']);
+  });
+
+  // The candidate scan feeds the flag-off deprecation warning in the loader. It
+  // must never PARSE the manifest: a broken manifest in a disabled legacy path
+  // must not be able to fail the boot.
+  it('lists a candidate whose manifest is unparseable JSON, without throwing', () => {
+    const dir = join(root, 'broken');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'breeze-extension.json'), '{ not json');
+    expect(listSourceExtensionCandidates(root)).toEqual(['broken']);
+    expect(() => listSourceExtensionCandidates(root)).not.toThrow();
+  });
+
+  it('sorts candidates by name', () => {
+    scaffold('zeta', { ...MANIFEST, name: 'zeta', routeNamespace: 'zeta', tenancy: {} });
+    scaffold('alpha', { ...MANIFEST, name: 'alpha', routeNamespace: 'alpha', tenancy: {} });
+    expect(listSourceExtensionCandidates(root)).toEqual(['alpha', 'zeta']);
   });
 });

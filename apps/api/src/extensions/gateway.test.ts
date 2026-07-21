@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { ExtensionContributionRegistry } from './contributionRegistry';
 
-const authLifetime = new AsyncLocalStorage<'user' | 'agent'>();
+const authLifetime = new AsyncLocalStorage<'user' | 'agent' | 'helper'>();
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (
@@ -39,14 +39,41 @@ vi.mock('../middleware/agentAuth', () => ({
   }),
 }));
 
+vi.mock('../middleware/helperAuth', () => ({
+  helperAuth: vi.fn(async (
+    c: {
+      req: { header(name: string): string | undefined };
+      json(body: unknown, status: 401): Response;
+      set(key: string, value: unknown): void;
+    },
+    next: () => Promise<void>,
+  ) => {
+    if (!c.req.header('Authorization')) {
+      return c.json({ error: 'missing helper auth' }, 401);
+    }
+    c.set('helperDevice', { id: 'dev-1', orgId: 'org-1' });
+    c.set('auth', { orgId: 'org-1', helperDeviceId: 'dev-1', scope: 'organization' });
+    await authLifetime.run('helper', next);
+  }),
+}));
+
 import {
+  EXTENSION_ROUTE_LABEL_OTHER,
+  EXTENSION_ROUTE_LABEL_UNAVAILABLE,
   legacyExtensionAgentAuthMiddleware,
   mountExtensionGateway,
 } from './gateway';
+import { setExtensionMetricsRecorder } from './metrics';
 import { authMiddleware } from '../middleware/auth';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
+import { helperAuth } from '../middleware/helperAuth';
 
-function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
+// `helperRoutes` is a legacy-manifest flag carried on the staged manifest for
+// the gateway guard; it is not part of the v1 wire schema yet (see the TODO in
+// packages/extension-sdk/src/manifest.ts).
+type GatewayTestManifest = ExtensionManifestV1 & { helperRoutes?: boolean };
+
+function makeManifest(overrides: Partial<GatewayTestManifest> = {}): GatewayTestManifest {
   return {
     apiVersion: 'breeze.extensions/v1',
     name: 'demo',
@@ -169,6 +196,52 @@ describe('mountExtensionGateway', () => {
 
     expect(response.status).toBe(401);
     expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+    expect(authMiddleware).not.toHaveBeenCalled();
+  });
+
+  it('routes /helper/* through helper auth when the manifest opts in', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({
+      deviceId: (c.get('helperDevice') as { id: string }).id,
+      authLifetime: authLifetime.getStore(),
+    }));
+    const manifest = makeManifest({ helperRoutes: true });
+    const { app } = makeGatewayFixture({ routeApp, manifest });
+
+    expect((await app.request('/api/v1/ext/demo/helper/search?q=x')).status).toBe(401);
+    const response = await app.request('/api/v1/ext/demo/helper/search?q=x', {
+      headers: { Authorization: 'Bearer brz_helper-test' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deviceId: 'dev-1', authLifetime: 'helper' });
+    expect(helperAuth).toHaveBeenCalledTimes(2);
+    expect(authMiddleware).not.toHaveBeenCalled();
+    expect(agentAuthMiddleware).not.toHaveBeenCalled();
+  });
+
+  it('keeps /helper/* on user auth when the manifest does not opt in', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({ ok: true }));
+    const { app } = makeGatewayFixture({ routeApp });
+
+    const response = await app.request('/api/v1/ext/demo/helper/search');
+
+    expect(response.status).toBe(200);
+    expect(authMiddleware).toHaveBeenCalledTimes(1);
+    expect(helperAuth).not.toHaveBeenCalled();
+  });
+
+  it('uses helper auth for helper paths and never public-route exemptions', async () => {
+    const routeApp = new Hono();
+    routeApp.get('/helper/search', (c) => c.json({ ok: true }));
+    const manifest = makeManifest({ helperRoutes: true, publicRoutes: ['/helper/*'] });
+    const { app } = makeGatewayFixture({ routeApp, manifest });
+
+    const response = await app.request('/api/v1/ext/demo/helper/search');
+
+    expect(response.status).toBe(401);
+    expect(helperAuth).toHaveBeenCalledTimes(1);
     expect(authMiddleware).not.toHaveBeenCalled();
   });
 
@@ -346,5 +419,114 @@ describe('mountExtensionGateway', () => {
 
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ outerError: 'extension exploded' });
+  });
+});
+
+describe('extension gateway route metric labels', () => {
+  function captureRouteLabels() {
+    const requests: Array<{ extension: string; route: string; status: number }> = [];
+    setExtensionMetricsRecorder({
+      onRequest: (extension, route, status) => { requests.push({ extension, route, status }); },
+      onJob: () => {},
+    });
+    return {
+      requests,
+      routes: () => new Set(requests.map((entry) => entry.route)),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    setExtensionMetricsRecorder(null);
+  });
+
+  // The point of the bounding fix: the `route` label must be drawn from the
+  // extension's registered route patterns, never from the request URL, so an
+  // unauthenticated attacker cannot mint one Prometheus series per random path.
+  it('collapses arbitrary unmatched paths to a single bounded route label', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    const attackPaths = Array.from(
+      { length: 50 },
+      (_unused, index) => `/api/v1/ext/demo/aaa${index.toString(36)}${'x'.repeat(index % 7)}`,
+    );
+    for (const path of attackPaths) {
+      expect((await app.request(path)).status).toBe(404);
+    }
+
+    expect(metrics.requests).toHaveLength(attackPaths.length);
+    // Bounded — NOT one label per distinct path.
+    expect(metrics.routes().size).toBeLessThanOrEqual(2);
+    expect([...metrics.routes()]).toEqual([EXTENSION_ROUTE_LABEL_OTHER]);
+  });
+
+  it('never leaks a raw path segment (PII) into the route label', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    await app.request('/api/v1/ext/demo/customers/todd@lanternops.io/sync');
+
+    expect([...metrics.routes()]).toEqual([EXTENSION_ROUTE_LABEL_OTHER]);
+  });
+
+  it('labels matched requests with the registered pattern, not the concrete path', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    expect((await app.request('/api/v1/ext/demo/items/item-42')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/items/item-99')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
+
+    expect(metrics.requests.map((entry) => entry.route)).toEqual([
+      '/items/:id',
+      '/items/:id',
+      '/health',
+    ]);
+  });
+
+  it('bounds the label the same way on the legacy alias mount', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'legacy-demo' }),
+    });
+
+    expect((await app.request('/api/v1/legacy-demo/items/item-42')).status).toBe(200);
+    for (let index = 0; index < 20; index += 1) {
+      await app.request(`/api/v1/legacy-demo/zz${index}`);
+    }
+
+    expect(metrics.routes()).toEqual(new Set(['/items/:id', EXTENSION_ROUTE_LABEL_OTHER]));
+  });
+
+  it('bounds agent-namespace labels including unauthenticated rejections', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture();
+
+    for (let index = 0; index < 20; index += 1) {
+      expect((await app.request(`/api/v1/ext/demo/agent/dev-${index}/config`)).status).toBe(401);
+    }
+    const authed = await app.request('/api/v1/ext/demo/agent/device-1/config', {
+      headers: { Authorization: 'Bearer agent-test' },
+    });
+    expect(authed.status).toBe(200);
+
+    expect(metrics.routes()).toEqual(
+      new Set([EXTENSION_ROUTE_LABEL_OTHER, '/agent/:id/config']),
+    );
+  });
+
+  it('records a 503 with a bounded label when the extension is disabled', async () => {
+    const metrics = captureRouteLabels();
+    const { app } = makeGatewayFixture({ isEnabled: async () => false });
+
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
+
+    expect(metrics.requests).toEqual([
+      { extension: 'demo', route: EXTENSION_ROUTE_LABEL_UNAVAILABLE, status: 503 },
+    ]);
   });
 });

@@ -3,6 +3,7 @@ import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, 
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { waitForApproval } from './aiAgent';
+import type { ActionIntentSnapshot } from './actionIntents/intentService';
 
 // ============================================
 // Mocks
@@ -200,7 +201,10 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function makeIntentSnapshot(overrides: Record<string, unknown> = {}) {
+// Typed as the real snapshot so an omitted field is a COMPILE error rather
+// than a silently-undefined property: the untyped literal is what let the
+// four-eyes → SSE hop (`selfApprovalRequestId`) go untested entirely.
+function makeIntentSnapshot(overrides: Partial<ActionIntentSnapshot> = {}): ActionIntentSnapshot {
   return {
     id: 'intent-1',
     status: 'pending_approval',
@@ -211,8 +215,19 @@ function makeIntentSnapshot(overrides: Record<string, unknown> = {}) {
     result: null,
     errorCode: null,
     approvalRequestIds: ['appr-1'],
+    // Default is the FOUR-EYES case: the requester holds no approval row.
+    requesterApprovalRequestId: null,
     ...overrides,
   };
+}
+
+/** The approval_required event the SDK published on this session. */
+function publishedApprovalRequired(session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) {
+  const call = session.eventBus.publish.mock.calls
+    .map((c) => c[0] as Record<string, unknown>)
+    .find((e) => e.type === 'approval_required');
+  expect(call).toBeDefined();
+  return call!;
 }
 
 // ============================================
@@ -594,6 +609,68 @@ describe('createSessionPreToolUse', () => {
       expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
     });
 
+    it('four-eyes: publishes NO selfApprovalRequestId when the requester holds no approval row', async () => {
+      // The requester must never be handed a self-approve button (nor another
+      // approver's row id) in a multi-approver org. objectContaining cannot
+      // fail on a wrong value here, so assert the exact field.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-fe' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-fe',
+          approvalRequestIds: ['appr-a', 'appr-b'],
+          requesterApprovalRequestId: null,
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const event = publishedApprovalRequired(session);
+      expect(event.intentBacked).toBe(true);
+      expect(event.selfApprovalRequestId).toBeUndefined();
+    });
+
+    it('sole operator: publishes the REQUESTER’s row id, not the first fanned-out row', async () => {
+      // The two ids differ deliberately: with identical values this assertion
+      // would still pass against `approvalRequestIds[0]`, which is exactly the
+      // four-eyes-breaking mutation this test exists to kill.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-solo' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-solo',
+          approvalRequestIds: ['appr-1'],
+          requesterApprovalRequestId: 'appr-solo',
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const event = publishedApprovalRequired(session);
+      expect(event.selfApprovalRequestId).toBe('appr-solo');
+      expect(event.approvalRequestId).toBe('appr-1');
+    });
+
     it('executes inline when the session wins the approved -> executing release CAS', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -612,7 +689,7 @@ describe('createSessionPreToolUse', () => {
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
       expect(result).toEqual({ allowed: true });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
@@ -638,7 +715,7 @@ describe('createSessionPreToolUse', () => {
         allowed: false,
         error: 'This action is already being completed by the approval worker; it will not run twice.',
       });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
       // still happens, but no inline execution: the "mark as executing"
       // update never fires.

@@ -95,10 +95,22 @@ function mockInsertSuccess(count: number) {
 
 describe('changes routes', () => {
   let app: Hono;
+  let agentRole: 'agent' | 'watchdog';
 
   beforeEach(() => {
     vi.clearAllMocks();
+    agentRole = 'agent';
     app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: DEVICE_ID,
+        agentId: AGENT_ID,
+        orgId: ORG_ID,
+        siteId: '22222222-2222-4222-8222-222222222222',
+        role: agentRole,
+      } as never);
+      await next();
+    });
     app.route('/agents', changesRoutes);
   });
 
@@ -107,6 +119,20 @@ describe('changes routes', () => {
   // ----------------------------------------------------------------
 
   describe('PUT /agents/:id/changes', () => {
+    it('rejects watchdog credentials before querying or inserting change history', async () => {
+      agentRole = 'watchdog';
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload()] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('should accept and insert valid changes', async () => {
       mockDeviceFound();
       mockInsertSuccess(2);

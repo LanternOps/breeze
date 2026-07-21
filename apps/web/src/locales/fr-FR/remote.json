@@ -28,33 +28,34 @@
     "downloadFor": "Télécharger pour {{platform}}",
     "errors": {
       "connectionFailed": "Connexion défaillante",
-      "createDesktopCode": "Impossible de créer du code de bureau",
+      "createDesktopCode": "Échec de la création du code de connexion au bureau",
       "createDesktopSession": "Impossible de créer une session de bureau",
-      "createVncTunnel": "Impossible de créer un tunnel vnc",
-      "deviceChanged": "Impossible de changer l’appareil",
+      "createVncTunnel": "Échec de la création du tunnel VNC",
+      "deviceChanged": "Échec du lancement à distance : la fiche de l'appareil a changé. Actualisez et réessayez.",
       "http": "Échec du lancement à distance (HTTP {{status}})",
-      "invalidDesktopCode": "Impossible de valider le code de bureau",
-      "issueVncCode": "Impossible d’émettre un code vnc",
-      "securityCheckToast": "Impossible de vérifier la sécurité grillée",
-      "securityPolicy": "Échec lié à la stratégie de sécurité",
-      "server": "Impossible de servir",
-      "vncTunnelFailed": "Impossible de faire échouer le tunnel VNC"
+      "invalidDesktopCode": "Réponse de code de connexion au bureau invalide",
+      "issueVncCode": "Échec de l'émission du code de connexion VNC",
+      "securityCheckToast": "Lancement à distance indisponible : le contrôle de sécurité a échoué. Contactez votre administrateur.",
+      "securityPolicy": "Lancement à distance bloqué par la politique de sécurité",
+      "server": "Échec du lancement à distance : erreur serveur. Contactez votre administrateur.",
+      "vncTunnelFailed": "Le tunnel VNC n'a pas pu s'ouvrir"
     },
     "fallback": {
-      "title": "Titre",
-      "viewerDescription": "Description du spectateur",
-      "vncDescription": "Description VNC"
+      "linuxFirstRun": "Sous Linux, rendez le fichier téléchargé exécutable (chmod +x) et lancez-le une fois. Cela enregistre la visionneuse ; les sessions s'ouvriront ensuite automatiquement.",
+      "title": "La visionneuse ne s'est pas ouverte ?",
+      "viewerDescription": "Si la visionneuse s'est ouverte, vous pouvez ignorer ce message. Sinon, téléchargez-la ci-dessous.",
+      "vncDescription": "Ouvrez plutôt la session VNC dans votre navigateur."
     },
     "launcherSkip": {
-      "configError": "Erreur de configuration",
-      "emptyUrlTemplate": "Modèle d’URL vide",
+      "configError": "Impossible de résoudre l'outil distant configuré par le partenaire (erreur de configuration). Retour au bureau à distance intégré.",
+      "emptyUrlTemplate": "L'outil distant configuré par le partenaire n'a aucun modèle d'URL défini. Retour au bureau à distance intégré.",
       "missingIdentifier": "Cet appareil manque l’identifiant par appareil dont l’outil distant configuré par partenaire a besoin (par exemple le pair RustDesk ID). Je revenais au bureau à distance intégré. Définissez l’identifiant dans les paramètres de l’appareil → dans les champs personnalisés.",
       "providerDisabled": "L’outil distant configuré par le partenaire pour cet appareil est actuellement désactivé. Je revenais au bureau à distance intégré."
     },
     "launching": "Lancement...",
     "launchingViewer": "Lancement du visionnement...",
-    "openInBrowser": "Ouvrir le navigateur",
-    "policyDisabled": "Stratégie désactivée",
+    "openInBrowser": "Ouvrir dans le navigateur",
+    "policyDisabled": "Le bureau à distance est désactivé par la politique",
     "policyDisabledNamed": "Le bureau à distance est désactivé par la politique « {{name}} »",
     "unavailable": {
       "default": "Le mode de bureau n’est pas disponible sur cet appareil",
@@ -76,21 +77,21 @@
     "errors": {
       "connectionFailed": "Connexion défaillante",
       "createTunnel": "Impossible de créer un tunnel",
-      "createVncTunnel": "Impossible de créer un tunnel vnc",
-      "issueConnectCode": "Impossible d’émettre un code de connexion",
-      "tunnelFailed": "Impossible de creuser un tunnel échoué"
+      "createVncTunnel": "Échec de la création du tunnel VNC",
+      "issueConnectCode": "Échec de l'émission du code de connexion VNC",
+      "tunnelFailed": "Le tunnel n'a pas pu s'ouvrir"
     },
     "fallback": {
-      "description": "Description",
-      "title": "Titre"
+      "description": "Ouvrez plutôt la session VNC dans votre navigateur.",
+      "title": "La visionneuse ne s'est pas ouverte ?"
     },
     "launching": "Lancement...",
-    "openInBrowser": "Ouvrir le navigateur",
-    "policyDisabled": "Stratégie désactivée",
-    "policyDisabledNamed": "Stratégie désactivée :",
-    "unavailable": "Indisponible",
+    "openInBrowser": "Ouvrir dans le navigateur",
+    "policyDisabled": "Le relais VNC est désactivé par la politique",
+    "policyDisabledNamed": "Le relais VNC est désactivé par la politique « {{name}} »",
+    "unavailable": "VNC indisponible",
     "vncDesktop": "Bureau VNC",
-    "vncRemote": "Télécommande VNC"
+    "vncRemote": "VNC à distance"
   },
   "deleteConfirmDialog": {
     "deletePermanently": "Supprimer définitivement",

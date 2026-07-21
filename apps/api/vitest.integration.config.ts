@@ -88,6 +88,47 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB integration test for the intent stale-execution
+      // reaper: proves the COALESCE(execution_started_at, decided_at) < now()
+      // - interval predicate the mocked unit suite can't verify against a
+      // real Postgres now().
+      'src/jobs/intentExpiryReaper.integration.test.ts',
+      // Co-located real-DB integration test for the decide-path intent fan-in
+      // atomicity (Task 6): drives the real approve route + injects a DB-level
+      // fault into the intent_approved outbox insert to prove {CAS + sibling
+      // expiry + outbox} roll back together — a rollback the mocked unit suite
+      // (which mocks db.transaction) cannot exercise.
+      'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for the create-path atomicity +
+      // tenant isolation (Task 7): injects a DB-level fault into the
+      // intent_created outbox insert to prove {intent insert + fan-out + outbox}
+      // roll back as ONE system-scoped transaction, and probes that an org-B
+      // context still cannot read org A's system-scoped intent (RLS unchanged).
+      'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for headless Google Tier-3 dispatch
+      // (Phase 2): drives an approved google_suspend_user intent through the real
+      // release worker with only the Google SDK client mocked, proving it
+      // resolves + decrypts the org's connection and runs to `completed` instead
+      // of false-failing `session_required` — the correctness linchpin the mocked
+      // unit suite (which mocks `../db` + the Google stack) can't exercise.
+      'src/jobs/intentReleaseWorkerGoogleHeadless.integration.test.ts',
+      // Co-located real-DB integration test for headless M365 Tier-3 dispatch
+      // (Task 9): drives approved m365_disable_user / m365_reset_password
+      // intents through the real release worker with only the Graph-actions
+      // executor client mocked, proving the real write-action authz ladder
+      // (feature flag -> connection load -> readiness -> budget -> executor
+      // call) resolves the org-keyed customer-graph-actions connection and
+      // runs to `completed` instead of false-failing `session_required` — the
+      // mocked unit suite (which mocks `../services/m365ToolsHeadless`
+      // wholesale) can't exercise this.
+      'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
+      // Co-located real-DB integration test for the two-replica runtime
+      // extension reconcile + failure policy (Task 8, issue #2619). Forks two
+      // genuinely separate child processes against the real reconciler/
+      // migrator/state-store; needs the real, already-migrated :5433 database
+      // this config's globalSetup provides. Belongs here, not the unit
+      // runner (no DB, no child-process fork target).
+      'src/extensions/twoReplicaReconcile.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

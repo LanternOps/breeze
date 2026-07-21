@@ -1,4 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+
+const { safeFetchMock } = vi.hoisted(() => ({
+  safeFetchMock: vi.fn(),
+}));
+
+vi.mock('../urlSafety', () => ({
+  safeFetch: safeFetchMock,
+}));
+
 import { createUnifiClient, UnifiApiError } from './unifiClient';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -6,6 +15,44 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
 }
 
 describe('unifiClient', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    safeFetchMock.mockReset();
+  });
+
+  it('uses the SSRF-safe transport with timeout and response-size limits by default', async () => {
+    safeFetchMock.mockResolvedValue(
+      jsonResponse({ data: [{ id: 'h1', reportedState: { name: 'Console 1' } }] })
+    );
+    const globalFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('global fetch must not be used'));
+
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k' });
+    await expect(client.listHosts()).resolves.toEqual([
+      { id: 'h1', name: 'Console 1', type: null, model: null },
+    ]);
+
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(safeFetchMock).toHaveBeenCalledWith(
+      'https://api.ui.com/v1/hosts',
+      expect.objectContaining({
+        method: 'GET',
+        timeoutMs: expect.any(Number),
+        maxBytes: expect.any(Number),
+      }),
+    );
+  });
+
+  it('does not follow redirects returned by the SSRF-safe transport', async () => {
+    safeFetchMock.mockResolvedValue(
+      new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data' } })
+    );
+
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k' });
+
+    await expect(client.listHosts()).rejects.toMatchObject({ name: 'UnifiApiError', status: 302 });
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('sends X-API-KEY and hits /v1/hosts for listHosts', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({ data: [{ id: 'h1', reportedState: { name: 'Console 1' } }] })

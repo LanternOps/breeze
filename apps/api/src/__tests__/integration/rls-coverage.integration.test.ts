@@ -81,6 +81,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
+  'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
+  'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -176,6 +178,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_orders', 'partner_id'],
   ['pax8_order_lines', 'partner_id'],
   ['accounting_connections', 'partner_id'],
+  ['network_known_guests', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],

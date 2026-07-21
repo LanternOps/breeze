@@ -16,6 +16,13 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../stores/uiStore', () => ({
   useUiStore: vi.fn(() => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() })),
 }));
+// This suite is about the STATIC core `navSections` structure — the runtime
+// "Extensions" section has its own dedicated coverage in
+// Sidebar.extensions.test.tsx. Stub it out here so the module doesn't need a
+// real (subscribable) auth store or registry fetch.
+vi.mock('../extensions/useExtensionNavigation', () => ({
+  useExtensionNavigation: () => [],
+}));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' }) }));
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 

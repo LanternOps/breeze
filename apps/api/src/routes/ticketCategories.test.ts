@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult, runOutsideDbContextSpy, withSystemDbAccessContextSpy } = vi.hoisted(() => {
+const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult, runOutsideDbContextSpy, withSystemDbAccessContextSpy, writeRouteAuditMock } = vi.hoisted(() => {
   // Spies for system-DB-context helpers; default to pass-through so existing tests are unaffected.
   const runOutsideDbContextSpy = vi.fn((fn: () => unknown) => fn());
   const withSystemDbAccessContextSpy = vi.fn((fn: () => unknown) => fn());
@@ -11,6 +11,7 @@ const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult, runOutsid
         scope: 'partner' as string,
         user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
         partnerId: 'p-1' as string | null,
+        partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
         orgId: null as string | null,
         accessibleOrgIds: null as string[] | null,
         orgCondition: () => undefined,
@@ -21,7 +22,8 @@ const { authRef, dbInsertReturning, dbUpdateReturning, dbSelectResult, runOutsid
     dbUpdateReturning: vi.fn(),
     dbSelectResult: vi.fn(),
     runOutsideDbContextSpy,
-    withSystemDbAccessContextSpy
+    withSystemDbAccessContextSpy,
+    writeRouteAuditMock: vi.fn(),
   };
 });
 
@@ -92,12 +94,17 @@ vi.mock('../db/schema', () => ({
   organizations: { id: 'id', partnerId: 'partnerId' }
 }));
 
+vi.mock('../services/auditEvents', () => ({
+  writeRouteAudit: writeRouteAuditMock,
+}));
+
 import { ticketCategoriesRoutes } from './ticketCategories';
 
 const DEFAULT_AUTH = {
   scope: 'partner' as string,
   user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example', isPlatformAdmin: false },
   partnerId: 'p-1' as string | null,
+  partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
   orgId: null as string | null,
   accessibleOrgIds: null as string[] | null,
   orgCondition: () => undefined,
@@ -113,6 +120,49 @@ function makeApp() {
 function resetAuth(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
   authRef.current = { ...DEFAULT_AUTH, ...overrides } as typeof authRef.current;
 }
+
+const CATEGORY_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+
+describe('partner-global authorization', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  const cases: Array<[string, string, unknown?]> = [
+    ['GET', '/ticket-categories'],
+    ['POST', '/ticket-categories', { name: 'Hardware' }],
+    ['PATCH', `/ticket-categories/${CATEGORY_ID}`, { name: 'Updated' }],
+    ['DELETE', `/ticket-categories/${CATEGORY_ID}`],
+    ['PUT', '/ticket-categories/reorder', { ids: [CATEGORY_ID] }],
+  ];
+
+  it.each(
+    (['selected', 'none'] as const).flatMap((partnerOrgAccess) =>
+      cases.map(([method, path, body]) => [partnerOrgAccess, method, path, body] as const)
+    )
+  )(
+    'rejects %s-org partner access before %s %s DB/system-context/audit work',
+    async (partnerOrgAccess, method, path, body) => {
+      resetAuth({
+        partnerOrgAccess,
+        user: { ...DEFAULT_AUTH.user, isPlatformAdmin: true },
+      });
+
+      const res = await makeApp().request(path, {
+        method,
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+
+      expect(res.status).toBe(403);
+      const { db } = await import('../db');
+      expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(runOutsideDbContextSpy).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContextSpy).not.toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('GET /ticket-categories', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
@@ -265,6 +315,17 @@ describe('POST /ticket-categories', () => {
     const { db } = await import('../db');
     const insertValuesCalls = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0];
     expect(insertValuesCalls?.[0]?.partnerId).toBe('p-1');
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null,
+      action: 'ticket_category.create',
+      resourceType: 'ticket_category',
+      resourceId: 'cat-1',
+      resourceName: 'Hardware',
+      details: expect.objectContaining({
+        partnerId: 'p-1',
+        changedFields: expect.arrayContaining(['name', 'color']),
+      }),
+    }));
   });
 
   it('returns 400 on missing name', async () => {
@@ -326,6 +387,12 @@ describe('PATCH /ticket-categories/:id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.name).toBe('Updated Name');
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_category.update',
+      resourceId: CAT_ID,
+      resourceName: 'Updated Name',
+      details: { partnerId: 'p-1', changedFields: ['name'] },
+    }));
   });
 
   it('returns 404 when update returns no rows (out of scope or not found)', async () => {
@@ -368,6 +435,11 @@ describe('DELETE /ticket-categories/:id', () => {
     const { db } = await import('../db');
     const setArg = vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
     expect(setArg?.isActive).toBe(false);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_category.delete',
+      resourceId: CAT_ID,
+      details: { partnerId: 'p-1', changedFields: ['isActive'] },
+    }));
   });
 
   it('returns 404 when category is not found or out of scope', async () => {
@@ -537,6 +609,15 @@ describe('PUT /ticket-categories/reorder', () => {
     expect(updates[0]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(0);
     expect(updates[1]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(1);
     expect(updates[2]?.value.set.mock.calls[0]?.[0].sortOrder).toBe(2);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_category.reorder',
+      resourceId: 'p-1',
+      details: {
+        partnerId: 'p-1',
+        categoryIds: [ID_B, ID_A, ID_C],
+        changedFields: ['sortOrder'],
+      },
+    }));
   });
 
   it('404 wholesale when any id belongs to another partner — no updates run', async () => {

@@ -580,25 +580,37 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
               const downloadInfo = getViewerDownloadInfo();
               if (downloadInfo) {
                 return (
-                  <div className="mt-2.5 flex items-center gap-3">
-                    <a
-                      href={downloadInfo.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => handleDismissAndCleanup()}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      {t('connectDesktopButton.downloadFor', { platform: downloadInfo.label })}
-                    </a>
-                    <button
-                      type="button"
-                      onClick={handleDismiss}
-                      className="text-xs text-muted-foreground transition hover:text-foreground"
-                    >
-                      {t('connectDesktopButton.dismiss')}
-                    </button>
-                  </div>
+                  <>
+                    {/* The Linux build ships as an AppImage, which the browser
+                        saves without the executable bit and which registers the
+                        breeze:// handler only once it has been run. Without
+                        saying so, downloading looks like it did nothing and this
+                        same card reappears on every attempt (issue #2614). */}
+                    {downloadInfo.os === 'linux' && (
+                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                        {t('connectDesktopButton.fallback.linuxFirstRun')}
+                      </p>
+                    )}
+                    <div className="mt-2.5 flex items-center gap-3">
+                      <a
+                        href={downloadInfo.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => handleDismissAndCleanup()}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {t('connectDesktopButton.downloadFor', { platform: downloadInfo.label })}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={handleDismiss}
+                        className="text-xs text-muted-foreground transition hover:text-foreground"
+                      >
+                        {t('connectDesktopButton.dismiss')}
+                      </button>
+                    </div>
+                  </>
                 );
               }
               return (

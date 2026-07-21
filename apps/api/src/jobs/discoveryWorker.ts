@@ -687,7 +687,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         approvalStatus: discoveredAssets.approvalStatus,
         isOnline: discoveredAssets.isOnline
       }).from(discoveredAssets).where(
-        and(eq(discoveredAssets.orgId, data.orgId), inArray(discoveredAssets.ipAddress, scannedIps))
+        and(
+          eq(discoveredAssets.orgId, data.orgId),
+          eq(discoveredAssets.siteId, data.siteId),
+          inArray(discoveredAssets.ipAddress, scannedIps),
+        )
       )
     : [];
   const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
@@ -777,6 +781,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       .where(
         and(
           eq(discoveredAssets.orgId, data.orgId),
+          eq(discoveredAssets.siteId, data.siteId),
           sql`${discoveredAssets.ipAddress} = ${host.ip}`
         )
       )
@@ -833,13 +838,28 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       upsertedAssetId = existing.id;
       updatedCount++;
 
-      // Check if already linked (preserve manual decisions)
+      // Preserve only same-site links. Older code could auto-link an asset to
+      // an org-sibling site's device when private IPs or MACs collided.
       const [currentAsset] = await db
-        .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
+        .select({
+          linkedDeviceId: discoveredAssets.linkedDeviceId,
+          linkedDeviceSiteId: devices.siteId,
+        })
         .from(discoveredAssets)
+        .leftJoin(devices, eq(devices.id, discoveredAssets.linkedDeviceId))
         .where(eq(discoveredAssets.id, existing.id))
         .limit(1);
-      alreadyLinked = !!currentAsset?.linkedDeviceId;
+      alreadyLinked = !!currentAsset?.linkedDeviceId
+        && currentAsset.linkedDeviceSiteId === data.siteId;
+      if (currentAsset?.linkedDeviceId && !alreadyLinked) {
+        await db
+          .update(discoveredAssets)
+          .set({ linkedDeviceId: null, linkSource: null })
+          .where(and(
+            eq(discoveredAssets.id, existing.id),
+            eq(discoveredAssets.siteId, data.siteId),
+          ));
+      }
     } else {
       const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
@@ -864,7 +884,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
             .select({ deviceId: deviceNetwork.deviceId })
             .from(deviceNetwork)
             .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
-            .where(and(eq(devices.orgId, data.orgId), or(...conditions)))
+            .where(and(
+              eq(devices.orgId, data.orgId),
+              eq(devices.siteId, data.siteId),
+              or(...conditions),
+            ))
             .limit(1);
 
           if (match) {

@@ -4,7 +4,9 @@
 services:
   # PostgreSQL Database
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector is the official postgres image + the vector extension
+    # (drop-in superset; same data dir format as postgres:16).
+    image: pgvector/pgvector:pg16
     container_name: breeze-postgres-dev
     restart: unless-stopped
     environment:

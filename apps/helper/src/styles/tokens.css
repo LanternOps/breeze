@@ -1,0 +1,61 @@
+/* Workspace design tokens. Light is default; dark is the rollback theme.  */
+:root {
+  /* color: canvas/surfaces */
+  --ws-canvas: hsl(40 20% 98%);
+  --ws-surface: hsl(0 0% 100%);
+  --ws-raised: hsl(0 0% 100%);
+  /* color: ink */
+  --ws-ink: hsl(230 15% 12%);
+  --ws-text-secondary: hsl(230 8% 38%);
+  --ws-text-tertiary: hsl(230 6% 56%);
+  /* color: borders (two strengths only) */
+  --ws-border-subtle: hsl(230 10% 92%);
+  --ws-border: hsl(230 10% 85%);
+  /* color: accent (console brand hue) */
+  --ws-accent: hsl(225 62% 48%);
+  --ws-accent-contrast: hsl(0 0% 100%);
+  --ws-accent-soft: hsl(225 62% 48% / 0.1);
+  /* color: semantic */
+  --ws-success: hsl(152 45% 34%);
+  --ws-success-soft: hsl(152 45% 34% / 0.12);
+  --ws-warning: hsl(38 85% 40%);
+  --ws-warning-soft: hsl(38 85% 40% / 0.12);
+  --ws-danger: hsl(0 62% 46%);
+  --ws-danger-soft: hsl(0 62% 46% / 0.1);
+  /* elevation */
+  --ws-shadow-1: 0 1px 2px hsl(230 20% 10% / 0.06);
+  --ws-shadow-2: 0 2px 8px hsl(230 20% 10% / 0.08), 0 1px 2px hsl(230 20% 10% / 0.05);
+  /* shape */
+  --ws-radius-control: 6px;
+  --ws-radius-surface: 10px;
+  /* type scale */
+  --ws-text-11: 11px; --ws-text-12: 12px; --ws-text-13: 13px;
+  --ws-text-15: 15px; --ws-text-17: 17px; --ws-text-20: 20px;
+  --ws-font: 'Inter Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  /* motion */
+  --ws-dur-fast: 120ms;
+  --ws-dur-slow: 200ms;
+  --ws-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root[data-theme='dark'] {
+  --ws-canvas: hsl(230 12% 11%);
+  --ws-surface: hsl(230 11% 14%);
+  --ws-raised: hsl(230 10% 17%);
+  --ws-ink: hsl(230 15% 92%);
+  --ws-text-secondary: hsl(230 8% 68%);
+  --ws-text-tertiary: hsl(230 6% 50%);
+  --ws-border-subtle: hsl(230 10% 20%);
+  --ws-border: hsl(230 10% 26%);
+  --ws-accent: hsl(225 70% 62%);
+  --ws-accent-contrast: hsl(230 15% 10%);
+  --ws-accent-soft: hsl(225 70% 62% / 0.14);
+  --ws-success: hsl(152 40% 55%);
+  --ws-success-soft: hsl(152 40% 55% / 0.14);
+  --ws-warning: hsl(38 80% 58%);
+  --ws-warning-soft: hsl(38 80% 58% / 0.14);
+  --ws-danger: hsl(0 62% 62%);
+  --ws-danger-soft: hsl(0 62% 62% / 0.14);
+  --ws-shadow-1: 0 1px 2px hsl(0 0% 0% / 0.35);
+  --ws-shadow-2: 0 2px 10px hsl(0 0% 0% / 0.45);
+}

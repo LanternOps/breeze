@@ -586,13 +586,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
         }
 
-        // Emit approval_required event via session event bus → UI shows the
-        // "waiting for an approver" state (intentBacked: true — the web chat
-        // card must NOT offer a self-approve button for this execution).
+        // Emit approval_required event via session event bus. `intentBacked:
+        // true` always means the four-eyes waiting state UNLESS
+        // selfApprovalRequestId is also set — in that case the sole-operator
+        // branch applies and the card offers an inline WebAuthn self-approve
+        // for that one row (an L3 proof satisfying, not bypassing, the decide
+        // handler's gate).
         session.eventBus.publish({
           type: 'approval_required',
           executionId: approvalExec.id,
           approvalRequestId: intent.approvalRequestIds[0],
+          // Set ONLY when the fan-out created a row for the requester (the
+          // sole-operator branch) — the web card offers the inline L3
+          // WebAuthn self-approve for exactly that row. In a multi-approver
+          // org the requester holds no row and this stays undefined; the
+          // card keeps its waiting state (four-eyes preserved).
+          selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
+          // The intent's real server-side deadline, so the self-approve card's
+          // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
+          // rather than a mount-relative client constant that can silently drift
+          // from it.
+          intentExpiresAt: intent.expiresAt.toISOString(),
           toolName,
           input,
           description,
@@ -638,7 +652,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           intent.id,
           'approved',
           'executing',
-          { executedAt: null },
+          // Stamp execution_started_at at the claim, symmetric with the durable
+          // worker (jobs/intentReleaseWorker.ts) — so the stale-execution reaper
+          // keys off a real execution-start time here too, not just the
+          // decided_at COALESCE fallback.
+          { executedAt: null, executionStartedAt: new Date() },
           { requireNotExpired: true },
         );
         if (!wonRelease) {

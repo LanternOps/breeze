@@ -29,6 +29,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { captureException } from '../services/sentry';
 import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
@@ -40,7 +41,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 export const huntressRoutes = new Hono();
 
-type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'accessibleOrgIds' | 'canAccessOrg'>;
 
 function resolveOrgId(
   auth: RouteAuth,
@@ -100,6 +101,9 @@ function resolvePartnerId(
 function requirePartnerManager(auth: RouteAuth, requested?: string): { partnerId: string } | { error: string; status: 400 | 403 } {
   if (auth.scope === 'organization') {
     return { error: 'Huntress credentials and mappings are managed at partner scope', status: 403 };
+  }
+  if (!canManagePartnerWidePolicies(auth)) {
+    return { error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 };
   }
   return resolvePartnerId(auth, requested);
 }
@@ -290,7 +294,9 @@ huntressRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    const partnerResult = auth.scope === 'organization'
+      ? resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c))
+      : requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const [integration] = await db
@@ -608,6 +614,10 @@ huntressRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     const [integration] = await db
       .select({
         id: huntressIntegrations.id,
@@ -671,12 +681,12 @@ huntressRoutes.post(
 
 huntressRoutes.get(
   '/status',
-  requireScope('organization', 'partner', 'system'),
+  requireScope('partner', 'system'),
   zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const partnerResult = resolvePartnerId(auth, query.partnerId ?? requestedPartnerId(c));
+    const partnerResult = requirePartnerManager(auth, query.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
     const requestedOrg = query.orgId ?? requestedOrgId(c);

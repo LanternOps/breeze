@@ -187,8 +187,8 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
   };
 });
 
-import { db, runOutsideDbContext } from '../db';
-import { devices } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { devices, deviceCommands } from '../db/schema';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -2069,5 +2069,120 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
     const stored = sessionSetSpy.mock.calls[0]![0] as { errorMessage: string };
     expect(stored.errorMessage).toContain('[PRIVATE_KEY_REDACTED]');
     expect(stored.errorMessage).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});
+
+// #1375 / BREEZE-7: the device_commands lookup + terminal compare-and-set on the
+// WS result path deliberately run OUTSIDE the held org-scoped transaction (fresh
+// snapshot visibility), but for a long time they ran with NO DB access context at
+// all — tripping the contextless-write guard in db/index.ts on every fresh
+// process and flooding Sentry. device_commands has no RLS so the write always
+// landed; the bug was the false invariant + the noise. The fix nests
+// withSystemDbAccessContext INSIDE runOutsideDbContext (same shape as
+// isAgentDeviceStillAuthorized here and the insert in services/commandQueue.ts).
+//
+// The READ is intentionally NOT wrapped in a system context: only
+// insert/update/delete are instrumented by the guard, and device_commands has
+// no RLS, so wrapping the read would add a BEGIN + set_config×6 + COMMIT per
+// command result on the hottest agent path for zero #1375 coverage (#1105).
+//
+// NOTE ON WHAT THIS SUITE CAN AND CANNOT PROVE: `../db` is mocked wholesale
+// here, so these assertions cover the WRAPPER COMPOSITION only — they cannot
+// prove the real guard goes quiet, because the real proxy, the real
+// AsyncLocalStorage, and withDbAccessContext's already-in-a-context early
+// return never execute. The real-guard assertions live in
+// db/contextlessWriteGuard.test.ts ('wrapper composition around a
+// device_commands-style write'), which drives the actual proxy. Keep both:
+// this one pins the call site, that one pins the mechanism.
+describe('device_commands access context on the WS result path (#1375)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('runs the device_commands write inside a system context nested in runOutsideDbContext, and the read outside any context', async () => {
+    // Track the ACTIVE WRAPPER STACK, not just depth counters. Depth counters
+    // are order-blind: `system(outside(write))` — the inverted nesting, which
+    // is the #1375 bug re-introduced, since runOutsideDbContext exits the
+    // context that was just established — produces the same non-zero counts as
+    // the correct `outside(system(write))`. Snapshotting the stack at the
+    // moment of each DB call is what makes that mutant detectable.
+    const stack: string[] = [];
+    const observed: Array<{ op: 'select' | 'update'; table: unknown; stack: string[] }> = [];
+
+    vi.mocked(runOutsideDbContext).mockImplementation((async (fn: any) => {
+      stack.push('outside');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: any) => {
+      stack.push('system');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+
+    const record = (op: 'select' | 'update', table: unknown) => {
+      observed.push({ op, table, stack: [...stack] });
+    };
+
+    // device_commands lookup returns the owned command; every other select
+    // (the devices lifecycle recheck) returns no rows and fails open.
+    const commandRow = { id: 'cmd-1375', type: 'run_script', payload: {}, deviceId: 'device-123' };
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        record('select', table);
+        const rows = table === deviceCommands ? [commandRow] : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+
+    vi.mocked(db.update).mockImplementation(((table: unknown) => {
+      record('update', table);
+      const returning = vi.fn().mockResolvedValue([{ id: 'cmd-1375' }]);
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+          returning,
+        }),
+      };
+    }) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', { deviceId: 'device-123', orgId: 'org-123' });
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '33333333-3333-4333-8333-333333333333',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    const commandOps = observed.filter((o) => o.table === deviceCommands);
+    expect(commandOps.map((o) => o.op)).toEqual(['select', 'update']);
+
+    const read = commandOps.find((o) => o.op === 'select')!;
+    const write = commandOps.find((o) => o.op === 'update')!;
+
+    // Read: outside the held tenant transaction for fresh-snapshot visibility,
+    // and deliberately NOT in a system context (see the note above).
+    expect(read.stack).toEqual(['outside']);
+
+    // Write: outside the held tenant transaction AND inside an explicit system
+    // context — in that exact order. Asserting the full stack (rather than
+    // "both are non-zero") is what fails if the two wrappers are ever swapped.
+    expect(write.stack).toEqual(['outside', 'system']);
   });
 });

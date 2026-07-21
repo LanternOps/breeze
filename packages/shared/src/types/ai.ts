@@ -118,7 +118,7 @@ export type AiStreamEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean }
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }
@@ -129,6 +129,9 @@ export type AiStreamEvent =
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
   | { type: 'error'; message: string }
+  // ── Generic client-declared session tools (e.g. Helper chat) — published by
+  //    services/clientSessionTools.ts when the model calls a client-declared tool.
+  | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   // ── AI for Office (client sessions) — published by the client tool bridge/handlers ──
   | { type: 'tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown>; mutating: boolean }
   | {
