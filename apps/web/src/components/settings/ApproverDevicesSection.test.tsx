@@ -107,8 +107,10 @@ describe('ApproverDevicesSection', () => {
     await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
   });
 
-  it('shows an incorrect-password error and preserves the label on a 401', async () => {
-    const err = Object.assign(new Error('Verification failed.'), { status: 401 });
+  it('shows an incorrect-password error and preserves the label on a 401 (credential failure)', async () => {
+    // The real API returns the literal string "Invalid credentials" for a
+    // rejected re-auth proof (routes/auth/helpers.ts, routes/auth/mfa.ts).
+    const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
     registerApproverDeviceMock.mockRejectedValueOnce(err);
     render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
     await screen.findByTestId('approver-device-dev-1');
@@ -123,6 +125,31 @@ describe('ApproverDevicesSection', () => {
 
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' }));
     expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('My workstation');
+  });
+
+  it('shows a session-expired error (not "Incorrect password") on a 401 whose message is NOT the credential-failure string', async () => {
+    // A rejected bearer token (auth middleware) also 401s, but with a message
+    // like "Invalid or expired token" rather than the literal "Invalid
+    // credentials" the credential-check handlers return. Because the mint
+    // calls use `skipUnauthorizedRetry`, this must not be mislabeled as a
+    // wrong password.
+    const err = Object.assign(new Error('Invalid or expired token'), { status: 401 });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+      target: { value: 'hunter2' },
+    });
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Session expired — reload the page and try again.',
+      }),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
   });
 
   it('clears the re-auth value but keeps the label on a 403 (grant expired)', async () => {
@@ -147,7 +174,7 @@ describe('ApproverDevicesSection', () => {
   });
 
   it('shows a passkey-specific error (not "Incorrect password") on a 401 in the passkey tier', async () => {
-    const err = Object.assign(new Error('Verification failed.'), { status: 401 });
+    const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
     registerApproverDeviceMock.mockRejectedValueOnce(err);
     render(<ApproverDevicesSection passkeyCount={1} mfaMethod={null} />);
     await screen.findByTestId('approver-device-dev-1');
@@ -159,6 +186,25 @@ describe('ApproverDevicesSection', () => {
     );
     expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
   });
+
+  it.each(['NotAllowedError', 'AbortError'])(
+    'shows a cancellation message (not raw DOMException text) when the WebAuthn ceremony rejects with %s',
+    async (name) => {
+      const domException = Object.assign(new Error('The operation either timed out or was not allowed.'), { name });
+      registerApproverDeviceMock.mockRejectedValueOnce(domException);
+      render(<ApproverDevicesSection passkeyCount={1} mfaMethod={null} />);
+      await screen.findByTestId('approver-device-dev-1');
+
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Registration was cancelled.' }),
+      );
+      expect(showToastMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('operation either timed out') }),
+      );
+    },
+  );
 
   it('shows stronger-factor guidance on a 403 whose message is stronger_factor_required', async () => {
     const err = Object.assign(new Error('stronger_factor_required'), { status: 403 });

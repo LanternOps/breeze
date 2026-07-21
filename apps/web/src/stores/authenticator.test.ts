@@ -293,7 +293,16 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       method: 'totp', code: '123456', operation: 'register_approver_device',
     });
+    // Register-options POST carries the minted grant.
+    expect(fetchMock.mock.calls[1][0]).toContain('/authenticator/devices/webauthn/options');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ registerGrantId: 'g-totp' });
+    // Verify POST carries the grant, label, and attestation response.
+    expect(fetchMock.mock.calls[2][0]).toContain('/authenticator/devices/webauthn/verify');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      registerGrantId: 'g-totp',
+      label: 'Laptop',
+      response: { id: 'cred-1', response: {} },
+    });
   });
 
   it('passkey path: step-up options → startAuthentication → step-up mint → register', async () => {
@@ -316,6 +325,16 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
       method: 'passkey', credential: assertion, operation: 'register_approver_device',
     });
+    // Register-options POST carries the minted grant.
+    expect(fetchMock.mock.calls[2][0]).toContain('/authenticator/devices/webauthn/options');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ registerGrantId: 'g-pk' });
+    // Verify POST carries the grant, label, and attestation response.
+    expect(fetchMock.mock.calls[3][0]).toContain('/authenticator/devices/webauthn/verify');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({
+      registerGrantId: 'g-pk',
+      label: 'Laptop',
+      response: { id: 'cred-1', response: {} },
+    });
   });
 
   it('mint failure rejects with the status attached (so the UI can map 401/403/429)', async () => {
@@ -324,6 +343,24 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     await expect(
       registerApproverDevice('x', { method: 'password', password: 'nope' })
     ).rejects.toMatchObject({ status: 401 });
+    expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
+  });
+
+  it('a 2xx with an unparseable body throws a clean RegisterStepError instead of returning null (no downstream null-deref)', async () => {
+    // e.g. an empty body or a truncated proxy response — response.ok is true
+    // but response.json() rejects. Must not resolve to `null`: every caller
+    // immediately reads a field off the result (data.registerGrantId), which
+    // would otherwise throw a raw TypeError deep in the ceremony.
+    const unparseableOkResponse = {
+      ok: true,
+      status: 200,
+      json: vi.fn().mockRejectedValue(new SyntaxError('Unexpected end of JSON input')),
+    } as unknown as Response;
+    const fetchMock = vi.fn().mockResolvedValueOnce(unparseableOkResponse);
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      registerApproverDevice('x', { method: 'password', password: 'hunter2!' })
+    ).rejects.toMatchObject({ message: 'Unexpected server response.' });
     expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
   });
 });

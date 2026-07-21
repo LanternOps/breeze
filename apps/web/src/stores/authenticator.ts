@@ -46,11 +46,20 @@ class RegisterStepError extends Error {
 }
 
 async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
-  const data = await response.json().catch(() => null);
   if (!response.ok) {
+    const data = await response.json().catch(() => null);
     throw new RegisterStepError(data?.error ?? fallback, response.status);
   }
-  return data;
+  // A 2xx with an unparseable body (empty body, truncated proxy response) must
+  // not silently resolve to `null` — every caller immediately reads a field
+  // off the result (e.g. `data.registerGrantId`), which would throw a raw
+  // TypeError deep in the ceremony instead of surfacing a clean, catchable
+  // RegisterStepError the UI can map to a toast.
+  try {
+    return await response.json();
+  } catch {
+    throw new RegisterStepError('Unexpected server response.');
+  }
 }
 
 /**

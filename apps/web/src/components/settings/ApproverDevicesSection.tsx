@@ -85,22 +85,43 @@ export default function ApproverDevicesSection({
   };
 
   const mapRegisterError = (err: unknown): string => {
+    // A user-cancelled/dismissed WebAuthn ceremony (startRegistration in the
+    // register call itself, or startAuthentication inside the passkey re-auth
+    // mint) rejects with a DOMException — `NotAllowedError` (dismissed/denied)
+    // or `AbortError` (browser aborted it) — that carries no `status`. Must be
+    // caught before the status checks below, or it falls through to the final
+    // `err.message` branch and shows raw browser jargon.
+    if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+      return t('approverDevicesSection.registrationCancelled');
+    }
     const status = (err as { status?: number })?.status;
     if (status === 401) {
+      // Because the mint calls use `skipUnauthorizedRetry`, a 401 here is
+      // EITHER a rejected re-auth proof (wrong password/code, burned/replayed
+      // WebAuthn assertion — the handler returns the literal string
+      // "Invalid credentials", see routes/auth/helpers.ts and routes/auth/mfa.ts)
+      // OR a rejected bearer token (auth middleware — various messages, e.g.
+      // "Invalid or expired token"; see middleware/auth.ts). Only the former
+      // is fixed by retyping the same field; the latter needs a page reload.
+      const isCredentialFailure = err instanceof Error && err.message === 'Invalid credentials';
+      if (!isCredentialFailure) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
       if (tier === 'totp') return t('approverDevicesSection.incorrectCode');
-      // The passkey tier never shows a password field — a 401 here means the
-      // WebAuthn assertion itself was rejected (burned/replayed challenge),
-      // not a wrong password, so "Incorrect password." would be nonsensical.
+      // The passkey tier never shows a password field — a credential-failure
+      // 401 here means the WebAuthn assertion itself was rejected
+      // (burned/replayed challenge), not a wrong password, so "Incorrect
+      // password." would be nonsensical.
       if (tier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
       return t('approverDevicesSection.incorrectPassword');
     }
     if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
     if (status === 403) {
-      // POST /authenticator/register-grant 403s with this exact error string
-      // when the account gained a stronger factor (passkey/TOTP) in another
-      // tab since the page loaded — the password field shown here is stale.
-      // Point the user at reloading rather than letting them retry the same
-      // password forever.
+      // POST /authenticator/register-grant (and the step-up mint) 403 for two
+      // distinct reasons: the register/step-up grant expired mid-ceremony
+      // (>300s in the WebAuthn prompt), or the account gained a stronger
+      // factor (passkey/TOTP) in another tab since the page loaded — signaled
+      // by the exact error string "stronger_factor_required" below, where the
+      // password field shown here is stale. Point the user at reloading
+      // rather than letting them retry the same password forever.
       if (err instanceof Error && err.message === 'stronger_factor_required') {
         return t('approverDevicesSection.useYourPasskeyOrAuthenticatorCodeInstead');
       }

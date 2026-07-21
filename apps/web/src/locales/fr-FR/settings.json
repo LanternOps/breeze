@@ -1405,7 +1405,9 @@
     "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives — réessayez dans quelques minutes.",
     "verificationExpiredPleaseVerifyAgain": "Vérification expirée — veuillez vérifier à nouveau.",
     "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d’accès ou votre code d’authentification — actualisez la page pour mettre à jour vos options.",
-    "pendingActivatesOnFirstApproval": "En attente — s’active à la première approbation"
+    "pendingActivatesOnFirstApproval": "En attente — s’active à la première approbation",
+    "sessionExpiredReloadAndTryAgain": "Session expirée — actualisez la page et réessayez.",
+    "registrationCancelled": "L’enregistrement a été annulé."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",

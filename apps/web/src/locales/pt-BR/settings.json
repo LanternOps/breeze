@@ -1405,7 +1405,9 @@
     "tooManyAttemptsTryAgainInAFewMinutes": "Muitas tentativas — tente novamente em alguns minutos.",
     "verificationExpiredPleaseVerifyAgain": "Verificação expirada — verifique novamente.",
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use sua chave de acesso ou código do autenticador em vez disso — recarregue a página para atualizar suas opções.",
-    "pendingActivatesOnFirstApproval": "Pendente — ativa na primeira aprovação"
+    "pendingActivatesOnFirstApproval": "Pendente — ativa na primeira aprovação",
+    "sessionExpiredReloadAndTryAgain": "Sessão expirada — recarregue a página e tente novamente.",
+    "registrationCancelled": "O registro foi cancelado."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",

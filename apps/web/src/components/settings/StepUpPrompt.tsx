@@ -21,7 +21,8 @@ type Props = {
 /**
  * Re-auth input for approver-device registration. Reusable: ProfilePage's
  * add-passkey flow (currently dead-ends for MFA-protected users on
- * existing_factor_step_up_required) is the intended second consumer.
+ * existing_factor_step_up_required) is the intended second consumer —
+ * tracked as a PR #2710 follow-up, not yet wired up.
  */
 export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: Props) {
   const { t } = useTranslation('settings');

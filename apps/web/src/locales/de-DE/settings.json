@@ -1405,7 +1405,9 @@
     "tooManyAttemptsTryAgainInAFewMinutes": "Zu viele Versuche – versuchen Sie es in ein paar Minuten erneut.",
     "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen – bitte erneut verifizieren.",
     "useYourPasskeyOrAuthenticatorCodeInstead": "Verwenden Sie stattdessen Ihren Passkey oder Authentifizierungscode – laden Sie die Seite neu, um Ihre Optionen zu aktualisieren.",
-    "pendingActivatesOnFirstApproval": "Ausstehend – wird bei der ersten Genehmigung aktiviert"
+    "pendingActivatesOnFirstApproval": "Ausstehend – wird bei der ersten Genehmigung aktiviert",
+    "sessionExpiredReloadAndTryAgain": "Sitzung abgelaufen – laden Sie die Seite neu und versuchen Sie es erneut.",
+    "registrationCancelled": "Die Registrierung wurde abgebrochen."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",

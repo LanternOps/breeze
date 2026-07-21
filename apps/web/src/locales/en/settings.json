@@ -1405,7 +1405,9 @@
     "tooManyAttemptsTryAgainInAFewMinutes": "Too many attempts — try again in a few minutes.",
     "verificationExpiredPleaseVerifyAgain": "Verification expired — please verify again.",
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use your passkey or authenticator code instead — reload the page to update your options.",
-    "pendingActivatesOnFirstApproval": "Pending — activates on first approval"
+    "pendingActivatesOnFirstApproval": "Pending — activates on first approval",
+    "sessionExpiredReloadAndTryAgain": "Session expired — reload the page and try again.",
+    "registrationCancelled": "Registration was cancelled."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
