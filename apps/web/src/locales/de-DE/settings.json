@@ -1401,8 +1401,10 @@
     "revokeDevice": "Gerät widerrufen",
     "incorrectCode": "Falscher Code.",
     "incorrectPassword": "Falsches Passwort.",
+    "passkeyVerificationFailed": "Passkey-Verifizierung fehlgeschlagen – bitte erneut versuchen.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Zu viele Versuche – versuchen Sie es in ein paar Minuten erneut.",
     "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen – bitte erneut verifizieren.",
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Verwenden Sie stattdessen Ihren Passkey oder Authentifizierungscode – laden Sie die Seite neu, um Ihre Optionen zu aktualisieren.",
     "pendingActivatesOnFirstApproval": "Ausstehend – wird bei der ersten Genehmigung aktiviert"
   },
   "stepUpPrompt": {

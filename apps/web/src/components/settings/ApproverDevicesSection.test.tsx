@@ -146,6 +146,42 @@ describe('ApproverDevicesSection', () => {
     expect((screen.getByTestId('approver-stepup-password') as HTMLInputElement).value).toBe('');
   });
 
+  it('shows a passkey-specific error (not "Incorrect password") on a 401 in the passkey tier', async () => {
+    const err = Object.assign(new Error('Verification failed.'), { status: 401 });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={1} mfaMethod={null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Passkey verification failed — try again.' }),
+    );
+    expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
+  });
+
+  it('shows stronger-factor guidance on a 403 whose message is stronger_factor_required', async () => {
+    const err = Object.assign(new Error('stronger_factor_required'), { status: 403 });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+      target: { value: 'My workstation' },
+    });
+    fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+      target: { value: 'hunter2' },
+    });
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'error',
+        message: 'Use your passkey or authenticator code instead — reload the page to update your options.',
+      }),
+    );
+  });
+
   it('lists a registered mobile_hw_key phone alongside the register-this-browser action', async () => {
     listApproverDevicesMock.mockResolvedValueOnce([
       deviceFixture({

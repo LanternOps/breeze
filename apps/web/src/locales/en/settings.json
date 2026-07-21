@@ -1401,8 +1401,10 @@
     "revokeDevice": "Revoke device",
     "incorrectCode": "Incorrect code.",
     "incorrectPassword": "Incorrect password.",
+    "passkeyVerificationFailed": "Passkey verification failed — try again.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Too many attempts — try again in a few minutes.",
     "verificationExpiredPleaseVerifyAgain": "Verification expired — please verify again.",
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Use your passkey or authenticator code instead — reload the page to update your options.",
     "pendingActivatesOnFirstApproval": "Pending — activates on first approval"
   },
   "stepUpPrompt": {

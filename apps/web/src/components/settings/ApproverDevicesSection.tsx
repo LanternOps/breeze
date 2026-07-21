@@ -87,12 +87,25 @@ export default function ApproverDevicesSection({
   const mapRegisterError = (err: unknown): string => {
     const status = (err as { status?: number })?.status;
     if (status === 401) {
-      return tier === 'totp'
-        ? t('approverDevicesSection.incorrectCode')
-        : t('approverDevicesSection.incorrectPassword');
+      if (tier === 'totp') return t('approverDevicesSection.incorrectCode');
+      // The passkey tier never shows a password field — a 401 here means the
+      // WebAuthn assertion itself was rejected (burned/replayed challenge),
+      // not a wrong password, so "Incorrect password." would be nonsensical.
+      if (tier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
+      return t('approverDevicesSection.incorrectPassword');
     }
     if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
-    if (status === 403) return t('approverDevicesSection.verificationExpiredPleaseVerifyAgain');
+    if (status === 403) {
+      // POST /authenticator/register-grant 403s with this exact error string
+      // when the account gained a stronger factor (passkey/TOTP) in another
+      // tab since the page loaded — the password field shown here is stale.
+      // Point the user at reloading rather than letting them retry the same
+      // password forever.
+      if (err instanceof Error && err.message === 'stronger_factor_required') {
+        return t('approverDevicesSection.useYourPasskeyOrAuthenticatorCodeInstead');
+      }
+      return t('approverDevicesSection.verificationExpiredPleaseVerifyAgain');
+    }
     return err instanceof Error ? err.message : t('approverDevicesSection.failedToRegisterThisDevice');
   };
 
@@ -138,6 +151,10 @@ export default function ApproverDevicesSection({
         if (err.status === 403) setReauthValue('');
         return; // already toasted by runAction
       }
+      // Defensive net only: every documented failure path (401/403/429) is
+      // converted into a Response above and surfaced via runAction's
+      // ActionError branch. This only fires for an error escaping runAction
+      // itself (e.g. a bug in runAction), not a live path in normal use.
       showToast({ type: 'error', message: mapRegisterError(err) });
     } finally {
       setIsRegistering(false);

@@ -1401,8 +1401,10 @@
     "revokeDevice": "Revogar dispositivo",
     "incorrectCode": "Código incorreto.",
     "incorrectPassword": "Senha incorreta.",
+    "passkeyVerificationFailed": "Falha na verificação com chave de acesso — tente novamente.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Muitas tentativas — tente novamente em alguns minutos.",
     "verificationExpiredPleaseVerifyAgain": "Verificação expirada — verifique novamente.",
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Use sua chave de acesso ou código do autenticador em vez disso — recarregue a página para atualizar suas opções.",
     "pendingActivatesOnFirstApproval": "Pendente — ativa na primeira aprovação"
   },
   "stepUpPrompt": {
