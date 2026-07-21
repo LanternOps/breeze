@@ -91,6 +91,7 @@ function isForbiddenFieldName(name: string): boolean {
 const CASE_TRANSITION_MIN = 2;
 const SEGMENT_SECRET_MIN_LENGTH = 16;
 const SEGMENT_SINGLE_CASE_MAX = 18;
+const SEGMENT_MIN_DISTINCT_CHARS = 5;
 const SEGMENT_MIN_VOWEL_RATIO = 0.15;
 const VOWEL_PATTERN = /[aeiouy]/iu;
 
@@ -112,11 +113,17 @@ function vowelRatio(segment: string): number {
   return letters.filter((character) => VOWEL_PATTERN.test(character)).length / letters.length;
 }
 
+/** Distinct-character count — a proxy for randomness that a repetitive run (e.g. a zero-entropy `'a'.repeat(64)`) fails. */
+function distinctCharCount(segment: string): number {
+  return new Set(segment).size;
+}
+
 /** A delimiter-free segment that looks like key material rather than a word. */
 function segmentLooksSecretLike(segment: string): boolean {
   if (segment.length < SEGMENT_SECRET_MIN_LENGTH) return false;
   if (hasMixedInternalCase(segment)) return true;             // e.g. bPxRfiCYEXAMPLEKEY
-  if (segment.length > SEGMENT_SINGLE_CASE_MAX) return true;   // long single-case blob / hex
+  if (segment.length > SEGMENT_SINGLE_CASE_MAX
+    && distinctCharCount(segment) >= SEGMENT_MIN_DISTINCT_CHARS) return true;   // long single-case blob / hex (but not a zero-entropy run)
   return vowelRatio(segment) < SEGMENT_MIN_VOWEL_RATIO;        // unpronounceable run
 }
 

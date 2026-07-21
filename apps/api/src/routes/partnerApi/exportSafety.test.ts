@@ -426,4 +426,14 @@ describe('recursive export safety', () => {
         .toMatchObject({ safe: false, reason: 'secret_detected' });
     }
   });
+
+  it('does not flag a zero-entropy repeated-character run as secret-like', () => {
+    // Regression: the placeholder export revision 'a'.repeat(64) is single-case and
+    // long but has one distinct character — not key material. Structural layer ON.
+    expect(inspectDefinitionForSecrets({ value: 'a'.repeat(64) }, 'custom-field-values'))
+      .toEqual({ safe: true });
+    // A genuine 40-char single-case hex secret (many distinct chars) still blocks.
+    expect(inspectDefinitionForSecrets({ value: 'de305d5475b4431badb2eb6b9e546014aabbccdd' }, 'custom-field-values'))
+      .toMatchObject({ safe: false, reason: 'secret_detected' });
+  });
 });
