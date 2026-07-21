@@ -230,6 +230,60 @@ services:
       OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
       OAUTH_JWKS_PUBLIC_JWK: ${OAUTH_JWKS_PUBLIC_JWK:-}
       OAUTH_CONSENT_URL_BASE: ${OAUTH_CONSENT_URL_BASE:-}
+      # --- Additional API runtime settings ---------------------------------
+      # These are documented in .env.example and read by the API, but were not
+      # previously threaded through Compose, so setting them in .env did nothing
+      # (the #570 / IS_HOSTED gap class). Every value uses `${VAR:-}`: an empty
+      # string is falsy to the API's envFlag/envInt helpers, which then fall
+      # back to their in-code default — so mapping them here is non-regressive
+      # (unset behaves exactly as before) and never drifts from the code default.
+      # Parity between .env.example and this block is enforced by
+      # apps/api/src/config/envComposeParity.test.ts.
+      # Auth / security / session
+      ENABLE_2FA: ${ENABLE_2FA:-}
+      BREEZE_PLATFORM_ADMINS: ${BREEZE_PLATFORM_ADMINS:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}
+      JWT_SIGNING_KEYRING: ${JWT_SIGNING_KEYRING:-}
+      JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-}
+      WS_TICKET_BIND_IP: ${WS_TICKET_BIND_IP:-}
+      ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: ${ENROLLMENT_KEY_DEFAULT_TTL_MINUTES:-}
+      AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
+      # Email — SMTP extras + Mailgun provider
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM: ${MAILGUN_FROM:-}
+      MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+      # SMS MFA + alert notifications (Twilio)
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_VERIFY_SERVICE_SID: ${TWILIO_VERIFY_SERVICE_SID:-}
+      TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      # MCP OAuth Dynamic Client Registration
+      OAUTH_DCR_ENABLED: ${OAUTH_DCR_ENABLED:-}
+      OAUTH_DCR_REQUIRE_IAT: ${OAUTH_DCR_REQUIRE_IAT:-}
+      OAUTH_DCR_ALLOW_ANONYMOUS: ${OAUTH_DCR_ALLOW_ANONYMOUS:-}
+      # M365 ticket mailbox + C2C backup app + Graph-read AI tools
+      TICKET_MAILBOX_M365_CLIENT_ID: ${TICKET_MAILBOX_M365_CLIENT_ID:-}
+      TICKET_MAILBOX_M365_CLIENT_SECRET: ${TICKET_MAILBOX_M365_CLIENT_SECRET:-}
+      C2C_M365_CLIENT_ID: ${C2C_M365_CLIENT_ID:-}
+      C2C_M365_CLIENT_SECRET: ${C2C_M365_CLIENT_SECRET:-}
+      M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
+      M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
+      # Cloudflare mTLS (API Shield client certificates)
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+      # Remote-session concurrency caps
+      MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG:-}
+      MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_USER:-}
+      # Metrics label controls
+      METRICS_INCLUDE_ORG_ID: ${METRICS_INCLUDE_ORG_ID:-}
+      METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
+      # Hosted billing redirect
+      BILLING_URL: ${BILLING_URL:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
