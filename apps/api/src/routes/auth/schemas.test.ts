@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema } from './schemas';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
 // `XXXX-XXXX` recovery-code form, and the `method` enum must include
@@ -56,5 +56,29 @@ describe('auth feature flag defaults', () => {
     const { ENABLE_REGISTRATION } = await import('./schemas');
 
     expect(ENABLE_REGISTRATION).toBe(true);
+  });
+});
+
+describe('mfaStepUpSchema operation field', () => {
+  it('defaults operation to add_factor on every branch', () => {
+    const totp = mfaStepUpSchema.parse({ method: 'totp', code: '123456' });
+    expect(totp.operation).toBe('add_factor');
+    const passkey = mfaStepUpSchema.parse({ method: 'passkey', credential: { id: 'cred-1' } });
+    expect(passkey.operation).toBe('add_factor');
+  });
+
+  it('accepts register_approver_device', () => {
+    const parsed = mfaStepUpSchema.parse({
+      method: 'totp',
+      code: '123456',
+      operation: 'register_approver_device',
+    });
+    expect(parsed.operation).toBe('register_approver_device');
+  });
+
+  it('rejects unknown operations', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })
+    ).toThrow();
   });
 });

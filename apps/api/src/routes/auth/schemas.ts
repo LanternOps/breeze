@@ -118,10 +118,16 @@ export const mfaEnableSchema = z.object({
 // avoid a schemas.ts <-> passkeys.ts import cycle.
 const stepUpSixDigit = z.string().refine((v) => /^\d{6}$/.test(v.trim()), { message: 'Invalid code' });
 const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
+// Which grant the proven factor mints. Defaults to the original add_factor so
+// existing clients are untouched; register_approver_device gates the
+// /authenticator register routes (#2707).
+const stepUpOperation = z
+  .enum(['add_factor', 'register_approver_device'])
+  .default('add_factor');
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.literal('totp'), code: stepUpSixDigit }),
-  z.object({ method: z.literal('sms'), code: stepUpSixDigit }),
-  z.object({ method: z.literal('passkey'), credential: stepUpAssertion }),
+  z.object({ method: z.literal('totp'), code: stepUpSixDigit, operation: stepUpOperation }),
+  z.object({ method: z.literal('sms'), code: stepUpSixDigit, operation: stepUpOperation }),
+  z.object({ method: z.literal('passkey'), credential: stepUpAssertion, operation: stepUpOperation }),
 ]);
 
 export const acceptInviteSchema = z.object({
