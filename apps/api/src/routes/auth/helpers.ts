@@ -312,6 +312,66 @@ export async function enforceExistingFactorStepUp(
   return null;
 }
 
+/**
+ * True when the account holds a re-auth factor STRONGER than a password that
+ * the browser register UI can actually exercise: TOTP MFA or an active
+ * passkey. Deliberately excludes SMS (no authenticated step-up SMS sender
+ * exists; SMS-method users use the password path — see the #2707 spec).
+ * Gates POST /authenticator/register-grant: password re-auth is refused when
+ * this returns true, keeping the server tiering identical to the UI tiering.
+ */
+export async function userHasStrongerReauthFactor(userId: string): Promise<boolean> {
+  const [row] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        mfaEnabled: users.mfaEnabled,
+        mfaMethod: users.mfaMethod,
+        passkeyCount: sql<number>`(SELECT COUNT(*)::int FROM user_passkeys WHERE user_id = ${userId} AND disabled_at IS NULL)`,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
+  return (row?.mfaEnabled === true && row?.mfaMethod === 'totp') || Number(row?.passkeyCount ?? 0) > 0;
+}
+
+/**
+ * #2707: enforce a register_approver_device grant on the approver-device
+ * registration routes. Same two-phase validate/consume contract as
+ * `enforceExistingFactorStepUp` above, with one CRITICAL difference: NO
+ * `userIsMfaProtected` bypass. Registration is deferred-proof-of-possession —
+ * a stolen bearer token must never be able to register an approver key, so
+ * the grant is required for EVERY account, MFA-protected or not.
+ */
+export async function enforceApproverRegisterStepUp(
+  c: Context,
+  auth: AuthContext,
+  grantId: string | undefined,
+  opts: { consume: boolean },
+): Promise<Response | null> {
+  const epochs = await getUserEpochs(auth.user.id);
+  if (!epochs || !auth.token.sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const bind = {
+    userId: auth.user.id,
+    operation: 'register_approver_device' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid: auth.token.sid,
+  };
+
+  const ok = grantId
+    ? (opts.consume ? await consumeStepUpGrant(grantId, bind) : await validateStepUpGrant(grantId, bind))
+    : false;
+
+  if (!ok) {
+    return c.json({ error: 'register_step_up_required' }, 403);
+  }
+  return null;
+}
+
 export function isSecureCookieEnvironment(): boolean {
   return process.env.NODE_ENV === 'production';
 }
