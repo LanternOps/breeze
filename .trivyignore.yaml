@@ -1,33 +1,33 @@
-# Trivy vulnerability ignores — SCOPED to base-image global tooling only.
+# Trivy vulnerability ignores — SCOPED by exact package version (PURL).
 #
-# Every entry below is path-scoped to `**/pnpm/dist/node_modules/**` — the
-# dependencies VENDORED inside the globally-installed pnpm CLI in the
-# node:24-alpine base image (usr/local/lib/node_modules/pnpm/dist/...). It is
-# NOT the application's dependency tree, which lives under `app/node_modules`
-# (pnpm store) and is scanned normally.
+# Each entry ignores a CVE ONLY for the specific vulnerable version that is
+# VENDORED inside the globally-installed pnpm CLI in the node:24-alpine base
+# image (usr/local/lib/node_modules/pnpm/dist/node_modules/...). Matching is by
+# purl, not file path, so the scope is the package identity+version itself.
 #
-# Why these are safe to ignore in THIS location:
+# Why these are safe to ignore:
 #   - They are all denial-of-service CVEs (ReDoS / decompression bombs /
-#     malformed-input parsing) in packages that pnpm vendors for its OWN use
+#     malformed-input parsing) in packages pnpm vendors for its OWN use
 #     (installing packages), not for the running service.
 #   - The production container's entrypoint is the API/Web/Portal/executor
-#     process. npm and pnpm are never invoked at runtime, and never against
+#     process; pnpm is never invoked at runtime, and never against
 #     attacker-controlled input, so these code paths are unreachable in prod.
-#   - The application's OWN copies of these packages are kept current via the
-#     pnpm `overrides` block in package.json (e.g. brace-expansion >=5.0.7).
-#     Because each ignore is path-scoped, a future regression that pulls a
-#     vulnerable copy into an APP dependency is NOT masked here — it would sit
-#     under app/node_modules and still fail the scan.
+#   - The scope is the EXACT vendored version. The application's own copies are
+#     kept current via the pnpm `overrides` block in package.json (e.g.
+#     brace-expansion is 5.0.7 — a different purl — and is still scanned). A
+#     future regression that pulled a DIFFERENT vulnerable version into an app
+#     dependency would NOT match these purls and would still fail the scan.
 #
-# Revisit when the base image ships a node/npm build whose vendored deps clear
-# these advisories; then delete the matching entry and let the scan confirm.
+# Revisit when pnpm ships a build whose vendored deps clear these advisories;
+# the pinned version will then no longer be present and the entry is dead —
+# delete it and let the scan confirm.
 vulnerabilities:
-  - id: CVE-2026-59873   # node-tar: DoS via crafted gzip bomb (fixed 7.5.19) — npm-vendored
-    paths:
-      - "**/pnpm/dist/node_modules/**"
-  - id: CVE-2026-59874   # node-tar: DoS via malformed tar archive (fixed 7.5.18) — npm-vendored
-    paths:
-      - "**/pnpm/dist/node_modules/**"
-  - id: CVE-2026-13149   # brace-expansion: ReDoS (fixed 5.0.7/2.1.2/1.1.16) — npm-vendored 2.1.0; app copy is 5.0.7
-    paths:
-      - "**/pnpm/dist/node_modules/**"
+  - id: CVE-2026-59873   # node-tar: DoS via crafted gzip bomb (fixed 7.5.19)
+    purls:
+      - "pkg:npm/tar@7.5.13"
+  - id: CVE-2026-59874   # node-tar: DoS via malformed tar archive (fixed 7.5.18)
+    purls:
+      - "pkg:npm/tar@7.5.13"
+  - id: CVE-2026-13149   # brace-expansion: ReDoS (fixed 5.0.7/2.1.2/1.1.16); app copy is 5.0.7
+    purls:
+      - "pkg:npm/brace-expansion@2.1.0"
