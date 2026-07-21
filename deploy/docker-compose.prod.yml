@@ -211,6 +211,19 @@ services:
       APNS_TEAM_ID: ${APNS_TEAM_ID:-}
       APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
       APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
+      # --- Additional API runtime settings (parity with deploy/.env.example) ---
+      # Documented in deploy/.env.example and read by the API but previously not
+      # threaded through this block, so setting them in .env was a silent no-op.
+      # `${VAR:-}` is non-regressive: empty is falsy to envFlag/envInt, which
+      # fall back to their in-code default. Enforced by
+      # apps/api/src/config/envComposeParity.test.ts.
+      IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}
+      M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
+      M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
+      # Synthetic sign-up monitor endpoints (deploy/.env.example calls out that
+      # these MUST be mapped here for compose interpolation to reach the API).
+      SYNTHETIC_TEST_TOKEN: ${SYNTHETIC_TEST_TOKEN:-}
+      SYNTHETIC_TEST_IP_ALLOWLIST: ${SYNTHETIC_TEST_IP_ALLOWLIST:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
