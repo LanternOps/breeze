@@ -16,6 +16,10 @@
  * apps/api. Precedent for reaching outside the package in an API test:
  * apps/api/src/config/proxyTrustCompose.test.ts (reads root compose files).
  *
+ * Label parsing and the checkGuardrails comparison are shared with the docs
+ * mirror (aiGuardrailsAiDocs.parity.test.ts) via
+ * aiGuardrailsTierParity.shared.ts.
+ *
  * NOTE: no vi.mock here — unlike aiGuardrails.test.ts this suite must see the
  * REAL aiTools registry, because base tiers are half the answer.
  */
@@ -27,41 +31,27 @@ import {
   TIER2_ACTIONS,
   TIER3_ACTIONS,
 } from './aiGuardrails';
+import {
+  driftMessage,
+  findTierMismatches,
+  parseToolLabel,
+  type ClaimedTierEntry,
+} from './aiGuardrailsTierParity.shared';
 import { RATE_LIMIT_CONFIGS, TIER_DEFINITIONS } from '../../../web/src/components/ai-risk/tierConfig';
 
-/**
- * Entry names are either `tool_name` or `tool_name (action/action/...)`.
- * The action list must be real guardrail action identifiers — prose such as
- * `manage_groups (add/remove devices)` fails the shape check below rather than
- * silently degrading to a base-tier lookup that happens to pass.
- */
-const ENTRY_RE = /^(?<tool>[a-z0-9_]+)(?: \((?<actions>[a-z0-9_/]+)\))?$/;
-
-interface ParsedEntry {
-  claimedTier: number;
-  displayName: string;
-  tool: string;
-  actions: string[];
-}
-
-const parsed: ParsedEntry[] = [];
+const parsed: ClaimedTierEntry[] = [];
 const unparseable: Array<{ tier: number; name: string }> = [];
 
 for (const tier of TIER_DEFINITIONS) {
   // Tier 4 lists concepts ("Cross-org access", "Unknown tools"), not tools.
   if (tier.tier === 4) continue;
   for (const entry of tier.tools) {
-    const m = ENTRY_RE.exec(entry.name);
-    if (!m?.groups) {
+    const label = parseToolLabel(entry.name);
+    if (!label) {
       unparseable.push({ tier: tier.tier, name: entry.name });
       continue;
     }
-    parsed.push({
-      claimedTier: tier.tier,
-      displayName: entry.name,
-      tool: m.groups.tool!,
-      actions: m.groups.actions ? m.groups.actions.split('/') : [],
-    });
+    parsed.push({ claimedTier: tier.tier, label: entry.name, ...label });
   }
 }
 
@@ -76,35 +66,10 @@ describe('tierConfig.ts ↔ aiGuardrails tier tables parity (#2686)', () => {
   });
 
   it('every tool/action pair resolves to the tier tierConfig.ts claims', () => {
-    const mismatches: string[] = [];
-
-    for (const entry of parsed) {
-      const inputs = entry.actions.length > 0
-        ? entry.actions.map((action) => ({ action }))
-        : [{}];
-
-      for (const input of inputs) {
-        const action = (input as { action?: string }).action;
-        const actual = checkGuardrails(entry.tool, input);
-        if (actual.tier !== entry.claimedTier) {
-          mismatches.push(
-            `${entry.tool}${action ? ` (action="${action}")` : ' (no action)'}: ` +
-            `tierConfig.ts claims Tier ${entry.claimedTier}, ` +
-            `checkGuardrails returns Tier ${actual.tier}` +
-            `${actual.reason ? ` — ${actual.reason}` : ''} ` +
-            `[entry "${entry.displayName}"]`,
-          );
-        }
-      }
-    }
-
+    const mismatches = findTierMismatches(parsed);
     expect(
       mismatches,
-      `apps/web/src/components/ai-risk/tierConfig.ts has drifted from the ` +
-      `guardrail tables in apps/api/src/services/aiGuardrails.ts. This is ` +
-      `customer-facing copy explaining what the AI may do without approval — ` +
-      `fix tierConfig.ts (or the tier tables), do not relax this test.\n` +
-      mismatches.map((m) => `  • ${m}`).join('\n'),
+      driftMessage('apps/web/src/components/ai-risk/tierConfig.ts', mismatches),
     ).toEqual([]);
   });
 
