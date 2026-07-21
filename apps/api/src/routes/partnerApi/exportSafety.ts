@@ -4,6 +4,7 @@ import {
   type PartnerExportBlockedRecord,
   type PartnerExportResource,
 } from './schemas';
+import { shouldRunStructuralLayer } from './exportSafety.classification';
 
 const MAX_FIELD_PATHS = 20;
 const MAX_FIELD_PATH_LENGTH = 256;
@@ -254,10 +255,10 @@ function containsCredentialAssignment(value: string, conservativeIdentifiers: bo
   return inspectCredentialSyntax(value, conservativeIdentifiers).secretLike;
 }
 
-function isSecretLikeValue(value: string, inspectScriptIdentifiers: boolean): boolean {
+function isSecretLikeValue(value: string, inspectScriptIdentifiers: boolean, runStructural: boolean): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
     || containsCredentialAssignment(value, inspectScriptIdentifiers)
-    || windowContainsHighEntropyToken(value);
+    || (runStructural && windowContainsHighEntropyToken(value));
 }
 
 function isSemanticIdentifierPath(path: string): boolean {
@@ -283,7 +284,10 @@ export type DefinitionInspectionResult =
   | { safe: true }
   | { safe: false; reason: 'secret_detected'; fieldPaths: string[] };
 
-export function inspectDefinitionForSecrets(definition: unknown): DefinitionInspectionResult {
+export function inspectDefinitionForSecrets(
+  definition: unknown,
+  resource?: PartnerExportResource,
+): DefinitionInspectionResult {
   const fieldPaths: string[] = [];
   const seenPaths = new Set<string>();
   const ancestors = new Set<object>();
@@ -321,8 +325,9 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
         traversalStopped = true;
         return;
       }
+      const runStructural = resource === undefined || shouldRunStructuralLayer(resource, path);
       if (!(trustedRevision && SHA256_PATTERN.test(value)) && (
-        isSecretLikeValue(value, path.split('.').at(-1)?.toLowerCase() === 'content')
+        isSecretLikeValue(value, path.split('.').at(-1)?.toLowerCase() === 'content', runStructural)
         || (isSemanticIdentifierPath(path) && isSecretSemanticIdentifier(value))
       )) addPath(path);
       return;
@@ -391,7 +396,7 @@ export function safelyExportDefinition<T>(
   identity: PartnerExportBlockedIdentity,
   definition: T,
 ): { safe: true; definition: T } | { safe: false; blocked: PartnerExportBlockedRecord } {
-  const inspection = inspectDefinitionForSecrets(definition);
+  const inspection = inspectDefinitionForSecrets(definition, identity.resource);
   if (inspection.safe) return { safe: true, definition };
   return { safe: false, blocked: buildSafeBlockedRecord(identity, inspection) };
 }

@@ -373,4 +373,35 @@ describe('recursive export safety', () => {
     expect(result).not.toHaveProperty('definition');
     expect(JSON.stringify(result)).not.toContain('value-');
   });
+
+  it('skips the structural layer on machine-observed inventory fields', () => {
+    // A high-entropy-looking device path on device-inventory must NOT block.
+    const inventory = { disks: [{ device: '/dev/mapper/ubuntu--vg-ubuntu--lv' }] };
+    expect(inspectDefinitionForSecrets(inventory, 'device-inventory')).toEqual({ safe: true });
+  });
+
+  it('still runs the structural layer on customer-authored fields', () => {
+    // Same shape under scripts (customer-authored) still exercises the layer;
+    // an actual embedded credential must block.
+    const script = { content: `export TOKEN=${embeddedCredential}` };
+    expect(inspectDefinitionForSecrets(script, 'scripts'))
+      .toMatchObject({ safe: false, reason: 'secret_detected' });
+  });
+
+  it('keeps global pattern + field-name layers on machine-observed fields', () => {
+    // A forbidden field name blocks even on an inventory resource.
+    expect(inspectDefinitionForSecrets({ apiKey: 'anything' }, 'device-inventory'))
+      .toMatchObject({ safe: false, reason: 'secret_detected' });
+    // An explicit token pattern blocks even on an inventory resource.
+    expect(inspectDefinitionForSecrets(
+      { note: 'ghp_A9dK2mQ7xR4tV8wY1zB3cN6fH0jL5pS2uE7g' },
+      'device-inventory',
+    )).toMatchObject({ safe: false, reason: 'secret_detected' });
+  });
+
+  it('defaults to scanning every field when no resource is supplied', () => {
+    // Backward-compatible: omitting resource keeps the pre-change behavior.
+    expect(inspectDefinitionForSecrets({ disks: [{ device: '/dev/mapper/ubuntu--vg-ubuntu--lv' }] }))
+      .toMatchObject({ safe: false });
+  });
 });
