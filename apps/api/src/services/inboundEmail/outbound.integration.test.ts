@@ -1,7 +1,7 @@
 /**
  * End-to-end outbound integration test (real DB, captured email mock).
  *
- * Task 9 of docs/superpowers/plans/2026-06-13-ticketing-phase4-outbound-backend.md
+ * Task 9 of docs/superpowers/plans/ticketing/2026-06-13-ticketing-phase4-outbound-backend.md
  *
  * Form: notify-worker-level integration test that seeds real DB rows
  * (real Postgres via withSystemDbAccessContext / createPartner / createOrganization)

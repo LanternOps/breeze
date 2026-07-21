@@ -1,5 +1,5 @@
 // Backup selection profiles — CRUD for the Cove-style "what to protect"
-// entity (docs/superpowers/specs/2026-07-13-backup-profiles-design.md).
+// entity (docs/superpowers/specs/backup/2026-07-13-backup-profiles-design.md).
 //
 // Dual-ownership (epic #2135): a profile is org-owned (org_id set) or
 // partner-wide (partner_id set, org_id NULL). Partner-wide create/update/

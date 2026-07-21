@@ -8,7 +8,7 @@ Authenticated MCP tools and HTTP routes that support agent-driven device deploym
 - `matchInviteOnEnrollment` — service that flips `deployment_invites.status` to `enrolled` on first heartbeat
 - `metrics` — funnel counters for invite → click → enrolled
 
-This module was previously named `mcpBootstrap`. The bootstrap-specific tools (`create_tenant`, `verify_tenant`, `attach_payment_method`) and the `/activate/<token>` flow were removed in 2026-04-29 — see `docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md`.
+This module was previously named `mcpBootstrap`. The bootstrap-specific tools (`create_tenant`, `verify_tenant`, `attach_payment_method`) and the `/activate/<token>` flow were removed in 2026-04-29 — see `docs/superpowers/plans/onboarding-signup/2026-04-29-mcp-bootstrap-cleanup.md`.
 
 ## Required environment variables (when enabled)
 

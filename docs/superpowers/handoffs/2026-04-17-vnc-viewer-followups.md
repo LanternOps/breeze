@@ -125,5 +125,5 @@ Open devtools in the viewer: right-click → Inspect Element, or Cmd+Option+I.
 
 ## Spec + plan reference
 
-- `docs/superpowers/specs/2026-04-16-viewer-webrtc-vnc-switcher-design.md`
-- `docs/superpowers/plans/2026-04-16-viewer-webrtc-vnc-switcher.md`
+- `docs/superpowers/specs/remote-desktop/2026-04-16-viewer-webrtc-vnc-switcher-design.md`
+- `docs/superpowers/plans/remote-desktop/2026-04-16-viewer-webrtc-vnc-switcher.md`

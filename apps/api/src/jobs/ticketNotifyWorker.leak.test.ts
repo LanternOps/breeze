@@ -1,7 +1,7 @@
 /**
  * Internal-note leak regression for the outbound composer (spec §6/§9).
  *
- * Task 8 of docs/superpowers/plans/2026-06-13-ticketing-phase4-outbound-backend.md
+ * Task 8 of docs/superpowers/plans/ticketing/2026-06-13-ticketing-phase4-outbound-backend.md
  *
  * Guarantee: a private ticket_comment (is_public=false) MUST NEVER:
  *   (a) directly trigger an outbound email (even if the worker somehow sees isPublic:false

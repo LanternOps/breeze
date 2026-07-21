@@ -1,6 +1,6 @@
 /**
  * Action intents & durable approval layer — eligible-approver resolution
- * (spec docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §4; CRITICAL-2 fix).
  *
  * Given an org, returns the distinct set of user ids eligible to decide a

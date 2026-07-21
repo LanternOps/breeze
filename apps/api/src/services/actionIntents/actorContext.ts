@@ -9,7 +9,7 @@ import type { TokenPayload } from '../jwt';
 
 /**
  * Rebuilds the acting `AuthContext` for a stored action intent at RELEASE
- * time (spec docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * time (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §5) — the release worker's trust boundary: a reconstructed identity is
  * about to execute a real, privileged Tier-3 action, so this must fail
  * CLOSED on any doubt. Returns `null` on ANY validation failure; the caller

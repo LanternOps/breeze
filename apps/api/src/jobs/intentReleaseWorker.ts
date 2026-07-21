@@ -26,7 +26,7 @@ import { sealActionResultSecrets, TEMP_PASSWORD_ENC_KEY } from '../services/acti
 
 /**
  * Durable release worker (spec
- * docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §5 / §10.3 / §8) — consumes `intent_approved` jobs off the `action-intents`
  * BullMQ queue (populated by `jobs/intentOutboxPublisher.ts`) and, for each,
  * re-validates the approval is still good and RE-EXECUTES the tool through a

@@ -23,7 +23,7 @@ describe('bootstrap admin production examples', () => {
   });
 
   it('do not advertise the development bootstrap credential in production docs', () => {
-    for (const path of ['README.md', 'docs/DEPLOY_PRODUCTION.md']) {
+    for (const path of ['README.md', 'docs/operations/DEPLOY_PRODUCTION.md']) {
       const content = readRepoFile(path);
 
       expect(content, path).not.toContain('BreezeAdmin123!');

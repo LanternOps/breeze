@@ -119,7 +119,7 @@ describe('site-scope coverage', () => {
  * site-scope gate. This is the exact blind spot the original scanner's header
  * note documented; the 2026-05 sweep fixed the first 6 offenders
  * (browserSecurity/sentinelOne/peripheralControl/huntress/dnsSecurity/analytics)
- * — see docs/superpowers/plans/2026-05-31-site-scope-input-scanner.md.
+ * — see docs/superpowers/plans/ai-mcp/2026-05-31-site-scope-input-scanner.md.
  *
  * The allowlist below captures handlers that touch device-scoped data but do
  * NOT need a site gate. Each entry MUST carry a one-line justification. The
@@ -244,7 +244,7 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
 // taking no device input. When triaged, REMOVE the entry here and either fix the
 // handler or add it to SITE_SCOPE_INPUT_EXEMPT. The "no stale entries" test makes
 // the ratchet one-directional — a fixed handler's baseline entry must be removed.
-// Full plan + triage guidance: docs/superpowers/plans/2026-05-31-site-scope-input-scanner.md
+// Full plan + triage guidance: docs/superpowers/plans/ai-mcp/2026-05-31-site-scope-input-scanner.md
 const SITE_SCOPE_INPUT_BASELINE: ReadonlySet<string> = new Set<string>([
 ]);
 

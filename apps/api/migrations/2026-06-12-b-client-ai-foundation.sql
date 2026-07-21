@@ -1,6 +1,6 @@
 -- 2026-06-12-b-client-ai-foundation.sql
 -- Breeze AI for Office, Plan 1 (Foundation).
--- Spec: docs/superpowers/specs/2026-06-12-breeze-ai-for-office-design.md §3, §7, §8, §10, §12.
+-- Spec: docs/superpowers/specs/ai-mcp/2026-06-12-breeze-ai-for-office-design.md §3, §7, §8, §10, §12.
 --
 -- 1. portal_users: Entra identity columns + partial unique identity index.
 -- 2. client_ai_tenant_mappings  — Entra tenant GUID -> org (RLS shape 1).

@@ -16,7 +16,7 @@ import { portalUsers } from './portal';
 
 /**
  * Breeze AI for Office — client-AI control-plane tables.
- * Spec: docs/superpowers/specs/2026-06-12-breeze-ai-for-office-design.md §3, §7, §8, §10, §12.
+ * Spec: docs/superpowers/specs/ai-mcp/2026-06-12-breeze-ai-for-office-design.md §3, §7, §8, §10, §12.
  *
  * RLS lives in apps/api/migrations/2026-06-12-b-client-ai-foundation.sql:
  *  - client_ai_tenant_mappings / client_ai_org_policies / client_ai_usage: shape 1

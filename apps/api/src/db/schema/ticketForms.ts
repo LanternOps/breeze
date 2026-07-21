@@ -6,7 +6,7 @@ import { ticketCategories } from './tickets';
 import { ticketPriorityEnum } from './portal';
 
 /**
- * Ticket intake forms (spec: docs/superpowers/specs/2026-07-10-ticket-intake-forms-design.md).
+ * Ticket intake forms (spec: docs/superpowers/specs/ticketing/2026-07-10-ticket-intake-forms-design.md).
  * Dual-axis ownership (Partner-Wide First, epic #2135): org_id XOR partner_id,
  * enforced by ticket_forms_one_owner_chk in the migration. Field definitions
  * are a self-contained jsonb document validated by ticketFormFieldsSchema in

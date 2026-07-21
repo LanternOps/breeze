@@ -115,8 +115,8 @@ For production on DigitalOcean:
 
 ## Primary References
 
-- `docs/SECURITY_PRACTICES.md`
-- `docs/BACKUP_RESTORE.md`
+- `docs/security/SECURITY_PRACTICES.md`
+- `docs/operations/BACKUP_RESTORE.md`
 - `apps/api/src/jobs/eventLogRetention.ts`
 - `apps/api/src/jobs/agentLogRetention.ts`
 - `apps/api/src/jobs/changeLogRetention.ts`

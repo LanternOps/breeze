@@ -7,7 +7,7 @@ import { buildAuthContextForIntent } from './actorContext';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
- * docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §5 step 2). Extracted so the TWO release paths — the durable
  * `jobs/intentReleaseWorker.ts` and the inline chat path in
  * `services/aiAgentSdk.ts` — run the IDENTICAL fail-closed checks. Previously

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// Contract template library (docs/superpowers/specs/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
+// Contract template library (docs/superpowers/specs/billing/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
 // Partner-Wide First shape (epic #2135), mirroring backupTargets.ts /
 // ticketForms.ts: org_id XOR partner_id, ownership axis fixed at create time.
 //

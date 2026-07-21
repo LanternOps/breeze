@@ -9,7 +9,7 @@ import { captureException } from '../services/sentry';
 
 /**
  * Drains the `intent_outbox` transactional outbox (spec
- * docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §5) into the `action-intents` BullMQ queue that `jobs/intentReleaseWorker.ts`
  * (Task 7 — not built here) consumes. This module only creates the queue and
  * publishes to it; it never processes `action-intents` jobs itself.

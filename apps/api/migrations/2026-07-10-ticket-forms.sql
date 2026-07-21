@@ -1,4 +1,4 @@
--- Ticket intake forms (spec: docs/superpowers/specs/2026-07-10-ticket-intake-forms-design.md).
+-- Ticket intake forms (spec: docs/superpowers/specs/ticketing/2026-07-10-ticket-intake-forms-design.md).
 -- Dual-axis config table (Partner-Wide First, epic #2135): org_id XOR partner_id.
 -- Idempotent: CREATE IF NOT EXISTS, guarded CHECK, DROP POLICY IF EXISTS then CREATE.
 -- No inner BEGIN/COMMIT (autoMigrate wraps each file in a transaction).

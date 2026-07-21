@@ -381,7 +381,7 @@ export function computeExpiresAt(
 // deleted expired backup_snapshots rows, and is the ONLY code path that
 // deletes backup objects.
 //
-// Shape (see docs/superpowers/specs/2026-07-16-incremental-backups-design.md,
+// Shape (see docs/superpowers/specs/backup/2026-07-16-incremental-backups-design.md,
 // "Amendments from GC review"):
 //
 //   Identity: sweeps run per STORAGE IDENTITY (provider + endpoint + bucket),

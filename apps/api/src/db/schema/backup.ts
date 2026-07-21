@@ -118,7 +118,7 @@ export const backupConfigs = pgTable(
 );
 
 // Backup selection profiles ("what to protect" for a device class) — the
-// Cove-style entity from docs/superpowers/specs/2026-07-13-backup-profiles-design.md.
+// Cove-style entity from docs/superpowers/specs/backup/2026-07-13-backup-profiles-design.md.
 // Dual-ownership per epic #2135: org_id XOR partner_id (CHECK + dual-axis RLS
 // live in 2026-07-13-backup-profiles.sql). `selections` enables any subset of
 // source types — keys match backup_mode_enum (file / system_image / mssql /

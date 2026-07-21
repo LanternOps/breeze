@@ -111,7 +111,7 @@ export const cloneQuoteSchema = z.object({
   title: z.string().max(200).optional(),
 }).strict();
 
-// Enhanced-proposals cover page (docs/superpowers/specs/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
+// Enhanced-proposals cover page (docs/superpowers/specs/billing/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
 // Stored as quotes.cover_page jsonb; `enabled: false` is a valid, minimal
 // payload (the customer-visible cover page toggled off) — every other field
 // is optional/nullable so a partial edit doesn't force re-sending the whole

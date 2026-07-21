@@ -2,7 +2,7 @@
  * Cross-partner isolation integration test for the inbound email pipeline
  * (real postgres.js driver).
  *
- * Task 12 of docs/superpowers/plans/2026-06-13-ticketing-phase4-email-ingest-backend.md.
+ * Task 12 of docs/superpowers/plans/ticketing/2026-06-13-ticketing-phase4-email-ingest-backend.md.
  *
  * The unit tests in inboundEmailService.test.ts mock the DB; this suite proves
  * the app-level isolation guards in `processInboundEmail` hold against a REAL

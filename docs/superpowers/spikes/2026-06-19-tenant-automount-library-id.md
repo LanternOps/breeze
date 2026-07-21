@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-19 (research) — 2026-06-22 (desk research complete) — **2026-07-09 (live mount validated)**
 **Status:** 🟢 **CLEAN CONFIRMED — live Windows round-trip mounted a never-synced library from a purely Graph-constructible composite**
-**Gates:** Sub-project A §4 (agent applier) and §5 (Graph library picker UX). See `docs/superpowers/specs/2026-06-19-onedrive-helper-library-sync-design.md` §6 and `docs/superpowers/plans/2026-06-19-onedrive-helper-server-foundation.md` Task 1.
+**Gates:** Sub-project A §4 (agent applier) and §5 (Graph library picker UX). See `docs/superpowers/specs/integrations/2026-06-19-onedrive-helper-library-sync-design.md` §6 and `docs/superpowers/plans/integrations/2026-06-19-onedrive-helper-server-foundation.md` Task 1.
 
 ## Live validation results (2026-07-09, Windows test VM)
 

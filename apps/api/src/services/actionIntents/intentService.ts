@@ -20,7 +20,7 @@ import { resolveIntentApprovers } from './intentApprovers';
 const LIVE_INTENT_STATUSES: readonly ActionIntentStatus[] = ['pending_approval', 'approved', 'executing'];
 
 // Action intents & durable approval layer — core intent service (spec
-// docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+// docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
 // §4, §7). Creates a digest-bound intent, fans it out to eligible approvers,
 // and provides the CAS primitive later tasks (decide handler, release worker,
 // reaper) use to move it through its state machine.

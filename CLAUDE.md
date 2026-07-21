@@ -62,7 +62,7 @@ Why this list exists: missing a cascade list is a **latent GDPR org-erasure bug*
 
 Only the device-side lists fail in the **Test API** unit job (they read the Drizzle schema statically). The org cascade list only fails under **Integration Tests**, so a PR on a stale base can go green and then red main after merge.
 
-For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE ... WHERE ctid IN (... LIMIT N)` loops before `SET NOT NULL`. Full narrative and rationale: `docs/superpowers/plans/2026-04-11-rls-coverage-gaps.md`.
+For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE ... WHERE ctid IN (... LIMIT N)` loops before `SET NOT NULL`. Full narrative and rationale: `docs/superpowers/plans/tenancy-rls/2026-04-11-rls-coverage-gaps.md`.
 
 ### Partner-Wide First (config/policy tables) — epic #2135
 
@@ -122,7 +122,7 @@ if (err instanceof ActionError && err.status === 401) return; // let auth redire
 if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401 ActionError already toasted by runAction
 ```
 
-The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/2026-05-15-ws-a-action-feedback-design.md`.
+The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/web-ui/2026-05-15-ws-a-action-feedback-design.md`.
 
 ---
 

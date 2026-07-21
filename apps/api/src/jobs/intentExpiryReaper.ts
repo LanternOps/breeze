@@ -13,7 +13,7 @@ import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 
 /**
  * Reaps `action_intents` rows past their deadline (spec
- * docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §3.4 + §8). Kept as a sibling of `approvalExpiryReaper.ts` rather than an
  * extension of it: that file's whole shape (queue name, job data type, audit
  * action string, and its `ai_tool_executions` mirror step) is specific to

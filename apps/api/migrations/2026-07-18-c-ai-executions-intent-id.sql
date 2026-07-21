@@ -1,6 +1,6 @@
 -- 2026-07-18-c: link ai_tool_executions rows to the durable action_intents
 -- row they were created for (spec
--- docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md,
+-- docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md,
 -- whole-branch review CRITICAL-3).
 --
 -- The web chat's per-step approval card (POST

@@ -1,5 +1,5 @@
 -- Phase 4 (native ticketing): email-to-ticket ingest tables
--- Spec: docs/superpowers/specs/2026-06-13-ticketing-phase4-email-to-ticket-design.md
+-- Spec: docs/superpowers/specs/ticketing/2026-06-13-ticketing-phase4-email-to-ticket-design.md
 
 CREATE TABLE IF NOT EXISTS ticket_email_inbound (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

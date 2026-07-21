@@ -76,7 +76,7 @@ KillMode=mixed
 #   - admins write under /home, /usr, /etc, and expect a shared /tmp
 # systemd sandbox restrictions are INHERITED by those children and silently break
 # these operations. Do not re-add them.
-# See docs/superpowers/specs/2026-06-09-agent-systemd-sandbox-remote-terminal-design.md
+# See docs/superpowers/specs/agent/2026-06-09-agent-systemd-sandbox-remote-terminal-design.md
 
 StandardOutput=journal
 StandardError=journal

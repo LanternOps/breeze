@@ -473,7 +473,7 @@ async function decideHandler(
     return c.json({ error: 'Expired', finalStatus: 'expired' }, 410);
   }
 
-  // Action intents (spec docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+  // Action intents (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
   // §4, §3.4): load the linked intent early so the digest-binding and
   // sole-operator checks below can run BEFORE the approval CAS. System
   // context, mirroring the elevation mirror's cross-row visibility need —

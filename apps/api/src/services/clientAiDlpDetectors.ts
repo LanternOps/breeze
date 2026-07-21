@@ -5,7 +5,7 @@
  * cards, mod-97 for IBAN, plausibility for SSN, mixed-class post-filters for
  * generic token blobs) keep false positives down; the residual trade-offs are
  * documented per detector in the Plan-3 doc
- * (docs/superpowers/plans/2026-06-12-ai-for-office-3-dlp.md, Tasks 2–3).
+ * (docs/superpowers/plans/ai-mcp/2026-06-12-ai-for-office-3-dlp.md, Tasks 2–3).
  *
  * The apiKey shapes are seeded from BARE_SECRET_PATTERNS in
  * services/aiToolOutput.ts (sk-, GitHub token family, github_pat_, AKIA, JWT)

@@ -4,7 +4,7 @@ import type { ActionIntentSource } from '../../db/schema/actionIntents';
 
 /**
  * Observability for the action-intents durable approval layer (spec
- * docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+ * docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
  * §7). Pattern-matches
  * services/m365ControlPlane/readActionMetrics.ts: a settable recorder behind
  * a Prometheus counter, plus an audit-event helper that fires both from one

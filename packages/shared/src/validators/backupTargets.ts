@@ -197,7 +197,7 @@ export const backupProfileLinkedInlineSettingsSchema = z.object({
   destinationConfigId: z.string().nullish(),
 });
 
-// ── Backup profiles (docs/superpowers/specs/2026-07-13-backup-profiles-design.md)
+// ── Backup profiles (docs/superpowers/specs/backup/2026-07-13-backup-profiles-design.md)
 //
 // A profile's `selections` enables any subset of the four source types. Keys
 // deliberately match `backupModeSchema` values (so `system_image`, not the

@@ -207,7 +207,7 @@ function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void
     + `from untrusted peer ${key}, which is not in TRUSTED_PROXY_CIDRS — falling back to the socket address. `
     + `If this peer is your reverse proxy, TRUSTED_PROXY_CIDRS is likely STALE (proxy container recreated without a `
     + `static ipv4_address): all per-IP rate limits are pooling onto the proxy IP and audit-log IP attribution is `
-    + `recording the proxy as every client. Fix TRUSTED_PROXY_CIDRS or pin the proxy IP (see docs/DEPLOY_PRODUCTION.md). `
+    + `recording the proxy as every client. Fix TRUSTED_PROXY_CIDRS or pin the proxy IP (see docs/operations/DEPLOY_PRODUCTION.md). `
     + `Suppressed for this peer for ${UNTRUSTED_PEER_WARN_INTERVAL_MS / 60000} minutes.`,
   );
 }

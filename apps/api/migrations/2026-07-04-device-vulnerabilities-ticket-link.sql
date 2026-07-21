@@ -1,5 +1,5 @@
 -- Vulnerabilities fleet triage UI: link findings to native tickets.
--- Spec: docs/superpowers/specs/2026-07-04-vulnerabilities-triage-ui-design.md
+-- Spec: docs/superpowers/specs/vuln-patch/2026-07-04-vulnerabilities-triage-ui-design.md
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps each file in a transaction).
 
 ALTER TABLE device_vulnerabilities ADD COLUMN IF NOT EXISTS ticket_id uuid;

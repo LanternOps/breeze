@@ -114,8 +114,8 @@ Recommended report template:
 
 Primary runbooks/procedures:
 
-- `docs/DISASTER_RECOVERY.md`
-- `docs/BACKUP_RESTORE.md`
+- `docs/operations/DISASTER_RECOVERY.md`
+- `docs/operations/BACKUP_RESTORE.md`
 - `scripts/prod/deploy.sh` (rebuild/deploy automation)
 
 ## Continuous Improvement Loop

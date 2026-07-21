@@ -82,7 +82,7 @@ export function selfHostAllowsPrivateNetwork(): boolean {
 
 // Public URL of the breeze-billing payment-setup landing page. Empty on
 // self-host. Consumed by the OAuth consent redirect (see Phase 2 Task 2.1
-// of docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md) — the
+// of docs/superpowers/plans/onboarding-signup/2026-04-29-mcp-bootstrap-cleanup.md) — the
 // consent handler redirects users to BILLING_URL?uid=<UID> when their
 // partner.status != 'active'. Distinct from BREEZE_BILLING_URL, which is
 // the internal service-to-service base URL used by breezeBillingClient.ts.

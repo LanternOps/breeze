@@ -4,7 +4,7 @@ How to move an entire agent fleet to a new server URL (domain rename,
 datacenter move, DR cutover) with zero per-device touch, using the
 `AGENT_BACKUP_SERVER_URL` backup-URL mechanism (#2288).
 
-Design doc: `docs/superpowers/specs/2026-07-09-agent-backup-server-url-design.md`
+Design doc: `docs/superpowers/specs/agent/2026-07-09-agent-backup-server-url-design.md`
 
 ## How it works
 

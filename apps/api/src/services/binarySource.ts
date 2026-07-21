@@ -22,7 +22,7 @@ export function getBinarySource(): BinarySource {
  * becomes the upgrade target. Set AGENT_AUTO_PROMOTE=false to decouple
  * registration from promotion — new binaries become downloadable but the fleet
  * upgrade target only changes via the explicit POST /agent-versions/promote
- * endpoint. See docs/superpowers/specs/2026-06-23-controlled-agent-fleet-rollout.md.
+ * endpoint. See docs/superpowers/specs/agent/2026-06-23-controlled-agent-fleet-rollout.md.
  */
 export function getAgentAutoPromote(): boolean {
   const raw = process.env.AGENT_AUTO_PROMOTE?.trim().toLowerCase();

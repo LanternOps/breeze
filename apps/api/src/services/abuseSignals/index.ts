@@ -35,7 +35,7 @@ function formatSignalAlert(s: ComputedSignal & { rowId: string }): { title: stri
       `Partner: ${String(s.evidence.partnerName ?? 'unknown')} (${shortId})`,
       `Score: ${s.score}`,
       `Partner id: ${s.partnerId}`,
-      `Review: docs/superpowers/specs/2026-07-11-signup-abuse-detection-design.md — suspend playbook applies`,
+      `Review: docs/superpowers/specs/security-auth/2026-07-11-signup-abuse-detection-design.md — suspend playbook applies`,
       `Evidence: ${JSON.stringify(s.evidence).slice(0, 800)}`,
     ].join('\n'),
   };

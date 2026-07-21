@@ -237,7 +237,7 @@ Recommended next step:
 
 Wave F validation:
 - Current release workflow publishes unsigned `checksums.txt` and verifies signed/notarized assets before release creation, but there is no signed release manifest that the API can treat as an independent trust root.
-- No fake verification was added to installer wrapping paths. The exact signed-manifest prerequisite is documented in `docs/ARTIFACT_SIGNING_OPERATIONS.md`.
+- No fake verification was added to installer wrapping paths. The exact signed-manifest prerequisite is documented in `docs/signing/ARTIFACT_SIGNING_OPERATIONS.md`.
 - Residual: implement API-side manifest-signature and digest verification after a signed manifest artifact exists.
 
 Wave G update:

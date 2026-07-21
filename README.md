@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/breeze-ai-demo.gif" alt="Breeze AI Demo: check a device's health" width="800" />
+  <img src="docs/assets/breeze-ai-demo.gif" alt="Breeze AI Demo: check a device's health" width="800" />
 </p>
 
 <p align="center">
@@ -75,7 +75,7 @@ Breeze has privileged access to every device it manages. We take that seriously.
 | **Operational** | Secret rotation runbooks, disaster recovery procedures (RTO < 1 hour, RPO < 15 minutes) |
 | **Abuse controls** | Cross-tenant platform-admin suspend endpoint, email-verification gate on signup, fail-closed token revocation |
 
-For the full security whitepaper, including SOC 2 alignment mapping, see **[Security Practices](docs/SECURITY_PRACTICES.md)**.
+For the full security whitepaper, including SOC 2 alignment mapping, see **[Security Practices](docs/security/SECURITY_PRACTICES.md)**.
 
 To report a vulnerability: **[security@lanternops.io](mailto:security@lanternops.io)**. See [SECURITY.md](SECURITY.md) for our disclosure policy.
 
@@ -206,7 +206,7 @@ Breeze will be running at `https://your-domain` (or `https://localhost` with a s
 
 On first production boot against an empty database, Breeze creates the initial Partner Admin only from operator-provided `BREEZE_BOOTSTRAP_ADMIN_EMAIL` and `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` values. If those values are missing, startup refuses to seed the empty production database. The password is never printed to logs. After you sign in and finish setup, remove those bootstrap values from `.env`.
 
-For hardened production deploys (Cloudflare Tunnel, mandatory digest-pinned images, monitoring + logging), see [docs/DEPLOY_PRODUCTION.md](docs/DEPLOY_PRODUCTION.md) which uses `deploy/docker-compose.prod.yml`.
+For hardened production deploys (Cloudflare Tunnel, mandatory digest-pinned images, monitoring + logging), see [docs/operations/DEPLOY_PRODUCTION.md](docs/operations/DEPLOY_PRODUCTION.md) which uses `deploy/docker-compose.prod.yml`.
 
 ### Install the Agent
 
@@ -221,7 +221,7 @@ make build
 
 # Binaries land in agent/bin/ — including breeze-agent, breeze-desktop-helper,
 # breeze-watchdog, and breeze-backup.
-# See docs/AGENT_INSTALLATION.md for enrollment instructions.
+# See docs/guides/AGENT_INSTALLATION.md for enrollment instructions.
 ```
 
 ### Enable the AI Operator (Optional)
@@ -345,7 +345,7 @@ The Brain Connector is the interface between the RMM and the AI, whether that's 
 └─────────────────────────────┘
 ```
 
-For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+For detailed architecture documentation, see [docs/guides/architecture.md](docs/guides/architecture.md).
 
 ---
 
@@ -496,7 +496,7 @@ For the in-product AI operator, Breeze uses the Claude Agent SDK (Anthropic). BY
 Yes. The Breeze agent has a built-in updater that pulls signed release artifacts and self-installs across macOS, Windows, and Linux. The Watchdog service supervises the agent process and restarts it on failure. Production deployments verify Ed25519-signed release manifests via `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`.
 
 **Is my data safe?**
-Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is isolated per partner with strict tenant separation, in your choice of US or EU region. See our [Security Practices](docs/SECURITY_PRACTICES.md) for the full security whitepaper, including SOC 2 alignment mapping, encryption standards, and audit controls.
+Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is isolated per partner with strict tenant separation, in your choice of US or EU region. See our [Security Practices](docs/security/SECURITY_PRACTICES.md) for the full security whitepaper, including SOC 2 alignment mapping, encryption standards, and audit controls.
 
 ---
 

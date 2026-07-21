@@ -112,9 +112,9 @@ Start with these systems/tables and expand:
 
 ## Primary References
 
-- `docs/SECURITY_PRACTICES.md`
-- `docs/SECURITY.md`
-- `docs/SECRET_ROTATION.md`
+- `docs/security/SECURITY_PRACTICES.md`
+- `docs/security/SECURITY.md`
+- `docs/operations/SECRET_ROTATION.md`
 - `apps/api/src/services/secretCrypto.ts`
 - `apps/api/src/db/migrations/2026-02-09-tenant-rls.sql`
 - `apps/api/src/db/migrations/2026-02-10-tenant-rls-deny-default.sql`

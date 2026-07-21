@@ -89,8 +89,8 @@ For each critical component, procedures should define:
 
 Primary references:
 
-- `docs/DISASTER_RECOVERY.md`
-- `docs/BACKUP_RESTORE.md`
+- `docs/operations/DISASTER_RECOVERY.md`
+- `docs/operations/BACKUP_RESTORE.md`
 
 ## Evidence Model (What Auditors Will Ask For)
 

@@ -1,5 +1,5 @@
 -- 2026-07-18: Action intents & durable approval layer — schema foundation
--- (spec docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md).
+-- (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
 --
 -- action_intents: org-scoped (Shape 1, direct org_id), durable record of a
 -- Tier-3 tool call awaiting/undergoing human approval. Identity/attribution

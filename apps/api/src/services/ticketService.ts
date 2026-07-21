@@ -13,7 +13,7 @@ import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketF
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
 
-// Lifecycle per spec §2 (docs/superpowers/specs/2026-06-09-native-ticketing-design.md). Closed/resolved reopen only to 'open'; any active status can short-circuit to resolved/closed.
+// Lifecycle per spec §2 (docs/superpowers/specs/ticketing/2026-06-09-native-ticketing-design.md). Closed/resolved reopen only to 'open'; any active status can short-circuit to resolved/closed.
 export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   new: ['open', 'pending', 'on_hold', 'resolved', 'closed'],
   open: ['pending', 'on_hold', 'resolved', 'closed'],

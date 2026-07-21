@@ -1,7 +1,7 @@
 > **PARTIALLY SUPERSEDED 2026-04-29.** The bootstrap-flow threats described
 > below (TM-007, sections gated on `MCP_BOOTSTRAP_ENABLED=true`) describe
 > the MCP bootstrap module that is being deleted in
-> `docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md`. The OAuth
+> `docs/superpowers/plans/onboarding-signup/2026-04-29-mcp-bootstrap-cleanup.md`. The OAuth
 > portions of this doc remain current. The threat model will be rewritten
 > in Phase 7 of that plan once the bootstrap module is gone.
 

@@ -435,7 +435,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
       // Per-step approval flow (default behavior). ONLY Tier 3 chat tools
       // route through the durable action-intents layer (spec
-      // docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md
+      // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
       // §6.1) — createActionIntent throws ActionIntentTierError for anything
       // below tier 3 (services/actionIntents/intentService.ts), so Tier 2
       // under per_step keeps the legacy lightweight bridge below (regression

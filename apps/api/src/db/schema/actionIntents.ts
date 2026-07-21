@@ -17,7 +17,7 @@ import { users } from './users';
 import { apiKeys } from './apiKeys';
 
 // Action intents & durable approval layer (spec
-// docs/superpowers/specs/2026-07-18-action-intents-approval-layer-design.md).
+// docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
 //
 // Tenancy Shape 1: direct `org_id` column. `partner_id` is denormalized for
 // ops queries only (mirrors elevations.ts / devices.ts) — it is NOT an

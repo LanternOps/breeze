@@ -1,7 +1,7 @@
 # Breeze AI for Office — Excel add-in
 
 Task-pane add-in delivering the governed Breeze AI assistant to MSP client
-end-users inside Excel. Spec: `docs/superpowers/specs/2026-06-12-breeze-ai-for-office-design.md`.
+end-users inside Excel. Spec: `docs/superpowers/specs/ai-mcp/2026-06-12-breeze-ai-for-office-design.md`.
 
 ## Prerequisites
 

@@ -616,7 +616,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		}
 		// desktop_debug forces info-level shipping so the chatty remote-desktop
 		// diagnostics surface to the API. Leave off in production. See
-		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		// docs/superpowers/plans/remote-desktop/2026-04-13-ice-turn-fallback-diagnostics.md.
 		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
 			logging.SetShipperLevel("info")
 		}
@@ -1560,7 +1560,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		}
 		// desktop_debug forces info-level shipping so the chatty remote-desktop
 		// diagnostics surface to the API. Leave off in production. See
-		// docs/superpowers/plans/2026-04-13-ice-turn-fallback-diagnostics.md.
+		// docs/superpowers/plans/remote-desktop/2026-04-13-ice-turn-fallback-diagnostics.md.
 		if cfg.DesktopDebug && (cfg.LogShippingLevel == "" || cfg.LogShippingLevel == "warn") {
 			logging.SetShipperLevel("info")
 		}

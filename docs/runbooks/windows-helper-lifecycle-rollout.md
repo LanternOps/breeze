@@ -1,7 +1,7 @@
 # Rollout: Windows helper lifecycle durability
 
 Operational notes for shipping the helper lifecycle work described in
-`docs/superpowers/specs/2026-07-14-windows-agent-helper-lifecycle-durability-design.md`
+`docs/superpowers/specs/agent/2026-07-14-windows-agent-helper-lifecycle-durability-design.md`
 (slice 7: "Cross-component integration tests, Windows validation, and rollout notes").
 
 ## What changes on the endpoint
