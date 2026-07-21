@@ -98,4 +98,13 @@ describe.skipIf(!SHOULD_RUN)('DCR redirect-URI transport policy (live)', () => {
     expect(res.status).toBe(201);
     expect(((await res.json()) as { client_id?: string }).client_id).toBeTruthy();
   });
+
+  it('registers a client with a localhost-hostname http redirect URI (claude-code CLI shape)', async () => {
+    // Regression guard for the 2026-07-12..21 outage: the CLI's native SDK auth
+    // registers `http://localhost:<ephemeral>/callback`, which #2377 rejected.
+    // This asserts the shape survives the full route, not just the pure policy.
+    const res = await register(live.url, ['http://localhost:52765/callback']);
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { client_id?: string }).client_id).toBeTruthy();
+  });
 });

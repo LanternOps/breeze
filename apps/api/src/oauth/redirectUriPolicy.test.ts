@@ -1,6 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import { validateRedirectUris } from './redirectUriPolicy';
 
+/**
+ * Real callback shapes emitted by MCP clients we intend to support.
+ *
+ * This is a COMPATIBILITY CONTRACT, not a convenience fixture. Every entry is a
+ * client that will silently fail to connect — with no server-side error anyone
+ * looks at — if the transport policy stops accepting its shape. Registration is
+ * step 4 of the OAuth handshake; steps 1-3 keep returning 200, so the break
+ * presents to the user as an inscrutable "not authenticated" and gets found
+ * weeks later by hand.
+ *
+ * If a policy change turns one of these red, DO NOT relax the test to match the
+ * code. Either keep the client working, or delete its entry deliberately and
+ * say so in the PR body — dropping a client must be a decision, not a side
+ * effect. Two outages came from exactly this being tracked in prose instead:
+ * #2193 (IAT gate vs Claude Desktop) and the `localhost` rejection in #2377.
+ *
+ * Ports are ephemeral: native clients bind a random port at runtime, so the
+ * specific number here is arbitrary but the shape is not.
+ */
+const REAL_CLIENT_CALLBACKS: ReadonlyArray<{ client: string; uri: string }> = [
+  // Hosted web connector — HTTPS callback on Anthropic's domain.
+  { client: 'claude.ai hosted connector', uri: 'https://claude.ai/api/mcp/auth_callback' },
+  // Claude Code CLI native SDK auth — binds a local server, uses the
+  // `localhost` HOSTNAME (not the IP literal). Rejecting this is what broke
+  // MCP auth for CLI users between 2026-07-12 (#2377) and 2026-07-21.
+  { client: 'claude-code CLI (native SDK auth)', uri: 'http://localhost:52765/callback' },
+  // mcp-remote stdio bridge — uses the IPv4 loopback literal.
+  { client: 'mcp-remote bridge', uri: 'http://127.0.0.1:49152/oauth/callback' },
+  // IPv6-only hosts: same bridge, bracketed IPv6 loopback.
+  { client: 'mcp-remote bridge (IPv6 host)', uri: 'http://[::1]:49152/oauth/callback' },
+];
+
+describe('validateRedirectUris — real MCP client compatibility', () => {
+  it.each(REAL_CLIENT_CALLBACKS)(
+    'accepts the callback registered by $client',
+    ({ uri }) => {
+      expect(validateRedirectUris([uri])).toEqual({ ok: true });
+    },
+  );
+
+  it('accepts every real client callback registered together in one array', () => {
+    expect(validateRedirectUris(REAL_CLIENT_CALLBACKS.map((c) => c.uri))).toEqual({ ok: true });
+  });
+});
+
 describe('validateRedirectUris', () => {
   it('accepts a plain HTTPS callback', () => {
     expect(validateRedirectUris(['https://client.example/cb'])).toEqual({ ok: true });
@@ -22,9 +67,21 @@ describe('validateRedirectUris', () => {
     expect(validateRedirectUris(['http://[::1]:8080/cb'])).toEqual({ ok: true });
   });
 
-  it('rejects http://localhost (hostname, not a loopback IP) per RFC 8252 §7.3', () => {
-    const result = validateRedirectUris(['http://localhost/cb']);
-    expect(result.ok).toBe(false);
+  it('accepts HTTP for the localhost hostname with no port', () => {
+    // RFC 8252 §7.3 prefers IP literals, but permitting `localhost` is a
+    // deliberate compatibility choice — see the policy docblock. Real clients
+    // hardcode it; see REAL_CLIENT_CALLBACKS above.
+    expect(validateRedirectUris(['http://localhost/cb'])).toEqual({ ok: true });
+  });
+
+  it('accepts HTTP for the localhost hostname with an ephemeral port', () => {
+    expect(validateRedirectUris(['http://localhost:52765/cb'])).toEqual({ ok: true });
+  });
+
+  it('rejects a hostname that merely starts with the localhost label', () => {
+    // `localhost.evil.com` is an ordinary DNS name — the loopback allowance is
+    // exact-match only, never a prefix/suffix test.
+    expect(validateRedirectUris(['http://localhost.evil.com/cb']).ok).toBe(false);
   });
 
   it('rejects a private-network HTTP address', () => {
