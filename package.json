@@ -26,21 +26,23 @@
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@10.33.4",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=22.19.0",
-    "pnpm": ">=10.33.4"
+    "pnpm": ">=10.34.5"
   },
   "pnpm": {
     "overrides": {
+      "adm-zip@<0.6.0": ">=0.6.0",
       "axios@>=1.0.0 <1.15.2": ">=1.15.2",
       "websocket-driver@<0.7.5": ">=0.7.5",
       "fast-xml-parser@<5.5.7": ">=5.5.7",
       "fast-xml-parser@<5.7.0": ">=5.7.0",
-      "brace-expansion@<1.1.13": ">=1.1.13",
-      "brace-expansion@>=2.0.0 <2.0.3": ">=2.0.3",
-      "brace-expansion@>=4.0.0 <5.0.6": ">=5.0.6",
-      "brace-expansion@5.0.5": "5.0.6",
+      "brace-expansion@<1.1.16": ">=1.1.16",
+      "brace-expansion@>=2.0.0 <2.1.2": ">=2.1.2",
+      "brace-expansion@>=4.0.0 <5.0.7": ">=5.0.7",
+      "brace-expansion@5.0.5": "5.0.7",
+      "brace-expansion@5.0.6": "5.0.7",
       "devalue@<5.6.4": ">=5.6.4",
       "devalue@>=5.6.4 <=5.8.0": ">=5.8.1",
       "dompurify@<3.4.11": ">=3.4.11",
@@ -80,7 +82,7 @@
       "follow-redirects@<=1.15.11": ">=1.16.0",
       "uuid@<14.0.0": ">=14.0.0",
       "@astrojs/node@<10.0.5": ">=10.0.5",
-      "shell-quote@<1.8.4": ">=1.8.4",
+      "shell-quote@<1.9.0": ">=1.9.0",
       "@grpc/grpc-js@<1.14.4": ">=1.14.4"
     }
   }

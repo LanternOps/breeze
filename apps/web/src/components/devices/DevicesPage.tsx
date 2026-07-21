@@ -641,7 +641,18 @@ export default function DevicesPage() {
           const label = action === 'reboot_safe_mode'
             ? t('devicesPage.actions.rebootSafeMode')
             : t(/* i18n-dynamic */ `devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
-          showToast({ type: 'success', message: t('devicesPage.toasts.commandSent', { action: label, hostname: device.hostname }) });
+          // These commands are QUEUED, and #2630 opened them to non-online
+          // devices. A 201 means "a row was inserted", not "the machine acted":
+          // there is no dispatch step, and for a disconnected device the agent
+          // claims it on its next poll (or staleCommandReaper fails it later).
+          // Saying "sent" for that is a false success — the user walks away
+          // believing it happened. Name the queue explicitly instead.
+          showToast({
+            type: 'success',
+            message: device.status === 'online'
+              ? t('devicesPage.toasts.commandSent', { action: label, hostname: device.hostname })
+              : t('devicesPage.toasts.commandQueued', { action: label, hostname: device.hostname }),
+          });
           break;
         }
 

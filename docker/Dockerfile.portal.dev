@@ -2,7 +2,7 @@
 # Development Dockerfile for Portal with hot-reloading
 FROM node:24-alpine
 
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./

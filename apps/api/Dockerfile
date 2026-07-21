@@ -4,7 +4,7 @@
 
 # Stage 1: Base image with pnpm
 FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS base
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@10.34.5
 RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
 

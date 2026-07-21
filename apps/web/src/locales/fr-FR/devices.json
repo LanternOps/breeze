@@ -152,6 +152,10 @@
       "pending": "L’appareil est en attente d’inscription",
       "notOnline": "L’appareil n’est pas en ligne"
     },
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — le Terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent à la reconnexion.",
+      "allCommands": "{{reason}} — il n'a aucun agent pour exécuter des commandes."
+    },
     "confirm": {
       "reboot": {
         "title": "Redémarrer l’appareil",
@@ -1724,7 +1728,7 @@
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
     "toasts": {
-      "actionFailed": "Action échouée",
+      "actionFailed": "Échec de {{action}} sur {{hostname}}",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
@@ -1738,7 +1742,8 @@
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
-      "commandSent": "Commandement envoyé",
+      "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}",
+      "commandSent": "{{action}} envoyé à {{hostname}}",
       "decommissionCancelled": "Mise hors service annulée",
       "decommissionFailed": "Échec de la mise hors service",
       "decommissioned": "Hors service",
