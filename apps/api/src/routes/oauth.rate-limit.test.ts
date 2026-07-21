@@ -351,25 +351,44 @@ describe('oauthRoutes rate limits', () => {
     expect(body.error).toBe('invalid_redirect_uri');
   });
 
-  it('rejects http://localhost redirect_uri but not the loopback IP (RFC 8252)', async () => {
+  it('accepts every loopback spelling — localhost and the literal IPs alike', async () => {
+    // Was "rejects http://localhost but not the loopback IP (RFC 8252)".
+    // Reversed deliberately: §7.3's IP-literal preference is a SHOULD, and
+    // rejecting the hostname blocked Claude Code's CLI auth, which registers
+    // `http://localhost:<ephemeral>/callback`. Rationale in the
+    // redirectUriPolicy.ts docblock; client shapes in REAL_CLIENT_CALLBACKS
+    // (redirectUriPolicy.test.ts). Non-loopback http is still rejected — see
+    // the `attacker.example` case above.
+    const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
+
+    // Each passes the pre-handler and falls through to the provider bridge
+    // (mocked to throw → onError yields the 200 sentinel).
+    for (const redirectUri of [
+      'http://localhost:8080/cb',
+      'http://127.0.0.1:49152/cb',
+      'http://[::1]:49152/cb',
+    ]) {
+      const accepted = await (await loadApp(rateLimiter)).request('/oauth/reg', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
+        body: JSON.stringify({ client_name: 'x', redirect_uris: [redirectUri] }),
+      });
+      expect(accepted.status, `expected ${redirectUri} to pass the transport policy`).toBe(200);
+    }
+  });
+
+  it('still rejects a hostname that merely starts with a loopback label', async () => {
+    // Guards the relaxation above: `localhost` is matched by exact equality,
+    // so attacker-controlled DNS names carrying it as a prefix stay rejected.
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
 
     const rejected = await (await loadApp(rateLimiter)).request('/oauth/reg', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
-      body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://localhost:8080/cb'] }),
+      body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://localhost.evil.com/cb'] }),
     });
     expect(rejected.status).toBe(400);
     expect((await rejected.json() as { error: string }).error).toBe('invalid_redirect_uri');
-
-    // The literal loopback IP passes the pre-handler and falls through to the
-    // provider bridge (mocked to throw → onError yields the 200 sentinel).
-    const accepted = await (await loadApp(rateLimiter)).request('/oauth/reg', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
-      body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://127.0.0.1:49152/cb'] }),
-    });
-    expect(accepted.status).toBe(200);
   });
 
   it('applies the redirect-uri transport policy to registration-management updates (MCP-OAUTH-09)', async () => {
