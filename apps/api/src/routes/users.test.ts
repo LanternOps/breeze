@@ -2095,7 +2095,7 @@ describe('user routes', () => {
 
     it('refuses to reset the caller’s own MFA (must use self-service disable)', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', { scope: 'partner', partnerId: 'partner-123', orgId: null, user: { id: TARGET, email: 't@e.com' } });
+        c.set('auth', { scope: 'partner', partnerId: 'partner-123', orgId: null, user: { id: TARGET, email: 'target@example.com' } });
         return next();
       });
 
