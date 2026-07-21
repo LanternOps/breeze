@@ -6,7 +6,7 @@
 
 # Stage 1: Base image with pnpm
 FROM node:24-alpine@sha256:fb71d01345f11b708a3553c66e7c74074f2d506400ea81973343d915cb64eef0 AS base
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@10.34.5
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 

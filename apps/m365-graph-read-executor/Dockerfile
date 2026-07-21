@@ -2,7 +2,7 @@
 
 # Build only the isolated executor workspace from the frozen monorepo lockfile.
 FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json ./
