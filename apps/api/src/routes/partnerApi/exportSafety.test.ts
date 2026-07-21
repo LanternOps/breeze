@@ -437,3 +437,69 @@ describe('recursive export safety', () => {
       .toMatchObject({ safe: false, reason: 'secret_detected' });
   });
 });
+
+describe('segment-aware detector corpus', () => {
+  // Benign machine-observed strings — must export under an inventory resource.
+  const BENIGN = [
+    '/dev/mapper/ubuntu--vg-ubuntu--lv',
+    '/dev/mapper/vg--data-lv--backups',
+    '/dev/mapper/rhel_prod--db01-var--log',
+    '/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK',
+    '/dev/disk/by-id/nvme-Samsung_SSD_980_PRO_1TB',
+    '/var/lib/docker/overlay2/containers',
+    '/usr/lib/systemd/system/multi-user.target.wants',
+    '/opt/microsoft/powershell/7/Modules',
+    'DESKTOP-ACCOUNTING-WORKSTATION-04',
+    'ubuntu-server-accounting-primary-01',
+    'SRV-EXCHANGE-MAILBOX-DATABASE-02',
+    'MACBOOKPRO-ENGINEERING-DEPARTMENT',
+    'microsoft-visual-cpp-redistributable-2022',
+    'veeam_agent_microsoft_windows_backup',
+    'Intel_Ethernet_Connection_I219-LM',
+    'MICROSOFTCORPORATIONSQLSERVER2022',
+    'WindowsServerStandardEditionLicense',
+    'DellOptiPlex7090SmallFormFactorDesktop',
+    '/dev/disk/by-uuid/a3f15d4c-9e78-4260-a3f1-5d4c9e78b260',
+  ];
+  // Secret tokens — must block under a customer-authored resource.
+  const SECRETS = [
+    'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'ghp_A9dK2mQ7xR4tV8wY1zB3cN6fH0jL5pS2uE7g',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9aBcD',
+    'Rk9mWv3xQpLz7NcB4dF8hJ2kS6gY1uE5aToPqXo0',
+    'AKIAIOSFODNN7EXAMPLEAKIAIOSFODNN7EXAMPLE',
+    'a3f15d4c9e78b260a3f15d4c9e78b260a3f15d4c',
+    'AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY',
+    'kR8xQ2mVp7LnWc4TgYhBz6JdFs1AeNu9XvCiPo3R',
+    'T7bK/9wQ2mZ+xR4nV8yL1cP6fH0jS5uE3gA',
+  ];
+
+  it('exports every benign machine-observed string (0 false positives)', () => {
+    const blocked = BENIGN.filter((device) =>
+      !inspectDefinitionForSecrets({ disks: [{ device }] }, 'device-inventory').safe);
+    expect(blocked).toEqual([]);
+  });
+
+  it('blocks every secret token in customer-authored content (0 false negatives)', () => {
+    const leaked = SECRETS.filter((value) =>
+      inspectDefinitionForSecrets({ value }, 'custom-field-values').safe);
+    expect(leaked).toEqual([]);
+  });
+
+  it('regression: the Ubuntu LVM device path that first broke IPAM reconstruction exports', () => {
+    // /dev/mapper/ubuntu--vg-ubuntu--lv is the default Ubuntu Server LVM path.
+    expect(inspectDefinitionForSecrets(
+      { disks: [{ id: '1', device: '/dev/mapper/ubuntu--vg-ubuntu--lv' }] },
+      'device-inventory',
+    )).toEqual({ safe: true });
+  });
+
+  it('honors the 16-char segment floor and 32-char candidate floor', () => {
+    // 15-char unbroken secret-shaped segment inside a 32+ candidate: below segment floor.
+    expect(inspectDefinitionForSecrets({ value: 'aB3dE6/gH9jK2mN-pQ4sT7vW0xZ/short' }, 'scripts'))
+      .toEqual({ safe: true });
+    // Candidate below 32 chars is never inspected structurally.
+    expect(inspectDefinitionForSecrets({ value: 'kR8xQ2mVp7LnWc4TgYhB' }, 'scripts'))
+      .toEqual({ safe: true });
+  });
+});
