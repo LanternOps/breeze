@@ -248,6 +248,28 @@ describe('intent-backed self-approve (sole operator)', () => {
     expect(onIntentDecided).toHaveBeenCalled();
   });
 
+  it('409 digest_mismatch → distinct "content changed" copy, not "already decided"', async () => {
+    // The server overloads 409 for a benign concurrent-decide race AND for the
+    // tamper tripwire (arguments changed after fan-out). The card must not
+    // surface the security-relevant refusal as the benign message.
+    decideIntentApproval.mockRejectedValue(
+      new ActionError('digest_mismatch', 409, undefined, { error: 'digest_mismatch' }),
+    );
+    render(
+      <AiApprovalDialog
+        {...selfProps}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        onIntentDecided={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/details changed/i);
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/already decided/i);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+  });
+
   it('410 expired → terminal state with the expiry copy', async () => {
     decideIntentApproval.mockRejectedValue(
       new ActionError('Expired', 410, undefined, { finalStatus: 'expired' }),
@@ -449,6 +471,23 @@ describe('self-approve expiry countdown', () => {
     });
 
     expect(screen.getByRole('timer')).toHaveTextContent('3:5');
+  });
+
+  it('anchors the countdown to intentExpiresAt when provided (not the mount-relative 5:00)', () => {
+    // The intent's real server-side deadline is 90s out — the card must show
+    // that, not a fresh 5:00 window, so it cannot silently disagree with the
+    // server's actual expiry.
+    render(
+      <AiApprovalDialog
+        {...makeSelfProps()}
+        intentBacked
+        selfApprovalRequestId="ap-1"
+        intentExpiresAt={new Date(Date.now() + 90_000).toISOString()}
+        onIntentDecided={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('timer')).toHaveTextContent('1:30');
   });
 
   it('does not render the countdown for the four-eyes case', () => {

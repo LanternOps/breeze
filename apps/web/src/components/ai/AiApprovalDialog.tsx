@@ -56,6 +56,14 @@ interface AiApprovalDialogProps {
   intentBacked?: boolean;
   /** The viewer's own fanned-out approval row (sole-operator case). */
   selfApprovalRequestId?: string;
+  /**
+   * The intent's real server-side expiry (ISO). When present, the countdown is
+   * anchored to it rather than a mount-relative constant — so the card cannot
+   * silently disagree with the server's actual deadline (CHAT_EXPIRY_MS).
+   * Absent on the legacy (non-intent) path, which keeps the mount-relative
+   * AUTO_DENY_MS behavior.
+   */
+  intentExpiresAt?: string;
   /** Called after a successful inline decide so the parent clears pendingApproval. */
   onIntentDecided?: () => void;
 }
@@ -171,10 +179,18 @@ export default function AiApprovalDialog({
   onReject,
   intentBacked,
   selfApprovalRequestId,
+  intentExpiresAt,
   onIntentDecided,
 }: AiApprovalDialogProps) {
   const { t } = useTranslation("ai");
-  const [remainingMs, setRemainingMs] = useState(AUTO_DENY_MS);
+  // Seed from the intent's real deadline when we have one, clamped to the
+  // AUTO_DENY_MS window so the progress bar (denominator AUTO_DENY_MS) can't
+  // exceed 100%. Falls back to the mount-relative constant for the legacy path.
+  const [remainingMs, setRemainingMs] = useState(() =>
+    intentExpiresAt
+      ? Math.max(0, Math.min(AUTO_DENY_MS, new Date(intentExpiresAt).getTime() - Date.now()))
+      : AUTO_DENY_MS,
+  );
   const [intentDecideState, setIntentDecideState] = useState<
     "idle" | "deciding" | "needs_device" | "decided" | "unavailable"
   >("idle");
@@ -237,11 +253,18 @@ export default function AiApprovalDialog({
       setIntentDecideState("decided");
       onIntentDecided?.();
     } catch (err) {
-      // 409 (already decided elsewhere) / 410 (expired) are TERMINAL for this
-      // row. Falling back to `idle` would re-offer a button whose only possible
-      // outcome is another WebAuthn prompt followed by the same rejection.
+      // 409 (already decided elsewhere / content changed) and 410 (expired) are
+      // TERMINAL for this row. Falling back to `idle` would re-offer a button
+      // whose only possible outcome is another WebAuthn prompt followed by the
+      // same rejection. The server overloads 409 for two distinct reasons, so
+      // discriminate on the token: `digest_mismatch` is a tamper tripwire (the
+      // action's arguments changed after fan-out, approvals.ts) — surfacing that
+      // as the benign "already decided" would hide a security-relevant refusal.
       if (err instanceof ActionError && (err.status === 409 || err.status === 410)) {
+        const token = (err.body as { error?: unknown } | null | undefined)?.error;
         if (err.status === 410) setIntentError(t("aiApprovalDialog.expired"));
+        else if (token === "digest_mismatch")
+          setIntentError(t("aiApprovalDialog.contentChanged"));
         else setIntentError(t("aiApprovalDialog.alreadyDecided"));
         setIntentDecideState("unavailable");
         onIntentDecided?.();
@@ -278,9 +301,24 @@ export default function AiApprovalDialog({
   // terminal "expired" presentation a server 410 produces.
   useEffect(() => {
     if (intentBacked && !canSelfDecide) return;
-    const start = Date.now();
+    // Anchor to the intent's real server-side expiry when we have it, so the
+    // countdown matches the deadline the server will actually enforce. The
+    // legacy path has none, so it counts down the mount-relative window.
+    const deadline = intentExpiresAt
+      ? new Date(intentExpiresAt).getTime()
+      : Date.now() + AUTO_DENY_MS;
     const interval = setInterval(() => {
-      const remaining = AUTO_DENY_MS - (Date.now() - start);
+      // Card already settled (decided / unavailable — via the decide handler's
+      // not_sole_approver or a server 409/410) — stop ticking so the countdown
+      // doesn't keep counting down beneath a terminal message.
+      if (
+        decideStateRef.current === "decided" ||
+        decideStateRef.current === "unavailable"
+      ) {
+        clearInterval(interval);
+        return;
+      }
+      const remaining = Math.min(AUTO_DENY_MS, deadline - Date.now());
       if (remaining <= 0) {
         clearInterval(interval);
         setRemainingMs(0);
@@ -302,7 +340,7 @@ export default function AiApprovalDialog({
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [onReject, intentBacked, canSelfDecide, t]);
+  }, [onReject, intentBacked, canSelfDecide, t, intentExpiresAt]);
 
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);

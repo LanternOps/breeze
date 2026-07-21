@@ -27,6 +27,7 @@
     "deny": "Negar",
     "verificationFailed": "Falha na verificação. Tente novamente.",
     "alreadyDecided": "Esta solicitação já foi decidida.",
+    "contentChanged": "Os detalhes desta solicitação mudaram após a criação, portanto ela não pode mais ser aprovada.",
     "expired": "Esta solicitação expirou antes de ser decidida.",
     "notSoleApprover": "Agora é necessário outro aprovador — você não pode mais aprovar a sua própria solicitação.",
     "noApproverDevice": "Aprovar a sua própria solicitação requer Touch ID / Windows Hello.",

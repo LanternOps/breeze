@@ -31,6 +31,8 @@ export interface PendingApproval {
   intentBacked?: boolean;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
+  /** The intent's real server-side expiry (ISO), so the self-approve countdown reflects actual deadline. */
+  intentExpiresAt?: string;
 }
 
 export interface PendingPlan {
@@ -135,6 +137,7 @@ export function processStreamEvent(
           deviceContext: event.deviceContext,
           intentBacked: event.intentBacked,
           selfApprovalRequestId: event.selfApprovalRequestId,
+          intentExpiresAt: event.intentExpiresAt,
         }
       }));
       return currentAssistantId;

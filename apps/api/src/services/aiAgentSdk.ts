@@ -602,6 +602,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // org the requester holds no row and this stays undefined; the
           // card keeps its waiting state (four-eyes preserved).
           selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
+          // The intent's real server-side deadline, so the self-approve card's
+          // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
+          // rather than a mount-relative client constant that can silently drift
+          // from it.
+          intentExpiresAt: intent.expiresAt.toISOString(),
           toolName,
           input,
           description,
