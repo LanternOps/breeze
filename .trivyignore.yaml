@@ -1,15 +1,15 @@
 # Trivy vulnerability ignores — SCOPED to base-image global tooling only.
 #
-# Every entry below is path-scoped to `usr/local/lib/node_modules/**`, the
-# global install directory in the node:24-alpine base image. That directory
-# holds npm (shipped with the base image) and the globally-installed pnpm —
-# and their VENDORED dependencies. It is NOT the application's dependency tree,
-# which lives under `app/node_modules` (pnpm store) and is scanned normally.
+# Every entry below is path-scoped to `**/pnpm/dist/node_modules/**` — the
+# dependencies VENDORED inside the globally-installed pnpm CLI in the
+# node:24-alpine base image (usr/local/lib/node_modules/pnpm/dist/...). It is
+# NOT the application's dependency tree, which lives under `app/node_modules`
+# (pnpm store) and is scanned normally.
 #
 # Why these are safe to ignore in THIS location:
 #   - They are all denial-of-service CVEs (ReDoS / decompression bombs /
-#     malformed-input parsing) in packages that npm/pnpm vendor for their OWN
-#     use (installing packages), not for the running service.
+#     malformed-input parsing) in packages that pnpm vendors for its OWN use
+#     (installing packages), not for the running service.
 #   - The production container's entrypoint is the API/Web/Portal/executor
 #     process. npm and pnpm are never invoked at runtime, and never against
 #     attacker-controlled input, so these code paths are unreachable in prod.
@@ -24,10 +24,10 @@
 vulnerabilities:
   - id: CVE-2026-59873   # node-tar: DoS via crafted gzip bomb (fixed 7.5.19) — npm-vendored
     paths:
-      - "usr/local/lib/node_modules/**"
+      - "**/pnpm/dist/node_modules/**"
   - id: CVE-2026-59874   # node-tar: DoS via malformed tar archive (fixed 7.5.18) — npm-vendored
     paths:
-      - "usr/local/lib/node_modules/**"
+      - "**/pnpm/dist/node_modules/**"
   - id: CVE-2026-13149   # brace-expansion: ReDoS (fixed 5.0.7/2.1.2/1.1.16) — npm-vendored 2.1.0; app copy is 5.0.7
     paths:
-      - "usr/local/lib/node_modules/**"
+      - "**/pnpm/dist/node_modules/**"
