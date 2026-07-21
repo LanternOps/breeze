@@ -238,27 +238,37 @@ describe('sole-operator self-approve guard — re-derived at decide time (#2685,
 
     const res = await decideViaRoute(s, s.requester, forgedRowId, 'approve');
 
-    // A distinguishable refusal, not a generic 403 — the client can explain it
-    // and it is greppable in logs / audit details.
+    // THE load-bearing assertion of this test: the refusal carries the
+    // `not_sole_approver` token specifically. This is what distinguishes the
+    // guard from the pre-existing gates. Note that `decideViaRoute(...'approve')`
+    // presents NO L3 proof, so with the guard removed this call still 403s — but
+    // with `step_up_required` from the assurance gate, not `not_sole_approver`.
+    // So the status check alone is vacuous (403 either way); the token match on
+    // the next line is the whole proof. That the guard refuses even at FULL L3
+    // assurance (i.e. it is a four-eyes check, not an assurance check) is proven
+    // separately, and more cheaply, by the unit test in approvals.test.ts that
+    // mocks assertApprovalAssurance to a passing L3 and shows the CAS is never
+    // reached.
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: 'not_sole_approver' });
 
     await withSystemDbAccessContext(async () => {
-      // THE property: the intent was never released. On the pre-#2685 handler
-      // this row is `approved` (the L3 gate is the only thing in the way, and
-      // it is an assurance check, not a four-eyes check).
+      // Corroborating side-effects of the refusal. These do NOT independently
+      // prove the guard (the L3 gate above would also leave the intent pending
+      // in this no-proof call) — they confirm the refusal happened cleanly:
+      // the intent was never released...
       const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, snapshot.id));
       expect(intent?.status).toBe('pending_approval');
 
-      // No outbox row → the release worker never sees it.
+      // ...no outbox row was written, so the release worker never sees it...
       const outbox = await db
         .select({ id: intentOutbox.id })
         .from(intentOutbox)
         .where(and(eq(intentOutbox.intentId, snapshot.id), eq(intentOutbox.eventType, 'intent_approved')));
       expect(outbox).toHaveLength(0);
 
-      // The refusal is BEFORE the CAS, so no approval row flipped — the real
-      // approver's row is still decidable.
+      // ...and because the refusal is BEFORE the CAS, no approval row flipped —
+      // the real approver's row is still decidable.
       const rows = await db
         .select({ id: approvalRequests.id, userId: approvalRequests.userId, status: approvalRequests.status })
         .from(approvalRequests)
