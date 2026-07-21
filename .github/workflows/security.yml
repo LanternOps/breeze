@@ -168,6 +168,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          trivyignores: '.trivyignore.yaml'
 
       - name: Scan Web image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -176,6 +177,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          trivyignores: '.trivyignore.yaml'
 
       - name: Scan Portal image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -184,6 +186,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          trivyignores: '.trivyignore.yaml'
 
       - name: Scan M365 Graph Read Executor image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -192,6 +195,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
+          trivyignores: '.trivyignore.yaml'
 
   # Lints the workflow files themselves. actionlint catches real workflow
   # bugs (bad expressions, wrong action inputs, invalid syntax); shellcheck
