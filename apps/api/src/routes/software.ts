@@ -688,10 +688,11 @@ softwareRoutes.get(
 
     const { id } = c.req.valid('param');
     // Built-in integration packages (Huntress/SentinelOne) are partner-scoped with
-    // org_id NULL, so an `eq(orgId)` filter excludes them and their versions come
-    // back empty — the "No versions" / grayed-out deploy bug. Look up by id and
-    // authorize in JS, mirroring the /deploy route: RLS already binds a built-in to
-    // the caller's partner, so a NULL-org row here can only be the caller's own.
+    // org_id NULL, so an `eq(orgId)` filter excludes the catalog row entirely and
+    // the endpoint 404s — which the deploy wizard renders as "No versions" with a
+    // grayed-out deploy. Look up by id and authorize in JS, mirroring the /deploy
+    // route: for an org/partner-scoped caller RLS binds a visible built-in to their
+    // own partner, so a NULL-org row here is the caller's own (system scope sees all).
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
     if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
