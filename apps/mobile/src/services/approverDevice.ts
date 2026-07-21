@@ -62,27 +62,24 @@ export type ApproverRegistrationOutcome =
   | { status: 'failed'; reason: string };
 
 // Single-flight: RootNavigator's effect can re-fire while a registration is in
-// flight (checkAuth double-dispatches setCredentials on cold start). The grant
-// is single-use, so a duplicate attempt would burn a consumed grant into a 403
-// and overwrite a successful outcome. Concurrent callers share one attempt.
+// flight (checkAuth double-dispatches setCredentials on cold start). With the
+// read-and-clear grant handoff a re-fired effect can never carry the SAME grant
+// twice, so the real races are: a grant-less duplicate call resolving `deferred`
+// and racing the effect's `active` cleanup to overwrite a real success, and a
+// duplicate POST racing the SecureStore write of the credential id. Grant-less
+// callers therefore just join whatever attempt is already running. A caller
+// that DOES carry a grant is different: dropping it silently strands a fresh,
+// unused grant (see below), so it first awaits the in-flight attempt — if that
+// attempt already registered the device, the grant is simply left unused
+// (harmless, it just expires); otherwise it fires its own attempt with the
+// grant, still funnelled through the same single in-flight slot.
 let inFlight: Promise<ApproverRegistrationOutcome> | null = null;
 
-/**
- * Idempotent: ensure this phone has a registered approver key. Called after
- * auth lands. FAILS OPEN — never throws, never blocks login.
- *
- * #2707: registration requires a `register_approver_device` grant minted at
- * login (`authenticatorRegisterGrantId` in the login/mfa-verify response) —
- * proof of a fresh interactive login, independent of the bearer token. With no
- * grant (cold-start restored session) there is nothing to prove with: return
- * `deferred` WITHOUT touching the network; the device registers on the next
- * real login. The #2683 banner surfaces this state with actionable copy.
- */
-export async function ensureApproverDevice(
-  signer: HardwareSigner = getHardwareSigner(),
-  registerGrant?: string,
+/** Run one registration attempt, occupying (and then releasing) `inFlight`. */
+function runAttempt(
+  signer: HardwareSigner,
+  registerGrant: string | undefined,
 ): Promise<ApproverRegistrationOutcome> {
-  if (inFlight) return inFlight;
   inFlight = (async (): Promise<ApproverRegistrationOutcome> => {
     try {
       if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
@@ -112,15 +109,49 @@ export async function ensureApproverDevice(
       }
       await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
       return { status: 'registered' };
-    } catch {
-      return { status: 'failed', reason: 'exception' };
+    } catch (e) {
+      return { status: 'failed', reason: `exception:${(e as Error)?.name ?? 'unknown'}` };
     }
   })();
-  try {
-    return await inFlight;
-  } finally {
-    inFlight = null;
+  return (async () => {
+    try {
+      return await inFlight!;
+    } finally {
+      inFlight = null;
+    }
+  })();
+}
+
+/**
+ * Idempotent: ensure this phone has a registered approver key. Called after
+ * auth lands. FAILS OPEN — never throws, never blocks login.
+ *
+ * #2707: registration requires a `register_approver_device` grant minted at
+ * login (`authenticatorRegisterGrantId` in the login/mfa-verify response) —
+ * proof of a fresh interactive login, independent of the bearer token. With no
+ * grant (cold-start restored session) there is nothing to prove with: return
+ * `deferred` WITHOUT touching the network; the device registers on the next
+ * real login. The ApprovalGate banner (mechanism introduced in #2683) surfaces
+ * this state with actionable copy.
+ */
+export async function ensureApproverDevice(
+  signer: HardwareSigner = getHardwareSigner(),
+  registerGrant?: string,
+): Promise<ApproverRegistrationOutcome> {
+  if (inFlight) {
+    if (!registerGrant) return inFlight;
+    // A grant-bearing call showed up while an attempt (almost certainly
+    // grant-less, since grants are read-and-cleared before the attempt even
+    // starts) is already running. Wait for it — if it already registered the
+    // device, our grant is simply unused and expires harmlessly; otherwise run
+    // our own attempt WITH the grant, still through the single in-flight slot.
+    const priorOutcome = await inFlight;
+    if (priorOutcome.status === 'registered' || priorOutcome.status === 'already_registered') {
+      return priorOutcome;
+    }
+    return runAttempt(signer, registerGrant);
   }
+  return runAttempt(signer, registerGrant);
 }
 
 /**

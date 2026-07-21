@@ -122,6 +122,10 @@ describe('ensureApproverDevice', () => {
     await expect(first).resolves.toEqual({ status: 'registered' });
     await expect(second).resolves.toEqual({ status: 'registered' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    // B4: the grant is single-use — a second key mint would mean a second
+    // (wasted, or worse duplicate) attempt slipped through the single-flight
+    // gate.
+    expect(signer.createKeys).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op when a credential id already exists', async () => {
@@ -204,17 +208,58 @@ describe('ensureApproverDevice', () => {
     expect(secureStore.setItemAsync).not.toHaveBeenCalled();
   });
 
-  it('never throws on the login path when the network blows up', async () => {
+  it('never throws on the login path when the network blows up; reason names the exception', async () => {
     const signer = fakeSigner();
     secureStore.getItemAsync.mockImplementation(async (k: string) =>
       k === 'breeze_approver_credential_id' ? null : 'test-token',
     );
     fetchMock.mockRejectedValueOnce(new Error('offline'));
 
+    // B2: the reason must name the exception (not the bare literal 'exception')
+    // so a failure that never leaves the device is at least distinguishable in
+    // aggregate telemetry once RootNavigator reports it.
     await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
       status: 'failed',
-      reason: 'exception',
+      reason: 'exception:Error',
     });
+  });
+
+  it('starts a FRESH attempt after a failed outcome — the in-flight slot is cleared', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    fetchMock.mockResolvedValueOnce(json({ error: 'nope' }, 500));
+
+    await expect(ensureApproverDevice(signer, 'grant-1')).resolves.toEqual({
+      status: 'failed',
+      reason: 'http_500',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-2' } }));
+    await expect(ensureApproverDevice(signer, 'grant-2')).resolves.toEqual({ status: 'registered' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('B1: a grant-bearing call joins a grant-less in-flight attempt, then fires its OWN POST once it resolves non-registered', async () => {
+    const signer = fakeSigner();
+    secureStore.getItemAsync.mockImplementation(async (k: string) =>
+      k === 'breeze_approver_credential_id' ? null : 'test-token',
+    );
+    // Grant-less caller — RootNavigator can start this before its grant read
+    // resolves. No POST: it resolves 'deferred' without touching the network.
+    const grantless = ensureApproverDevice(signer);
+    // A grant-bearing caller shows up while the grant-less attempt is still
+    // in flight — it must NOT be dropped (that's the B1 bug): it should join,
+    // see the non-registered outcome, and fire its own POST with the grant.
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-1' } }));
+    const withGrant = ensureApproverDevice(signer, 'grant-1');
+
+    await expect(grantless).resolves.toEqual({ status: 'deferred', reason: 'no_reauth_grant' });
+    await expect(withGrant).resolves.toEqual({ status: 'registered' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ registerGrantId: 'grant-1' });
   });
 });
 

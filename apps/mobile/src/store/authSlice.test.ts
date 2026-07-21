@@ -155,14 +155,25 @@ describe('approver registration status', () => {
   it.each([
     ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id')],
     ['rejected', () => logoutAsync.rejected(null, 'req-id')],
-  ])('clears on logoutAsync.%s — the next user must not inherit the banner', (_name, action) => {
+  ])('clears on logoutAsync.%s — the next user must not inherit the banner or grant', (_name, action) => {
     const store = makeStore();
     store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+    // Seed a live grant via loginAsync.fulfilled so we can prove logoutAsync
+    // clears it too — not just the synchronous `logout()` reducer.
+    store.dispatch(
+      loginAsync.fulfilled(
+        { token: 't', user: fakeUser, registerGrant: 'grant-1' } as any,
+        '',
+        { email: 'e', password: 'p' },
+      ),
+    );
+    expect(store.getState().auth.authenticatorRegisterGrantId).toBe('grant-1');
 
     store.dispatch(action() as never);
 
     expect(store.getState().auth.approverRegistration).toBe('idle');
     expect(store.getState().auth.approverRegistrationReason).toBeNull();
+    expect(store.getState().auth.authenticatorRegisterGrantId).toBeNull();
   });
 });
 

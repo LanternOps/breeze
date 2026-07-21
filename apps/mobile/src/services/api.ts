@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Sentry from '@sentry/react-native';
 
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
@@ -213,16 +214,25 @@ async function requestWithPrefix<T>(
     (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
   }
 
-  // Always send the per-install id so the API can recognise this phone for
-  // the lifecycle/lockout flow. Failures (SecureStore disabled in tests)
-  // fall through silently — a missing header simply means "no row to match".
+  // Always send the per-install id so the API can recognise this phone. This
+  // used to be a harmless soft-matching hint (the lifecycle/lockout flow), but
+  // post-#2707 the server also gates login-time register_approver_device grant
+  // minting on this header — if SecureStore fails here, the phone never gets a
+  // grant, approver registration permanently defers, and there is no recovery:
+  // ApprovalGate's deferred-banner "sign out and back in" advice cannot fix a
+  // device that can't produce an installation id at all. Report failures so
+  // they're observable instead of silently capping the phone at L1 forever.
   try {
     const installationId = await getOrCreateInstallationId();
     if (installationId) {
       (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    Sentry.captureMessage('installation id unavailable for mobile-device header', {
+      level: 'warning',
+      tags: { area: 'mobile-device-id-header' },
+      extra: { errorName: (e as Error)?.name ?? 'unknown' },
+    });
   }
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;

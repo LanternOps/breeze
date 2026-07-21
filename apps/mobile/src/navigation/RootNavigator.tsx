@@ -111,6 +111,15 @@ export function RootNavigator() {
     if (registerGrant) dispatch(clearAuthenticatorRegisterGrant());
     void ensureApproverDevice(undefined, registerGrant ?? undefined).then((outcome) => {
       if (!active) return;
+      if (outcome.status === 'failed') {
+        // Telemetry only, so a silent registration failure is at least visible
+        // in Sentry — this is otherwise invisible until the user reports it.
+        // NEVER include the grant value here; it's a single-use credential.
+        Sentry.captureMessage('approver-device registration failed', {
+          level: 'warning',
+          tags: { area: 'approver-device-registration', reason: outcome.reason },
+        });
+      }
       dispatch(
         setApproverRegistration({
           status: outcome.status === 'already_registered' ? 'registered' : outcome.status,

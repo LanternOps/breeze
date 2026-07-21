@@ -156,11 +156,15 @@ function ApproverFailedBanner() {
 }
 
 /**
- * Shown when {@link ensureApproverDevice} deferred registration because the
- * login-minted grant was consumed or absent (e.g. a restored session, not a
+ * Shown when {@link ensureApproverDevice} deferred registration because there
+ * was no login-minted grant available to use — either it was already taken
+ * out of the Redux store (read-and-clear) by an earlier attempt this session,
+ * or none was ever minted at all (a restored/cold-start session rather than a
  * fresh interactive login). This is informational, not an error — approvals
  * still work at L1 — so it uses the neutral/brand border rather than the
- * `deny` styling {@link ApproverFailedBanner} uses.
+ * `deny` styling {@link ApproverFailedBanner} uses. A grant that WAS minted
+ * but got consumed server-side (Redis) surfaces as `failed`/`http_403`
+ * instead, not `deferred`.
  */
 function ApproverDeferredBanner() {
   const insets = useSafeAreaInsets();
