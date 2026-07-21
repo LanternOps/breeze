@@ -152,6 +152,10 @@
       "pending": "El dispositivo está pendiente de inscripción",
       "notOnline": "El dispositivo no está en línea"
     },
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — la Terminal remota necesita un agente conectado. Los comandos en cola se ejecutan al reconectar.",
+      "allCommands": "{{reason}} — no tiene un agente que ejecute comandos."
+    },
     "confirm": {
       "reboot": {
         "title": "Reiniciar dispositivo",
@@ -1724,7 +1728,7 @@
     "subtitle": "Gestiona y monitoriza su flota.",
     "title": "Dispositivos",
     "toasts": {
-      "actionFailed": "Acción fallida",
+      "actionFailed": "{{action}} falló en {{hostname}}",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",
@@ -1738,7 +1742,8 @@
       "bulkWakeAllFailed": "Error en la reactivación masiva de todos",
       "bulkWakeSent": "Despertador masivo enviado",
       "bulkWakeSomeFailed": "Despertar en masa algunos falló",
-      "commandSent": "Comando enviado",
+      "commandQueued": "{{action}} en cola — se ejecutará cuando {{hostname}} se reconecte",
+      "commandSent": "{{action}} enviado a {{hostname}}",
       "decommissionCancelled": "Desmantelamiento cancelado",
       "decommissionFailed": "Error de desmantelamiento",
       "decommissioned": "Fuera de servicio",

@@ -9,6 +9,12 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import {
+  actionGateHint,
+  isCommandQueueable,
+  notOnlineTitle,
+  notQueueableTitle,
+} from "./bulkActionGating";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
@@ -177,6 +183,26 @@ export default function DeviceCard({
   const ramHistory =
     historyState === "ready" ? metricHistory.map((point) => point.ram) : [];
 
+  // Action gating for the card menu (#2488). The grid view previously had no
+  // gates at all, so Run Script/Reboot fired on decommissioned devices and
+  // Remote Terminal fired doomed requests on offline ones.
+  //   - queued commands (Run Script, Reboot) run on reconnect and are refused
+  //     by the API only for decommissioned devices -> isCommandQueueable, the
+  //     same predicate the list row menu and bulk bar use.
+  //   - Remote Terminal is a live session and genuinely needs a connected
+  //     agent -> status === 'online', matching DeviceActions.
+  // Tooltips come from the shared helpers so this card names the ACTUAL status
+  // ("Device is quarantined") rather than a blanket "Device is not online".
+  const commandQueueable = isCommandQueueable(device.status);
+  const online = device.status === "online";
+  const liveSessionTitle = notOnlineTitle(device.status, t);
+  const queuedCommandTitle = notQueueableTitle(device.status, t);
+  // `title` alone is unreachable on touch and for AT (a disabled button leaves
+  // the tab order), so the reason is also rendered as visible text below the
+  // menu and referenced by aria-describedby. Pattern: QuoteActions (#1975).
+  const gateHint = actionGateHint(device.status, t);
+  const gateHintId = `device-${device.id}-action-gate-hint`;
+
   return (
     <div
       onClick={() => onClick?.(device)}
@@ -222,7 +248,10 @@ export default function DeviceCard({
                   onAction?.("terminal", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!online}
+                title={liveSessionTitle}
+                aria-describedby={!online ? gateHintId : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <Terminal className="h-4 w-4" />
                 {t("deviceCard.remoteTerminal")}{" "}
@@ -234,7 +263,10 @@ export default function DeviceCard({
                   onAction?.("run-script", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!commandQueueable}
+                title={queuedCommandTitle}
+                aria-describedby={!commandQueueable ? gateHintId : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <FileCode className="h-4 w-4" />
                 {t("deviceCard.runScript")}{" "}
@@ -246,7 +278,10 @@ export default function DeviceCard({
                   onAction?.("reboot", device);
                   setMenuOpen(false);
                 }}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                disabled={!commandQueueable}
+                title={queuedCommandTitle}
+                aria-describedby={!commandQueueable ? gateHintId : undefined}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceCard.reboot")}{" "}
@@ -290,6 +325,20 @@ export default function DeviceCard({
                   <Trash2 className="h-4 w-4" />
                   {t("deviceCard.decommission")}{" "}
                 </button>
+              )}
+              {gateHint && (
+                // Visible so the reason survives touch (no hover) and does not
+                // depend on focusing a disabled button, which is impossible.
+                <>
+                  <hr className="my-1" />
+                  <p
+                    id={gateHintId}
+                    data-testid={`device-${device.id}-action-gate-hint`}
+                    className="px-4 py-2 text-xs text-muted-foreground"
+                  >
+                    {gateHint}
+                  </p>
+                </>
               )}
             </div>
           )}

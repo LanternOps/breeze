@@ -1157,14 +1157,12 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
   });
 
   // Remote Terminal really IS a live session (terminalWs rejects anything but
-  // online), so its `!== "online"` gate is correct. Reboot's identical gate is
-  // stricter than the API requires — it's a queued command — but that's
-  // pre-existing behaviour left for a maintainer call, so pin it as-is rather
-  // than leave it untested either way.
+  // online), so its `!== "online"` gate is correct and applies to every
+  // non-online status.
   //
   // The per-status tooltip map is exercised across ALL six non-online statuses:
-  // it's new code mapping each to a distinct string, so a transposed entry
-  // (quarantined → "Device is updating") would otherwise ship silently.
+  // it maps each to a distinct string, so a transposed entry (quarantined →
+  // "Device is updating") would otherwise ship silently.
   it.each([
     ['offline', 'Device is offline'],
     ['maintenance', 'Device is in maintenance mode'],
@@ -1173,20 +1171,91 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     ['updating', 'Device is updating'],
     ['pending', 'Device is pending enrollment'],
   ] as const)(
-    'disables Remote Terminal and Reboot for a %s device with the status-accurate tooltip',
+    'disables Remote Terminal for a %s device with the status-accurate tooltip',
     (status, expectedTitle) => {
       render(
         <DeviceList devices={[{ ...baseDevice, status }]} includeDecommissioned />,
       );
       openRowMenu();
 
-      for (const name of [/remote terminal/i, /^reboot$/i]) {
-        const btn = screen.getByRole('button', { name });
-        expect(btn).toBeDisabled();
-        expect(btn).toHaveAttribute('title', expectedTitle);
-      }
+      const btn = screen.getByRole('button', { name: /remote terminal/i });
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute('title', expectedTitle);
     },
   );
+
+  // Reboot is a QUEUED command, not a live session: list view and grid view
+  // (DeviceCard) both gate it with isCommandQueueable, so decommissioned is the
+  // only status that disables it — an offline device keeps Reboot enabled and
+  // the command runs on reconnect.
+  it.each(['offline', 'maintenance', 'quarantined', 'updating', 'pending'] as const)(
+    'keeps Reboot enabled for a %s device and dispatches (runs on reconnect)',
+    (status) => {
+      const onAction = vi.fn();
+      const device: Device = { ...baseDevice, status };
+      render(<DeviceList devices={[device]} onAction={onAction} />);
+      openRowMenu();
+
+      const btn = screen.getByRole('button', { name: /^reboot$/i });
+      expect(btn).toBeEnabled();
+      expect(btn).not.toHaveAttribute('title');
+      fireEvent.click(btn);
+      expect(onAction).toHaveBeenCalledWith('reboot', device);
+    },
+  );
+
+  it('disables Reboot only for a decommissioned device, and it does not dispatch', () => {
+    const onAction = vi.fn();
+    render(
+      <DeviceList
+        devices={[{ ...baseDevice, status: 'decommissioned' }]}
+        onAction={onAction}
+        includeDecommissioned
+      />,
+    );
+    openRowMenu();
+
+    const btn = screen.getByRole('button', { name: /^reboot$/i });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('title', 'Device is decommissioned');
+    fireEvent.click(btn);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  // Guards the other direction for the live-session gate: without this, setting
+  // Remote Terminal to permanently disabled passes the whole suite, because the
+  // only other assertion about it covers non-online statuses.
+  it('keeps Remote Terminal enabled and dispatching for an online device', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    const btn = screen.getByRole('button', { name: /remote terminal/i });
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
+    expect(onAction).toHaveBeenCalledWith('terminal', baseDevice);
+  });
+
+  // #2630 a11y: the disabled reason must be reachable without hover — see the
+  // matching suite in DeviceCard.gating.test.tsx for the rationale.
+  it('exposes the gate reason as visible text tied to the disabled action', () => {
+    render(<DeviceList devices={[{ ...baseDevice, status: 'offline' }]} />);
+    openRowMenu();
+
+    const el = screen.getByTestId(`device-${baseDevice.id}-action-gate-hint`);
+    expect(el).toHaveTextContent('Device is offline');
+    expect(screen.getByRole('button', { name: /remote terminal/i }))
+      .toHaveAttribute('aria-describedby', el.id);
+    // Reboot is enabled on offline, so it must NOT claim a disabled reason.
+    expect(screen.getByRole('button', { name: /^reboot$/i }))
+      .not.toHaveAttribute('aria-describedby');
+  });
+
+  it('renders no gate hint for an online device', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    openRowMenu();
+    expect(screen.queryByTestId(`device-${baseDevice.id}-action-gate-hint`)).toBeNull();
+  });
 
   // Wake (Wake-on-LAN) is the deliberate exception — it exists precisely to
   // target an offline device. Guards against a future "gate every row-menu

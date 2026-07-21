@@ -152,6 +152,10 @@
       "pending": "Device is pending enrollment",
       "notOnline": "Device is not online"
     },
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — Remote Terminal needs a connected agent. Queued commands still run on reconnect.",
+      "allCommands": "{{reason}} — it has no agent to run commands."
+    },
     "confirm": {
       "reboot": {
         "title": "Reboot Device",
@@ -1728,7 +1732,7 @@
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",
     "toasts": {
-      "actionFailed": "Action Failed",
+      "actionFailed": "{{action}} failed on {{hostname}}",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",
@@ -1743,7 +1747,8 @@
       "bulkWakeAllFailed": "Bulk Wake All Failed",
       "bulkWakeSent": "Bulk Wake Sent",
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
-      "commandSent": "Command Sent",
+      "commandQueued": "{{action}} queued — will run when {{hostname}} reconnects",
+      "commandSent": "{{action}} sent to {{hostname}}",
       "decommissionCancelled": "Decommission Cancelled",
       "decommissionFailed": "Decommission Failed",
       "decommissioned": "Decommissioned",

@@ -226,12 +226,18 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     });
 
     // Pick a specific site — proves the selection flows into the request body.
-    // The site list loads async (fetched per selected org): the select exists
-    // in a disabled/placeholder state during the load, so wait for the option.
-    await screen.findByRole('option', { name: 'Site B' });
-    fireEvent.change(screen.getByTestId('enrollment-key-site-select'), {
-      target: { value: 'site-b' },
+    // The site list loads async (fetched per selected org). Waiting for the
+    // option alone is racy: options commit one render before sitesLoading flips
+    // false (separate .then/.finally state updates), and the default-site
+    // effect runs after that commit — a change fired inside that window is
+    // lost and the default (site-a) wins. Wait for the settled state instead:
+    // select enabled AND defaulted to the first site.
+    const siteSelect = screen.getByTestId('enrollment-key-site-select');
+    await waitFor(() => {
+      expect(siteSelect).toBeEnabled();
+      expect(siteSelect).toHaveValue('site-a');
     });
+    fireEvent.change(siteSelect, { target: { value: 'site-b' } });
 
     const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
     expect(submit.disabled).toBe(false);

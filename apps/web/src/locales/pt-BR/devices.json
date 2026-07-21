@@ -152,6 +152,10 @@
       "pending": "O dispositivo está aguardando inscrição",
       "notOnline": "O dispositivo não está online"
     },
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — o Terminal remoto precisa de um agente conectado. Comandos na fila são executados na reconexão.",
+      "allCommands": "{{reason}} — não há agente para executar comandos."
+    },
     "confirm": {
       "reboot": {
         "title": "Reiniciar dispositivo",
@@ -1728,7 +1732,7 @@
     "subtitle": "Gerencie e monitore sua frota.",
     "title": "Dispositivos",
     "toasts": {
-      "actionFailed": "Falha na ação",
+      "actionFailed": "{{action}} falhou em {{hostname}}",
       "agentOnlyAction": "Esta ação se aplica somente a dispositivos com agente. Os dispositivos de rede não têm agente e foram ignorados.",
       "alreadyPendingTail": "Já estava pendente",
       "bulkActionFailed": "Falha na ação em massa",
@@ -1743,7 +1747,8 @@
       "bulkWakeAllFailed": "Falha ao despertar todos os dispositivos",
       "bulkWakeSent": "Comando de despertar em massa enviado",
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
-      "commandSent": "Comando enviado",
+      "commandQueued": "{{action}} na fila — será executado quando {{hostname}} reconectar",
+      "commandSent": "{{action}} enviado para {{hostname}}",
       "decommissionCancelled": "Desativação cancelada",
       "decommissionFailed": "Falha na desativação",
       "decommissioned": "Desativado",
