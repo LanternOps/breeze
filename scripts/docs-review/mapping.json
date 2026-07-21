@@ -1987,6 +1987,56 @@
       "docs": [
         "features/devices.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/m365ControlPlane/writeActionRuntimeConfig.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/m365ControlPlane/writeActionService.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/m365ControlPlane/graphActionsExecutorClient.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/**",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/intentApprovers.ts",
+      "docs": [
+        "features/ai.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/googleToolsHeadless.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/m365ToolsHeadless.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/quoteSendQueue.ts",
+      "docs": [
+        "features/quotes.mdx"
+      ]
     }
   ]
 }

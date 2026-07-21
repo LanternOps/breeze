@@ -57,6 +57,22 @@ When the AI proposes a Tier 3 action, it enters a **pending** state and waits fo
 
 Approved actions execute immediately. Rejected actions are logged and the AI is notified.
 
+#### Who can approve
+
+Approving or rejecting a Tier 3 action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer — reviewing a proposed action and authorising it are separate responsibilities.
+
+To let another role approve actions, add `approvals:decide` to it under **Settings → Users & Roles**. See [Users and Roles](/reference/users-and-roles/).
+
+<Aside type="note">
+  If an organization has no user whose role grants `approvals:decide`, a Tier 3 request has nobody who can act on it and is automatically cancelled rather than left pending indefinitely.
+</Aside>
+
+#### Pending approvals survive a restart
+
+Tier 3 requests raised from AI chat or the MCP server are stored durably, so a pending approval is no longer tied to the session that created it. If the server restarts — or you simply close the browser and come back later — the request is still waiting in **Approval History**, and approving it there executes the action.
+
+This also means an approved identity action against a connected Google Workspace or Microsoft 365 tenant (for example a password reset, sign-out, or user disable) runs against that organization's connection without needing the original chat session to still be open. Microsoft 365 write actions additionally require the Graph-actions executor to be enabled — see [Customer Microsoft 365 Graph-actions (write) executor](/deploy/environment/#customer-microsoft-365-graph-actions-write-executor-optional).
+
 ### Rate limits
 
 Each tool has a per-tool sliding window rate limit. Requests that exceed the limit are rejected and logged in the **Rejection & Denial Log**.

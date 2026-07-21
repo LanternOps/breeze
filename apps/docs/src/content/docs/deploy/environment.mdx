@@ -324,6 +324,38 @@ Customer Graph-read lets a customer administrator grant read-only Microsoft Grap
   Setting a value in `.env` is necessary but **not sufficient** on a custom Compose file. Every variable above must also be listed in the `api` service's `environment:` block — Compose only interpolates variables it maps explicitly. A value present in `.env` but not mapped through Compose reaches the container as empty, so an "enabled" deploy would fail to boot as if the variable were unset.
 </Aside>
 
+## Customer Microsoft 365 Graph-actions (write) executor (optional)
+
+Like Graph-read above, this feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`; while the flag is off (or absent) these variables are never parsed and any values you set are ignored.
+
+Where Graph-read is read-only inventory, Graph-actions authorises **write** operations against a customer's Microsoft 365 tenant — the identity actions the AI can propose, such as resetting a user's password, disabling a user, or changing mailbox rules. Those tools are Tier 3, so they still require human approval before anything executes (see [AI Risk Engine → Approval workflow](/features/ai/#approval-workflow)).
+
+It uses the same isolation model as Graph-read: the Entra certificate and Key Vault access live entirely inside a **separately deployed** executor sidecar, and the API holds only an opaque version-pinned reference plus a private key it uses to sign short-lived internal requests.
+
+| Variable | Required when enabled | Format / example | Meaning |
+|---|---|---|---|
+| `M365_GRAPH_ACTIONS_TOOLS_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for the M365 write-action tools. When `false`, none of the variables below are validated and the write tools are unavailable. |
+| `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS` | Yes | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations may use M365 write actions. `*` = all organizations; otherwise an allowlist. Leave empty while the feature is off. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the multi-tenant Graph-actions app. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION` | Yes | Exactly 32 lowercase hex characters | Pins which stored credential version the executor must use. Must equal the version segment of `M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF`. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF` | Yes | `akv://<vault-host>/m365-customer-graph-actions/<32-lowercase-hex-version>` | Opaque Key Vault reference to the app's certificate material. The trailing version segment **must match** `M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION`. |
+| `M365_GRAPH_ACTIONS_EXECUTOR_URL` | Yes | Origin-only HTTPS, e.g. `https://m365-actions.internal` (no path, query, fragment, or userinfo) | Private base URL of the Graph-actions executor sidecar. Must be HTTPS; anything other than a bare origin is rejected at boot. |
+| `M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE` | Yes | Literal `m365-graph-actions-executor` | JWT audience for the API→executor internal auth token. Must equal that exact string. |
+| `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID` | Yes | Non-empty string | Key ID of the API's signing JWK. If the JWK file carries a `kid`, it must match this value. |
+| `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Yes | Absolute path, e.g. `/run/secrets/m365_graph_actions_executor_signing_private_jwk` | The API's Ed25519 **private** signing JWK. Same rules as the Graph-read key: a regular file, mode `0600` or stricter, mounted read-only. Never inline the private JWK in an env var. |
+
+<Aside type="caution" title="The executor is not part of the bundled Compose stack">
+  The Graph-actions executor is **deliberately not deployed** by the generic Compose stack. Run its separately released, digest-pinned image (`ghcr.io/lanternops/breeze/m365-graph-actions-executor@sha256:<digest>`) in an environment that supplies a managed or workload identity, private authenticated ingress, and controlled HTTPS egress to Key Vault, Microsoft identity, and Graph. Never expose it through Caddy or a public tunnel, never publish its container port, and never configure a plaintext executor URL.
+</Aside>
+
+<Aside type="tip">
+  As with Graph-read, `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` is the in-container mount path, while `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` in `.env` is the **host path** of the source JWK feeding that secret. Standalone Compose cannot apply secret uid/gid/mode, so provision the source file with numeric owner `1001:1001` and mode `0400`. The executor receives only the matching **public** JWK.
+</Aside>
+
+<Aside type="caution" title="Map new variables into the api service">
+  As with every optional block above, a value in `.env` is necessary but **not sufficient** on a custom Compose file — each variable must also appear in the `api` service's `environment:` block, or it reaches the container empty and an "enabled" deploy fails to boot.
+</Aside>
+
 ## Docker Deployment
 
 | Variable | Default | Description |
