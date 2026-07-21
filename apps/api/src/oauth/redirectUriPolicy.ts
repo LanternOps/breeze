@@ -12,30 +12,51 @@
  * Policy (RFC 8252 §7.3 native-app loopback guidance):
  *   - HTTPS is accepted for any host, provided it carries no userinfo
  *     credentials and no fragment.
- *   - HTTP is accepted ONLY for the literal loopback IP hosts `127.0.0.1` and
- *     `[::1]`, with any (or no) port. Ephemeral ports are expected — native
- *     apps bind a random port at runtime.
- *   - Everything else is rejected: `localhost` as a *hostname* (RFC 8252 warns
- *     it can resolve to a non-loopback interface and is DNS-spoofable),
- *     private-network addresses, public HTTP hosts, protocol-relative URLs,
- *     malformed URLs, credentials, fragments, and custom/app schemes.
+ *   - HTTP is accepted ONLY for the loopback hosts `127.0.0.1`, `[::1]`, and
+ *     `localhost`, with any (or no) port. Ephemeral ports are expected —
+ *     native apps bind a random port at runtime.
+ *   - Everything else is rejected: private-network addresses, public HTTP
+ *     hosts, protocol-relative URLs, malformed URLs, credentials, fragments,
+ *     and custom/app schemes.
  *
  * A single invalid URI rejects the ENTIRE registration (fail closed) — we never
  * silently drop the bad entry and register the rest.
  *
- * ROLLOUT NOTE (RFC 8252): rejecting `localhost` while allowing loopback IPs is
- * RFC-correct but has broken real MCP clients before (issue #2193). Claude's
- * hosted callback is HTTPS and mcp-remote uses a `127.0.0.1` loopback IP, so
- * both pass — but verify against a staging registration before deploy.
+ * WHY `localhost` IS ALLOWED (reversed 2026-07-21, see below): RFC 8252 §7.3
+ * *recommends* IP literals over the `localhost` hostname because `localhost`
+ * can in principle resolve to a non-loopback interface via a doctored
+ * hosts/DNS entry. That is a SHOULD, not a MUST, and the attack presupposes an
+ * already-compromised client host — at which point the authorization code is
+ * readable anyway. Meanwhile every client that hardcodes `http://localhost`
+ * simply cannot register. Stock `oidc-provider` (our own dependency) treats all
+ * three spellings as loopback (`LOOPBACKS` in lib/consts/client_attributes.js),
+ * so rejecting `localhost` made this policy stricter than the library it wraps.
+ *
+ * The bypass hardening is unaffected: exact host equality still rejects
+ * hostname-prefix tricks (`127.0.0.1.evil.com`, `localhost.evil.com`), and
+ * userinfo/fragment/scheme checks are unchanged.
+ *
+ * CLIENT COMPATIBILITY IS A TEST, NOT A CHECKLIST: `redirectUriPolicy.test.ts`
+ * carries a `REAL_CLIENT_CALLBACKS` fixture naming the exact callback shape each
+ * MCP client emits. Tightening this policy such that a named client no longer
+ * registers must be a deliberate edit to that fixture. Prose "verify on staging
+ * before deploy" notes have failed twice: #2193 (the `OAUTH_DCR_REQUIRE_IAT`
+ * gate blocked Claude Desktop's anonymous DCR) and this rule, which blocked
+ * Claude Code's CLI auth for 9 days because "Claude" was assumed to be a single
+ * client with an HTTPS hosted callback.
  */
 
 export type RedirectUriValidation = { ok: true } | { ok: false; reason: string };
 
-// RFC 8252 §7.3: only the literal loopback IP addresses are trusted for HTTP.
-// Node's WHATWG URL parser reports the IPv6 loopback host as the bracketed
-// form `[::1]`; accept the un-bracketed spelling too for defense in depth.
-function isLoopbackIpHost(hostname: string): boolean {
-  return hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+// Loopback hosts trusted for plain HTTP. Matched by EXACT equality — a
+// substring/suffix test would admit `127.0.0.1.evil.com` and `localhost.evil.com`,
+// which are ordinary DNS names that merely start with a loopback label.
+// Node's WHATWG URL parser reports the IPv6 loopback host as the bracketed form
+// `[::1]`; accept the un-bracketed spelling too for defense in depth.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', '::1', 'localhost']);
+
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(hostname);
 }
 
 function validateOne(uri: unknown): RedirectUriValidation {
@@ -64,12 +85,12 @@ function validateOne(uri: unknown): RedirectUriValidation {
   }
 
   if (url.protocol === 'http:') {
-    if (isLoopbackIpHost(url.hostname)) {
+    if (isLoopbackHost(url.hostname)) {
       return { ok: true };
     }
     return {
       ok: false,
-      reason: `http redirect_uri is permitted only for the loopback IPs 127.0.0.1 or [::1] (got host "${url.hostname}")`,
+      reason: `http redirect_uri is permitted only for the loopback hosts 127.0.0.1, [::1] or localhost (got host "${url.hostname}")`,
     };
   }
 
