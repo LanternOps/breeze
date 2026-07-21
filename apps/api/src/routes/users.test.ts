@@ -810,6 +810,37 @@ describe('user routes', () => {
       expect(runOutsideDbContext).toHaveBeenCalled();
       expect(withSystemDbAccessContext).toHaveBeenCalled();
     });
+
+    it('includes mfaMethod so the web can pick the register re-auth tier (#2707)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'admin@example.com',
+              name: 'Admin',
+              avatarUrl: null,
+              status: 'active',
+              mfaEnabled: true,
+              mfaMethod: 'totp',
+              isPlatformAdmin: false,
+              createdAt: new Date(),
+              lastLoginAt: new Date(),
+              setupCompletedAt: new Date(),
+              passwordChangedAt: new Date(),
+              preferences: {}
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { mfaMethod?: unknown };
+      expect(body.mfaMethod).toBe('totp');
+    });
   });
 
   describe('PATCH /users/me validation', () => {

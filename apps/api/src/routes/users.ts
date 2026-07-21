@@ -318,6 +318,9 @@ userRoutes.get('/me', async (c) => {
       avatarUrl: users.avatarUrl,
       status: users.status,
       mfaEnabled: users.mfaEnabled,
+      // #2707: lets the profile UI pick the approver-register re-auth tier
+      // (passkey → TOTP code → password) without a second endpoint.
+      mfaMethod: users.mfaMethod,
       // Exposed so the web sidebar can hide platform-admin-only nav (e.g.
       // account-deletion-requests) and skip its badge fetch — otherwise that
       // fetch 403s ("platform admin access required") on every page load for
