@@ -27,7 +27,7 @@ import type { ExtensionJobDefinition } from '@breeze/extension-sdk';
  * deliberate extra reservations and are allowed.
  */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
-  'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
+  'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
   'backup', 'billing', 'browser-security', 'c2c', 'catalog', 'changes',
