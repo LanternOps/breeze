@@ -117,6 +117,33 @@ describe('authenticator store approver helpers', () => {
     expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['an empty 2xx body', null],
+    ['an empty object', {}],
+    ['a challenge-less options object', { options: { allowCredentials: [] } }],
+  ])('getApprovalAssertion rejects on a malformed 2xx challenge (%s)', async (_label, payload) => {
+    // A malformed 200 must NOT fall through to the device-less branch: that
+    // tells a user who HAS a registered authenticator to go register one, and
+    // in PamRespondModal it silently downgrades the approve to a proofless L1.
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse(payload));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getApprovalAssertion('/pam/elevation-requests', 'req-m')).rejects.toMatchObject({
+      name: expect.not.stringMatching(/NoApproverDeviceError/),
+    });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+  });
+
+  it('getApprovalAssertion still reports NoApproverDeviceError for a WELL-FORMED device-less challenge', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ challenge: 'c-b64url', allowCredentials: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getApprovalAssertion('/pam/elevation-requests', 'req-n')).rejects.toMatchObject({
+      name: 'NoApproverDeviceError',
+    });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+  });
+
   it('revokeApproverDevice POSTs to the revoke endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ success: true }));
     vi.stubGlobal('fetch', fetchMock);

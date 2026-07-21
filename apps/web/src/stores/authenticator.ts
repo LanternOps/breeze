@@ -104,15 +104,32 @@ export async function getApprovalAssertion(basePath: string, id: string): Promis
   if (!challengeResponse.ok) {
     throw new Error(challengeData?.error ?? `Could not start verification (${challengeResponse.status}).`);
   }
-  const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
-    challengeData.options ?? challengeData.optionsJSON ?? challengeData;
+  // A 2xx whose body isn't a usable challenge (empty body, truncated proxy
+  // response, a future field rename) must NOT fall through to the device-less
+  // branch below — that would tell a user who HAS a registered authenticator to
+  // go register one, and in PamRespondModal it silently downgrades the approve
+  // to a proofless L1. Require the device-less case to be explicit: a real
+  // options object carrying a `challenge`, whose allowCredentials is empty.
+  const optionsJSON: PublicKeyCredentialRequestOptionsJSON | null =
+    challengeData && typeof challengeData === 'object'
+      ? (challengeData.options ?? challengeData.optionsJSON ?? challengeData)
+      : null;
+  if (
+    !optionsJSON ||
+    typeof optionsJSON !== 'object' ||
+    typeof optionsJSON.challenge !== 'string' ||
+    optionsJSON.challenge.length === 0
+  ) {
+    throw new Error('Could not start verification: the server returned an unusable challenge.');
+  }
 
   // No registered approver device → the challenge carries no allowCredentials.
   // Signal this distinctly (name='NoApproverDeviceError') BEFORE the ceremony so
   // callers can fall back to an L1 (session-tap) approval instead of firing a
   // Windows Hello prompt the technician can't satisfy. Thrown before
-  // startAuthentication so it is never a DOMException (which callers treat as a
-  // genuine cancel/abort). P2 is opt-in, not required (enforcement is Phase 4).
+  // startAuthentication, so it can never be confused with a ceremony failure
+  // (which callers treat as a genuine cancel/abort). P2 is opt-in, not required
+  // (enforcement is Phase 4).
   if (!optionsJSON.allowCredentials || optionsJSON.allowCredentials.length === 0) {
     const err = new Error('No registered approver device');
     err.name = 'NoApproverDeviceError';

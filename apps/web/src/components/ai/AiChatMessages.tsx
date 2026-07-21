@@ -11,6 +11,11 @@ import type { ActionPlanStep } from "@breeze/shared";
 import { isDocsUrl } from "@/lib/safeHref";
 import { useHelpStore } from "@/stores/helpStore";
 import { useTranslation } from "react-i18next";
+// Single source of truth: the store owns the shape the stream writes (incl.
+// intentBacked / selfApprovalRequestId). Redeclaring it here meant both
+// copies had to be edited in lockstep. Type-only import — no runtime edge to
+// the store, so no cycle.
+import type { PendingApproval } from "@/stores/processStreamEvent";
 
 interface Message {
   id: string;
@@ -22,27 +27,6 @@ interface Message {
   toolUseId?: string;
   isError?: boolean;
   isStreaming?: boolean;
-}
-
-interface PendingApproval {
-  executionId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  description: string;
-  deviceContext?: {
-    hostname: string;
-    displayName?: string;
-    status: string;
-    lastSeenAt?: string;
-    activeSessions?: Array<{
-      username: string;
-      activityState?: string;
-      idleMinutes?: number;
-      sessionType: string;
-    }>;
-  };
-  /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
-  intentBacked?: boolean;
 }
 
 interface PendingPlan {
@@ -70,6 +54,8 @@ interface AiChatMessagesProps {
   onAbortPlan?: () => void;
   onPauseAi?: (paused: boolean) => void;
   onSendQuickAction?: (prompt: string) => void;
+  /** Inline intent decide succeeded — drop the card (the SSE stream carries the outcome). */
+  onIntentDecided?: () => void;
 }
 
 export default function AiChatMessages({
@@ -85,6 +71,7 @@ export default function AiChatMessages({
   onAbortPlan,
   onPauseAi,
   onSendQuickAction,
+  onIntentDecided,
 }: AiChatMessagesProps) {
   const { t } = useTranslation("ai");
   const quickActions = [
@@ -312,6 +299,12 @@ export default function AiChatMessages({
 
       {pendingApproval && (
         <AiApprovalDialog
+          // Each approval_required event REPLACES pendingApproval in place; without
+          // a key React reconciles the same instance and the previous card's decide
+          // state (needs_device / error / decided) leaks into an unrelated approval —
+          // e.g. a card that renders with no Approve button after the user registered
+          // an authenticator in response to the previous one.
+          key={pendingApproval.executionId}
           toolName={pendingApproval.toolName}
           description={pendingApproval.description}
           input={pendingApproval.input}
@@ -319,6 +312,9 @@ export default function AiChatMessages({
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
+          selfApprovalRequestId={pendingApproval.selfApprovalRequestId}
+          intentExpiresAt={pendingApproval.intentExpiresAt}
+          onIntentDecided={onIntentDecided}
         />
       )}
 

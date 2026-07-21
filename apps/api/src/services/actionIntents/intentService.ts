@@ -84,6 +84,14 @@ export type ActionIntentSnapshot = {
   result: unknown;
   errorCode: string | null;
   approvalRequestIds: string[];
+  /**
+   * The approval_requests row fanned out to the REQUESTER, when one exists —
+   * i.e. the sole-operator branch (requester is the only eligible approver).
+   * null on a multi-approver fan-out (spec §4: the requester is excluded) and
+   * when there are no approvers. The web chat card uses this to offer an
+   * inline L3 self-approve (WebAuthn) for exactly this row and no other.
+   */
+  requesterApprovalRequestId: string | null;
 };
 
 export interface ActionIntentTransitionPatch {
@@ -155,7 +163,11 @@ function computeExpiresAt(source: ActionIntentSource): Date {
   return new Date(Date.now() + (source === 'chat' ? CHAT_EXPIRY_MS : MCP_EXPIRY_MS));
 }
 
-function toSnapshot(intent: ActionIntent, approvalRequestIds: string[]): ActionIntentSnapshot {
+function toSnapshot(
+  intent: ActionIntent,
+  approvalRequestIds: string[],
+  requesterApprovalRequestId: string | null,
+): ActionIntentSnapshot {
   return {
     id: intent.id,
     status: intent.status,
@@ -166,6 +178,7 @@ function toSnapshot(intent: ActionIntent, approvalRequestIds: string[]): ActionI
     result: intent.result,
     errorCode: intent.errorCode,
     approvalRequestIds,
+    requesterApprovalRequestId,
   };
 }
 
@@ -176,6 +189,7 @@ function toSnapshot(intent: ActionIntent, approvalRequestIds: string[]): ActionI
 interface CreationResult {
   intent: ActionIntent;
   approvalRequestIds: string[];
+  requesterApprovalRequestId: string | null;
   /** userIds that received a fanned-out approval row, in the same order as approvalRequestIds — used for the post-commit push fan-out. Empty on an idempotent replay. */
   fanOutUserIds: string[];
   isNew: boolean;
@@ -338,12 +352,14 @@ export async function createActionIntent(
           );
         }
         const approvalRows = await db
-          .select({ id: approvalRequests.id })
+          .select({ id: approvalRequests.id, userId: approvalRequests.userId })
           .from(approvalRequests)
           .where(eq(approvalRequests.intentId, existing.id));
         return {
           intent: existing,
           approvalRequestIds: approvalRows.map((r) => r.id),
+          requesterApprovalRequestId:
+            approvalRows.find((r) => r.userId === requesterId)?.id ?? null,
           fanOutUserIds: [],
           isNew: false,
         };
@@ -352,6 +368,7 @@ export async function createActionIntent(
       // New intent: fan out the cross-user approval_requests and write the
       // intent_created outbox row, all in this same transaction.
       let approvalRequestIds: string[] = [];
+      let requesterApprovalRequestId: string | null = null;
       let fanOutUserIds: string[] = [];
 
       const approvalRowFor = (userId: string) => ({
@@ -386,6 +403,7 @@ export async function createActionIntent(
           .returning({ id: approvalRequests.id });
         if (rows[0]) {
           approvalRequestIds = [rows[0].id];
+          requesterApprovalRequestId = rows[0].id;
           fanOutUserIds = [requesterId];
         }
       }
@@ -414,7 +432,7 @@ export async function createActionIntent(
         payload: { intentId: inserted.id, orgId },
       });
 
-      return { intent: finalIntent, approvalRequestIds, fanOutUserIds, isNew: true };
+      return { intent: finalIntent, approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, isNew: true };
     });
   } catch (err) {
     // One transaction ⇒ any throw already rolled the intent insert back with
@@ -476,7 +494,7 @@ export async function createActionIntent(
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds);
+  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId);
 }
 
 // ---------------------------------------------------------------------------
@@ -489,10 +507,20 @@ export async function getActionIntent(auth: AuthContext, intentId: string): Prom
     const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
     if (!intent) return null;
     const approvalRows = await db
-      .select({ id: approvalRequests.id })
+      .select({ id: approvalRequests.id, userId: approvalRequests.userId })
       .from(approvalRequests)
       .where(eq(approvalRequests.intentId, intent.id));
-    return toSnapshot(intent, approvalRows.map((r) => r.id));
+    // Caller-derived, matching the sibling derivation in the idempotent-replay
+    // path (`r.userId === requesterId`). The field's contract is "the approval
+    // row YOU may self-approve", so it must key on the caller — keying on
+    // intent.requestedByUserId would hand an approver looking at somebody
+    // else's intent a row id that is not theirs to decide.
+    const callerId = auth.user.id;
+    return toSnapshot(
+      intent,
+      approvalRows.map((r) => r.id),
+      approvalRows.find((r) => r.userId === callerId)?.id ?? null,
+    );
   });
 }
 

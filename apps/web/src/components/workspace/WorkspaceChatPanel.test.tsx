@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../ai/AiChatMessages', () => ({ default: () => <div /> }));
+// Captures the props the panel forwards, so the tab-id closure on
+// onIntentDecided can be asserted against the RENDERED tab.
+const messagesHarness = vi.hoisted(() => ({ props: null as Record<string, any> | null }));
+vi.mock('../ai/AiChatMessages', () => ({
+  default: (props: Record<string, any>) => {
+    messagesHarness.props = props;
+    return <div />;
+  },
+}));
 vi.mock('../ai/AiChatInput', () => ({ default: () => <div /> }));
 vi.mock('../ai/AiContextBadge', () => ({ default: () => <div /> }));
 vi.mock('../ai/AiCostIndicator', () => ({ default: () => <div /> }));
@@ -9,6 +17,7 @@ vi.mock('../ai/AiCostIndicator', () => ({ default: () => <div /> }));
 const store = {
   sendMessage: vi.fn(),
   approveExecution: vi.fn(),
+  clearPendingApproval: vi.fn(),
   approvePlan: vi.fn(),
   abortPlan: vi.fn(),
   pauseAi: vi.fn(),
@@ -94,5 +103,29 @@ describe('WorkspaceChatPanel - Create Ticket button', () => {
 
     await waitFor(() => expect(store.draftTicketFromChat).toHaveBeenCalledWith('t'));
     expect(screen.getByTestId('create-ticket-from-chat-modal')).toBeInTheDocument();
+  });
+});
+
+describe('WorkspaceChatPanel - onIntentDecided', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    messagesHarness.props = null;
+  });
+
+  it('forwards onIntentDecided as clearPendingApproval bound to the rendered tab id', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ id: 'tab-b' }) as any} />);
+
+    messagesHarness.props!.onIntentDecided();
+
+    // The multi-tab failure mode is clearing the wrong tab: assert the id, not
+    // just that the action fired.
+    expect(store.clearPendingApproval).toHaveBeenCalledWith('tab-b');
+    expect(store.clearPendingApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear anything on render alone', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+
+    expect(store.clearPendingApproval).not.toHaveBeenCalled();
   });
 });

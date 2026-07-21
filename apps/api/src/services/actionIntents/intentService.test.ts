@@ -13,7 +13,12 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     idempotencyKey: col('idempotency_key'),
     status: col('status'),
   };
-  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id') };
+  // `userId` MUST be present here: createActionIntent projects
+  // `approvalRequests.userId` on the idempotent-replay path and matches it
+  // against the requester to derive `requesterApprovalRequestId`. Without the
+  // column the projection key is `undefined` and every
+  // requesterApprovalRequestId assertion below passes vacuously.
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), userId: col('user_id') };
   const intentOutboxTbl = { id: col('id'), intentId: col('intent_id') };
 
   return {
@@ -345,13 +350,14 @@ describe('createActionIntent — idempotency', () => {
     dbState.insertActionIntentsResults.push([]);
     const existing = makeIntentRow({ id: 'existing-intent', status: 'approved' });
     dbState.selectActionIntentsResults.push([existing]);
-    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing' }]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: REQUESTER_ID }]);
 
     const snapshot = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'fixed-key' }));
 
     expect(snapshot.id).toBe('existing-intent');
     expect(snapshot.status).toBe('approved');
     expect(snapshot.approvalRequestIds).toEqual(['approval-existing']);
+    expect(snapshot.requesterApprovalRequestId).toBe('approval-existing');
     // No new approver resolution or fan-out happened.
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
     expect(dbState.insertedOutboxValues).toHaveLength(0);
@@ -383,6 +389,7 @@ describe('createActionIntent — approver fan-out', () => {
 
     expect(snapshot.status).toBe('pending_approval');
     expect(snapshot.approvalRequestIds).toEqual(['approval-1', 'approval-2']);
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
     const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
     expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
     expect(inserted.every((r) => r.userId !== REQUESTER_ID)).toBe(true);
@@ -407,6 +414,7 @@ describe('createActionIntent — approver fan-out', () => {
 
     expect(snapshot.status).toBe('pending_approval');
     expect(snapshot.approvalRequestIds).toEqual(['approval-solo']);
+    expect(snapshot.requesterApprovalRequestId).toBe('approval-solo');
     const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
     expect(inserted).toHaveLength(1);
     expect(inserted[0]?.userId).toBe(REQUESTER_ID);
@@ -428,6 +436,7 @@ describe('createActionIntent — approver fan-out', () => {
     expect(snapshot.status).toBe('cancelled');
     expect(snapshot.errorCode).toBe('no_eligible_approvers');
     expect(snapshot.approvalRequestIds).toEqual([]);
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
     expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
     expect(dbState.updateActionIntentsSets[0]).toMatchObject({
       status: 'cancelled',
@@ -553,10 +562,42 @@ describe('getActionIntent', () => {
 
   it('returns a snapshot with approval request ids when found', async () => {
     dbState.selectActionIntentsResults.push([makeIntentRow({ id: 'intent-1' })]);
-    dbState.selectApprovalRequestsResults.push([{ id: 'approval-1' }, { id: 'approval-2' }]);
+    // Rows carry userId in production (the select projects it); a fixture that
+    // omits it makes the requesterApprovalRequestId derivation unfalsifiable.
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', userId: APPROVER_1 },
+      { id: 'approval-2', userId: APPROVER_2 },
+    ]);
     const result = await getActionIntent(makeAuth(), 'intent-1');
     expect(result?.id).toBe('intent-1');
     expect(result?.approvalRequestIds).toEqual(['approval-1', 'approval-2']);
+  });
+
+  it('requesterApprovalRequestId is the CALLER’s row (the one they may self-approve)', async () => {
+    // Caller-derived, matching the idempotent-replay path. Keying on the
+    // intent's requestedByUserId would hand an approver reading somebody
+    // else's intent a row id that is not theirs to decide.
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', requestedByUserId: APPROVER_1 }),
+    ]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-other', userId: APPROVER_1 },
+      { id: 'approval-mine', userId: REQUESTER_ID },
+    ]);
+    const result = await getActionIntent(makeAuth(), 'intent-1');
+    expect(result?.requesterApprovalRequestId).toBe('approval-mine');
+  });
+
+  it('requesterApprovalRequestId is null when every row belongs to someone else', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({ id: 'intent-1', requestedByUserId: REQUESTER_ID }),
+    ]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', userId: APPROVER_1 },
+      { id: 'approval-2', userId: APPROVER_2 },
+    ]);
+    const result = await getActionIntent(makeAuth(), 'intent-1');
+    expect(result?.requesterApprovalRequestId).toBeNull();
   });
 });
 

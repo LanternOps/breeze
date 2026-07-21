@@ -44,6 +44,7 @@ export default function AiChatSidebar() {
     isSearching,
     sendMessage,
     approveExecution,
+    clearPendingApproval,
     approvePlan,
     abortPlan,
     pauseAi,
@@ -352,6 +353,7 @@ export default function AiChatSidebar() {
               onAbortPlan={abortPlan}
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
+              onIntentDecided={clearPendingApproval}
             />
 
             {/* Input */}

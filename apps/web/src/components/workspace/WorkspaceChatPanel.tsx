@@ -24,6 +24,7 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
   const {
     sendMessage,
     approveExecution,
+    clearPendingApproval,
     approvePlan,
     abortPlan,
     pauseAi,
@@ -126,6 +127,7 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
         onAbortPlan={() => abortPlan(tab.id)}
         onPauseAi={(paused) => pauseAi(tab.id, paused)}
         onSendQuickAction={(prompt) => sendMessage(tab.id, prompt)}
+        onIntentDecided={() => clearPendingApproval(tab.id)}
       />
 
       {/* Input */}
