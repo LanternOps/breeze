@@ -138,6 +138,120 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(c.passwordComplexityPct).toBe(50);
   });
 
+  it('excludes a stale security_status row from firewall/encryption, marking it unknown', async () => {
+    const stale = new Date(Date.now() - 60 * 86400000); // 60 days ago
+    mockGeneratorQueries({
+      2: [
+        { id: 'fresh', hostname: 'pc-fresh', osType: 'windows', siteName: 'S' },
+        { id: 'stale', hostname: 'pc-stale', osType: 'windows', siteName: 'S' },
+      ],
+      3: [
+        { deviceId: 'fresh', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 }, updatedAt: new Date() },
+        { deviceId: 'stale', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'unencrypted', firewallEnabled: false, passwordPolicySummary: { minLength: 4 }, localAdminSummary: { adminCount: 5 }, updatedAt: stale },
+      ],
+      4: [],
+      5: [],
+    });
+    // Default cutoff is 30 days → the 60-day-old row is excluded from both controls.
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const c = (r.summary as any).controls;
+    // Only pc-fresh is assessed: 1/1 encrypted, 1/1 firewall on. The stale
+    // 'unencrypted'/firewall-off row does NOT drag the pass rate down.
+    expect(c.encryptionPct).toBe(100);
+    expect(c.firewallPct).toBe(100);
+    // Two in-scope devices, one assessed → one unknown each.
+    expect(c.encryptionUnknownCount).toBe(1);
+    expect(c.firewallUnknownCount).toBe(1);
+    // The stale device's per-row cells read as "no data", matching the aggregate.
+    const byHost = Object.fromEntries((r.rows as any[]).map((x) => [x.hostname, x]));
+    expect(byHost['pc-stale'].encryption).toBe('no data');
+    expect(byHost['pc-stale'].firewall).toBeNull();
+  });
+
+  it('honors a custom maxSecurityStatusAgeDays cutoff', async () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 86400000);
+    mockGeneratorQueries({
+      2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+      3: [
+        { deviceId: 'd', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: tenDaysAgo },
+      ],
+      4: [],
+      5: [],
+    });
+    // A 10-day-old row is fresh under the 30-day default but stale under a 7-day cutoff.
+    const c = (await generateSecurityCompliancePostureReport(ORG, { maxSecurityStatusAgeDays: 7 })).summary!.controls as any;
+    expect(c.encryptionPct).toBeNull();
+    expect(c.firewallPct).toBeNull();
+    expect(c.encryptionUnknownCount).toBe(1);
+    expect(c.firewallUnknownCount).toBe(1);
+  });
+
+  it('counts a device with no security_status row toward the unknown tally (deviceCount basis)', async () => {
+    const stale = new Date(Date.now() - 60 * 86400000);
+    mockGeneratorQueries({
+      2: [
+        { id: 'assessed', hostname: 'pc-a', osType: 'windows', siteName: 'S' },
+        { id: 'stale', hostname: 'pc-s', osType: 'windows', siteName: 'S' },
+        { id: 'norow', hostname: 'pc-n', osType: 'windows', siteName: 'S' },
+      ],
+      3: [
+        { deviceId: 'assessed', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date() },
+        { deviceId: 'stale', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: stale },
+        // 'norow' intentionally has no security_status row.
+      ],
+      4: [],
+      5: [],
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    // 3 in-scope devices, only 'assessed' is fresh with data. Unknown must be 2
+    // (stale + no-row). A `reporting - assessed` basis would wrongly yield 1 by
+    // dropping the no-row device — this pins the deviceCount denominator.
+    expect(c.encryptionPct).toBe(100);
+    expect(c.firewallPct).toBe(100);
+    expect(c.encryptionUnknownCount).toBe(2);
+    expect(c.firewallUnknownCount).toBe(2);
+  });
+
+  it('treats a row exactly at the cutoff as fresh and one day past it as stale', async () => {
+    mockGeneratorQueries({
+      2: [
+        { id: 'edge', hostname: 'pc-edge', osType: 'windows', siteName: 'S' },
+        { id: 'past', hostname: 'pc-past', osType: 'windows', siteName: 'S' },
+      ],
+      3: [
+        // daysAgo floors to whole days: exactly 30d → 30 (<= 30, fresh); 31d → stale.
+        { deviceId: 'edge', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date(Date.now() - 30 * 86400000) },
+        { deviceId: 'past', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date(Date.now() - 31 * 86400000) },
+      ],
+      4: [],
+      5: [],
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    // Only 'edge' (exactly at the inclusive 30-day cutoff) is assessed; 'past' is unknown.
+    expect(c.encryptionPct).toBe(100);
+    expect(c.firewallPct).toBe(100);
+    expect(c.encryptionUnknownCount).toBe(1);
+    expect(c.firewallUnknownCount).toBe(1);
+  });
+
+  it('fails open: a row with no updatedAt is treated as fresh, not stale', async () => {
+    mockGeneratorQueries({
+      2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+      3: [
+        // updatedAt omitted → daysAgo returns null → fail-open as fresh (defensive;
+        // the column is NOT NULL in prod, so this documents the intended default).
+        { deviceId: 'd', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+      ],
+      4: [],
+      5: [],
+    });
+    const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
+    expect(c.encryptionPct).toBe(100);
+    expect(c.firewallPct).toBe(100);
+    expect(c.encryptionUnknownCount).toBe(0);
+    expect(c.firewallUnknownCount).toBe(0);
+  });
+
   it('carries the backup requirement without changing posture score', async () => {
     mockGeneratorQueries();
     const summary = (await generateSecurityCompliancePostureReport(ORG, {
