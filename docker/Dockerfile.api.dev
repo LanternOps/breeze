@@ -2,7 +2,7 @@
 FROM node:24-alpine
 
 # Install pnpm (pinned to match prod / packageManager field)
-RUN npm install -g pnpm@10.33.4
+RUN npm install -g pnpm@10.34.5
 
 # Set working directory
 WORKDIR /app

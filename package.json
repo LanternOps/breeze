@@ -26,13 +26,14 @@
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"
   },
-  "packageManager": "pnpm@10.33.4",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=22.19.0",
-    "pnpm": ">=10.33.4"
+    "pnpm": ">=10.34.5"
   },
   "pnpm": {
     "overrides": {
+      "adm-zip@<0.6.0": ">=0.6.0",
       "axios@>=1.0.0 <1.15.2": ">=1.15.2",
       "websocket-driver@<0.7.5": ">=0.7.5",
       "fast-xml-parser@<5.5.7": ">=5.5.7",
