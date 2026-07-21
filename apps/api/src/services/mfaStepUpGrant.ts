@@ -3,10 +3,12 @@ import { getRedis } from './redis';
 
 /**
  * SR2-20: existing-factor step-up grant for adding a NEW MFA factor to an
- * ALREADY-PROTECTED account. Minted by `POST /auth/mfa/step-up` after the
- * caller proves an existing factor (TOTP/SMS/passkey), then presented back
- * to a factor-addition endpoint (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`,
- * `/passkeys/register/*`) as `stepUpGrantId`.
+ * ALREADY-PROTECTED account, OR registering an authenticator device as an
+ * approver. Minted by `POST /auth/mfa/step-up` after the caller proves an
+ * existing factor (TOTP/SMS/passkey), then presented back to a factor-addition
+ * endpoint (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`)
+ * as `stepUpGrantId`, or to an authenticator registration route
+ * (`POST /authenticator/register/options`, `/authenticator/register/verify`).
  *
  * Bound to the live `authEpoch`/`mfaEpoch` + the initiating session's `sid` so
  * a factor change (which bumps `mfa_epoch` + revokes refresh families) or a
@@ -15,10 +17,14 @@ import { getRedis } from './redis';
  * for the intermediate `register/options` step (the SAME grant is consumed
  * later at `/register/verify`).
  */
+/** Operations a step-up grant can authorize. A grant minted for one operation
+ * can never validate/consume for another (bindsMatch checks equality). */
+export type StepUpOperation = 'add_factor' | 'register_approver_device';
+
 export interface StepUpGrant {
   id: string;
   userId: string;
-  operation: 'add_factor';
+  operation: StepUpOperation;
   authEpoch: number;
   mfaEpoch: number;
   sid: string;
