@@ -84,8 +84,10 @@ export async function executeM365ToolHeadless(
     return JSON.stringify({ error: outcome.message });
   }
 
-  // Success body is stored verbatim into intent.result (has `success`, so the
-  // worker's isReturnedToolError treats it as a completion). For reset it
-  // carries temporaryPassword for the approvals-UI reveal.
+  // Success body is normalized and passed through sealActionResultSecrets by
+  // the release worker before storage (has `success`, so isReturnedToolError
+  // treats it as a completion). For reset the temporaryPassword is encrypted
+  // at rest in intent.result and revealed once via
+  // POST /action-intents/:id/reveal-secret.
   return JSON.stringify(outcome.result);
 }

@@ -40,6 +40,15 @@ process.env.REDIS_URL ||= 'redis://localhost:6380';
 process.env.JWT_SECRET ||= 'test-jwt-secret-must-be-at-least-32-characters-long';
 process.env.NODE_ENV ||= 'test';
 
+// Secret-encryption defaults. APP_ENCRYPTION_KEY_ID must be set alongside
+// APP_ENCRYPTION_KEY for encryptSecret to emit AAD-bound v3 ciphertext —
+// without the key id it silently falls back to v1 (no AAD), which the
+// action-intents temp-password seal guard refuses (fails closed, drops the
+// credential). Both are needed: the v3 decrypt path resolves key material
+// from the dedicated key vars only, never the JWT_SECRET fallback.
+process.env.APP_ENCRYPTION_KEY ||= 'test-app-encryption-key-at-least-32-chars-long!!';
+process.env.APP_ENCRYPTION_KEY_ID ||= 'test-key-1';
+
 // OAuth defaults for integration tests. The OAuth integration test
 // (oauth-code-flow.integration.test.ts) needs MCP_OAUTH_ENABLED=true plus
 // a deterministic JWKS so the in-process bearer middleware can verify

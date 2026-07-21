@@ -32,8 +32,9 @@ import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
+import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
@@ -1250,7 +1251,8 @@ aiRoutes.get(
       .groupBy(drizzleSql`DATE(${aiToolExecutions.createdAt})`)
       .orderBy(drizzleSql`DATE(${aiToolExecutions.createdAt}) ASC`);
 
-    // 4. Raw executions list
+    // 4. Raw executions list (leftJoin: only reset-password rows have an
+    // intent with a revealable secret; everything else derives NULL state)
     const executions = await db
       .select({
         id: aiToolExecutions.id,
@@ -1264,9 +1266,22 @@ aiRoutes.get(
         errorMessage: aiToolExecutions.errorMessage,
         createdAt: aiToolExecutions.createdAt,
         completedAt: aiToolExecutions.completedAt,
+        intentId: aiToolExecutions.intentId,
+        tempPasswordState: drizzleSql<'available' | 'revealed' | 'expired' | null>`CASE
+          WHEN ${actionIntents.id} IS NULL THEN NULL
+          WHEN ${actionIntents.result} ?| array['temporaryPasswordEnc', 'temporaryPassword'] THEN
+            CASE
+              WHEN ${actionIntents.executedAt} < now() - make_interval(days => ${REVEAL_WINDOW_DAYS}) THEN 'expired'
+              ELSE 'available'
+            END
+          WHEN ${actionIntents.result} ? 'temporaryPasswordRevealed' THEN 'revealed'
+          WHEN ${actionIntents.result} ? 'temporaryPasswordExpired' THEN 'expired'
+          ELSE NULL
+        END`,
       })
       .from(aiToolExecutions)
       .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+      .leftJoin(actionIntents, eq(aiToolExecutions.intentId, actionIntents.id))
       .where(and(...baseConditions))
       .orderBy(desc(aiToolExecutions.createdAt))
       .limit(limit);

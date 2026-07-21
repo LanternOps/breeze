@@ -47,6 +47,8 @@ export interface ToolExecution {
   errorMessage: string | null;
   createdAt: string;
   completedAt: string | null;
+  intentId: string | null;
+  tempPasswordState: "available" | "revealed" | "expired" | null;
 }
 export interface SecurityEvent {
   id: string;
