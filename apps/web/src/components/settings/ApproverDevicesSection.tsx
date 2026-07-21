@@ -8,10 +8,12 @@ import {
   revokeApproverDevice,
   renameApproverDevice,
   type ApproverDevice,
+  type RegisterReauth,
 } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatAbsolute, formatRelative } from '../account/relativeTime';
+import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 
 /**
  * Profile "Approval security" section (Breeze Authenticator Phase 2).
@@ -37,17 +39,25 @@ function deviceTitle(d: ApproverDevice): string {
 
 const OK_RESPONSE = { ok: true, status: 200, json: async () => ({ success: true }) } as Response;
 
-export default function ApproverDevicesSection() {
+export default function ApproverDevicesSection({
+  passkeyCount,
+  mfaMethod,
+}: {
+  passkeyCount: number;
+  mfaMethod: string | null;
+}) {
   const { t } = useTranslation('settings');
   const [devices, setDevices] = useState<ApproverDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
   const [label, setLabel] = useState('');
+  const [reauthValue, setReauthValue] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
+  const tier: ReauthTier = pickReauthTier(passkeyCount, mfaMethod);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -68,28 +78,67 @@ export default function ApproverDevicesSection() {
 
   const activeDevices = useMemo(() => devices.filter((d) => !d.disabledAt), [devices]);
 
+  const buildReauth = (): RegisterReauth | null => {
+    if (tier === 'passkey') return { method: 'passkey' };
+    if (tier === 'totp') return reauthValue.length === 6 ? { method: 'totp', code: reauthValue } : null;
+    return reauthValue.length > 0 ? { method: 'password', password: reauthValue } : null;
+  };
+
+  const mapRegisterError = (err: unknown): string => {
+    const status = (err as { status?: number })?.status;
+    if (status === 401) {
+      return tier === 'totp'
+        ? t('approverDevicesSection.incorrectCode')
+        : t('approverDevicesSection.incorrectPassword');
+    }
+    if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
+    if (status === 403) return t('approverDevicesSection.verificationExpiredPleaseVerifyAgain');
+    return err instanceof Error ? err.message : t('approverDevicesSection.failedToRegisterThisDevice');
+  };
+
   const handleRegister = async () => {
     if (isRegistering) return;
+    const reauth = buildReauth();
+    if (!reauth) return; // submit disabled anyway
     const trimmed = label.trim() || 'This device';
     setIsRegistering(true);
     try {
       await runAction({
         // registerApproverDevice runs the full WebAuthn registration ceremony
-        // (options → Touch ID/Hello → verify) and resolves void on success; a
-        // user cancellation or a non-2xx verify rejects, which runAction turns
-        // into an error toast.
+        // (options → Touch ID/Hello → verify) and resolves void on success. A
+        // rejected re-auth (wrong code/password, rate-limited, expired grant)
+        // throws with a `status`. Convert that into a non-2xx Response here —
+        // rather than letting it escape request() as a throw — so runAction's
+        // status-aware isApiFailure branch carries the real status through to
+        // the toast and to the 403 handling below (a throw straight out of
+        // `request()` always collapses to a generic status-0 "network error"
+        // toast, per runAction's documented contract in runAction.test.ts).
         request: async () => {
-          await registerApproverDevice(trimmed);
-          return OK_RESPONSE;
+          try {
+            await registerApproverDevice(trimmed, reauth);
+            return OK_RESPONSE;
+          } catch (err) {
+            const status = (err as { status?: number })?.status ?? 500;
+            return { ok: false, status, json: async () => ({ error: mapRegisterError(err) }) } as Response;
+          }
         },
         errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
         successMessage: t('approverDevicesSection.thisDeviceCanNowApproveRequests'),
+        // A 401 here means "wrong code/password", not "stale access token" —
+        // must be toasted, not silently swallowed into a login redirect.
+        treatUnauthorizedAsError: true,
       });
       setLabel('');
+      setReauthValue('');
       await load();
     } catch (err) {
-      if (err instanceof ActionError) return; // already toasted by runAction
-      showToast({ type: 'error', message: err instanceof Error ? err.message : t('approverDevicesSection.failedToRegisterThisDevice') });
+      if (err instanceof ActionError) {
+        // 403 = grant expired mid-ceremony (>300s in the WebAuthn prompt):
+        // keep the label, clear the proof, and ask the user to verify again.
+        if (err.status === 403) setReauthValue('');
+        return; // already toasted by runAction
+      }
+      showToast({ type: 'error', message: mapRegisterError(err) });
     } finally {
       setIsRegistering(false);
     }
@@ -209,6 +258,14 @@ export default function ApproverDevicesSection() {
                         >
                           {t('approverDevicesSection.platformBound')}</span>
                       )}
+                      {device.lastUsedAt === null && (
+                        <span
+                          data-testid={`approver-device-pending-${device.id}`}
+                          className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600"
+                        >
+                          {t('approverDevicesSection.pendingActivatesOnFirstApproval')}
+                        </span>
+                      )}
                     </div>
                     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                       <dt>{t('approverDevicesSection.registered')}</dt>
@@ -291,10 +348,11 @@ export default function ApproverDevicesSection() {
             data-testid="approver-device-label-input"
           />
         </div>
+        <StepUpPrompt tier={tier} reauthValue={reauthValue} onChange={setReauthValue} disabled={isRegistering} />
         <button
           type="button"
           onClick={() => void handleRegister()}
-          disabled={isRegistering}
+          disabled={isRegistering || buildReauth() === null}
           data-testid="approver-device-register"
           className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >

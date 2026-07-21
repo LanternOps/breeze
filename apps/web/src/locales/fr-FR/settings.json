@@ -1398,7 +1398,17 @@
     "registering": "Enregistrement...",
     "registerThisDevice": "Enregistrez cet appareil",
     "revoking": "Révoque...",
-    "revokeDevice": "Révoquer le dispositif"
+    "revokeDevice": "Révoquer le dispositif",
+    "incorrectCode": "Code incorrect.",
+    "incorrectPassword": "Mot de passe incorrect.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives — réessayez dans quelques minutes.",
+    "verificationExpiredPleaseVerifyAgain": "Vérification expirée — veuillez vérifier à nouveau.",
+    "pendingActivatesOnFirstApproval": "En attente — s’active à la première approbation"
+  },
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",
+    "authenticatorCode": "Code d’authentification",
+    "confirmYourPassword": "Confirmez votre mot de passe"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Réponses préfabriquées",

@@ -28,6 +28,7 @@ type User = {
   email: string;
   avatarUrl?: string;
   mfaEnabled?: boolean;
+  mfaMethod?: string | null;
   preferences?: UserPreferences;
 };
 
@@ -911,7 +912,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       </div>
 
       {/* Approval security (Breeze Authenticator) */}
-      <ApproverDevicesSection />
+      <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
       <ThemingSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}

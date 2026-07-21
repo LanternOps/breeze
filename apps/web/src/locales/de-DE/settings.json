@@ -1398,7 +1398,17 @@
     "registering": "Registrieren…",
     "registerThisDevice": "Registrieren Sie dieses Gerät",
     "revoking": "Widerrufen…",
-    "revokeDevice": "Gerät widerrufen"
+    "revokeDevice": "Gerät widerrufen",
+    "incorrectCode": "Falscher Code.",
+    "incorrectPassword": "Falsches Passwort.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Zu viele Versuche – versuchen Sie es in ein paar Minuten erneut.",
+    "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen – bitte erneut verifizieren.",
+    "pendingActivatesOnFirstApproval": "Ausstehend – wird bei der ersten Genehmigung aktiviert"
+  },
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",
+    "authenticatorCode": "Authentifizierungscode",
+    "confirmYourPassword": "Bestätigen Sie Ihr Passwort"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Vorgefertigte Antworten",

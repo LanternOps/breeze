@@ -1398,7 +1398,17 @@
     "registering": "Registering…",
     "registerThisDevice": "Register this device",
     "revoking": "Revoking…",
-    "revokeDevice": "Revoke device"
+    "revokeDevice": "Revoke device",
+    "incorrectCode": "Incorrect code.",
+    "incorrectPassword": "Incorrect password.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Too many attempts — try again in a few minutes.",
+    "verificationExpiredPleaseVerifyAgain": "Verification expired — please verify again.",
+    "pendingActivatesOnFirstApproval": "Pending — activates on first approval"
+  },
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
+    "authenticatorCode": "Authenticator code",
+    "confirmYourPassword": "Confirm your password"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
