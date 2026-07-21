@@ -14,6 +14,13 @@ vi.mock('../services/installationId', () => ({
   getOrCreateInstallationId: async () => 'install-test',
 }));
 
+// services/api now imports @sentry/react-native (#2707 header-loss breadcrumb);
+// mock it so this jsdom-less suite doesn't pull real react-native in.
+vi.mock('@sentry/react-native', () => ({
+  captureMessage: vi.fn(),
+  captureException: vi.fn(),
+}));
+
 import reducer, {
   blockPairedDevice,
   fetchPairedDevices,
