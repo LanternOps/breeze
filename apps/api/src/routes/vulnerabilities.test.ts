@@ -19,7 +19,9 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'u1', email: 't@example.test' },
       orgCondition: () => undefined,
       canAccessSite: () => true,
-      canAccessOrg: (id: string) => id !== 'org-denied',
+      // Denies both the legacy 'org-denied' marker (bulk-route row orgIds) and
+      // the uuid-shaped DENIED_ORG used by the ?orgId= query-narrowing tests.
+      canAccessOrg: (id: string) => id !== 'org-denied' && id !== 'de000000-0000-4000-8000-00000000dead',
     });
     return next();
   },
@@ -136,6 +138,11 @@ function fleetRow(overrides: Partial<FleetFindingRow> = {}): FleetFindingRow {
 }
 
 const future = new Date(Date.now() + 7 * 864e5).toISOString();
+
+// Org-selector narrowing (?orgId= auto-injected by the web client): one org the
+// mocked auth can access, one it denies (must match the canAccessOrg mock above).
+const ORG_OK = '11111111-2222-3333-8444-555555555555';
+const ORG_DENIED = 'de000000-0000-4000-8000-00000000dead';
 
 beforeEach(() => {
   granted.clear();
@@ -282,6 +289,16 @@ describe('GET /vulnerabilities — kevOnly/patchAvailable params', () => {
     expect((await app().request('/vulnerabilities?expiringWithinDays=abc')).status).toBe(400);
     expect((await app().request('/vulnerabilities?expiringWithinDays=0')).status).toBe(400);
     expect((await app().request('/vulnerabilities?expiringWithinDays=366')).status).toBe(400);
+  });
+
+  it('accepts an accessible orgId (org-selector narrowing) and 403s a denied one', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+    } as never);
+    const ok = await app().request(`/vulnerabilities?orgId=${ORG_OK}`);
+    expect(ok.status).toBe(200);
+    expect((await app().request(`/vulnerabilities?orgId=${ORG_DENIED}`)).status).toBe(403);
+    expect((await app().request('/vulnerabilities?orgId=acme')).status).toBe(400);
   });
 });
 
@@ -474,6 +491,25 @@ describe('GET /vulnerabilities/software (fleet work queue)', () => {
     const res = await app().request('/vulnerabilities/software?expiringWithinDays=soon');
     expect(res.status).toBe(400);
   });
+
+  it('forwards orgId (web org selector) into the fleet query', async () => {
+    const res = await app().request(`/vulnerabilities/software?orgId=${ORG_OK}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_OK }),
+    );
+  });
+
+  it('403s an orgId outside the caller accessible set', async () => {
+    const res = await app().request(`/vulnerabilities/software?orgId=${ORG_DENIED}`);
+    expect(res.status).toBe(403);
+    expect(vi.mocked(fetchFleetFindingRows)).not.toHaveBeenCalled();
+  });
+
+  it('400s a non-uuid orgId', async () => {
+    const res = await app().request('/vulnerabilities/software?orgId=acme');
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
@@ -506,6 +542,16 @@ describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
     expect(body.cves).toHaveLength(2);
     expect(body.findings).toHaveLength(2);
     expect(body.findings[0]).toMatchObject({ deviceVulnerabilityId: expect.any(String), deviceName: expect.any(String) });
+  });
+
+  it('forwards orgId and 403s a denied org', async () => {
+    const key = encodeURIComponent('sw:google chrome|google llc');
+    await app().request(`/vulnerabilities/software/${key}?orgId=${ORG_OK}`);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all', orgId: ORG_OK }),
+    );
+    const denied = await app().request(`/vulnerabilities/software/${key}?orgId=${ORG_DENIED}`);
+    expect(denied.status).toBe(403);
   });
 });
 
@@ -558,6 +604,19 @@ describe('GET /vulnerabilities/devices/:deviceId/software', () => {
     const res = await app().request(`/vulnerabilities/devices/${ID}/software`);
     expect(res.status).toBe(404);
   });
+
+  it('ignores the auto-injected ?orgId= (a stale org selector must not blank a cross-org device tab)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ siteId: 'site-1' }]) }),
+      }),
+    } as never);
+    const res = await app().request(`/vulnerabilities/devices/${ID}/software?orgId=${ORG_OK}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.not.objectContaining({ orgId: expect.anything() }),
+    );
+  });
 });
 
 describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
@@ -601,6 +660,15 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
     expect(body.cve.cveId).toBe('CVE-2026-0001');
     expect(body.findings).toHaveLength(1);
     expect(body.findings[0].deviceVulnerabilityId).toBe('dv-1');
+  });
+
+  it('forwards orgId and 403s a denied org (before the catalog lookup)', async () => {
+    await app().request(`/vulnerabilities/CVE-2026-0001/devices?orgId=${ORG_OK}`);
+    // 404s on the null catalog record, but the org gate passed; the fleet query
+    // is only reached with a real record, so assert the denied path instead.
+    const denied = await app().request(`/vulnerabilities/CVE-2026-0001/devices?orgId=${ORG_DENIED}`);
+    expect(denied.status).toBe(403);
+    expect(vi.mocked(fetchCveCatalogRecord)).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -799,6 +867,19 @@ describe('GET /vulnerabilities/stats', () => {
       totalFindings: 2,
       lastDetectedAt: '2026-06-01T00:00:00.000Z',
     });
+  });
+
+  it('forwards orgId so the stat cards scope to the selected org', async () => {
+    const res = await app().request(`/vulnerabilities/stats?orgId=${ORG_OK}`);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all', orgId: ORG_OK }),
+    );
+  });
+
+  it('403s an orgId outside the caller accessible set', async () => {
+    const res = await app().request(`/vulnerabilities/stats?orgId=${ORG_DENIED}`);
+    expect(res.status).toBe(403);
   });
 });
 
