@@ -76,11 +76,15 @@ const listQuerySchema = z.object({
 });
 
 // Fleet org narrowing: the web client auto-injects ?orgId= for the currently
-// selected organization (fetchWithAuth), same as patches/devices. Absent = all
+// selected organization (fetchWithAuth; /vulnerabilities is org-or-all in
+// routeScope.ts — reclassifying it silently stops the injection). Absent = all
 // accessible orgs. Access is enforced per-request via auth.canAccessOrg (403);
 // the eq() filter then narrows within the already-RLS-scoped set. Deliberately
-// NOT on listQuerySchema itself: the per-device routes share that schema, and a
-// stale selected org must never blank out a cross-org device's findings tab.
+// NOT on listQuerySchema itself: /devices/:deviceId spreads its validated
+// query straight into listVulnerabilities ({...query}), so an orgId on the
+// shared schema would let a stale org selector blank out a cross-org device's
+// findings. The device routes scope via assertDeviceSiteAccess instead and
+// rely on zod stripping the unknown key (pinned by tests).
 const orgIdQuerySchema = z.string().uuid().optional();
 const fleetListQuerySchema = listQuerySchema.extend({ orgId: orgIdQuerySchema });
 const orgScopeQuerySchema = z.object({ orgId: orgIdQuerySchema });

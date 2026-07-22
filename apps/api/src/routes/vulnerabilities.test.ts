@@ -292,11 +292,16 @@ describe('GET /vulnerabilities — kevOnly/patchAvailable params', () => {
   });
 
   it('accepts an accessible orgId (org-selector narrowing) and 403s a denied one', async () => {
+    const where = vi.fn().mockResolvedValue([]);
     vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      from: vi.fn().mockReturnValue({ where }),
     } as never);
     const ok = await app().request(`/vulnerabilities?orgId=${ORG_OK}`);
     expect(ok.status).toBe(200);
+    // The orgId must reach the WHERE clause — a bare 200 stays green even with
+    // the eq(org_id) narrowing deleted (this route forwards via {...query}
+    // spread, so nothing else pins the wiring).
+    expect(JSON.stringify(where.mock.calls[0]?.[0])).toContain(ORG_OK);
     expect((await app().request(`/vulnerabilities?orgId=${ORG_DENIED}`)).status).toBe(403);
     expect((await app().request('/vulnerabilities?orgId=acme')).status).toBe(400);
   });
@@ -619,6 +624,39 @@ describe('GET /vulnerabilities/devices/:deviceId/software', () => {
   });
 });
 
+describe('GET /vulnerabilities/devices/:deviceId', () => {
+  beforeEach(() => {
+    granted.clear();
+    granted.add('devices:read');
+    delete permissionsState.allowedSiteIds;
+    vi.mocked(db.select).mockReset();
+  });
+
+  // This route spreads the validated query straight into listVulnerabilities
+  // ({...query, deviceId}), so it is the one place an orgId added to the shared
+  // listQuerySchema would silently narrow a per-device lookup. Pins that zod
+  // strips the auto-injected param before the spread — see the schema comment
+  // at orgIdQuerySchema.
+  it('strips the auto-injected ?orgId= before the {...query} spread', async () => {
+    const listWhere = vi.fn().mockResolvedValue([]);
+    vi.mocked(db.select)
+      // assertDeviceSiteAccess: device lookup (site accessible).
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ siteId: 'site-1' }]) }),
+        }),
+      } as never)
+      // listVulnerabilities: the findings query whose WHERE we inspect.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: listWhere }),
+      } as never);
+    const res = await app().request(`/vulnerabilities/devices/${ID}?orgId=${ORG_OK}`);
+    expect(res.status).toBe(200);
+    expect(listWhere).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(listWhere.mock.calls[0]?.[0])).not.toContain(ORG_OK);
+  });
+});
+
 describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
   beforeEach(() => {
     vi.mocked(fetchFleetFindingRows).mockReset().mockResolvedValue([]);
@@ -662,12 +700,29 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
     expect(body.findings[0].deviceVulnerabilityId).toBe('dv-1');
   });
 
-  it('forwards orgId and 403s a denied org (before the catalog lookup)', async () => {
-    await app().request(`/vulnerabilities/CVE-2026-0001/devices?orgId=${ORG_OK}`);
-    // 404s on the null catalog record, but the org gate passed; the fleet query
-    // is only reached with a real record, so assert the denied path instead.
+  it('forwards orgId into the fleet query and 403s a denied org (before the catalog lookup)', async () => {
+    vi.mocked(fetchCveCatalogRecord).mockResolvedValueOnce({
+      cveId: 'CVE-2026-0001',
+      description: 'Bad bug',
+      references: [],
+      cvssVersion: '3.1',
+      cvssVector: 'CVSS:3.1/AV:N',
+      cvssScore: 9.1,
+      epssScore: 0.4,
+      knownExploited: true,
+      patchAvailable: true,
+      severity: 'critical',
+      publishedAt: '2026-01-01T00:00:00.000Z',
+      modifiedAt: null,
+    });
+    const ok = await app().request(`/vulnerabilities/CVE-2026-0001/devices?orgId=${ORG_OK}`);
+    expect(ok.status).toBe(200);
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all', orgId: ORG_OK }),
+    );
     const denied = await app().request(`/vulnerabilities/CVE-2026-0001/devices?orgId=${ORG_DENIED}`);
     expect(denied.status).toBe(403);
+    // The gate runs BEFORE the catalog lookup: only the allowed request reached it.
     expect(vi.mocked(fetchCveCatalogRecord)).toHaveBeenCalledTimes(1);
   });
 });
