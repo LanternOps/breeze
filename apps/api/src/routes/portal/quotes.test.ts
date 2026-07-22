@@ -470,3 +470,54 @@ describe('portal quotes /:id/pdf', () => {
     expect(renderQuotePdfMock).not.toHaveBeenCalled();
   });
 });
+
+describe('portal quotes GET /quotes/:id/line-image/:lineId', () => {
+  const LINE_ID = '77777777-7777-7777-7777-777777777777';
+  const CATALOG_ID = '88888888-8888-8888-8888-888888888888';
+  beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; });
+
+  it('serves the per-line uploaded image bytes', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([{ imageId: 'img-1', catalogItemId: null, customerVisible: true }]); // line
+    dbResults.push([{ data: Buffer.from('PNGDATA'), mime: 'image/png', byteSize: 7 }]); // readQuoteImage
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('falls back to the line catalog item image when no uploaded image', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([{ imageId: null, catalogItemId: CATALOG_ID, customerVisible: true }]);
+    dbResults.push([{ data: Buffer.from('JPEG'), mime: 'image/jpeg', byteSize: 4 }]); // readCatalogItemImage
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/jpeg');
+  });
+
+  it('404s a line with no image', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([{ imageId: null, catalogItemId: null, customerVisible: true }]);
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a cross-quote / unknown lineId (line lookup scoped to the quote)', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([]); // line lookup: no row for this quote
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when the quote is not owned by the caller org', async () => {
+    dbResults.push([]); // quote ownership lookup → none
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('does not serve an image for a non-customer-visible line', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([{ imageId: 'img-1', catalogItemId: null, customerVisible: false }]);
+    const res = await app().request(`/quotes/${QUOTE_ID}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(404);
+  });
+});

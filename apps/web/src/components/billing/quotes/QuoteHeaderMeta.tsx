@@ -67,6 +67,11 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
   }, [organizations, quote.orgId, detail.billTo?.name]);
 
   const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
+  // The select's `title` is a mouse-hover tooltip — the ONLY way to read a long
+  // org name once the select's own max-w-56 clips it. Falls back to the
+  // generic help copy only when nothing resolves (shouldn't happen in
+  // practice: customerOrgId always defaults to the quote's own org).
+  const selectedOrgName = orgOptions.find((o) => o.id === customerOrgId)?.name?.trim();
   const [customerBusy, setCustomerBusy] = useState(false);
   useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
   // Reassignment clears site + bill-to and re-resolves tax, so a select change
@@ -124,7 +129,7 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
       <select
         value={customerOrgId}
         aria-label={t('quotes.editor.customer.label')}
-        title={t('quotes.editor.customer.help')}
+        title={selectedOrgName || t('quotes.editor.customer.help')}
         onChange={(e) => {
           const id = e.target.value;
           if (id === customerOrgId) return;

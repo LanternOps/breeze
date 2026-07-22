@@ -1,4 +1,4 @@
--- Quote deposits (spec: docs/superpowers/specs/billing/2026-07-05-quote-deposits-design.md).
+-- Quote deposits (spec: docs/superpowers/specs/2026-07-05-quote-deposits-design.md).
 -- Columns only — no new tables, RLS untouched.
 
 DO $$ BEGIN

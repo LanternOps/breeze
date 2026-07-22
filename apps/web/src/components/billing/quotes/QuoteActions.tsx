@@ -15,6 +15,7 @@ import { isValidEmail } from '@/lib/email';
 import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
+import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
 
@@ -121,6 +122,10 @@ interface Props {
    *  held (with a "Saving changes…" hint) until the quote is quiescent, so the
    *  confirm dialog can't quote a stale total or race a blur-save server-side. */
   savePending?: boolean;
+  /** Called when Send is clicked while savePending — lets the workspace flush
+   *  deferred work immediately (the editor's undo-grace deletions) so the held
+   *  Send opens as soon as those land instead of waiting out a grace window. */
+  onSendWhilePending?: () => void;
 }
 
 /**
@@ -129,7 +134,7 @@ interface Props {
  * Detail rail and the workspace header can't drift in behavior or copy; the
  * data-testids are stable across both variants.
  */
-export default function QuoteActions({ detail, onChanged, variant, savePending = false }: Props) {
+export default function QuoteActions({ detail, onChanged, variant, savePending = false, onSendWhilePending }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
@@ -201,6 +206,24 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Deposit configured → the composer must warn when Stripe isn't connected,
   // since the customer would have no way to actually pay that deposit online.
   const hasDeposit = Boolean(quote.depositType && quote.depositType !== 'none');
+
+  // Soft send-time warning (Task 3 UX pass): an incomplete profit estimate
+  // shouldn't block Send — a tech may not know every cost yet — but it should
+  // be visible at the one moment before the quote goes irreversible. Gated on
+  // margin visibility, same as MarginPanel: an org-scoped/read-only-cost user
+  // must never see this notice imply a permission they don't have.
+  const canSeeMargin = can('quotes', 'read');
+  const profit = useMemo<QuoteProfit>(
+    () => computeQuoteProfit(lines.map((l) => ({
+      quantity: l.quantity,
+      unitPrice: l.unitPrice,
+      taxable: l.taxable,
+      customerVisible: l.customerVisible,
+      recurrence: l.recurrence,
+      unitCost: l.unitCost,
+    }))),
+    [lines],
+  );
 
   const orgName = useMemo(() => {
     const billTo = quote.billToName?.trim();
@@ -521,8 +544,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               // During savePending the click's job is the prerequisite: the
               // click itself blurs the dirty field (starting its save); queue
               // the composer to open the moment the editor goes quiescent —
-              // one click to the money moment, never a dead one.
-              if (savePending) { setOpenWhenQuiet(true); return; }
+              // one click to the money moment, never a dead one. Deferred
+              // deletions (undo grace window) flush now for the same reason.
+              if (savePending) { onSendWhilePending?.(); setOpenWhenQuiet(true); return; }
               openSend();
             }}
             disabled={sending || isEmpty}
@@ -699,6 +723,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
             {t('quotes.actions.sendConfirm.zeroTotalWarning')}
+          </p>
+        )}
+        {/* Non-blocking: an incomplete profit estimate never disables Send (a
+            tech may genuinely not know every cost yet) — it's a heads-up, not a
+            gate. Reuses MarginPanel's own copy (billingUi.margin.missingCost) so
+            the wording can't drift between the rail and this dialog. */}
+        {canSeeMargin && profit.linesMissingCost > 0 && (
+          <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-missing-cost-notice">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>{t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}</span>
           </p>
         )}
 

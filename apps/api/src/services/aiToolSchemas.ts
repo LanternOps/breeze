@@ -324,6 +324,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'add_catalog_line',
       'update_line',
       'remove_line',
+      'move_line',
       'reorder_lines',
       'send',
       'decline',

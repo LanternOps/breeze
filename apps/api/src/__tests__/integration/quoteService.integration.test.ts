@@ -26,11 +26,12 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { quotes, quoteLines } from '../../db/schema/quotes';
+import { quotes, quoteLines, quoteBlocks } from '../../db/schema/quotes';
 import { catalogItems } from '../../db/schema/catalog';
 import { createOrganization, createPartner } from './db-utils';
 import {
   createQuote,
+  cloneQuote,
   getQuote,
   addBlock,
   deleteBlock,
@@ -185,6 +186,74 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(l1.blockId).toBe(lineBlocks[0]!.id);
     expect(l2.blockId).toBe(lineBlocks[0]!.id);
     expect(fetched.lines.every((l) => l.blockId === lineBlocks[0]!.id)).toBe(true);
+  });
+
+  /**
+   * Forge the pre-#2553 orphan shape on an existing quote: null out every line's
+   * block_id, and optionally delete the blocks so the quote has no pricing
+   * section at all. Runs under system scope — the API can no longer create this
+   * shape, but legacy rows (and prod quote 50a25127) still carry it.
+   */
+  async function orphanAllLines(quoteId: string, opts: { dropBlocks?: boolean } = {}) {
+    await withSystemDbAccessContext(async () => {
+      await db.update(quoteLines).set({ blockId: null }).where(eq(quoteLines.quoteId, quoteId));
+      if (opts.dropBlocks) await db.delete(quoteBlocks).where(eq(quoteBlocks.quoteId, quoteId));
+    });
+  }
+
+  runDb('cloneQuote lands legacy orphan lines in ONE real pricing section on the clone', async () => {
+    const fx = await seedFixture();
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    for (const price of [100, 50]) {
+      await withDbAccessContext(fx.ctxA, () =>
+        addManualLine(quote.id, {
+          sourceType: 'manual', description: `Line ${price}`, quantity: 1, unitPrice: price,
+          taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
+        }, fx.actorA)
+      );
+    }
+    // Source has NO line_items block left, so the clone must mint one itself.
+    await orphanAllLines(quote.id, { dropBlocks: true });
+
+    const cloned = await withDbAccessContext(fx.ctxA, () => cloneQuote(quote.id, fx.actorA));
+    const fetched = await withDbAccessContext(fx.ctxA, () => getQuote(cloned.id, fx.actorA));
+
+    const lineBlocks = fetched.blocks.filter((b) => b.blockType === 'line_items');
+    expect(lineBlocks).toHaveLength(1); // ONE fallback section, not one per orphan
+    expect(fetched.lines).toHaveLength(2);
+    // The orphan never propagates: every cloned line is editable in the builder.
+    expect(fetched.lines.every((l) => l.blockId === lineBlocks[0]!.id)).toBe(true);
+
+    // The SOURCE is left exactly as it was — cloning repairs the copy, not the original.
+    const sourceLines = await withDbAccessContext(fx.ctxA, () =>
+      db.select({ blockId: quoteLines.blockId }).from(quoteLines).where(eq(quoteLines.quoteId, quote.id))
+    );
+    expect(sourceLines.every((l) => l.blockId === null)).toBe(true);
+  });
+
+  runDb('cloneQuote re-parents an orphan onto the clone of the source pricing section', async () => {
+    const fx = await seedFixture();
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+    await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, {
+        sourceType: 'manual', description: 'Kept', quantity: 1, unitPrice: 100,
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
+      }, fx.actorA)
+    );
+    // Keep the auto-created line_items block; only orphan the line.
+    await orphanAllLines(quote.id);
+
+    const cloned = await withDbAccessContext(fx.ctxA, () => cloneQuote(quote.id, fx.actorA));
+    const fetched = await withDbAccessContext(fx.ctxA, () => getQuote(cloned.id, fx.actorA));
+
+    // No extra section is spawned — the existing one is reused.
+    const lineBlocks = fetched.blocks.filter((b) => b.blockType === 'line_items');
+    expect(lineBlocks).toHaveLength(1);
+    expect(fetched.lines[0]!.blockId).toBe(lineBlocks[0]!.id);
   });
 
   runDb('addCatalogLine snapshots a recurring item (recurrence/term/price/MRR)', async () => {

@@ -110,6 +110,22 @@ describe('QuoteHeaderMeta customer reassignment', () => {
     expect(customerPatchCalls()).toHaveLength(0);
   });
 
+  // The select clips a long org name at max-w-56 with no other way to read it —
+  // `title` is the mouse-hover escape hatch, so it must carry the actual
+  // selected name rather than generic static help copy.
+  it("the select's title carries the selected organization's full name", () => {
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+
+    const select = screen.getByTestId('quote-customer');
+    expect(select).toHaveAttribute('title', 'Acme');
+
+    fireEvent.change(select, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('quote-customer-confirm'));
+    // The select snaps to the new value optimistically on confirm; its title
+    // follows the same selection, not the stale one.
+    return waitFor(() => expect(select).toHaveAttribute('title', 'Beta Corp'));
+  });
+
   it('snaps the select back when the move fails', async () => {
     fetchMock.mockImplementation(async (path, init) => {
       if (path === '/quotes/q-1' && (init as RequestInit | undefined)?.method === 'PATCH') {

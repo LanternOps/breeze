@@ -126,9 +126,11 @@ export function updateBlock(id: string, blockId: string, body: QuoteBlockInput):
   });
 }
 
-/** Delete a block and its lines (DELETE /quotes/:id/blocks/:blockId). */
+/** Delete a block and its lines (DELETE /quotes/:id/blocks/:blockId).
+ *  keepalive: the editor defers deletions for an undo grace window and flushes
+ *  them on pagehide — the request must survive the page teardown. */
 export function deleteBlock(id: string, blockId: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, { method: 'DELETE' });
+  return fetchWithAuth(`/quotes/${id}/blocks/${blockId}`, { method: 'DELETE', keepalive: true });
 }
 
 export function addManualLine(
@@ -166,8 +168,9 @@ export function updateLine(
   });
 }
 
+/** keepalive: undo-grace deletions flush on pagehide (see deleteBlock). */
 export function removeLine(id: string, lineId: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/lines/${lineId}`, { method: 'DELETE' });
+  return fetchWithAuth(`/quotes/${id}/lines/${lineId}`, { method: 'DELETE', keepalive: true });
 }
 
 /** Reorder a quote's blocks. Body is the full ordered id list; the server

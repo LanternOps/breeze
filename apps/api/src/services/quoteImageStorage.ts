@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
-import { quoteImages } from '../db/schema/quotes';
+import { quoteImages, quoteLines } from '../db/schema/quotes';
+import { readCatalogItemImage } from './catalogImageStorage';
 import { sniffImageMime } from './avatarStorage';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
@@ -27,6 +28,35 @@ export async function readQuoteImage(imageId: string, quoteId: string): Promise<
   const [img] = await db.select({ data: quoteImages.imageData, mime: quoteImages.mime, byteSize: quoteImages.byteSize })
     .from(quoteImages).where(and(eq(quoteImages.id, imageId), eq(quoteImages.quoteId, quoteId))).limit(1);
   return img?.data ? { data: img.data, mime: img.mime, byteSize: img.byteSize } : null;
+}
+
+/**
+ * Resolve the customer-facing thumbnail image for ONE quote line, for the portal
+ * + public proposal views (which serve the same product photos the in-app
+ * preview shows via the authed /catalog/:id/image route). The line is looked up
+ * scoped to its quote (`id AND quoteId`) — the same cross-quote IDOR guard as
+ * readQuoteImage — and must be customer-visible, so a token/session holder can
+ * only reach images for lines actually on their own proposal.
+ *
+ * Source precedence mirrors the web renderer's DocLineThumb: a per-line uploaded
+ * image (`image_id`, in quote_images, org-axis) wins; otherwise the line's
+ * snapshotted catalog item's image (catalog_item_images, PARTNER-axis). Because
+ * catalog_item_images is partner-scoped, callers on the ORG-scoped portal path
+ * must invoke this under a SYSTEM db access context (the #1375 class — a bare
+ * org-scoped read would RLS-filter to 0 rows); the public path already runs in
+ * system scope. Ownership is enforced by the quote-scoped line lookup above, not
+ * by RLS, so running under system scope here is safe.
+ */
+export async function loadCustomerLineImage(quoteId: string, lineId: string): Promise<{ data: Buffer; mime: string; byteSize: number } | null> {
+  const [line] = await db.select({
+    imageId: quoteLines.imageId,
+    catalogItemId: quoteLines.catalogItemId,
+    customerVisible: quoteLines.customerVisible,
+  }).from(quoteLines).where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
+  if (!line || !line.customerVisible) return null;
+  if (line.imageId) return readQuoteImage(line.imageId, quoteId);
+  if (line.catalogItemId) return readCatalogItemImage(line.catalogItemId);
+  return null;
 }
 
 export type RemoteImageFailureReason = 'unreachable' | 'not_image' | 'too_large' | 'timeout';

@@ -1,5 +1,5 @@
 -- Cleanup of unused tables/columns from the deleted mcpBootstrap module.
--- See docs/superpowers/plans/onboarding-signup/2026-04-29-mcp-bootstrap-cleanup.md for context.
+-- See docs/superpowers/plans/2026-04-29-mcp-bootstrap-cleanup.md for context.
 --
 -- Idempotent (per CLAUDE.md migration rules). Safe to apply multiple times.
 

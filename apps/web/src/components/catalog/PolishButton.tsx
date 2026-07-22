@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -27,8 +27,23 @@ interface PolishButtonProps {
   disabled?: boolean;
   /** Override the button label. Default: "Tidy description". */
   label?: string;
+  /** Icon rendered before the label (e.g. a Sparkles glyph to signal AI). */
+  icon?: ReactNode;
   /** Render a smaller, condensed button (for inline use in line editors). */
   compact?: boolean;
+  /** Skip rendering the trigger `<button>` — used when a host drives `run()`
+   *  itself via `autoRun` (see below) and only wants the preview dialog. */
+  hideTrigger?: boolean;
+  /** Fire `run()` once, immediately on mount. Combine with `hideTrigger` and a
+   *  fresh `key` per target (e.g. `key={line.id}`) to drive an unattended,
+   *  one-line-at-a-time queue (a block's "Tidy all descriptions" action) — the
+   *  remount resets internal state, and the mount-effect kicks off the request. */
+  autoRun?: boolean;
+  /** Fires once the run cycle is fully settled: either no preview was shown
+   *  (blank input, "already looks good", or a hard error) or the preview was
+   *  dismissed (applied or cancelled). Lets a queue driver advance to the next
+   *  item without reaching into internal state. */
+  onSettled?: () => void;
 }
 
 interface Preview {
@@ -81,7 +96,7 @@ function FieldDiff({
 }
 
 export default function PolishButton({
-  getText, onApply, idSuffix, disabled, label, compact,
+  getText, onApply, idSuffix, disabled, label, icon, compact, hideTrigger, autoRun, onSettled,
 }: PolishButtonProps) {
   const { t } = useTranslation('common');
   const [busy, setBusy] = useState(false);
@@ -95,6 +110,7 @@ export default function PolishButton({
     const description = input.description?.trim() ? input.description : undefined;
     if (!name && !description) {
       showToast({ message: t('longTail.catalog.PolishButton.errors.enterText'), type: 'error' });
+      onSettled?.();
       return;
     }
     setBusy(true);
@@ -122,6 +138,7 @@ export default function PolishButton({
       const descVisiblySame = result.description === null || trimEq(result.description, description);
       if (!result.factChanges && (!result.changed || (nameVisiblySame && descVisiblySame))) {
         showToast({ message: t('longTail.catalog.PolishButton.messages.noChanges'), type: 'success' });
+        onSettled?.();
         return;
       }
       setPreview({
@@ -136,40 +153,59 @@ export default function PolishButton({
       if (!(err instanceof ActionError)) {
         showToast({ message: t('longTail.catalog.PolishButton.errors.polishFailed'), type: 'error' });
       }
+      onSettled?.();
     } finally {
       setBusy(false);
     }
   };
 
+  // Drives an unattended queue (see `autoRun` doc above): fire once per mount.
+  // Intentionally mount-only — the host remounts this component (fresh `key`)
+  // for each queued item rather than re-triggering via a dependency array.
+  useEffect(() => {
+    if (autoRun && !disabled) void run();
+  }, []);
+
+  // Closing the preview (Cancel, backdrop/Escape, or after a successful
+  // Apply) is always the end of this run's cycle — a queue driver listens on
+  // `onSettled` to advance regardless of which path got here.
+  const closePreview = () => {
+    setPreview(null);
+    onSettled?.();
+  };
+
   const apply = () => {
     if (!preview) return;
     onApply({ name: preview.afterName, description: preview.afterDescription });
-    setPreview(null);
     showToast({ message: t('longTail.catalog.PolishButton.messages.applied'), type: 'success' });
+    closePreview();
   };
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => void run()}
-        disabled={disabled || busy}
-        aria-busy={busy}
-        data-testid={`polish-btn-${idSuffix}`}
-        title={t('longTail.catalog.PolishButton.title')}
-        className={
-          compact
-            ? 'inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50'
-            : 'inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50'
-        }
-      >
-        {busy && <Loader2 className={`animate-spin ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`} aria-hidden="true" />}
-        {busy ? t('longTail.catalog.PolishButton.polishing') : (label ?? t('longTail.catalog.PolishButton.defaultLabel'))}
-      </button>
+      {!hideTrigger && (
+        <button
+          type="button"
+          onClick={() => void run()}
+          disabled={disabled || busy}
+          aria-busy={busy}
+          data-testid={`polish-btn-${idSuffix}`}
+          title={t('longTail.catalog.PolishButton.title')}
+          className={
+            compact
+              ? 'inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50'
+              : 'inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50'
+          }
+        >
+          {busy && <Loader2 className={`animate-spin ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`} aria-hidden="true" />}
+          {!busy && icon}
+          {busy ? t('longTail.catalog.PolishButton.polishing') : (label ?? t('longTail.catalog.PolishButton.defaultLabel'))}
+        </button>
+      )}
 
       <Dialog
         open={preview !== null}
-        onClose={() => setPreview(null)}
+        onClose={closePreview}
         title={t('longTail.catalog.PolishButton.preview.dialogTitle')}
         labelledBy={headingId}
         maxWidth="2xl"
@@ -227,7 +263,7 @@ export default function PolishButton({
             <div className="flex justify-end gap-2 border-t px-5 py-4">
               <button
                 type="button"
-                onClick={() => setPreview(null)}
+                onClick={closePreview}
                 data-testid={`polish-cancel-${idSuffix}`}
                 className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
               >

@@ -55,6 +55,7 @@ import {
   addCatalogLine,
   updateLine,
   removeLine,
+  moveLineToBlock,
   reorderLines,
 } from './quoteService';
 import { sendQuote, declineQuoteByActor } from './quoteLifecycle';
@@ -99,6 +100,7 @@ const REQUIRED_PARAMS: Record<string, readonly string[]> = {
   add_catalog_line: ['quoteId', 'catalogItemId', 'quantity'],
   update_line: ['quoteId', 'lineId', 'patch'],
   remove_line: ['quoteId', 'lineId'],
+  move_line: ['quoteId', 'lineId', 'blockId'],
   reorder_lines: ['quoteId', 'blockId', 'lineIds'],
   send: ['quoteId'],
   decline: ['quoteId'],
@@ -199,7 +201,8 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
         'create_pay_link: quoteId; add_block: quoteId, block; update_block: quoteId, blockId, block; delete_block: ' +
         'quoteId, blockId; reorder_blocks: quoteId, blockIds; add_manual_line: quoteId, line; add_catalog_line: ' +
         'quoteId, catalogItemId, quantity (blockId optional); update_line: quoteId, lineId, patch; remove_line: ' +
-        'quoteId, lineId; reorder_lines: quoteId, blockId, lineIds.',
+        'quoteId, lineId; move_line: quoteId, lineId, blockId (the TARGET line_items block); ' +
+        'reorder_lines: quoteId, blockId, lineIds.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -217,6 +220,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               'add_catalog_line',
               'update_line',
               'remove_line',
+              'move_line',
               'reorder_lines',
               'send',
               'decline',
@@ -224,7 +228,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             ],
           },
           quoteId: { type: 'string', description: 'Quote UUID' },
-          blockId: { type: 'string' },
+          blockId: {
+            type: 'string',
+            description:
+              'Block UUID. For move_line this is the TARGET line_items block the line moves into; ' +
+              'for reorder_lines, the block whose lines are being reordered.',
+          },
           lineId: { type: 'string' },
           catalogItemId: {
             type: 'string',
@@ -390,6 +399,17 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'remove_line':
             await removeLine(String(input.quoteId), String(input.lineId), actor);
             return JSON.stringify({ ok: true });
+          // Re-parents a line onto another pricing table on the SAME quote. The
+          // only repair path for a legacy orphan (block_id NULL) — those lines
+          // count toward the totals and print on the PDF but are invisible in
+          // the web editor, so without this they need raw SQL (#2553).
+          case 'move_line':
+            return JSON.stringify(await moveLineToBlock(
+              String(input.quoteId),
+              String(input.lineId),
+              String(input.blockId),
+              actor
+            ));
           case 'reorder_lines': {
             const { lineIds } = reorderLinesSchema.parse({ lineIds: input.lineIds });
             await reorderLines(String(input.quoteId), String(input.blockId), lineIds, actor);

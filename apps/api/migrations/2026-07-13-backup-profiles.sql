@@ -1,4 +1,4 @@
--- Backup profiles (docs/superpowers/specs/backup/2026-07-13-backup-profiles-design.md).
+-- Backup profiles (docs/superpowers/specs/2026-07-13-backup-profiles-design.md).
 --
 -- A backup profile is a Cove-style selection entity answering "what to
 -- protect" for a device class (Files / System State / SQL / Hyper-V, each

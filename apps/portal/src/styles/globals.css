@@ -156,6 +156,20 @@
   .quote-rich-text ol {
     @apply mb-2 list-decimal space-y-1 pl-5 last:mb-0;
   }
+  /* Tailwind's base reset neutralizes b/strong/em weight+style in some resets;
+   * restore the emphasis the sanitizer allows so bold/italic/underline in an
+   * author's rich_text renders with the same fidelity as the in-app preview. */
+  .quote-rich-text strong,
+  .quote-rich-text b {
+    @apply font-semibold text-foreground;
+  }
+  .quote-rich-text em,
+  .quote-rich-text i {
+    @apply italic;
+  }
+  .quote-rich-text u {
+    @apply underline underline-offset-2;
+  }
   .quote-rich-text a {
     @apply text-primary underline underline-offset-2;
   }

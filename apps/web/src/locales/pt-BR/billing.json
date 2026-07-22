@@ -447,7 +447,11 @@
         "addSection": "Adicionar seção",
         "adding": "Adicionando…",
         "cancel": "Cancelar",
+        "collapseSection": "Recolher seção",
+        "dragLine": "Arraste para reordenar a linha",
+        "dragLineTitle": "Arraste para reordenar dentro desta tabela. Pelo teclado: use Mover para cima/baixo no menu da linha.",
         "dragSection": "Arraste para reordenar a seção",
+        "expandSection": "Expandir seção",
         "fetch": "Buscar",
         "fetchAddImage": "Buscar e adicionar imagem",
         "fromUrl": "Da URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Substituir imagem",
         "sectionActions": "Ações da seção",
         "showCostMargin": "Mostrar custo e margem",
+        "tidyAllDescriptions": "Aprimorar todas as descrições",
         "uploadAddImage": "Enviar e adicionar imagem",
         "uploading": "Enviando…"
       },
       "addLine": {
+        "addFromCatalog": "Adicionar do catálogo",
+        "aiLookupAction": "Busca com IA",
         "catalogItem": "Item do catálogo",
         "manualLine": "Linha manual",
-        "moreWays": "Mais formas de adicionar (catálogo, busca com IA, detalhes)",
+        "moreDetails": "Mais detalhes",
         "searchDistributor": "Pesquisar distribuidor",
         "searchPax8": "Pesquisar Pax8"
       },
@@ -511,6 +518,26 @@
         "pricingTable": "Tabela de preços",
         "richText": "Texto rico",
         "contract": "Contrato"
+      },
+      "bulk": {
+        "applied_one": "{{count}} linha atualizada.",
+        "applied_other": "{{count}} linhas atualizadas.",
+        "apply": "Aplicar",
+        "barAria": "Edição em massa das linhas selecionadas",
+        "clearSelection": "Limpar seleção",
+        "invalidMarkup": "Informe um percentual de margem válido.",
+        "markupHint": "Aplica-se às linhas selecionadas que têm custo.",
+        "partialFailure": "{{failed}} de {{total}} linhas não foram atualizadas.",
+        "selectAllAria": "Selecionar todas as linhas de {{label}}",
+        "selectLineAria": "Selecionar {{name}}",
+        "selectedCount_one": "{{count}} linha selecionada",
+        "selectedCount_other": "{{count}} linhas selecionadas",
+        "setCost": "Definir custo",
+        "setMarkup": "Definir margem %",
+        "skippedNoCost_one": "{{count}} linha sem custo ignorada.",
+        "skippedNoCost_other": "{{count}} linhas sem custo ignoradas.",
+        "taxableOff": "Tributável: não",
+        "taxableOn": "Tributável: sim"
       },
       "catalog": {
         "addSome": "Adicione alguns no Catálogo de Produtos",
@@ -600,11 +627,16 @@
         "full": "Interno · não mostrado ao cliente",
         "short": "Interno"
       },
+      "lastSaved": {
+        "saved": "Salvo às {{time}}",
+        "saving": "Salvando…"
+      },
       "line": {
         "addDescription": "descrição",
         "billing": "Cobrança",
         "billingFrequencyAria": "Frequência de cobrança",
         "cost": "Custo",
+        "costMissingAria": "Custo não informado — esta linha é excluída da estimativa de lucro.",
         "descriptionAria": "Descrição da linha",
         "descriptionOptional": "Descrição (opcional)",
         "enterCostFirstMarkup": "Informe um custo primeiro para definir a margem %",
@@ -614,27 +646,42 @@
         "markupPercent": "Margem %",
         "nameAria": "Nome da linha",
         "namePlaceholder": "Nome",
+        "noCost": "Sem custo",
+        "noCostHelp": "Marque esta linha como intencionalmente sem custo (por exemplo, mão de obra ou um serviço) — ela é excluída do aviso de custo ausente.",
         "partNumberAbbr": "PN",
+        "partNumberHelp": "O número de peça do fabricante para este item.",
         "partNumberOptional": "Nº da peça (opcional)",
         "profit": "Lucro",
         "quantityAria": "Quantidade",
         "saveToCatalog": "Salvar no catálogo",
+        "showLess": "Mostrar menos",
+        "showMore": "Mostrar mais",
         "sku": "SKU",
+        "skuHelp": "Seu número de estoque de catálogo ou distribuidor para este item.",
         "skuOptional": "SKU (opcional)",
+        "tidyWithAi": "Aprimorar com IA",
         "unitCost": "Custo unitário"
       },
       "liveTotals": {
         "annualRecurring": "Recorrente anual",
         "dueOnAcceptance": "Devido na aceitação",
+        "firstPeriodSubtotal": "Subtotal do primeiro período",
         "firstPeriodTotal": "Total do primeiro período (incl. recorrente)",
         "monthlyRecurring": "Recorrente mensal",
-        "oneTime": "Único",
+        "oneTime": "Único (antes dos impostos)",
         "srUpdated": "Totais atualizados. Único {{oneTime}}, recorrente mensal {{monthly}}, recorrente anual {{annual}}, devido na aceitação {{due}}.",
         "srUpdatedWithTax": "Totais atualizados. Único {{oneTime}}, recorrente mensal {{monthly}}, recorrente anual {{annual}}, imposto {{tax}}, devido na aceitação {{due}}.",
+        "subtotal": "Subtotal",
         "tax": "Imposto",
         "taxRate": "Alíquota de imposto",
         "taxRateHelp": "Aplica-se às linhas marcadas como tributáveis. Definido nas configurações de imposto da organização.",
-        "title": "Totais ao vivo"
+        "title": "Totais ao vivo",
+        "total": "Total"
+      },
+      "outline": {
+        "aria": "Conteúdo do orçamento",
+        "shortcutHint": "Alt+Seta para baixo / Alt+Seta para cima pula para a seção seguinte ou anterior durante a edição.",
+        "title": "Conteúdo"
       },
       "recurrence": {
         "annual": "Anual",
@@ -662,6 +709,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} linhas · {{amount}}",
+        "collapsedSummary_one": "{{count}} linha · {{amount}}",
+        "collapsedSummary_other": "{{count}} linhas · {{amount}}",
         "emptyLines": "Ainda não há linhas. Adicione um item de catálogo ou uma linha manual abaixo.",
         "fallbackName": "Tabela de preços {{number}}",
         "item": "Item",
@@ -670,7 +720,7 @@
         "notTaxable": "Não tributável",
         "qty": "Qtd.",
         "recurrence": "Recorrência",
-        "scrollAria": "Tabela de preços — role lateralmente em telas estreitas para ver totais e ações da linha",
+        "scrollAria": "Tabela de preços — role lateralmente em telas estreitas para ver totais e ações da linha; em seções longas, role verticalmente com o cabeçalho fixo",
         "showSubtotal": "Mostrar linha de subtotal",
         "tax": "Imposto",
         "taxSuffix": "+ {{amount}} de imposto",
@@ -682,6 +732,14 @@
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
         "title": "Termos e Condições"
+      },
+      "tidyAll": {
+        "complete": "{{count}} descrição(ões) revisada(s).",
+        "noDescriptions": "Nenhuma descrição de linha para aprimorar nesta seção."
+      },
+      "undo": {
+        "lineDeleted": "Linha excluída",
+        "sectionDeleted": "Seção excluída"
       },
       "title": {
         "label": "Título da cotação",
@@ -728,6 +786,14 @@
         "add": "Adicionar",
         "nameAria": "Nome da nova linha",
         "placeholder": "Digite o nome do item…"
+      },
+      "unassigned": {
+        "explainer": "Estas linhas não estão em nenhuma seção de preços, mas mesmo assim aparecem na cotação do cliente e entram nos totais dela. Mova cada uma para uma seção de preços para controlar onde ela aparece.",
+        "moveAria": "Mover {{line}} para uma seção de preços",
+        "movePlaceholder": "Mover para…",
+        "noTargets": "Adicione uma seção de preços e depois mova estas linhas para ela.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Linhas não atribuídas"
       }
     },
     "actions": {

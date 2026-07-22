@@ -447,7 +447,11 @@
         "addSection": "Ajouter une section",
         "adding": "Ajout…",
         "cancel": "Annuler",
+        "collapseSection": "Réduire la section",
+        "dragLine": "Glisser pour réordonner la ligne",
+        "dragLineTitle": "Glisser pour réordonner dans ce tableau. Au clavier : utilisez Monter/Descendre dans le menu de la ligne.",
         "dragSection": "Glisser pour réordonner la section",
+        "expandSection": "Développer la section",
         "fetch": "Récupérer",
         "fetchAddImage": "Récupérer et ajouter l'image",
         "fromUrl": "Depuis une URL",
@@ -468,13 +472,16 @@
         "replaceImage": "Remplacer l'image",
         "sectionActions": "Actions de la section",
         "showCostMargin": "Afficher coût et marge",
+        "tidyAllDescriptions": "Peaufiner toutes les descriptions",
         "uploadAddImage": "Téléverser et ajouter l'image",
         "uploading": "Téléversement…"
       },
       "addLine": {
+        "addFromCatalog": "Ajouter depuis le catalogue",
+        "aiLookupAction": "Recherche IA",
         "catalogItem": "Article du catalogue",
         "manualLine": "Ligne manuelle",
-        "moreWays": "Plus de façons d'ajouter (catalogue, recherche IA, détails)",
+        "moreDetails": "Plus de détails",
         "searchDistributor": "Rechercher un distributeur",
         "searchPax8": "Rechercher Pax8"
       },
@@ -511,6 +518,26 @@
         "pricingTable": "Tableau de prix",
         "richText": "Texte enrichi",
         "contract": "Contrat"
+      },
+      "bulk": {
+        "applied_one": "{{count}} ligne mise à jour.",
+        "applied_other": "{{count}} lignes mises à jour.",
+        "apply": "Appliquer",
+        "barAria": "Modification groupée des lignes sélectionnées",
+        "clearSelection": "Effacer la sélection",
+        "invalidMarkup": "Saisissez un pourcentage de marge valide.",
+        "markupHint": "S'applique aux lignes sélectionnées ayant un coût.",
+        "partialFailure": "{{failed}} lignes sur {{total}} n'ont pas pu être mises à jour.",
+        "selectAllAria": "Sélectionner toutes les lignes de {{label}}",
+        "selectLineAria": "Sélectionner {{name}}",
+        "selectedCount_one": "{{count}} ligne sélectionnée",
+        "selectedCount_other": "{{count}} lignes sélectionnées",
+        "setCost": "Définir le coût",
+        "setMarkup": "Définir la marge %",
+        "skippedNoCost_one": "{{count}} ligne sans coût ignorée.",
+        "skippedNoCost_other": "{{count}} lignes sans coût ignorées.",
+        "taxableOff": "Taxable : non",
+        "taxableOn": "Taxable : oui"
       },
       "catalog": {
         "addSome": "Ajoutez-en dans Product Catalog",
@@ -600,11 +627,16 @@
         "full": "Interne · non visible par le client",
         "short": "Interne"
       },
+      "lastSaved": {
+        "saved": "Enregistré à {{time}}",
+        "saving": "Enregistrement…"
+      },
       "line": {
         "addDescription": "description",
         "billing": "Facturation",
         "billingFrequencyAria": "Fréquence de facturation",
         "cost": "Coût",
+        "costMissingAria": "Coût non renseigné — cette ligne est exclue de l'estimation du profit.",
         "descriptionAria": "Description de la ligne",
         "descriptionOptional": "Description (facultatif)",
         "enterCostFirstMarkup": "Saisissez d'abord un coût pour définir le % de marge",
@@ -614,27 +646,42 @@
         "markupPercent": "Marge %",
         "nameAria": "Nom de la ligne",
         "namePlaceholder": "Nom",
+        "noCost": "Sans coût",
+        "noCostHelp": "Marquer cette ligne comme volontairement sans coût (par ex. main-d'œuvre ou prestation) — elle sera exclue de l'avertissement de coût manquant.",
         "partNumberAbbr": "PN",
+        "partNumberHelp": "La référence fabricant (numéro de pièce) de cet article.",
         "partNumberOptional": "Part # (facultatif)",
         "profit": "Profit",
         "quantityAria": "Quantité",
         "saveToCatalog": "Enregistrer dans le catalogue",
+        "showLess": "Afficher moins",
+        "showMore": "Afficher plus",
         "sku": "SKU",
+        "skuHelp": "Votre référence de catalogue ou de distributeur pour cet article.",
         "skuOptional": "SKU (facultatif)",
+        "tidyWithAi": "Peaufiner avec l'IA",
         "unitCost": "Coût unitaire"
       },
       "liveTotals": {
         "annualRecurring": "Récurrent annuel",
         "dueOnAcceptance": "Dû à l'acceptation",
+        "firstPeriodSubtotal": "Sous-total de la première période",
         "firstPeriodTotal": "Total de première période (récurrent inclus)",
         "monthlyRecurring": "Récurrent mensuel",
-        "oneTime": "Ponctuel",
+        "oneTime": "Ponctuel (avant taxes)",
         "srUpdated": "Totaux mis à jour. Ponctuel {{oneTime}}, récurrent mensuel {{monthly}}, récurrent annuel {{annual}}, dû à l'acceptation {{due}}.",
         "srUpdatedWithTax": "Totaux mis à jour. Ponctuel {{oneTime}}, récurrent mensuel {{monthly}}, récurrent annuel {{annual}}, taxe {{tax}}, dû à l'acceptation {{due}}.",
+        "subtotal": "Sous-total",
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
         "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
-        "title": "Totaux en direct"
+        "title": "Totaux en direct",
+        "total": "Total"
+      },
+      "outline": {
+        "aria": "Sommaire du devis",
+        "shortcutHint": "Alt+Bas / Alt+Haut permet de passer à la section suivante ou précédente pendant l'édition.",
+        "title": "Sommaire"
       },
       "recurrence": {
         "annual": "Annuel",
@@ -662,6 +709,9 @@
         "plusSeparator": " + "
       },
       "table": {
+        "collapsedSummary": "{{count}} lignes · {{amount}}",
+        "collapsedSummary_one": "{{count}} ligne · {{amount}}",
+        "collapsedSummary_other": "{{count}} lignes · {{amount}}",
         "emptyLines": "Aucune ligne pour le moment. Ajoutez un article du catalogue ou une ligne manuelle ci-dessous.",
         "fallbackName": "Tableau de prix {{number}}",
         "item": "Article",
@@ -670,7 +720,7 @@
         "notTaxable": "Non taxable",
         "qty": "Qté",
         "recurrence": "Récurrence",
-        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne",
+        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne ; pour les sections longues, défilement vertical avec l'en-tête fixe",
         "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
         "taxSuffix": "+ {{amount}} de taxe",
@@ -682,6 +732,14 @@
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
         "title": "Conditions générales"
+      },
+      "tidyAll": {
+        "complete": "{{count}} description(s) passée(s) en revue.",
+        "noDescriptions": "Aucune description de ligne à peaufiner dans cette section."
+      },
+      "undo": {
+        "lineDeleted": "Ligne supprimée",
+        "sectionDeleted": "Section supprimée"
       },
       "title": {
         "label": "Titre du devis",
@@ -728,6 +786,14 @@
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
         "placeholder": "Saisissez le nom de l'article…"
+      },
+      "unassigned": {
+        "explainer": "Ces lignes ne figurent dans aucune section tarifaire, mais elles apparaissent malgré tout sur le devis du client et sont comptées dans ses totaux. Déplacez chacune d'elles dans une section tarifaire pour maîtriser l'endroit où elle apparaît.",
+        "moveAria": "Déplacer {{line}} vers une section tarifaire",
+        "movePlaceholder": "Déplacer vers…",
+        "noTargets": "Ajoutez une section tarifaire, puis déplacez-y ces lignes.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Lignes non affectées"
       }
     },
     "actions": {
@@ -1044,7 +1110,7 @@
       "tabs": {
         "editor": "Éditeur",
         "preview": "Aperçu",
-        "detail": "Détail"
+        "detail": "Détails"
       }
     }
   },

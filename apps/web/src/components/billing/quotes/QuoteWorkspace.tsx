@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { DocumentWorkspace, type DocumentTab } from '../shared/DocumentWorkspace';
+import { StatusPill } from '../shared/StatusPill';
 import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import { QuoteHeaderMeta } from './QuoteHeaderMeta';
 import { useOrgStore } from '../../../stores/orgStore';
-import { type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
+import { STATUS_ROLES, type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -46,6 +47,18 @@ export default function QuoteWorkspace({ id }: Props) {
   // The header's editable title/customer (drafts) report their own pending
   // state; Send waits for BOTH surfaces to be quiescent.
   const [headerSavePending, setHeaderSavePending] = useState(false);
+  // Bridge between the editor's deferred deletions (undo grace window) and the
+  // header's Send: the editor registers a "flush now" hook, and QuoteActions
+  // calls it when Send is clicked while edits are pending — so a held Send
+  // fires as soon as the deferred DELETE lands instead of waiting out the
+  // remainder of the undo window.
+  const pendingDeleteFlushRef = useRef<(() => void) | null>(null);
+  const registerPendingDeleteFlush = useCallback((flush: (() => void) | null) => {
+    pendingDeleteFlushRef.current = flush;
+  }, []);
+  const flushEditorPendingDeletes = useCallback(() => {
+    pendingDeleteFlushRef.current?.();
+  }, []);
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page spinner would remount the form and
@@ -126,6 +139,20 @@ export default function QuoteWorkspace({ id }: Props) {
   }));
   const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';
 
+  // Status was previously visible only on the Preview/Details tabs — a tech
+  // sitting in the Editor (the default landing tab for a draft) had no cue at
+  // all. Reuses the same StatusPill + STATUS_ROLES vocabulary as
+  // QuotesPage/QuoteDetail/QuoteDocument; display only, no new writes.
+  const statusRoles = STATUS_ROLES[detail.quote.status];
+  const statusPill = (
+    <StatusPill
+      role={statusRoles.role}
+      label={t(/* i18n-dynamic */ `quotes.status.${detail.quote.status}`)}
+      className={statusRoles.className ? `${statusRoles.className} shrink-0` : 'shrink-0'}
+      testId="quote-workspace-status"
+    />
+  );
+
   return (
     <DocumentWorkspace
       idPrefix="quote"
@@ -135,9 +162,10 @@ export default function QuoteWorkspace({ id }: Props) {
       // Drafts get the editable identity row (title input + customer select) in
       // place of the static h1 — the editor no longer carries a title strip.
       titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setHeaderSavePending} /> : undefined}
+      statusPill={statusPill}
       // Primary actions live in the header so Send (the money-moment) and Download
       // are reachable from any tab, not buried inside the Detail tab.
-      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || headerSavePending} />}
+      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || headerSavePending} onSendWhilePending={flushEditorPendingDeletes} />}
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}
@@ -161,7 +189,7 @@ export default function QuoteWorkspace({ id }: Props) {
           while previewing. */}
       {isDraft && (
         <div className={activeTab === 'editor' ? '' : 'hidden'}>
-          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} />
+          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} />
         </div>
       )}
       {activeTab === 'preview' && (

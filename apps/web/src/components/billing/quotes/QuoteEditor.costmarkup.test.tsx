@@ -103,8 +103,10 @@ describe('QuoteEditor — per-line cost/markup/net strip', () => {
     fireEvent.blur(markup);
 
     // Price reflects 150.00 optimistically, and the PATCH carries unitPrice 150.
+    // The field is unfocused after the markup blur, so it renders through
+    // formatMoney (currency-formatted), same as the adjacent Total/summary cells.
     await waitFor(() =>
-      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('150.00'),
+      expect((screen.getByTestId('quote-line-price-line-1') as HTMLInputElement).value).toBe('$150.00'),
     );
     await waitFor(() =>
       expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitPrice: 150 }),

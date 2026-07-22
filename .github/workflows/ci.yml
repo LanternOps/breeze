@@ -256,6 +256,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Migrating an EMPTY DB below cannot catch edits to already-shipped
+      # migrations (no recorded checksums to mismatch) — but autoMigrate
+      # refuses to boot on them in prod. Enforce immutability statically.
+      - name: Shipped-migration immutability guard
+        run: bash scripts/check-migration-immutability.sh
+
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
 

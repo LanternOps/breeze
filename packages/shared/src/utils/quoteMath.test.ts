@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, marginPct, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 
 const line = (over: Partial<QuoteLineForMath>): QuoteLineForMath => ({
   quantity: '1', unitPrice: '0', taxable: false, recurrence: 'one_time', customerVisible: true, ...over,
@@ -77,6 +77,35 @@ describe('quoteMath (shared)', () => {
     expect(r.monthlyRecurringNet).toBe('15.00');
     expect(r.totalCost).toBe('125.00');
     expect(r.linesMissingCost).toBe(1);
+    // Revenue is split by the SAME cadence rule, over the SAME cost-bearing
+    // lines as net (the missing-cost line contributes to neither) — the
+    // denominator marginPct needs for a per-cadence percent.
+    expect(r.oneTimeRevenue).toBe('130.00');
+    expect(r.monthlyRecurringRevenue).toBe('40.00');
+    expect(r.annualRecurringRevenue).toBe('0.00');
+  });
+
+  it('computeQuoteProfit: an EXPLICIT cost of 0 ("no cost", Task B1) is NOT missing — full price counts as net, distinct from a null (never-entered) cost', () => {
+    const lineHelper = (o: Partial<QuoteLineForMath>) => ({
+      quantity: '1', unitPrice: '0', taxable: false, customerVisible: true, recurrence: 'one_time' as const, ...o,
+    });
+    const r = computeQuoteProfit([
+      lineHelper({ unitPrice: '150', unitCost: '0' }),   // explicit no-cost labor line — net = full price
+      lineHelper({ unitPrice: '80', unitCost: null }),   // genuinely missing/unknown cost
+    ]);
+    expect(r.linesMissingCost).toBe(1); // only the null line, NOT the explicit-0 line
+    expect(r.oneTimeNet).toBe('150.00'); // 150 - 0, the null-cost line contributes nothing
+    expect(r.totalCost).toBe('0.00');
+    expect(r.oneTimeRevenue).toBe('150.00'); // only the cost-bearing (incl. $0-cost) line's revenue
+  });
+
+  it('marginPct: net/revenue·100 (margin, not markup); null on div-by-zero/non-finite', () => {
+    expect(marginPct('30', '50')).toBeCloseTo(60);
+    expect(marginPct('-10', '50')).toBeCloseTo(-20); // a loss is a valid (negative) margin
+    expect(marginPct('10', '0')).toBeNull(); // no revenue to compute a percent from
+    expect(marginPct('10', '-5')).toBeNull(); // negative revenue is nonsensical, not "0%"
+    expect(marginPct('10', Number.NaN)).toBeNull();
+    expect(marginPct(Number.NaN, '50')).toBeNull();
   });
 });
 

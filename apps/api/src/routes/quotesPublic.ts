@@ -10,9 +10,9 @@ import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
-import { readQuoteImage } from '../services/quoteImageStorage';
+import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
-import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../services/quoteService';
+import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -35,6 +35,7 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 export const quotesPublicRoutes = new Hono();
 const tokenParam = z.object({ token: z.string().min(10) });
 const tokenImageParam = z.object({ token: z.string().min(10), imageId: z.string().guid() });
+const tokenLineImageParam = z.object({ token: z.string().min(10), lineId: z.string().guid() });
 const tokenBlockParam = z.object({ token: z.string().min(10), blockId: z.string().guid() });
 
 // Resolve + verify the token, returning the scoped claims or null.
@@ -69,7 +70,8 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
       const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
-      return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+      const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
+      return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
     }));
     if (!data) return c.json({ error: 'Quote not found' }, 404);
     return c.json({ data });
@@ -87,6 +89,24 @@ quotesPublicRoutes.get('/:token/images/:imageId', zValidator('param', tokenImage
     const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
     if (!quote) return null;
     return readQuoteImage(imageId, quote.id);
+  }));
+  if (!img) return c.json({ error: 'Image not found' }, 404);
+  return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
+});
+
+// GET /:token/line-image/:lineId — per-line product thumbnail (uploaded image or
+// the line's snapshotted catalog item image), the customer counterpart to the
+// authed /catalog/:id/image route. Same token-gated, system-scope read as the
+// image route: quote_id resolved from the signature-verified token, the line
+// lookup scoped to that quote (id AND quoteId, customer-visible) so a token
+// holder can only reach images for lines on their own proposal.
+quotesPublicRoutes.get('/:token/line-image/:lineId', zValidator('param', tokenLineImageParam), async (c) => {
+  const claims = await resolve(c); const { lineId } = c.req.valid('param');
+  if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  const img = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
+    if (!quote) return null;
+    return loadCustomerLineImage(quote.id, lineId);
   }));
   if (!img) return c.json({ error: 'Image not found' }, 404);
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
