@@ -194,6 +194,89 @@ describe('QuoteEditor — internal band progressive disclosure', () => {
   });
 });
 
+// Task B1: an explicit cost of 0 ("no cost", e.g. a labor/service line) is a
+// real, known cost — deliberately distinct from a never-entered/unknown cost
+// (null) — so it's excluded from the "N lines missing a cost" warning and the
+// collapsed summary reads "No cost" rather than "Cost $0.00".
+describe('QuoteEditor — explicit "no cost" designation (Task B1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    state.permissions = [{ resource: '*', action: '*' }];
+    updateLineMock.mockResolvedValue(
+      { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
+    );
+  });
+
+  it('checking "No cost" sets an explicit cost of 0 through the same commit path as typing it', async () => {
+    render(<QuoteEditor detail={detailWith([baseLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+    fireEvent.click(screen.getByTestId('quote-line-internal-toggle-line-1'));
+
+    fireEvent.click(screen.getByTestId('quote-line-nocost-line-1'));
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitCost: 0 }));
+    // Unfocused, the cost input renders currency-formatted (same as any commit).
+    expect((screen.getByTestId('quote-line-cost-line-1') as HTMLInputElement).value).toBe('$0.00');
+  });
+
+  it('unchecking "No cost" clears the cost back to null (the same as clearing the field by hand)', async () => {
+    const detail = detailWith([{ ...baseLine, unitCost: '0.00' }]);
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+    fireEvent.click(screen.getByTestId('quote-line-internal-toggle-line-1'));
+
+    const checkbox = screen.getByTestId('quote-line-nocost-line-1') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitCost: null }));
+  });
+
+  it('collapsed summary reads "No cost · Profit $X" (not "Cost $0.00") and drops the Markup segment', async () => {
+    const detail = detailWith([
+      { ...baseLine, unitCost: '0.00', unitPrice: '130.00', lineTotal: '130.00' },
+    ]);
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+
+    const summary = screen.getByTestId('quote-line-internal-summary-line-1');
+    expect(summary).toHaveTextContent('No cost');
+    expect(summary).toHaveTextContent('Profit $130.00');
+    expect(summary.textContent).not.toContain('Cost $0.00');
+    expect(summary.textContent).not.toContain('Markup');
+    expect(screen.queryByTestId('quote-line-cost-missing-line-1')).not.toBeInTheDocument();
+  });
+
+  it('readonly rows also swap the collapsed "Cost $0.00" figure for "No cost"', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }];
+    const detail = detailWith([
+      { ...baseLine, unitCost: '0.00', unitPrice: '75.00', lineTotal: '75.00' },
+    ]);
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+
+    const summary = screen.getByTestId('quote-line-internal-summary-line-1');
+    expect(summary).toHaveTextContent('No cost');
+    expect(summary.textContent).not.toContain('Cost $0.00');
+  });
+
+  it('an explicit cost of 0 is excluded from the missing-cost warning; a null cost still triggers it', async () => {
+    const detail = detailWith([
+      { ...baseLine, id: 'line-1', unitCost: '0.00' },
+      { ...baseLine, id: 'line-2', unitCost: null, sortOrder: 1 },
+    ]);
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+
+    // Only line-2 (the null-cost line) counts toward the warning.
+    expect(screen.getByTestId('quote-margin-missing-cost')).toHaveTextContent('1 line missing a cost');
+  });
+});
+
 describe('QuoteEditor — cadence suffix only on mixed-cadence quotes', () => {
   beforeEach(() => {
     vi.clearAllMocks();

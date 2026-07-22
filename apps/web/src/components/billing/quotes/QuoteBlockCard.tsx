@@ -32,6 +32,7 @@ import { ContractBlockEditor } from './QuoteContractBlockEditor';
 export function BlockCard({
   block, quoteId, lines, currency, taxRate, catalog, catalogLoadFailed, isPending, canWrite, showInternal, mixedCadence, depositSelectMode, ecActive, pax8Active, defaultMarkupPct, onAddCatalog, onImportAddDistributor, onImportAddPax8, onAddManual, onEditLine, onEditBlock, onMoveLine, onRemoveLine, onLineDraft,
   moveTargets, onMoveLineToBlock, revealRequest, hasDirtyLines, onDropLine,
+  selectionActive, isLineSelected, onToggleLineSelected, onSetBlockSelection,
 }: {
   block: QuoteBlock;
   quoteId: string;
@@ -79,6 +80,13 @@ export function BlockCard({
   /** Commit a row drag-drop: the dragged line id + the gap index it landed in
    *  (0..n). Routes to the SAME reorder path the ⋯ menu's Move up/down uses. */
   onDropLine: (dragLineId: string, targetIdx: number) => void;
+  /** Bulk-edit selection (Task D): true while ANY line on the quote is selected
+   *  (pins every row checkbox visible), plus the per-line membership check /
+   *  toggle and the block-level select-all setter. */
+  selectionActive: boolean;
+  isLineSelected: (lineId: string) => boolean;
+  onToggleLineSelected: (lineId: string) => void;
+  onSetBlockSelection: (lineIds: string[], selected: boolean) => void;
 }) {
   const { t } = useTranslation('billing');
   // Pending state scoped to this block: editing/removing this block, or adding a
@@ -172,6 +180,18 @@ export function BlockCard({
   // Collapsed-summary subtotal: the sum of the block's per-line totals (the
   // same persisted lineTotal figures the rows render), in cents.
   const blockSubtotalCents = lines.reduce((sum, l) => sum + toCents(l.lineTotal), 0);
+
+  // ---- bulk-select (Task D): per-block select-all --------------------------
+  // Indeterminate is a DOM property, not an attribute, so it's wired via a ref
+  // effect. The checkbox follows the same quiet reveal grammar as the row
+  // checkboxes: hidden at rest, revealed on block hover/focus-within, pinned
+  // visible while any selection is active.
+  const selectedInBlock = lines.reduce((n, l) => n + (isLineSelected(l.id) ? 1 : 0), 0);
+  const allInBlockSelected = lines.length > 0 && selectedInBlock === lines.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = selectedInBlock > 0 && !allInBlockSelected;
+  }, [selectedInBlock, allInBlockSelected]);
 
   // ---- row drag-to-reorder (HTML5 DnD, same vocabulary as blocks) ----------
   // The drag state lives here (one drag per table); drop gaps render between
@@ -306,10 +326,10 @@ export function BlockCard({
               onBlur={() => void commitHeading()}
               disabled={blockBusy}
               data-testid={`quote-block-heading-input-${block.id}`}
-              className={`w-full rounded-md border bg-transparent px-2 py-1 text-lg font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(headingDraft.trim() !== heading, blockSaved))}`}
+              className={`w-full rounded-md border bg-transparent px-2 py-1 text-lg font-bold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(headingDraft.trim() !== heading, blockSaved))}`}
             />
           ) : (
-            <p className="text-lg font-semibold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
+            <p className="text-lg font-bold" data-testid={`quote-block-heading-content-${block.id}`}>{heading}</p>
           )
         )}
         {block.blockType === 'rich_text' && (
@@ -364,6 +384,22 @@ export function BlockCard({
                 line count + block subtotal in one compact row (mirroring the
                 internal band's whole-strip trigger). */}
             <div className="flex items-center gap-2">
+              {/* Select-all for this table's lines (writers, expanded only —
+                  collapsed, the whole strip is the expand toggle). Indeterminate
+                  while a strict subset is selected. */}
+              {canWrite && blockExpanded && lines.length > 0 && (
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allInBlockSelected}
+                  onChange={(e) => onSetBlockSelection(lines.map((l) => l.id), e.target.checked)}
+                  aria-label={t('quotes.editor.bulk.selectAllAria', { label: tableLabel.trim() || t('quotes.editor.blockTypes.pricingTable') })}
+                  data-testid={`quote-block-select-all-${block.id}`}
+                  className={`h-3.5 w-3.5 shrink-0 accent-primary transition-opacity focus-visible:opacity-100 ${
+                    selectionActive || selectedInBlock > 0 ? 'opacity-100' : 'opacity-0 group-focus-within/block:opacity-100 group-hover/block:opacity-100'
+                  }`}
+                />
+              )}
               <button
                 type="button"
                 onClick={() => setBlockOpen((v) => !v)}
@@ -382,7 +418,7 @@ export function BlockCard({
                     className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5"
                     data-testid={`quote-block-collapsed-summary-${block.id}`}
                   >
-                    <span className="truncate text-sm font-semibold">
+                    <span className="truncate text-sm font-bold">
                       {tableLabel.trim() || t('quotes.editor.blockTypes.pricingTable')}
                     </span>
                     <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -402,7 +438,7 @@ export function BlockCard({
                     disabled={blockBusy}
                     placeholder={t('quotes.editor.table.labelPlaceholder')}
                     data-testid={`quote-block-table-label-input-${block.id}`}
-                    className={`h-9 w-full rounded-md border bg-transparent px-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved))}`}
+                    className={`h-9 w-full rounded-md border bg-transparent px-2 text-sm font-bold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved))}`}
                   />
                 </div>
               )}
@@ -426,16 +462,25 @@ export function BlockCard({
                 visible without sideways scrolling at desktop widths. Billing cadence
                 rides in the Price cell; Taxable moved to each line's controls row;
                 per-line tax renders as a sub-line under the Total. The wrapper still
-                scrolls on genuinely narrow screens (phone), without a sticky column. */}
-            <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
+                scrolls on genuinely narrow screens (phone), without a sticky column.
+                max-h + overflow-y-auto (in addition to the existing overflow-x-auto)
+                makes THIS div the sticky containing block for the header cells below —
+                position:sticky on a descendant binds to its nearest scroll-container
+                ancestor, and an unbounded overflow-x-auto div never actually scrolls
+                vertically, so a plain `sticky top-0` inside it is inert (verified: the
+                header just scrolls off with the rows). Bounding the height is what
+                makes the header cells' sticky top-0 do anything at all. The cap is
+                generous (70vh) so short blocks never show an inner scrollbar — it only
+                engages once a section has enough rows to need a pinned header. */}
+            <div className="max-h-[70vh] overflow-x-auto overflow-y-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
             <table className="w-full min-w-[36rem] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="min-w-[12rem] px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
-                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
-                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
-                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
-                  {canWrite && <th className="px-1.5 py-2" />}
+                  <th className="sticky top-0 z-10 min-w-[12rem] bg-card px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
+                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
+                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
+                  {canWrite && <th className="sticky top-0 z-10 bg-card px-1.5 py-2" />}
                 </tr>
               </thead>
               <tbody>
@@ -481,6 +526,9 @@ export function BlockCard({
                           dragging={dragLineId === l.id}
                           onDragStartRow={() => setDragLineId(l.id)}
                           onDragEndRow={endLineDrag}
+                          selected={isLineSelected(l.id)}
+                          selectionActive={selectionActive}
+                          onToggleSelected={() => onToggleLineSelected(l.id)}
                         />
                       </Fragment>
                     ) : (
@@ -510,6 +558,24 @@ export function BlockCard({
                   />
                 )}
               </tbody>
+              {/* "Show subtotal row" previously only affected the document/PDF —
+                  checking it in the editor had no visible effect here. Mirrors
+                  it in the expanded table itself (same blockSubtotalCents the
+                  collapsed header summary already computes) so the toggle does
+                  something the tech can see without switching to Preview. */}
+              {showSubtotal && (
+                <tfoot>
+                  <tr className="border-t-2 bg-muted/20" data-testid={`quote-block-subtotal-row-${block.id}`}>
+                    <td className="px-1.5 py-2 text-right text-sm font-semibold text-foreground" colSpan={3}>
+                      {t('quotes.editor.liveTotals.subtotal')}
+                    </td>
+                    <td className="whitespace-nowrap px-1.5 py-2 text-right text-sm font-semibold tabular-nums text-foreground">
+                      {formatMoney(fromCents(blockSubtotalCents), currency)}
+                    </td>
+                    {canWrite && <td />}
+                  </tr>
+                </tfoot>
+              )}
             </table>
             </div>
 
@@ -676,6 +742,7 @@ export function BlockCard({
                   <input
                     type="text" placeholder={t('quotes.editor.line.namePlaceholder')} aria-label={t('quotes.editor.line.nameAria')} value={name}
                     onChange={(e) => setName(e.target.value)}
+                    title={name || undefined}
                     data-testid={`quote-manual-name-${block.id}`}
                     className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
@@ -746,18 +813,24 @@ export function BlockCard({
                       <input
                         type="text" value={sku}
                         onChange={(e) => setSku(e.target.value)}
+                        title={t('quotes.editor.line.skuHelp')}
+                        aria-describedby={`quote-manual-sku-help-${block.id}`}
                         data-testid={`quote-manual-sku-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
+                      <span id={`quote-manual-sku-help-${block.id}`} className="sr-only">{t('quotes.editor.line.skuHelp')}</span>
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.partNumberOptional')}</span>
                       <input
                         type="text" value={partNumber}
                         onChange={(e) => setPartNumber(e.target.value)}
+                        title={t('quotes.editor.line.partNumberHelp')}
+                        aria-describedby={`quote-manual-partnumber-help-${block.id}`}
                         data-testid={`quote-manual-partnumber-${block.id}`}
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
+                      <span id={`quote-manual-partnumber-help-${block.id}`} className="sr-only">{t('quotes.editor.line.partNumberHelp')}</span>
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.unitCost')}</span>

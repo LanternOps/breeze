@@ -55,7 +55,11 @@ export default function ContextScopeLine() {
       <p
         data-testid="context-scope-line"
         data-kind="fleet"
-        className="mb-4 flex items-center gap-1.5 text-sm text-primary"
+        // mt-1: the page's domain-accent strip sits flush against the top of
+        // the scrollable content area (no padding above it) — without this the
+        // banner immediately follows that strip with no breathing room, reading
+        // as clipped/cramped at the content's top edge.
+        className="mb-4 mt-1 flex items-center gap-1.5 text-sm text-primary"
       >
         <Globe className="h-3.5 w-3.5" aria-hidden="true" />
         {t('layout.scope.fleetLine', { count: orgCount })}

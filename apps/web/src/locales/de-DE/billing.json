@@ -519,6 +519,26 @@
         "richText": "Rich-Text",
         "contract": "Vertrag"
       },
+      "bulk": {
+        "applied_one": "{{count}} Position aktualisiert.",
+        "applied_other": "{{count}} Positionen aktualisiert.",
+        "apply": "Anwenden",
+        "barAria": "Ausgewählte Positionen gesammelt bearbeiten",
+        "clearSelection": "Auswahl aufheben",
+        "invalidMarkup": "Geben Sie einen gültigen Markup-Prozentsatz ein.",
+        "markupHint": "Gilt für ausgewählte Positionen mit hinterlegten Kosten.",
+        "partialFailure": "{{failed}} von {{total}} Positionen konnten nicht aktualisiert werden.",
+        "selectAllAria": "Alle Positionen in {{label}} auswählen",
+        "selectLineAria": "{{name}} auswählen",
+        "selectedCount_one": "{{count}} Position ausgewählt",
+        "selectedCount_other": "{{count}} Positionen ausgewählt",
+        "setCost": "Kosten festlegen",
+        "setMarkup": "Markup % festlegen",
+        "skippedNoCost_one": "{{count}} Position ohne Kosten übersprungen.",
+        "skippedNoCost_other": "{{count}} Positionen ohne Kosten übersprungen.",
+        "taxableOff": "Steuerpflichtig: nein",
+        "taxableOn": "Steuerpflichtig: ja"
+      },
       "catalog": {
         "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
         "empty": "Keine Katalogartikel.",
@@ -607,6 +627,10 @@
         "full": "Intern · dem Kunden nicht angezeigt",
         "short": "Intern"
       },
+      "lastSaved": {
+        "saved": "Gespeichert um {{time}} Uhr",
+        "saving": "Wird gespeichert…"
+      },
       "line": {
         "addDescription": "Beschreibung",
         "billing": "Abrechnung",
@@ -622,7 +646,10 @@
         "markupPercent": "Aufschlag %",
         "nameAria": "Positionsname",
         "namePlaceholder": "Name",
+        "noCost": "Keine Kosten",
+        "noCostHelp": "Diese Position bewusst als kostenlos markieren (z. B. Arbeitszeit oder eine Dienstleistung) – sie wird dann nicht in der Warnung für fehlende Kosten berücksichtigt.",
         "partNumberAbbr": "PN",
+        "partNumberHelp": "Die Herstellerteilenummer für diesen Artikel.",
         "partNumberOptional": "Teilenummer (optional)",
         "profit": "Gewinn",
         "quantityAria": "Menge",
@@ -630,6 +657,7 @@
         "showLess": "Weniger anzeigen",
         "showMore": "Mehr anzeigen",
         "sku": "SKU",
+        "skuHelp": "Ihre Katalog- oder Distributor-Lagernummer für diesen Artikel.",
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Mit KI überarbeiten",
         "unitCost": "Stückkosten"
@@ -637,18 +665,22 @@
       "liveTotals": {
         "annualRecurring": "Jährlich wiederkehrend",
         "dueOnAcceptance": "Fällig bei Abnahme",
+        "firstPeriodSubtotal": "Zwischensumme erster Zeitraum",
         "firstPeriodTotal": "Gesamtsumme der ersten Periode (inkl. wiederkehrende)",
         "monthlyRecurring": "Monatlich wiederkehrend",
-        "oneTime": "Einmalig",
+        "oneTime": "Einmalig (vor Steuern)",
         "srUpdated": "Summen aktualisiert. Einmalig {{oneTime}}, monatlich wiederkehrend {{monthly}}, jährlich wiederkehrend {{annual}}, fällig bei Abnahme {{due}}.",
         "srUpdatedWithTax": "Summen aktualisiert. Einmalig {{oneTime}}, monatlich wiederkehrend {{monthly}}, jährlich wiederkehrend {{annual}}, Steuer {{tax}}, fällig bei Abnahme {{due}}.",
+        "subtotal": "Zwischensumme",
         "tax": "Steuer",
         "taxRate": "Steuersatz",
         "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Wird in den Steuereinstellungen der Organisation festgelegt.",
-        "title": "Live-Summen"
+        "title": "Live-Summen",
+        "total": "Gesamtsumme"
       },
       "outline": {
         "aria": "Inhalt des Angebots",
+        "shortcutHint": "Alt+Nach-unten / Alt+Nach-oben springt beim Bearbeiten zum nächsten oder vorherigen Abschnitt.",
         "title": "Inhalt"
       },
       "recurrence": {
@@ -688,7 +720,7 @@
         "notTaxable": "Nicht steuerpflichtig",
         "qty": "Menge",
         "recurrence": "Wiederholung",
-        "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen",
+        "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen; bei langen Abschnitten scrollt sie vertikal mit fixierter Kopfzeile",
         "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
         "taxSuffix": "+ {{amount}} Steuer",
@@ -704,6 +736,10 @@
       "tidyAll": {
         "complete": "{{count}} Beschreibung(en) überprüft.",
         "noDescriptions": "Keine Positionsbeschreibungen in diesem Abschnitt zum Überarbeiten."
+      },
+      "undo": {
+        "lineDeleted": "Position gelöscht",
+        "sectionDeleted": "Abschnitt gelöscht"
       },
       "title": {
         "label": "Angebotstitel",

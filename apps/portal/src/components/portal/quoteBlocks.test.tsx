@@ -90,3 +90,53 @@ describe('QuoteBlocks — contract block rendering', () => {
     expect(el.querySelector('iframe')).toBeNull();
   });
 });
+
+describe('QuoteBlocks — line rendering (title/blurb + thumbnail)', () => {
+  const lineItemsBlock: QuoteBlock = {
+    id: 'blk-lines', blockType: 'line_items', sortOrder: 0, content: { label: 'Hardware' },
+  };
+  function renderLines(lines: import('@/lib/api').QuoteLine[]) {
+    return render(
+      <QuoteBlocks
+        blocks={[lineItemsBlock]}
+        lines={lines}
+        currency="USD"
+        imageUrl={(imageId) => `https://portal.example.test/images/${imageId}`}
+        buildUrl={buildUrl}
+      />
+    );
+  }
+  const base = {
+    blockId: 'blk-lines', quantity: '1', unitPrice: '10', lineTotal: '10',
+    recurrence: 'one_time', customerVisible: true, sortOrder: 0,
+  };
+
+  it('renders a bold name title with the description as a separate blurb', () => {
+    renderLines([{ id: 'l1', name: 'Lenovo TIO 24 G5', description: '24 inch FHD display • IPS panel', ...base }]);
+    const row = screen.getByTestId('quote-line-l1');
+    expect(row.textContent).toContain('Lenovo TIO 24 G5');
+    expect(row.textContent).toContain('24 inch FHD display');
+    // Title is emphasized; the blurb is a distinct muted paragraph.
+    expect(row.querySelector('.font-medium')?.textContent).toContain('Lenovo TIO 24 G5');
+    expect(row.querySelector('p')?.textContent).toContain('24 inch FHD display');
+  });
+
+  it('falls back to description as the title for legacy lines with no name', () => {
+    renderLines([{ id: 'l2', name: null, description: 'Legacy line', ...base }]);
+    const row = screen.getByTestId('quote-line-l2');
+    expect(row.querySelector('.font-medium')?.textContent).toContain('Legacy line');
+    // No separate blurb paragraph when there's no distinct name.
+    expect(row.querySelector('p')).toBeNull();
+  });
+
+  it('renders a product thumbnail resolved through buildUrl when imageUrl is present', () => {
+    renderLines([{ id: 'l3', name: 'Widget', description: 'x', imageUrl: '/portal/quotes/q1/line-image/l3', ...base }]);
+    const img = screen.getByTestId('quote-line-image-l3') as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe('https://portal.example.test/portal/quotes/q1/line-image/l3');
+  });
+
+  it('renders no thumbnail when imageUrl is null', () => {
+    renderLines([{ id: 'l4', name: 'Widget', description: 'x', imageUrl: null, ...base }]);
+    expect(screen.queryByTestId('quote-line-image-l4')).toBeNull();
+  });
+});

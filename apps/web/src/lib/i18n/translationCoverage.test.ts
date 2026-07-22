@@ -22,7 +22,9 @@ const namespaceDuplicateBaselines = {
     // legitimately identical to English.
     // +3: quote send composer — "Cc" (label + toggle) and the example email
     // placeholder are locale-invariant.
-    'billing.json': 45,
+    // +2: liveTotals "Subtotal"/"Total" — both spell identically to English in
+    // pt-BR (same cognate already accepted for document.totals.subtotal).
+    'billing.json': 47,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     'common.json': 90,
     'devices.json': 159,
@@ -51,7 +53,9 @@ const namespaceDuplicateBaselines = {
     // to English in es-419.
     // +3: quote send composer — "Cc" (label + toggle) and the example email
     // placeholder are locale-invariant.
-    'billing.json': 38,
+    // +1: liveTotals "Total" — spells identically to English in es-419 (same
+    // cognate already accepted for document.totals.firstPeriodTotal's root word).
+    'billing.json': 39,
     'common.json': 75,
     'devices.json': 115,
     'discovery.json': 17,
@@ -83,7 +87,9 @@ const namespaceDuplicateBaselines = {
     // +1: the unassigned-lines row format ("{{qty}} × {{price}}") is two
     // interpolations and a multiplication sign — there is no French wording to
     // translate, and every other locale carries the identical value.
-    'billing.json': 49,
+    // +1: liveTotals "Total" — spells identically to English in fr-FR (same
+    // cognate already accepted for document.totals.firstPeriodTotal's root word).
+    'billing.json': 50,
     'common.json': 93,
     'devices.json': 136,
     'discovery.json': 15,

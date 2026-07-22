@@ -62,4 +62,29 @@ describe('QuoteWorkspace tabs', () => {
     expect(screen.getByTestId('quote-tab-preview')).toHaveTextContent('Preview');
     expect(screen.queryByTestId('quote-tab-editor')).not.toBeInTheDocument();
   });
+
+  // The Editor tab previously had no status cue at all (only Preview/Details
+  // showed it) — the workspace header now always carries a status badge next
+  // to the title/tabs, reusing the same StatusPill + STATUS_ROLES vocabulary
+  // as QuotesPage/QuoteDetail/QuoteDocument.
+  it('shows a status badge in the workspace header matching the quote status', async () => {
+    render(<QuoteWorkspace id="q-1" />);
+    await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Sent');
+  });
+
+  it('renders an "Accepted" status badge for a different quote status (proves the badge is status-driven, not hardcoded)', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') {
+        return json({ data: { ...sentQuote, quote: { ...sentQuote.quote, status: 'accepted', acceptedAt: '2026-06-02T00:00:00Z' } } });
+      }
+      return json({ data: {} });
+    });
+
+    render(<QuoteWorkspace id="q-1" />);
+    await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Accepted');
+  });
 });

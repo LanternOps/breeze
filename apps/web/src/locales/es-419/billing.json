@@ -519,6 +519,26 @@
         "richText": "Texto enriquecido",
         "contract": "Contrato"
       },
+      "bulk": {
+        "applied_one": "Se actualizó {{count}} línea.",
+        "applied_other": "Se actualizaron {{count}} líneas.",
+        "apply": "Aplicar",
+        "barAria": "Edición masiva de las líneas seleccionadas",
+        "clearSelection": "Borrar selección",
+        "invalidMarkup": "Ingrese un porcentaje de margen válido.",
+        "markupHint": "Se aplica a las líneas seleccionadas que tienen costo.",
+        "partialFailure": "{{failed}} de {{total}} líneas no se pudieron actualizar.",
+        "selectAllAria": "Seleccionar todas las líneas de {{label}}",
+        "selectLineAria": "Seleccionar {{name}}",
+        "selectedCount_one": "{{count}} línea seleccionada",
+        "selectedCount_other": "{{count}} líneas seleccionadas",
+        "setCost": "Fijar costo",
+        "setMarkup": "Fijar margen %",
+        "skippedNoCost_one": "Se omitió {{count}} línea sin costo.",
+        "skippedNoCost_other": "Se omitieron {{count}} líneas sin costo.",
+        "taxableOff": "Imponible: no",
+        "taxableOn": "Imponible: sí"
+      },
       "catalog": {
         "addSome": "Agregue algunos en el catálogo de productos",
         "empty": "Sin artículos de catálogo.",
@@ -607,6 +627,10 @@
         "full": "Interno · no mostrado al cliente",
         "short": "Interno"
       },
+      "lastSaved": {
+        "saved": "Guardado a las {{time}}",
+        "saving": "Guardando…"
+      },
       "line": {
         "addDescription": "descripción",
         "billing": "Facturación",
@@ -622,7 +646,10 @@
         "markupPercent": "% de margen",
         "nameAria": "Nombre de línea",
         "namePlaceholder": "Nombre",
+        "noCost": "Sin costo",
+        "noCostHelp": "Marque esta línea como intencionalmente sin costo (por ejemplo, mano de obra o un servicio); se excluye de la advertencia de costo faltante.",
         "partNumberAbbr": "PN",
+        "partNumberHelp": "El número de pieza del fabricante para este artículo.",
         "partNumberOptional": "Número de pieza (opcional)",
         "profit": "Ganancia",
         "quantityAria": "Cantidad",
@@ -630,6 +657,7 @@
         "showLess": "Mostrar menos",
         "showMore": "Mostrar más",
         "sku": "SKU",
+        "skuHelp": "Su número de stock de catálogo o distribuidor para este artículo.",
         "skuOptional": "SKU (opcional)",
         "tidyWithAi": "Pulir con IA",
         "unitCost": "Costo unitario"
@@ -637,18 +665,22 @@
       "liveTotals": {
         "annualRecurring": "Recurrente anual",
         "dueOnAcceptance": "Vencimiento al momento de la aceptación",
+        "firstPeriodSubtotal": "Subtotal del primer período",
         "firstPeriodTotal": "Total del primer período (incl. recurrente)",
         "monthlyRecurring": "Recurrente mensual",
-        "oneTime": "una sola vez",
+        "oneTime": "Una sola vez (antes de impuestos)",
         "srUpdated": "Totales actualizados. {{oneTime}} por única vez, {{monthly}} recurrente mensual, {{annual}} recurrente anual, vence al momento de la aceptación {{due}}.",
         "srUpdatedWithTax": "Totales actualizados. {{oneTime}} por única vez, {{monthly}} recurrente mensual, {{annual}} recurrente anual, impuesto {{tax}}, vencido al momento de la aceptación {{due}}.",
+        "subtotal": "Total parcial",
         "tax": "Impuesto",
         "taxRate": "Tasa impositiva",
         "taxRateHelp": "Aplica a líneas marcadas como sujetas a impuestos. Establecido en la configuración fiscal de la organización.",
-        "title": "Totales en vivo"
+        "title": "Totales en vivo",
+        "total": "Total"
       },
       "outline": {
         "aria": "Contenido de la cotización",
+        "shortcutHint": "Alt+Abajo / Alt+Arriba salta a la sección siguiente o anterior mientras edita.",
         "title": "Contenido"
       },
       "recurrence": {
@@ -688,7 +720,7 @@
         "notTaxable": "No sujeto a impuestos",
         "qty": "Cantidad",
         "recurrence": "Recurrencia",
-        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila",
+        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila; en secciones largas, se desplaza verticalmente con el encabezado fijo",
         "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
         "taxSuffix": "+ {{amount}} de impuesto",
@@ -704,6 +736,10 @@
       "tidyAll": {
         "complete": "Se revisaron {{count}} descripción(es).",
         "noDescriptions": "No hay descripciones de línea que pulir en esta sección."
+      },
+      "undo": {
+        "lineDeleted": "Línea eliminada",
+        "sectionDeleted": "Sección eliminada"
       },
       "title": {
         "label": "Título de la cita",

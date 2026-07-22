@@ -122,6 +122,10 @@ interface Props {
    *  held (with a "Saving changes…" hint) until the quote is quiescent, so the
    *  confirm dialog can't quote a stale total or race a blur-save server-side. */
   savePending?: boolean;
+  /** Called when Send is clicked while savePending — lets the workspace flush
+   *  deferred work immediately (the editor's undo-grace deletions) so the held
+   *  Send opens as soon as those land instead of waiting out a grace window. */
+  onSendWhilePending?: () => void;
 }
 
 /**
@@ -130,7 +134,7 @@ interface Props {
  * Detail rail and the workspace header can't drift in behavior or copy; the
  * data-testids are stable across both variants.
  */
-export default function QuoteActions({ detail, onChanged, variant, savePending = false }: Props) {
+export default function QuoteActions({ detail, onChanged, variant, savePending = false, onSendWhilePending }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
@@ -540,8 +544,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               // During savePending the click's job is the prerequisite: the
               // click itself blurs the dirty field (starting its save); queue
               // the composer to open the moment the editor goes quiescent —
-              // one click to the money moment, never a dead one.
-              if (savePending) { setOpenWhenQuiet(true); return; }
+              // one click to the money moment, never a dead one. Deferred
+              // deletions (undo grace window) flush now for the same reason.
+              if (savePending) { onSendWhilePending?.(); setOpenWhenQuiet(true); return; }
               openSend();
             }}
             disabled={sending || isEmpty}

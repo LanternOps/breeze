@@ -235,3 +235,47 @@ describe('quotesPublic GET /:token/contract-file/:blockId', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('quotesPublic GET /:token/line-image/:lineId', () => {
+  const LINE_ID = '77777777-7777-7777-7777-777777777777';
+  const CATALOG_ID = '88888888-8888-8888-8888-888888888888';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quoteId: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, jti: 'jti-1',
+    });
+    (isQuoteAcceptJtiRevoked as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+  });
+
+  it('serves the per-line uploaded image for a valid token', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote (token-resolved) lookup
+    dbResults.push([{ imageId: 'img-1', catalogItemId: null, customerVisible: true }]); // line
+    dbResults.push([{ data: Buffer.from('PNGDATA'), mime: 'image/png', byteSize: 7 }]); // readQuoteImage
+    const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+  });
+
+  it('falls back to the catalog item image', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([{ imageId: null, catalogItemId: CATALOG_ID, customerVisible: true }]);
+    dbResults.push([{ data: Buffer.from('JPEG'), mime: 'image/jpeg', byteSize: 4 }]);
+    const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/jpeg');
+  });
+
+  it('rejects an invalid/expired token with 401 (no db read)', async () => {
+    (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('404s a cross-quote / unknown lineId (line lookup scoped to the token quote)', async () => {
+    dbResults.push([{ id: QUOTE_ID }]);
+    dbResults.push([]); // no line on this quote
+    const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
+    expect(res.status).toBe(404);
+  });
+});

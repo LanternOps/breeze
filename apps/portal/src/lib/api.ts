@@ -436,6 +436,9 @@ export interface QuoteBlock {
 export interface QuoteLine {
   id: string;
   blockId?: string | null;
+  /** Product/display title; falls back to `description` for legacy lines with no
+   *  distinct name (mirrors the web renderer's lineTitle/lineBlurb split). */
+  name?: string | null;
   description: string;
   quantity: string;
   unitPrice: string;
@@ -444,6 +447,10 @@ export interface QuoteLine {
   recurrence: string;
   customerVisible: boolean;
   sortOrder: number;
+  /** Server-built relative path to this line's product thumbnail (uploaded image
+   *  or its catalog item's), or null when the line has no image. Resolve via
+   *  buildPortalApiUrl before use. */
+  imageUrl?: string | null;
 }
 
 export interface QuoteHeader extends QuoteSummary {

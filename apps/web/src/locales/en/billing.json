@@ -519,6 +519,26 @@
         "richText": "Rich text",
         "contract": "Contract"
       },
+      "bulk": {
+        "applied_one": "Updated {{count}} line.",
+        "applied_other": "Updated {{count}} lines.",
+        "apply": "Apply",
+        "barAria": "Bulk edit selected lines",
+        "clearSelection": "Clear selection",
+        "invalidMarkup": "Enter a valid markup percent.",
+        "markupHint": "Applies to selected lines that have a cost.",
+        "partialFailure": "{{failed}} of {{total}} lines failed to update.",
+        "selectAllAria": "Select all lines in {{label}}",
+        "selectLineAria": "Select {{name}}",
+        "selectedCount_one": "{{count}} line selected",
+        "selectedCount_other": "{{count}} lines selected",
+        "setCost": "Set cost",
+        "setMarkup": "Set markup %",
+        "skippedNoCost_one": "Skipped {{count}} line with no cost.",
+        "skippedNoCost_other": "Skipped {{count}} lines with no cost.",
+        "taxableOff": "Taxable off",
+        "taxableOn": "Taxable on"
+      },
       "catalog": {
         "addSome": "Add some in Product Catalog",
         "empty": "No catalog items.",
@@ -607,6 +627,10 @@
         "full": "Internal · not shown to customer",
         "short": "Internal"
       },
+      "lastSaved": {
+        "saved": "Saved {{time}}",
+        "saving": "Saving…"
+      },
       "line": {
         "addDescription": "description",
         "billing": "Billing",
@@ -622,7 +646,10 @@
         "markupPercent": "Markup %",
         "nameAria": "Line name",
         "namePlaceholder": "Name",
+        "noCost": "No cost",
+        "noCostHelp": "Mark this line as deliberately having no cost (e.g. labor or a service) — excludes it from the missing-cost warning.",
         "partNumberAbbr": "PN",
+        "partNumberHelp": "The manufacturer's part number for this item.",
         "partNumberOptional": "Part # (optional)",
         "profit": "Profit",
         "quantityAria": "Quantity",
@@ -630,6 +657,7 @@
         "showLess": "Show less",
         "showMore": "Show more",
         "sku": "SKU",
+        "skuHelp": "Your catalog or distributor stock number for this item.",
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Tidy with AI",
         "unitCost": "Unit cost"
@@ -637,18 +665,22 @@
       "liveTotals": {
         "annualRecurring": "Annual recurring",
         "dueOnAcceptance": "Due on acceptance",
+        "firstPeriodSubtotal": "First period subtotal",
         "firstPeriodTotal": "First-period total (incl. recurring)",
         "monthlyRecurring": "Monthly recurring",
-        "oneTime": "One-time",
+        "oneTime": "One-time (pre-tax)",
         "srUpdated": "Totals updated. One-time {{oneTime}}, monthly recurring {{monthly}}, annual recurring {{annual}}, due on acceptance {{due}}.",
         "srUpdatedWithTax": "Totals updated. One-time {{oneTime}}, monthly recurring {{monthly}}, annual recurring {{annual}}, tax {{tax}}, due on acceptance {{due}}.",
+        "subtotal": "Subtotal",
         "tax": "Tax",
         "taxRate": "Tax rate",
         "taxRateHelp": "Applies to lines marked taxable. Set in the organization’s tax settings.",
-        "title": "Live totals"
+        "title": "Live totals",
+        "total": "Total"
       },
       "outline": {
         "aria": "Quote contents",
+        "shortcutHint": "Alt+Down / Alt+Up jumps to the next or previous section while editing.",
         "title": "Contents"
       },
       "recurrence": {
@@ -688,7 +720,7 @@
         "notTaxable": "Not taxable",
         "qty": "Qty",
         "recurrence": "Recurrence",
-        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions",
+        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions, and vertically (with the header pinned) once a section grows long",
         "showSubtotal": "Show subtotal row",
         "tax": "Tax",
         "taxSuffix": "+ {{amount}} tax",
@@ -704,6 +736,10 @@
       "tidyAll": {
         "complete": "Finished reviewing {{count}} description(s).",
         "noDescriptions": "No line descriptions to tidy in this section."
+      },
+      "undo": {
+        "lineDeleted": "Line deleted",
+        "sectionDeleted": "Section deleted"
       },
       "title": {
         "label": "Quote title",

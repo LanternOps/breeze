@@ -35,6 +35,30 @@ export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Om
 }
 
 /**
+ * Attach a per-line `imageUrl` for the customer-facing portal + public proposal
+ * views and drop the raw `imageId`/`catalogItemId` (internal identifiers the
+ * customer document has no use for). A line gets a URL when it has EITHER a
+ * per-line uploaded image or a snapshotted catalog item — the same
+ * `imageId || catalogItemId` presence rule the web renderer's DocLineThumb uses;
+ * the URL points at the quote-scoped `line-image/:lineId` asset route (which
+ * resolves the actual source, see loadCustomerLineImage). Kept a pure mapper (no
+ * DB) so it runs correctly on either the org-scoped portal path or the
+ * system-scoped public path without a partner-axis RLS scoping hazard; a line
+ * whose catalog item happens to have no image simply 404s and the client hides
+ * the broken thumbnail, matching the preview's render-nothing-on-miss behaviour.
+ */
+export function attachCustomerLineImages<T extends { id: string; imageId: string | null; catalogItemId: string | null }>(
+  lines: T[],
+  buildLineImagePath: (lineId: string) => string,
+): (Omit<T, 'imageId' | 'catalogItemId'> & { imageUrl: string | null })[] {
+  return lines.map((line) => {
+    const { imageId, catalogItemId, ...rest } = line;
+    const hasImage = !!imageId || !!catalogItemId;
+    return { ...(rest as Omit<T, 'imageId' | 'catalogItemId'>), imageUrl: hasImage ? buildLineImagePath(line.id) : null };
+  });
+}
+
+/**
  * Sanitize every rich_text block's content.html at READ-serialization time —
  * defense in depth alongside the write-time sanitization in addBlock/updateBlock
  * below, covering rows written before this sanitizer existed (or by any future

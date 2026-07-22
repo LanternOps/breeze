@@ -11,9 +11,9 @@ import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecy
 import { acceptQuote, emitAcceptInvoiceIssued } from '../../services/quoteAcceptService';
 import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
-import { readQuoteImage } from '../../services/quoteImageStorage';
+import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
+import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
@@ -27,6 +27,7 @@ export const quoteRoutes = new Hono();
 quoteRoutes.use('*', portalFinancialMutationGuard);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
+const lineImageParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
 const blockFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 // GET /quotes — list (drafts filtered; org defense-in-depth atop RLS).
@@ -64,7 +65,8 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // ahead of the response we're about to build below) and replaces its raw
     // authoring content with the render contract the portal understands.
     const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
-    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } } });
+    const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
+    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
@@ -149,6 +151,22 @@ quoteRoutes.get('/quotes/:id/images/:imageId', zValidator('param', imageParam), 
   const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   const img = await readQuoteImage(imageId, id);
+  if (!img) return c.json({ error: 'Image not found' }, 404);
+  return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
+});
+
+// GET /quotes/:id/line-image/:lineId — per-line product thumbnail (uploaded image
+// or the line's snapshotted catalog item image), the customer-facing counterpart
+// to the in-app /catalog/:id/image route. The line lookup is quote-scoped
+// (id AND quoteId, customer-visible), closing the cross-quote case exactly like
+// the /images/:imageId route. The catalog-image branch reads a PARTNER-axis table
+// invisible to this org scope (#1375), so resolve under SYSTEM scope — ownership
+// is already established by the org-scoped quote lookup + the quote-scoped line.
+quoteRoutes.get('/quotes/:id/line-image/:lineId', zValidator('param', lineImageParam), async (c) => {
+  const auth = c.get('portalAuth'); const { id, lineId } = c.req.valid('param');
+  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
+  if (!quote) return c.json({ error: 'Quote not found' }, 404);
+  const img = await runOutsideDbContext(() => withSystemDbAccessContext(() => loadCustomerLineImage(id, lineId)));
   if (!img) return c.json({ error: 'Image not found' }, 404);
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
 });

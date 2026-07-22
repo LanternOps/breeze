@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import * as quotesApi from '../../../lib/api/quotes';
 import type { QuoteBlock, QuoteDetail as QuoteDetailData, QuoteLine } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
+import { showToast } from '../../shared/Toast';
 
 vi.mock('../../../stores/auth', () => ({
   // orgStore (imported by QuoteEditor for the customer select) registers an
@@ -91,9 +92,36 @@ describe('QuoteEditor — block removal', () => {
     expect(deleteBlock).not.toHaveBeenCalled();
   });
 
-  it('deletes the block only after the confirm step', async () => {
+  it('deletes the block only after the confirm step (deferred through the undo grace window)', async () => {
+    // Confirm hides the section immediately but DEFERS the DELETE for the
+    // undo grace window — advance fake timers to flush it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const deleteBlock = vi.mocked(quotesApi.deleteBlock);
+      deleteBlock.mockResolvedValue(json({ data: null }));
+
+      render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
+      fireEvent.click(screen.getByTestId('quote-block-remove-blk-1'));
+      fireEvent.click(await screen.findByTestId('quote-block-remove-confirm'));
+
+      // Optimistically gone (its lines with it), but nothing sent yet.
+      expect(screen.queryByTestId('quote-block-container-blk-1')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('quote-line-l-1')).not.toBeInTheDocument();
+      expect(deleteBlock).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      expect(deleteBlock).toHaveBeenCalledWith('q-1', 'blk-1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('undo within the grace window restores the section without any DELETE', async () => {
     const deleteBlock = vi.mocked(quotesApi.deleteBlock);
-    deleteBlock.mockResolvedValue(json({ data: null }));
+    const showToastMock = vi.mocked(showToast);
 
     render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
@@ -101,7 +129,15 @@ describe('QuoteEditor — block removal', () => {
     fireEvent.click(screen.getByTestId('quote-block-actions-blk-1'));
     fireEvent.click(screen.getByTestId('quote-block-remove-blk-1'));
     fireEvent.click(await screen.findByTestId('quote-block-remove-confirm'));
+    expect(screen.queryByTestId('quote-block-container-blk-1')).not.toBeInTheDocument();
 
-    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('q-1', 'blk-1'));
+    const undoCall = [...showToastMock.mock.calls].reverse()
+      .find((c) => (c[0] as { type: string }).type === 'undo');
+    expect(undoCall).toBeDefined();
+    act(() => { (undoCall![0] as { onUndo: () => void }).onUndo(); });
+
+    expect(screen.getByTestId('quote-block-container-blk-1')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-line-l-1')).toBeInTheDocument();
+    expect(deleteBlock).not.toHaveBeenCalled();
   });
 });

@@ -86,7 +86,10 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
           onChange={(e) => setAgreed(e.target.checked)}
           disabled={busy}
           data-testid={`${testIdPrefix}-agree`}
-          className="mt-0.5 h-4 w-4 rounded border-input text-primary focus:ring-primary/40"
+          // border-input (== --border, a near-white slate) rendered the box as a
+          // barely-visible outline on the white card — customers couldn't see the
+          // agreement checkbox. Use a contrasty, theme-aware border instead.
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border border-muted-foreground/50 text-primary focus:ring-primary/40"
         />
         <span className="leading-relaxed text-muted-foreground">
           I have reviewed this proposal and agree to its terms. Typing my name above is my electronic signature.

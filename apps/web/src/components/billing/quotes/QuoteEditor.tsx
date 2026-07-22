@@ -4,6 +4,7 @@ import { Eye, EyeOff, GripVertical, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
+import { formatTime } from '../../../lib/dateTimeFormat';
 import { usePermissions } from '../../../lib/permissions';
 import {
   addBlock,
@@ -28,7 +29,7 @@ import {
   type TemplateVersionSummary,
 } from '../../../lib/api/contractTemplates';
 import type { QuoteBlockInput, CoverPage } from '@breeze/shared';
-import { computeQuoteTotals, computeQuoteProfit, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
+import { computeQuoteTotals, computeQuoteProfit, priceFromMarkup, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
@@ -36,6 +37,7 @@ import { showToast } from '../../shared/Toast';
 import RichTextEditor from '../../common/RichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
+import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
@@ -65,6 +67,22 @@ const ADD_BLOCK_OPTIONS: { value: AddableBlockType; labelKey: string }[] = [
 ];
 
 
+// Grace window for undo-able line/section deletion: the item leaves the UI
+// immediately on confirm, but the real DELETE is deferred this long so Undo
+// can restore it with zero API traffic (nothing was sent yet). Long enough to
+// read the toast and react; short enough that the server state doesn't sit
+// lying for ages. Matches the toast's own display duration.
+const UNDO_GRACE_MS = 6000;
+
+/** One deferred deletion awaiting its grace window. `rows` lists every hidden
+ *  line row — a bundle parent carries its children (the server FK-cascades
+ *  them on delete) — each with its position at delete time, so reorder
+ *  PATCHes can splice the hidden ids back into the full-permutation id lists
+ *  the server validates against ALL its rows (hidden ones included). */
+type PendingDeleteEntry =
+  | { kind: 'line'; id: string; blockId: string | null; rows: { id: string; index: number }[]; timer: ReturnType<typeof setTimeout> }
+  | { kind: 'block'; id: string; index: number; timer: ReturnType<typeof setTimeout> };
+
 /** Latest PUBLISHED version of a template (design: attach pins the latest
  *  published version, never a newer draft). Returns null when the template has
  *  no published version yet — the picker blocks the attach in that case. */
@@ -89,10 +107,15 @@ interface Props {
    *  Send until the quote is quiescent, so the irreversible money-moment
    *  can't race a blur-save. */
   onPendingEditsChange?: (hasPendingEdits: boolean) => void;
+  /** Hands the workspace an imperative "flush deferred deletions now" hook
+   *  (called with null on unmount). QuoteActions invokes it when Send is
+   *  clicked during the undo grace window, so the held Send fires as soon as
+   *  the DELETE lands instead of waiting out the rest of the window. */
+  onRegisterPendingDeleteFlush?: (flush: (() => void) | null) => void;
 }
 
 
-export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }: Props) {
+export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onRegisterPendingDeleteFlush }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
@@ -117,8 +140,79 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       return next;
     });
   }, []);
-  const { quote, blocks, lines } = detail;
+  const { quote, blocks: serverBlocks, lines: serverLines } = detail;
   const currency = quote.currencyCode;
+
+  // ---- undo-able deletion (deferred DELETE + grace window) -----------------
+  // Confirming a line/section removal hides it here and starts a grace timer;
+  // the real DELETE fires only when the window expires — or at an earlier
+  // flush point (Send, unmount, page-hide, a section delete swallowing a
+  // pending line delete). Undo cancels the timer and clears the id: nothing
+  // was sent, so restoration is exact and free. The entries ref carries what
+  // flushing and reorder-splicing need; the id sets drive rendering. All the
+  // derived state below consumes the FILTERED `blocks`/`lines`, so totals,
+  // profit, bulk selection, missing-cost ids, reveal targeting and reorder
+  // commits all treat a pending-deleted item as already gone.
+  const pendingDeleteEntries = useRef<Map<string, PendingDeleteEntry>>(new Map());
+  const [pendingDeletedLineIds, setPendingDeletedLineIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [pendingDeletedBlockIds, setPendingDeletedBlockIds] = useState<ReadonlySet<string>>(() => new Set());
+  const blocks = useMemo(
+    () => serverBlocks.filter((b) => !pendingDeletedBlockIds.has(b.id)),
+    [serverBlocks, pendingDeletedBlockIds],
+  );
+  // A line hides when it (or the bundle parent it rides with) is
+  // pending-deleted, or when its whole section is — the server cascades a
+  // block delete to its lines, so the UI mirrors that immediately.
+  const lines = useMemo(
+    () => serverLines.filter((l) =>
+      !pendingDeletedLineIds.has(l.id) && (l.blockId === null || !pendingDeletedBlockIds.has(l.blockId))),
+    [serverLines, pendingDeletedLineIds, pendingDeletedBlockIds],
+  );
+  // Retire an id only once the post-flush refetch has dropped the row
+  // server-side — clearing on DELETE success would flash the row back for the
+  // refetch round-trip.
+  useEffect(() => {
+    setPendingDeletedLineIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(serverLines.map((l) => l.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [serverLines]);
+  useEffect(() => {
+    setPendingDeletedBlockIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(serverBlocks.map((b) => b.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [serverBlocks]);
+  // Reorder PATCHes send full-permutation id lists the server validates
+  // against ALL its rows — including ones only hidden here (their DELETE
+  // hasn't fired yet). These splice the hidden ids back in at (about) their
+  // original slots, so a reorder during a grace window neither 400s
+  // (REORDER_IDS_MISMATCH) nor teleports the hidden item if it's undone.
+  const withPendingDeletedLineIds = useCallback((blockId: string, ids: string[]): string[] => {
+    const hidden = [...pendingDeleteEntries.current.values()]
+      .flatMap((e) => (e.kind === 'line' && e.blockId === blockId ? e.rows : []))
+      .filter((r) => !ids.includes(r.id))
+      .sort((a, b) => a.index - b.index);
+    if (hidden.length === 0) return ids;
+    const full = [...ids];
+    for (const r of hidden) full.splice(Math.min(r.index, full.length), 0, r.id);
+    return full;
+  }, []);
+  const withPendingDeletedBlockIds = useCallback((ids: string[]): string[] => {
+    const hidden = [...pendingDeleteEntries.current.values()]
+      .filter((e): e is Extract<PendingDeleteEntry, { kind: 'block' }> => e.kind === 'block')
+      .filter((e) => !ids.includes(e.id))
+      .sort((a, b) => a.index - b.index);
+    if (hidden.length === 0) return ids;
+    const full = [...ids];
+    for (const e of hidden) full.splice(Math.min(e.index, full.length), 0, e.id);
+    return full;
+  }, []);
+
   // Rows only repeat the '/mo' | '/yr' cadence suffix when the quote actually
   // mixes cadences — on a uniform quote the suffix is per-line noise (the rail
   // totals and each editable row's recurrence select still carry the cadence).
@@ -136,6 +230,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const inFlight = useRef<Set<string>>(new Set());
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const isPending = useCallback((key: string) => pending.has(key), [pending]);
+  // Timestamp of the last successful mutation, for the quiet "Saved 2:41 PM"
+  // indicator near the autosave hint — null until this session's first save
+  // (nothing to report before that; the indicator itself stays unrendered).
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
   // Run a scoped mutation: mark the key pending, run, surface failures via the
   // standard handleActionError path, and always clear the key. Returns whether
@@ -147,6 +245,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       setPending((s) => { const n = new Set(s); n.add(key); return n; });
       try {
         await fn();
+        setLastSavedAt(Date.now());
         return true;
       } catch (err) {
         handleActionError(err, errMsg);
@@ -177,7 +276,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // (line/block/terms/add/remove); the terms dirty flag covers the rail's
   // blur-to-save field. Per-line dirty state isn't lifted — clicking Send blurs
   // the focused field, whose commit lands in `pending` before the dialog opens.
-  const hasPendingEdits = pending.size > 0 || termsDirty;
+  // Deferred deletions count too: their DELETE hasn't fired yet, so a Send
+  // must not snapshot a quote the user has visibly already trimmed (clicking
+  // Send also flushes them immediately — see onRegisterPendingDeleteFlush).
+  const hasPendingEdits = pending.size > 0 || termsDirty
+    || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
   // (e.g. the quote was just issued and the tab switched).
@@ -476,8 +579,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   const blockReorderBase = useRef<string[] | null>(null);
   const lineReorderTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const lineReorderBase = useRef<Record<string, string[]>>({});
-  useEffect(() => { setBlockOrder(null); blockReorderBase.current = null; }, [blocks]);
-  useEffect(() => { setLineOrder({}); lineReorderBase.current = {}; setLineBlockOverride({}); }, [lines]);
+  // Keyed to the SERVER arrays (not the pending-delete-filtered views): these
+  // overrides must clear when fresh server data lands, not when a deletion is
+  // merely hidden/undone client-side.
+  useEffect(() => { setBlockOrder(null); blockReorderBase.current = null; }, [serverBlocks]);
+  useEffect(() => { setLineOrder({}); lineReorderBase.current = {}; setLineBlockOverride({}); }, [serverLines]);
   useEffect(() => () => {
     if (blockReorderTimer.current) clearTimeout(blockReorderTimer.current);
     Object.values(lineReorderTimers.current).forEach(clearTimeout);
@@ -520,10 +626,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // server rate.
   const effectiveRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
 
-  // The figures the rail renders: optimistic recompute when any line is mid-edit,
-  // otherwise the authoritative server values.
+  // The figures the rail renders: optimistic recompute when any line is
+  // mid-edit OR a deletion sits in its undo grace window (the server totals
+  // still include the hidden line until the deferred DELETE lands), otherwise
+  // the authoritative server values.
+  const hasPendingDeletes = pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   const optimisticTotals = useMemo<QuoteTotals | null>(() => {
-    if (Object.keys(lineDrafts).length === 0) return null;
+    if (Object.keys(lineDrafts).length === 0 && !hasPendingDeletes) return null;
     const merged: QuoteLineForMath[] = lines.map((l) => {
       const d = lineDrafts[l.id];
       return d ?? {
@@ -532,10 +641,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       };
     });
     return computeQuoteTotals(merged, effectiveRate);
-  }, [lineDrafts, lines, effectiveRate]);
+  }, [lineDrafts, lines, effectiveRate, hasPendingDeletes]);
   const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
   const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
   const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
+  const railSubtotal = optimisticTotals?.subtotal ?? quote.subtotal;
   const railTax = optimisticTotals?.taxTotal ?? quote.taxTotal;
   const railTotal = optimisticTotals?.total ?? quote.total;
   const railDue = optimisticTotals?.dueOnAcceptanceTotal ?? quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
@@ -770,6 +880,30 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     el.focus({ preventScroll: true });
   }, []);
 
+  // Keyboard shortcut: Alt+ArrowDown / Alt+ArrowUp jumps to the next/previous
+  // block, reusing the outline's own jumpToBlock (same scroll + focus contract).
+  // Scoped to a keydown handler on the blocks column (not document-level) and
+  // gated on the Alt modifier specifically so it can never fire while a writer
+  // is just typing into a name/description field — a bare arrow key inside an
+  // input is left completely alone. "Current" block is whichever container the
+  // focused element lives inside, falling back to the outline's scroll-position
+  // highlight, then the first block.
+  const jumpRelativeBlock = useCallback((direction: 1 | -1) => {
+    const ids = sortedBlocks.map((b) => b.id);
+    if (ids.length === 0) return;
+    const activeEl = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+    const containerEl = activeEl?.closest<HTMLElement>('[data-outline-block-id]');
+    const currentId = containerEl?.dataset.outlineBlockId ?? activeOutlineId ?? ids[0];
+    const idx = ids.indexOf(currentId);
+    const nextIdx = idx === -1 ? (direction === 1 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, idx + direction));
+    jumpToBlock(ids[nextIdx]);
+  }, [sortedBlocks, activeOutlineId, jumpToBlock]);
+  const onBlocksColumnKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!e.altKey || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    e.preventDefault();
+    jumpRelativeBlock(e.key === 'ArrowDown' ? 1 : -1);
+  }, [jumpRelativeBlock]);
+
   // Orphan lines: `block_id` is nullable, and `linesForBlock` can never surface
   // them (a null blockId matches no block id, ever). They are NOT invisible to
   // the customer — the PDF, the portal and the Preview all render them, and
@@ -949,12 +1083,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     ids.splice(Math.min(insertAt, ids.length), 0, created.id);
     try {
       await runAction({
-        request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+        request: () => reorderBlocksApi(quote.id, { blockIds: withPendingDeletedBlockIds(ids) }),
         errorFallback: t('quotes.editor.errors.reorderSections'),
         onUnauthorized: UNAUTHORIZED,
       });
     } catch { /* toasted; the new section simply lands at the end */ }
-  }, [insertAt, sortedBlocks, quote.id, t]);
+  }, [insertAt, sortedBlocks, quote.id, withPendingDeletedBlockIds, t]);
 
   const submitBlock = useCallback(async () => {
     // Image blocks have no block-update endpoint, so the file must exist before
@@ -1099,12 +1233,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
   // Real block delete: removes the block and (server-side) any lines attached to
   // it. Works for every block type — heading, rich_text, and line_items — so the
   // "Remove" button is no longer a silent no-op for heading/rich_text blocks.
-  const removeBlock = useCallback((block: QuoteBlock) =>
-    runScoped(pendingKey.block(block.id), async () => {
+  // This is the deferred-flush executor (see startBlockDelete): the undo toast
+  // at delete time is the user-facing feedback, so no success toast here — a
+  // "Section removed" popping up seconds after the fact read as a second event.
+  const removeBlock = useCallback((blockId: string) =>
+    runScoped(pendingKey.block(blockId), async () => {
       await runAction({
-        request: () => deleteBlock(quote.id, block.id),
+        request: () => deleteBlock(quote.id, blockId),
         errorFallback: t('quotes.editor.errors.removeSection'),
-        successMessage: t('quotes.editor.success.sectionRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
@@ -1283,17 +1419,152 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, t('quotes.editor.errors.addLine'));
   }, [quote.id, refresh, loadCatalog, runScoped, t]);
 
+  // Deferred-flush executor for a line delete (see startLineDelete). No
+  // success toast — the undo toast at delete time already told the user.
   const deleteLine = useCallback((lineId: string) =>
     runScoped(pendingKey.line(lineId), async () => {
       await runAction({
         request: () => removeLine(quote.id, lineId),
         errorFallback: t('quotes.editor.errors.removeLine'),
-        successMessage: t('quotes.editor.success.lineRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
     }, t('quotes.editor.errors.removeLine')),
   [quote.id, refresh, runScoped, t]);
+
+  // ---- deferred-deletion lifecycle (undo grace window) --------------------
+  // undo → cancel the timer, unhide (nothing was ever sent).
+  // flush → fire the real DELETE through the existing delete path; on failure
+  //         the item is honestly restored (it IS still there) on top of the
+  //         path's own error toast.
+  const undoLineDelete = useCallback((lineId: string) => {
+    const key = pendingKey.line(lineId);
+    const entry = pendingDeleteEntries.current.get(key);
+    if (!entry || entry.kind !== 'line') return; // already flushed — the deletion is real now
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(key);
+    setPendingDeletedLineIds((s) => {
+      const n = new Set(s);
+      for (const r of entry.rows) n.delete(r.id);
+      return n;
+    });
+  }, []);
+
+  const flushLineDelete = useCallback(async (lineId: string) => {
+    const key = pendingKey.line(lineId);
+    const entry = pendingDeleteEntries.current.get(key);
+    if (!entry || entry.kind !== 'line') return; // undone, or another flush already owns it
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(key);
+    // One DELETE for the parent row — the server FK-cascades bundle children.
+    const ok = await deleteLine(lineId);
+    if (!ok) {
+      // Honest failure: the DELETE didn't land (already toasted by the delete
+      // path), so the line is actually still there — put it back on screen.
+      setPendingDeletedLineIds((s) => {
+        const n = new Set(s);
+        for (const r of entry.rows) n.delete(r.id);
+        return n;
+      });
+    }
+    // On success the ids stay hidden until the refetch drops the rows (the
+    // retire effect near the top).
+  }, [deleteLine]);
+
+  const startLineDelete = useCallback((line: QuoteLine) => {
+    const key = pendingKey.line(line.id);
+    if (pendingDeleteEntries.current.has(key)) return;
+    const blockId = lineBlockOverride[line.id] ?? line.blockId;
+    const blockLines = blockId ? linesForBlock(blockId) : [];
+    // Bundle children ride with their parent (the server cascade deletes
+    // them), so they hide — and restore — as one unit.
+    const memberIds = [line.id, ...lines.filter((l) => l.parentLineId === line.id).map((l) => l.id)];
+    const rows = memberIds.map((id) => ({ id, index: Math.max(blockLines.findIndex((l) => l.id === id), 0) }));
+    const timer = setTimeout(() => { void flushLineDelete(line.id); }, UNDO_GRACE_MS);
+    pendingDeleteEntries.current.set(key, { kind: 'line', id: line.id, blockId, rows, timer });
+    setPendingDeletedLineIds((s) => {
+      const n = new Set(s);
+      for (const id of memberIds) n.add(id);
+      return n;
+    });
+    showToast({
+      type: 'undo',
+      message: t('quotes.editor.undo.lineDeleted'),
+      duration: UNDO_GRACE_MS,
+      onUndo: () => undoLineDelete(line.id),
+    });
+  }, [lines, lineBlockOverride, linesForBlock, flushLineDelete, undoLineDelete, t]);
+
+  const undoBlockDelete = useCallback((blockId: string) => {
+    const key = pendingKey.block(blockId);
+    const entry = pendingDeleteEntries.current.get(key);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(key);
+    setPendingDeletedBlockIds((s) => { const n = new Set(s); n.delete(blockId); return n; });
+  }, []);
+
+  const flushBlockDelete = useCallback(async (blockId: string) => {
+    const key = pendingKey.block(blockId);
+    const entry = pendingDeleteEntries.current.get(key);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(key);
+    const ok = await removeBlock(blockId);
+    if (!ok) {
+      setPendingDeletedBlockIds((s) => { const n = new Set(s); n.delete(blockId); return n; });
+    }
+  }, [removeBlock]);
+
+  const startBlockDelete = useCallback((block: QuoteBlock) => {
+    const key = pendingKey.block(block.id);
+    if (pendingDeleteEntries.current.has(key)) return;
+    // A pending line-deletion inside this section flushes NOW rather than
+    // merging into the section's window: the user deleted that line as its own
+    // action, so undoing the SECTION must not resurrect it — and its DELETE
+    // must land before the section's cascade would have raced it.
+    for (const e of [...pendingDeleteEntries.current.values()]) {
+      if (e.kind === 'line' && e.blockId === block.id) void flushLineDelete(e.id);
+    }
+    const index = Math.max(sortedBlocks.findIndex((b) => b.id === block.id), 0);
+    const timer = setTimeout(() => { void flushBlockDelete(block.id); }, UNDO_GRACE_MS);
+    pendingDeleteEntries.current.set(key, { kind: 'block', id: block.id, index, timer });
+    setPendingDeletedBlockIds((s) => { const n = new Set(s); n.add(block.id); return n; });
+    showToast({
+      type: 'undo',
+      message: t('quotes.editor.undo.sectionDeleted'),
+      duration: UNDO_GRACE_MS,
+      onUndo: () => undoBlockDelete(block.id),
+    });
+  }, [sortedBlocks, flushLineDelete, flushBlockDelete, undoBlockDelete, t]);
+
+  // Flush every deferred deletion immediately. Send (via the workspace),
+  // unmount and page-hide all route through here — the grace window is a UI
+  // nicety, never a way for a confirmed deletion to be lost or to outlive the
+  // editor.
+  const flushAllPendingDeletes = useCallback(() => {
+    for (const e of [...pendingDeleteEntries.current.values()]) {
+      if (e.kind === 'line') void flushLineDelete(e.id);
+      else void flushBlockDelete(e.id);
+    }
+  }, [flushLineDelete, flushBlockDelete]);
+  const flushAllRef = useRef(flushAllPendingDeletes);
+  useEffect(() => { flushAllRef.current = flushAllPendingDeletes; }, [flushAllPendingDeletes]);
+  useEffect(() => {
+    // pagehide (not beforeunload): it also fires on bfcache navigations, and
+    // the DELETEs go out with keepalive (see lib/api/quotes) so they survive
+    // the page teardown. Unmount gets the same treatment via the cleanup.
+    const onPageHide = () => flushAllRef.current();
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      flushAllRef.current();
+    };
+  }, []);
+  useEffect(() => {
+    onRegisterPendingDeleteFlush?.(flushAllPendingDeletes);
+    return () => onRegisterPendingDeleteFlush?.(null);
+  }, [onRegisterPendingDeleteFlush, flushAllPendingDeletes]);
 
   // Inline edit of an existing line. `body` carries only the changed fields
   // (matches updateQuoteLineSchema). Routed through runAction so failures are
@@ -1313,6 +1584,102 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       refresh();
     }, t('quotes.editor.errors.updateLine')),
   [quote.id, refresh, runScoped, t]);
+
+  // ---- bulk edit (Task D) --------------------------------------------------
+  // Multi-select lines → set markup / cost / taxable across the selection.
+  // Selection lives here (rows stay mounted through internal-band and block
+  // collapse, so the set survives both); it's pruned when a selected line
+  // disappears from the server data and never persisted across reloads.
+  const [selectedLineIds, setSelectedLineIds] = useState<ReadonlySet<string>>(() => new Set());
+  const selectionActive = selectedLineIds.size > 0;
+  useEffect(() => {
+    setSelectedLineIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(lines.map((l) => l.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [lines]);
+  const isLineSelected = useCallback((id: string) => selectedLineIds.has(id), [selectedLineIds]);
+  const toggleLineSelected = useCallback((id: string) => {
+    setSelectedLineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const setBlockSelection = useCallback((ids: string[], selected: boolean) => {
+    setSelectedLineIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) { if (selected) next.add(id); else next.delete(id); }
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => {
+    setSelectedLineIds(new Set());
+    // The bar unmounts with the selection — park focus on the editor's stable
+    // anchor rather than letting it drop to <body>.
+    blocksColRef.current?.focus();
+  }, []);
+
+  // Apply one PATCH per selected line through the SAME editLine path the
+  // inline inputs use, so dirty rings, SrSaved, lastSavedAt and the
+  // pending-edits Send-hold all behave exactly as if each field were edited by
+  // hand. Sequential on purpose (each runs under its own scoped pending key):
+  // no request flood, and a failure never aborts the rest. One aggregate toast
+  // reports the honest outcome — per-line failures already toasted by runAction,
+  // the summary says how many.
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const applyBulk = useCallback(async (
+    targets: QuoteLine[],
+    body: (line: QuoteLine) => LineUpdate,
+    field: string,
+    skippedNoCost = 0,
+  ) => {
+    setBulkBusy(true);
+    let failed = 0;
+    try {
+      for (const l of targets) {
+        if (!(await editLine(l.id, body(l), pendingKey.lineField(l.id, field)))) failed += 1;
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+    if (failed > 0) {
+      showToast({ type: 'error', message: t('quotes.editor.bulk.partialFailure', { failed, total: targets.length }) });
+    } else if (targets.length > 0) {
+      showToast({ type: 'success', message: t('quotes.editor.bulk.applied', { count: targets.length }) });
+    }
+    if (skippedNoCost > 0) {
+      showToast({ type: 'warning', message: t('quotes.editor.bulk.skippedNoCost', { count: skippedNoCost }) });
+    }
+  }, [editLine, t]);
+  const selectedLines = useMemo(
+    () => lines.filter((l) => selectedLineIds.has(l.id)),
+    [lines, selectedLineIds],
+  );
+  const bulkSetTaxable = useCallback((taxable: boolean) =>
+    void applyBulk(selectedLines, () => ({ taxable }), 'taxable'),
+  [applyBulk, selectedLines]);
+  const bulkSetCost = useCallback((cost: number) =>
+    void applyBulk(selectedLines, () => ({ unitCost: cost }), 'cost'),
+  [applyBulk, selectedLines]);
+  // Markup rewrites unitPrice from each line's OWN cost (price = cost·(1+m)) —
+  // the same derivation the per-row markup input commits. Lines with no cost
+  // (never entered — null) AND lines with an explicit cost of 0 (Task B1's
+  // deliberate "no cost" designation) both have no usable markup base — cost·
+  // (1+m) on a $0 base is $0 regardless of markup%, mirroring markupPct's own
+  // null-on-zero-or-less-cost rule — so both are skipped and counted together
+  // in the honest "skipped N" toast.
+  const bulkSetMarkup = useCallback((pct: number) => {
+    const withCost = selectedLines.filter((l) => l.unitCost !== null && Number(l.unitCost) > 0);
+    void applyBulk(
+      withCost,
+      (l) => ({ unitPrice: Number(priceFromMarkup(l.unitCost as string, pct)) }),
+      'price',
+      selectedLines.length - withCost.length,
+    );
+  }, [applyBulk, selectedLines]);
 
   // Inline edit of a block's content (heading text/level, rich-text html). The
   // block type is restated so the server validates the content shape; it is
@@ -1354,7 +1721,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       void (async () => {
         try {
           await runAction({
-            request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+            request: () => reorderBlocksApi(quote.id, { blockIds: withPendingDeletedBlockIds(ids) }),
             errorFallback: t('quotes.editor.errors.reorderSections'),
             onUnauthorized: UNAUTHORIZED,
           });
@@ -1367,7 +1734,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         }
       })();
     }, 250);
-  }, [sortedBlocks, quote.id, refresh, t]);
+  }, [sortedBlocks, quote.id, refresh, withPendingDeletedBlockIds, t]);
 
   // Drag-to-reorder for blocks (HTML5 DnD on the grip). Drop commits the full
   // reordered id list through the same optimistic + PATCH path the menu moves
@@ -1389,7 +1756,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     void (async () => {
       try {
         await runAction({
-          request: () => reorderBlocksApi(quote.id, { blockIds: ids }),
+          request: () => reorderBlocksApi(quote.id, { blockIds: withPendingDeletedBlockIds(ids) }),
           errorFallback: t('quotes.editor.errors.reorderSections'),
           onUnauthorized: UNAUTHORIZED,
         });
@@ -1401,7 +1768,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         refresh();
       }
     })();
-  }, [dragBlockId, sortedBlocks, quote.id, refresh, t]);
+  }, [dragBlockId, sortedBlocks, quote.id, refresh, withPendingDeletedBlockIds, t]);
 
 
   // The ONE line-reorder persistence path: optimistic order + a debounced
@@ -1419,7 +1786,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       void (async () => {
         try {
           await runAction({
-            request: () => reorderLinesApi(quote.id, blockId, { lineIds: ids }),
+            request: () => reorderLinesApi(quote.id, blockId, { lineIds: withPendingDeletedLineIds(blockId, ids) }),
             errorFallback: t('quotes.editor.errors.reorderLines'),
             onUnauthorized: UNAUTHORIZED,
           });
@@ -1432,7 +1799,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         }
       })();
     }, 250);
-  }, [quote.id, refresh, t]);
+  }, [quote.id, refresh, withPendingDeletedLineIds, t]);
 
   const moveLine = useCallback((blockId: string, line: QuoteLine, direction: 'up' | 'down') => {
     const currentIds = lineReorderBase.current[blockId] ?? linesForBlock(blockId).map((l) => l.id);
@@ -1789,6 +2156,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             {t('quotes.editor.autosaveHint')}
           </p>
         )}
+        {/* Quiet sync indicator: "Saving…" while any mutation is in flight, else
+            "Saved 2:41 PM" once this session has saved at least once. Purely
+            informational — never disables Send or any other control. */}
+        {canWrite && (pending.size > 0 || lastSavedAt !== null) && (
+          <p className="text-xs text-muted-foreground" data-testid="quote-editor-last-saved">
+            {pending.size > 0
+              ? t('quotes.editor.lastSaved.saving')
+              : t('quotes.editor.lastSaved.saved', { time: formatTime(lastSavedAt as number, { hour: '2-digit', minute: '2-digit' }) })}
+          </p>
+        )}
         {canWrite && (
           <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" data-testid="quote-cover-page">
             <input
@@ -1911,6 +2288,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
           className="min-w-0 space-y-4 rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           ref={blocksColRef}
           tabIndex={-1}
+          onKeyDown={onBlocksColumnKeyDown}
+          aria-keyshortcuts="Alt+ArrowDown Alt+ArrowUp"
         >
           {/* The paper: one continuous document-shaped surface. Blocks render in
               document typography inside it; the per-block card chrome is gone.
@@ -2069,6 +2448,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 revealRequest={revealRequest}
                 hasDirtyLines={block.blockType === 'line_items' && linesForBlock(block.id).some((l) => l.id in lineDrafts)}
                 onDropLine={(dragLineId, targetIdx) => dropLineInBlock(block.id, dragLineId, targetIdx)}
+                selectionActive={selectionActive}
+                isLineSelected={isLineSelected}
+                onToggleLineSelected={toggleLineSelected}
+                onSetBlockSelection={setBlockSelection}
               />
                   </div>
                 </Fragment>
@@ -2134,12 +2517,30 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                   <dd data-testid="quote-total-annual">{formatMoney(railAnnual, currency)}<span className="text-xs text-muted-foreground">{t('quotes.editor.units.perYear')}</span></dd>
                 </div>
               )}
+              {/* Grand-total stack: Subtotal → Tax → Total, mirroring the customer
+                  document's terminology (bare "Subtotal"/"Total" when the quote is
+                  one-time only; "First period …" once a recurring cadence is mixed
+                  in, since the subtotal then also rolls in the first monthly/annual
+                  period). Total is deliberately the most visually dominant figure in
+                  this stack — the one-time row above is money BEFORE tax, so it's
+                  labeled as such to prevent it from being misread as the payable
+                  total. */}
+              <div className="flex items-baseline justify-between border-t pt-2">
+                <dt className="text-muted-foreground">
+                  {hasRecurring ? t('quotes.editor.liveTotals.firstPeriodSubtotal') : t('quotes.editor.liveTotals.subtotal')}
+                </dt>
+                <dd data-testid="quote-total-subtotal">{formatMoney(railSubtotal, currency)}</dd>
+              </div>
               {Number(railTax) > 0 && (
                 <div className="flex items-baseline justify-between">
                   <dt className="text-muted-foreground">{t('quotes.editor.liveTotals.tax')}</dt>
-                  <dd>{formatMoney(railTax, currency)}</dd>
+                  <dd data-testid="quote-total-tax">{formatMoney(railTax, currency)}</dd>
                 </div>
               )}
+              <div className="flex items-baseline justify-between text-base font-semibold">
+                <dt>{hasRecurring ? t('quotes.editor.liveTotals.firstPeriodTotal') : t('quotes.editor.liveTotals.total')}</dt>
+                <dd data-testid="quote-total-grand">{formatMoney(railTotal, currency)}</dd>
+              </div>
             </dl>
             {/* Per-category subtotals (hardware / software / service / other) — only
                 worth showing once the quote spans more than one category. Mirrors the
@@ -2261,15 +2662,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
                 </div>
               )}
             </div>
-            {hasRecurring && (
-              <>
-                <div className="mt-2 flex items-baseline justify-between text-sm tabular-nums">
-                  <span className="text-muted-foreground">{t('quotes.editor.liveTotals.firstPeriodTotal')}</span>
-                  <span className="font-medium" data-testid="quote-total-first-period">{formatMoney(railTotal, currency)}</span>
-                </div>
-                <RecurringBillingNote className="mt-2" testId="quote-totals-recurring-hint" />
-              </>
-            )}
+            {/* The "First period total" figure itself now lives in the Subtotal →
+                Tax → Total stack above (dominant, data-testid="quote-total-grand");
+                this note just explains what "first period" means for a recurring
+                quote so the two numbers (due on acceptance vs. total) don't read
+                as a discrepancy. */}
+            {hasRecurring && <RecurringBillingNote className="mt-2" testId="quote-totals-recurring-hint" />}
           </div>
 
           {/* Contents outline — a quiet nav under the totals (the rail's primary
@@ -2280,7 +2678,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               data-testid="quote-outline"
               className="rounded-lg border bg-card p-3 shadow-xs"
             >
-              <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.outline.title')}</h2>
+              <h2
+                className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                title={t('quotes.editor.outline.shortcutHint')}
+              >
+                {t('quotes.editor.outline.title')}
+              </h2>
               <ul className="space-y-0.5">
                 {sortedBlocks.map((b) => (
                   <li key={b.id}>
@@ -2325,6 +2728,22 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         </div>
       </div>
 
+      {/* One sticky viewport-bottom stack for BOTH floating bars — the bulk-edit
+          action bar (any width, while a selection is active) above the slim
+          totals summary (below xl only). Stacking them in a single sticky
+          wrapper is what keeps them from colliding: two independent sticky
+          siblings would both pin to the same bottom offset and overlap. */}
+      <div className="sticky bottom-2 z-10 space-y-2">
+        {canWrite && selectionActive && (
+          <QuoteBulkBar
+            count={selectedLineIds.size}
+            busy={bulkBusy}
+            onSetMarkup={bulkSetMarkup}
+            onSetCost={bulkSetCost}
+            onSetTaxable={bulkSetTaxable}
+            onClear={clearSelection}
+          />
+        )}
       {/* Below xl the full totals rail stacks under all blocks, which would break
           the edit→see-total loop mid-task — so a slim summary stays pinned to the
           viewport bottom while the rail's natural position is below the fold
@@ -2334,11 +2753,18 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
       <div
         aria-hidden="true"
         data-testid="quote-totals-sticky"
-        className="sticky bottom-2 z-10 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm shadow-md xl:hidden"
+        className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm shadow-md xl:hidden"
       >
         <span className="flex items-baseline gap-2">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.liveTotals.dueOnAcceptance')}</span>
           <span className="text-base font-semibold tabular-nums">{formatMoney(railDue, currency)}</span>
+        </span>
+        {/* Grand total (subtotal + tax across all cadences' first period) mirrors
+            the rail's Subtotal → Tax → Total stack; a plain secondary chip here
+            since Due on acceptance stays the primary figure at this width. */}
+        <span className="flex items-baseline gap-1 text-muted-foreground">
+          <span className="text-xs">{t('quotes.editor.liveTotals.total')}</span>
+          <span className="font-medium tabular-nums text-foreground" data-testid="quote-totals-sticky-total">{formatMoney(railTotal, currency)}</span>
         </span>
         {Number(railMonthly) > 0 && (
           <span className="text-muted-foreground">
@@ -2355,6 +2781,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
             {t('quotes.editor.deposit.short')} <span className="font-medium tabular-nums text-foreground">{formatMoney(railDeposit, currency)}</span>
           </span>
         )}
+      </div>
       </div>
 
       {/* The "Tidy all descriptions" queue driver: an unattended PolishButton
@@ -2389,18 +2816,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         onConfirm={() => {
           const block = pendingRemove;
           if (!block) return;
-          // Keep the dialog open and awaiting (so isLoading shows "Processing…")
-          // until the delete resolves. On failure (already toasted by runAction)
-          // leave the dialog open so the user can retry or cancel — don't close as
-          // if it worked while the block is still there. On success, close and move
-          // focus to a stable anchor — the triggering Remove button is gone.
-          void (async () => {
-            if (!(await removeBlock(block))) return;
-            setPendingRemove(null);
-            blocksColRef.current?.focus();
-          })();
+          // Confirm starts the undo grace window: the section leaves the UI
+          // now, the real DELETE fires when the window expires (undo toast
+          // shown by startBlockDelete). Focus moves to a stable anchor — the
+          // triggering Remove button is gone with the section.
+          startBlockDelete(block);
+          setPendingRemove(null);
+          blocksColRef.current?.focus();
         }}
-        isLoading={pendingRemove ? isPending(pendingKey.block(pendingRemove.id)) : false}
         title={t('quotes.editor.confirm.removeSectionTitle')}
         message={
           pendingRemove?.blockType === 'line_items' && linesForBlock(pendingRemove.id).length > 0
@@ -2417,15 +2840,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         onConfirm={() => {
           const line = pendingLineRemove;
           if (!line) return;
-          // Leave the dialog open on failure (already toasted) so the user can
-          // retry; only close + restore focus once the line is actually gone.
-          void (async () => {
-            if (!(await deleteLine(line.id))) return;
-            setPendingLineRemove(null);
-            blocksColRef.current?.focus();
-          })();
+          // Confirm starts the undo grace window (deferred DELETE + undo
+          // toast, see startLineDelete); the row disappears immediately.
+          startLineDelete(line);
+          setPendingLineRemove(null);
+          blocksColRef.current?.focus();
         }}
-        isLoading={pendingLineRemove ? isPending(pendingKey.line(pendingLineRemove.id)) : false}
         title={t('quotes.editor.confirm.removeLineTitle')}
         message={
           pendingLineRemove

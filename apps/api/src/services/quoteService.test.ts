@@ -661,3 +661,35 @@ describe('quoteService deposits', () => {
     expect(updated.coverPage).toMatchObject({ coverImageId: 'img1' });
   });
 });
+
+describe('attachCustomerLineImages', () => {
+  const base = { id: 'l1', description: 'Widget', quantity: '1', unitPrice: '10', lineTotal: '10' };
+  const buildPath = (lineId: string) => `/quotes/public/tok/line-image/${lineId}`;
+
+  it('builds a quote-scoped imageUrl for a line with an uploaded image and drops the raw ids', () => {
+    const [line] = svc.attachCustomerLineImages(
+      [{ ...base, imageId: 'img1', catalogItemId: null }],
+      buildPath,
+    );
+    expect(line.imageUrl).toBe('/quotes/public/tok/line-image/l1');
+    expect(line).not.toHaveProperty('imageId');
+    expect(line).not.toHaveProperty('catalogItemId');
+    expect(line.description).toBe('Widget'); // other fields preserved
+  });
+
+  it('builds an imageUrl for a catalog-sourced line (no uploaded image)', () => {
+    const [line] = svc.attachCustomerLineImages(
+      [{ ...base, imageId: null, catalogItemId: 'cat1' }],
+      buildPath,
+    );
+    expect(line.imageUrl).toBe('/quotes/public/tok/line-image/l1');
+  });
+
+  it('emits null imageUrl for a line with neither an uploaded nor a catalog image', () => {
+    const [line] = svc.attachCustomerLineImages(
+      [{ ...base, imageId: null, catalogItemId: null }],
+      buildPath,
+    );
+    expect(line.imageUrl).toBeNull();
+  });
+});

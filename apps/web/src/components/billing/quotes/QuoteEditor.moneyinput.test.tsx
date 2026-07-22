@@ -184,6 +184,30 @@ describe('QuoteLineRows — money-formatted price/cost inputs', () => {
     expect(widthCh).toBeGreaterThanOrEqual(7); // > the old fixed w-16 (~8ch) floor for short values
   });
 
+  it('markup is a text/inputMode=decimal field (no spinner) that sanitizes keystrokes but allows a leading minus for a loss', async () => {
+    render(<QuoteEditor detail={detailWith([{ ...baseLine, unitCost: '100.00', unitPrice: '80.00' }])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+    fireEvent.click(screen.getByTestId('quote-line-internal-toggle-line-1'));
+
+    const markupEl = screen.getByTestId('quote-line-markup-line-1') as HTMLInputElement;
+    expect(markupEl.type).toBe('text');
+    expect(markupEl.getAttribute('inputmode')).toBe('decimal');
+    // Priced below cost is a real loss, not a typo — the negative markup that
+    // gave (80-100)/100 = -20 must round-trip through the field.
+    expect(markupEl.value).toBe('-20');
+
+    // Garbage keystrokes strip to digits/decimal/leading-minus only.
+    fireEvent.change(markupEl, { target: { value: 'abc-12.5xyz' } });
+    expect(markupEl.value).toBe('-12.5');
+    fireEvent.blur(markupEl);
+
+    // Commit semantics unchanged: markup edits still derive and PATCH price
+    // (unitPrice = cost·(1 + markup/100) = 100·0.875 = 87.50).
+    await waitFor(() => expect(updateLineMock).toHaveBeenCalledWith('q-1', 'line-1', { unitPrice: 87.5 }));
+  });
+
   it('ghost-row price formats on blur and shows the raw decimal while focused', async () => {
     render(<QuoteEditor detail={detailWith([baseLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());

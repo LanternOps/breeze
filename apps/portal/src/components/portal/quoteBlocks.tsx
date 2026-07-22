@@ -35,6 +35,18 @@ const RECURRENCE_GROUPS: ReadonlyArray<{ key: string; label: string; suffix: str
   { key: 'annual', label: 'Annual', suffix: '/yr' },
 ];
 
+/** A line's title falls back to its description for legacy lines created before
+ *  the name/description split; the blurb only renders when a distinct name
+ *  exists. Mirrors the web renderer's lineTitle/lineBlurb (quoteTypes.ts) so the
+ *  portal shows the same bold product title + muted spec blurb as the preview. */
+function lineTitle(l: QuoteLine): string {
+  return (l.name ?? l.description ?? '').trim();
+}
+function lineBlurb(l: QuoteLine): string | null {
+  const b = l.name ? (l.description ?? '').trim() : '';
+  return b || null;
+}
+
 function PricingTable({
   lines,
   currency,
@@ -42,6 +54,7 @@ function PricingTable({
   testId,
   taxRate,
   showTax,
+  buildUrl,
 }: {
   lines: QuoteLine[];
   currency: string;
@@ -49,6 +62,8 @@ function PricingTable({
   testId: string;
   taxRate: number;
   showTax: boolean;
+  /** Resolves a server-built relative line-image path into a fetchable URL. */
+  buildUrl: (path: string) => string;
 }) {
   if (lines.length === 0) return null;
   // Preserve sortOrder within each recurrence group, in the canonical group order.
@@ -90,7 +105,29 @@ function PricingTable({
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
                   return (
                   <tr key={l.id} data-testid={`quote-line-${l.id}`} className="border-b align-top last:border-0">
-                    <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
+                    <td className="px-4 py-3 text-foreground sm:px-5">
+                      <div className="flex items-start gap-2.5">
+                        {l.imageUrl && (
+                          // A line whose catalog item happens to have no image
+                          // 404s; hide the broken thumbnail (render-nothing-on-
+                          // miss parity with the in-app preview's DocLineThumb).
+                          <img
+                            src={buildUrl(l.imageUrl)}
+                            alt=""
+                            loading="lazy"
+                            data-testid={`quote-line-image-${l.id}`}
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            className="h-10 w-10 shrink-0 rounded border bg-card object-contain"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <span className="font-medium">{lineTitle(l)}</span>
+                          {lineBlurb(l) && (
+                            <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
+                          )}
+                        </div>
+                      </div>
+                    </td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{Number(l.quantity)}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
                       {money(l.unitPrice, currency)}{g.suffix && <span className="text-xs">{g.suffix}</span>}
@@ -251,6 +288,7 @@ export function QuoteBlocks({
           testId={`quote-lines-${block.id}`}
           taxRate={taxRate}
           showTax={showTax}
+          buildUrl={buildUrl}
         />
       );
     }
@@ -266,7 +304,7 @@ export function QuoteBlocks({
     <div className="space-y-6">
       {rendered}
       {orphanLines.length > 0 && (
-        <PricingTable lines={orphanLines} currency={currency} label="Pricing" testId="quote-lines-default" taxRate={taxRate} showTax={showTax} />
+        <PricingTable lines={orphanLines} currency={currency} label="Pricing" testId="quote-lines-default" taxRate={taxRate} showTax={showTax} buildUrl={buildUrl} />
       )}
     </div>
   );
