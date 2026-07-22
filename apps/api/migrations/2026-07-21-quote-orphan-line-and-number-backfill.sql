@@ -41,6 +41,15 @@
 --
 -- No inner BEGIN;/COMMIT; — autoMigrate wraps each file in a transaction.
 
+-- quotes/quote_lines/quote_blocks are RLS-FORCED (org policies) and
+-- partner_quote_sequences is partner-RLS. The migration connection (managed-DB
+-- doadmin, no request GUCs) is NOT exempt: without system scope Part A's
+-- SELECTs match zero rows (silent no-op, recorded as applied) and Part B's
+-- INSERT fails its WITH CHECK with 42501, aborting the boot. Transaction-local
+-- elevation, same pattern as 2026-04-13-fix-uuid-hostnames.sql. (Superuser
+-- runs — CI, stock self-host compose — bypass RLS either way.)
+SELECT set_config('breeze.scope', 'system', true);
+
 -- ---------------------------------------------------------------------------
 -- PART A: attach orphan quote_lines to a line_items block.
 -- ---------------------------------------------------------------------------
