@@ -207,7 +207,13 @@
     "stats": {
       "totalDevices": "Total Devices",
       "warnings": "Warnings",
-      "critical": "Critical"
+      "critical": "Critical",
+      "openTickets": "Open tickets",
+      "unassignedCount": "{{count}} unassigned",
+      "unassignedCount_one": "{{count}} unassigned",
+      "unassignedCount_other": "{{count}} unassigned",
+      "patchCompliance": "Patch compliance",
+      "loadFailed": "Couldn't load"
     },
     "emptyDevices": {
       "title": "No devices enrolled yet",
@@ -219,7 +225,8 @@
       "onlineCount": "{{online}}/{{total}} online",
       "allOnline": "All devices online",
       "healthy": "Your fleet is healthy",
-      "viewOffline": "View all {{count}} offline"
+      "viewOffline": "View all {{count}} offline",
+      "other": "Other"
     },
     "activity": {
       "title": "Recent Activity",
@@ -294,7 +301,51 @@
         "30d": "Last 30 days"
       },
       "defaultPerRole": "Default dashboard per role"
-    }
+    },
+    "attention": {
+      "title": "Needs attention"
+    },
+    "security": {
+      "title": "Security posture",
+      "good": "Good standing",
+      "fair": "Needs work",
+      "poor": "At risk",
+      "empty": "No security data yet",
+      "trendLabel": "30-day score trend",
+      "atRiskCount": "{{count}} devices at risk",
+      "atRiskCount_one": "{{count}} device at risk",
+      "atRiskCount_other": "{{count}} devices at risk",
+      "threatsCount": "{{count}} active threats",
+      "threatsCount_one": "{{count}} active threat",
+      "threatsCount_other": "{{count}} active threats"
+    },
+    "patch": {
+      "title": "Patch compliance",
+      "installed": "Installed",
+      "failed": "Failed",
+      "devicesCompliant": "{{compliant}} of {{total}} devices fully patched",
+      "criticalPending": "{{count}} critical patches pending",
+      "criticalPending_one": "{{count}} critical patch pending",
+      "criticalPending_other": "{{count}} critical patches pending",
+      "empty": "No patch data yet"
+    },
+    "vuln": {
+      "title": "Vulnerabilities",
+      "criticalOpen": "Critical open",
+      "kev": "Known exploited",
+      "patchReady": "Patch available",
+      "totalOpen": "{{count}} open findings",
+      "totalOpen_one": "{{count}} open finding",
+      "totalOpen_other": "{{count}} open findings",
+      "allClear": "No open vulnerabilities",
+      "kevCves": "{{count}} CVEs",
+      "kevCves_one": "{{count}} CVE",
+      "kevCves_other": "{{count}} CVEs",
+      "kevDevices": "{{count}} devices",
+      "kevDevices_one": "{{count}} device",
+      "kevDevices_other": "{{count}} devices"
+    },
+    "refreshFailed": "Couldn't refresh — showing older data"
   },
   "filters": {
     "advanced": "Advanced Filter",

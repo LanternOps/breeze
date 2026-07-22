@@ -1,28 +1,10 @@
 ---
 import DashboardLayout from '../layouts/DashboardLayout.astro';
-import DashboardStats from '../components/dashboard/DashboardStats';
-import DeviceStatusChart from '../components/dashboard/DeviceStatusChart';
-import RecentAlerts from '../components/dashboard/RecentAlerts';
-import RecentActivity from '../components/dashboard/RecentActivity';
+import DashboardPage from '../components/dashboard/DashboardPage';
 ---
 
 <DashboardLayout title="Dashboard">
-  <div class="space-y-6" data-testid="dashboard-root">
-    <div class="animate-in">
-      <DashboardStats client:load />
-    </div>
-
-    <!-- Alerts get 2/3 width — that's what techs triage first -->
-    <div class="animate-in stagger-1 grid gap-6 lg:grid-cols-3">
-      <div class="lg:col-span-2">
-        <RecentAlerts client:load />
-      </div>
-      <DeviceStatusChart client:load />
-    </div>
-
-    <!-- Activity — lightweight secondary section -->
-    <div class="animate-in stagger-2">
-      <RecentActivity client:load />
-    </div>
+  <div class="animate-in" data-testid="dashboard-root">
+    <DashboardPage client:load />
   </div>
 </DashboardLayout>

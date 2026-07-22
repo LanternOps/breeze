@@ -19,4 +19,10 @@ test.describe('Dashboard', () => {
     await expect(dashboard.recentAlertsHeading()).toBeVisible();
     await expect(dashboard.recentActivityHeading()).toBeVisible();
   });
+
+  test('shows the fleet status card', async ({ authedPage }) => {
+    const dashboard = new DashboardPage(authedPage);
+    await dashboard.goto();
+    await expect(dashboard.fleetStatusCard()).toBeVisible();
+  });
 });

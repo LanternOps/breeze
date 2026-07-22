@@ -11,6 +11,7 @@ export class DashboardPage extends BasePage {
   criticalCard = () => this.page.getByTestId('dashboard-critical-card');
   recentAlertsHeading = () => this.page.getByTestId('dashboard-recent-alerts-heading');
   recentActivityHeading = () => this.page.getByTestId('dashboard-recent-activity-heading');
+  fleetStatusCard = () => this.page.getByTestId('dashboard-fleet-status');
 
   async goto() {
     await this.page.goto(this.url);
