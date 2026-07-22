@@ -17,7 +17,7 @@ import {
 import { vulnerabilityRoutes } from '../../routes/vulnerabilities';
 import { clearPermissionCache } from '../../services/permissions';
 import { getTestDb } from './setup';
-import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
+import { createOrganization, createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -634,6 +634,83 @@ describe('vulnerabilityRoutes', () => {
     expect(closedRes.status).toBe(200);
     const closed = await closedRes.json() as { items: unknown[] };
     expect(closed.items).toEqual([]);
+  });
+
+  // Org-selector narrowing (?orgId=, auto-injected by the web client): a partner
+  // caller with two orgs gets only the selected org's rows. Every unit test
+  // mocks the query layer, so this is the only place the eq(org_id) narrowing
+  // is proven against real Postgres — review mutation showed deleting it kept
+  // the unit suite green.
+  runDb('fleet reads narrow to ?orgId= for a partner-scope caller (and 403 an inaccessible org)', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgB = await createOrganization({ partnerId: env.partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const deviceA = await seedDevice(env, 'orgsel-a');
+    const [deviceB] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId: orgB.id,
+        siteId: siteB.id,
+        agentId: `vuln-route-agent-orgsel-b-${Date.now()}`,
+        hostname: 'vuln-route-host-orgsel-b',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        status: 'offline',
+      })
+      .returning({ id: devices.id });
+    if (!deviceB) throw new Error('failed to seed org-B device');
+
+    // Org A: plain high. Org B: KEV critical — a narrowing failure inflates
+    // org A's counts with org B's scarier finding.
+    const vulnA = await seedCatalogVulnerability({ cveId: 'CVE-2026-94001', severity: 'high', cvssScore: '7.5' });
+    const vulnB = await seedCatalogVulnerability({
+      cveId: 'CVE-2026-94002',
+      severity: 'critical',
+      cvssScore: '9.9',
+      knownExploited: true,
+    });
+    await seedDeviceFinding({ orgId: env.organization.id, deviceId: deviceA, vulnerabilityId: vulnA, riskScore: '7.50' });
+    await seedDeviceFinding({ orgId: orgB.id, deviceId: deviceB.id, vulnerabilityId: vulnB, riskScore: '9.90' });
+
+    // Baseline (no orgId): the partner caller sees BOTH orgs' findings — proves
+    // the narrowed assertions below aren't passing because org B is invisible.
+    const allStats = await buildApp().request('/api/v1/vulnerabilities/stats', { headers: authHeaders(env) });
+    expect(allStats.status).toBe(200);
+    expect(((await allStats.json()) as { totalFindings: number }).totalFindings).toBe(2);
+
+    const q = `?orgId=${env.organization.id}`;
+
+    // GET / — aggregated CVE table narrows to org A.
+    const listRes = await buildApp().request(`/api/v1/vulnerabilities${q}`, { headers: authHeaders(env) });
+    expect(listRes.status).toBe(200);
+    const list = await listRes.json() as { items: Array<{ cveId: string }> };
+    expect(list.items.map((i) => i.cveId)).toEqual(['CVE-2026-94001']);
+
+    // GET /software — work queue narrows to org A's single device.
+    const swRes = await buildApp().request(`/api/v1/vulnerabilities/software${q}`, { headers: authHeaders(env) });
+    expect(swRes.status).toBe(200);
+    const sw = await swRes.json() as { items: Array<{ deviceCount: number; cveIds: string[] }> };
+    expect(sw.items.reduce((sum, g) => sum + g.deviceCount, 0)).toBe(1);
+    expect(sw.items.some((g) => g.cveIds.includes('CVE-2026-94002'))).toBe(false);
+
+    // GET /stats — stat cards narrow to org A (no KEV/critical bleed-through).
+    const statsRes = await buildApp().request(`/api/v1/vulnerabilities/stats${q}`, { headers: authHeaders(env) });
+    expect(statsRes.status).toBe(200);
+    const stats = await statsRes.json() as { totalFindings: number; criticalOpen: number; kevCveCount: number };
+    expect(stats.totalFindings).toBe(1);
+    expect(stats.criticalOpen).toBe(0);
+    expect(stats.kevCveCount).toBe(0);
+
+    // An org outside the partner's accessible set: hard 403, not silent-empty.
+    const foreign = await setupTestEnvironment({ scope: 'organization' });
+    const denied = await buildApp().request(
+      `/api/v1/vulnerabilities/stats?orgId=${foreign.organization.id}`,
+      { headers: authHeaders(env) },
+    );
+    expect(denied.status).toBe(403);
   });
 
   // ──────────────────────────────────────────────────────────────────────────
