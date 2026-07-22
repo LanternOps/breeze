@@ -26,7 +26,7 @@ The table below lists every device-control tool, its tier classification, and wh
 | `execute_command` | Run system commands on a device | Tier 3 | **Yes** |
 | `run_script` | Execute a library script on up to 10 devices | Tier 3 | **Yes** |
 | `manage_services` | List services (Tier 2); start/stop/restart (Tier 3) | Tier 2/3 | Start/stop/restart only |
-| `file_operations` | List/read files (Tier 1); write/delete/mkdir/rename (Tier 3) | Tier 1/3 | Write/delete/mkdir/rename only |
+| `file_operations` | List directories (Tier 2); read/write/delete/mkdir/rename (Tier 3) | Tier 2/3 | Read/write/delete/mkdir/rename |
 | `analyze_disk_usage` | Filesystem usage analysis with cleanup preview | Tier 1 | No |
 | `disk_cleanup` | Preview cleanup (Tier 1); execute cleanup (Tier 3) | Tier 1/3 | Execute only |
 | `security_scan` | Scan/status (Tier 3); quarantine/remove/restore (Tier 3) | Tier 3 | **Yes** |
@@ -40,7 +40,7 @@ The table below lists every device-control tool, its tier classification, and wh
 | `set_agent_log_level` | Temporarily adjust agent log verbosity | Tier 2 | No |
 
 <Aside>
-  Tier classification is determined at the **action level**, not the tool level. For example, `file_operations` is Tier 1 when listing or reading files, but escalates to Tier 3 when writing or deleting. The AI resolves the effective tier at runtime for each specific invocation. See [AI Features](/features/ai/) for full governance details.
+  Tier classification is determined at the **action level**, not the tool level. For example, `file_operations` is Tier 2 when listing a directory, but escalates to Tier 3 when reading, writing, or deleting files. The AI resolves the effective tier at runtime for each specific invocation. See [AI Features](/features/ai/) for full governance details.
 </Aside>
 
 ---
@@ -186,12 +186,12 @@ Manages alerts across your organization. Listing and viewing alerts is Tier 1 (a
 
 ### file_operations
 
-Performs file system operations on a device. Read-only actions execute automatically; mutating actions require approval.
+Performs file system operations on a device. Listing a directory auto-executes (with an audit record); everything that touches file *contents* — including reads — requires approval, because the agent accesses the filesystem with system-level privileges.
 
 | Action | Tier | Approval | Description |
 |--------|------|----------|-------------|
-| `list` | Tier 1 | No | List directory contents |
-| `read` | Tier 1 | No | Read file contents |
+| `list` | Tier 2 | No (audit logged) | List directory contents |
+| `read` | Tier 3 | **Yes** | Read file contents |
 | `write` | Tier 3 | **Yes** | Write or overwrite a file (max 1 MB) |
 | `delete` | Tier 3 | **Yes** | Delete a file or directory |
 | `mkdir` | Tier 3 | **Yes** | Create a directory |
@@ -478,8 +478,7 @@ Each tool requires specific RBAC permissions. The permission check is action-awa
 | `manage_services` | all | `devices:execute` |
 | `security_scan` | all | `devices:execute` |
 | `get_security_posture` | all | (no explicit check) |
-| `file_operations` | list, read | `devices:read` |
-| `file_operations` | write, delete, mkdir, rename | `devices:execute` |
+| `file_operations` | all | `devices:execute` |
 | `analyze_disk_usage` | all | `devices:read` |
 | `disk_cleanup` | preview | `devices:read` |
 | `disk_cleanup` | execute | `devices:execute` |

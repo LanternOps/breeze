@@ -28,7 +28,7 @@ The storage configuration wizard walks you through four steps:
        - **Base Path** — optional prefix within the bucket (e.g., `breeze-backups/`)
        - **Access Key** and **Secret Key** — IAM credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, and `s3:DeleteObject` permissions
 
-       Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly.
+       Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly. Enter the endpoint as a host (`s3.example.com`) or host and port (`minio.local:9000`), optionally prefixed with `http://` or `https://`; a scheme-less endpoint is treated as `https://`. Other schemes (such as `s3://` or `ftp://`) are rejected with a validation error rather than failing later at backup time.
      </TabItem>
      <TabItem label="Azure Blob">
        - **Storage Account** — your Azure Storage account name

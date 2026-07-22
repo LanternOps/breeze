@@ -13,7 +13,18 @@ Quotes are **partner-scoped**: you can quote any of your customer organizations 
 
 ## The Quote Editor
 
-The editor is where you assemble and price a quote. Add lines from the shared **catalog picker** -- start typing to search your catalog by name or SKU -- or add a **manual line** for anything not in the catalog. The running subtotal, tax, and total update live as you edit.
+The editor is where you assemble and price a quote. Add lines from the shared **catalog picker** -- start typing to search your catalog by name or SKU -- or add a **manual line** for anything not in the catalog. The running subtotal, tax, and total update live as you edit. A **last-saved** indicator in the header shows when your changes were last persisted.
+
+### Reordering, Bulk Edit, and Undo
+
+- **Drag to reorder** -- every line has a drag handle, so you can rearrange lines within and between pricing sections directly; the **⋯** menu offers the same moves for keyboard use. A sticky **Contents** outline in the side rail lets you jump between sections of a long quote, and pricing sections can be collapsed while you work.
+- **Bulk edit** -- select multiple lines (across sections) with their checkboxes to reveal a bulk action bar: apply a markup, change customer visibility, or delete the selection in one step.
+- **Undo delete** -- deleting a line or a whole section shows an undo toast, so a slip doesn't cost you the work.
+- **Unassigned lines** -- if a quote ends up with lines that don't belong to any pricing section (for example, on some quotes cloned in older versions), they now appear in a dedicated **Unassigned lines** bucket below the document instead of silently counting toward the totals, so you can edit or re-home them.
+
+### Internal Cost Details
+
+Each line's internal cost details (SKU, cost, markup, profit) collapse into a one-line summary; expand a line to edit them. These figures are internal -- the customer never sees them. If any lines are missing a cost, the editor shows a **"N lines missing a cost"** warning that jumps you to the first offender, and the send dialog repeats the notice (without blocking the send).
 
 ### Quote Title
 
@@ -42,7 +53,7 @@ Don't have an item in your catalog yet? Type a product name or SKU into a line's
 
 ### Line Images
 
-Any line can carry an **image**, so a hardware quote can show the product the customer is buying. A catalog item's [product image](/features/product-catalog/#product-images) flows onto the line automatically; you can also upload an image directly on the line, which takes precedence over the catalog picture for that quote. Images appear on the quote preview and the PDF.
+Any line can carry an **image**, so a hardware quote can show the product the customer is buying. A catalog item's [product image](/features/product-catalog/#product-images) flows onto the line automatically; you can also upload an image directly on the line, which takes precedence over the catalog picture for that quote. Images appear on the quote preview, the PDF, and the customer-facing proposal page -- along with each line's name and description, so the proposal the customer opens matches what you built in the editor.
 
 ### One-Time and Recurring Pricing
 
@@ -113,6 +124,12 @@ If the accepted quote contains **Pax8-backed** catalog items, acceptance also **
 The **Send** dialog accepts an optional **personal message**. When you add one, it renders in the email above the accept link, so you can add a short note to the customer without leaving the quote. Leave it blank to send the standard email.
 
 After you click Send, the quote shows a brief **"Sending in Ns — Undo"** countdown (about 30 seconds) before the email actually leaves. Click **Undo** during that window and nothing is sent — the quote stays a draft and you can keep editing. Once the countdown finishes the email goes out and the quote moves to **Sent**.
+
+<Aside type="caution" title="Who can accept a quote from the customer portal">
+  Accepting or declining a quote from the authenticated [customer portal](/features/portal/) is limited to the **email addresses the quote was sent to**. A portal user whose email was not a recipient of the send can view the quote but cannot act on it.
+
+  This gate applies retroactively: quotes sent **before upgrading to v0.99.0** have no recorded recipients, so nobody can accept or decline them from the portal until you **re-send** them. If a customer reports they can't accept an older outstanding quote, re-send it to record the recipients.
+</Aside>
 
 Preview images support **click-to-zoom**: click an image on the quote preview to open it enlarged, and press **Escape** or click the backdrop to close it. The lightbox is keyboard-reachable.
 

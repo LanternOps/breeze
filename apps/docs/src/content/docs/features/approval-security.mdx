@@ -57,6 +57,17 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 
 </Steps>
 
+## Enrolling an approver device
+
+Registering a Breeze Authenticator (approver) device always requires a **fresh identity check that is independent of the login session** -- possession of a signed-in browser or a stolen token is never enough to enroll a new approval device.
+
+- **From the web dashboard**, registering a device prompts for a step-up in order of strength: a **passkey** tap if you have one enrolled, otherwise your **TOTP code**, otherwise your **password**. If your account has a passkey or TOTP factor, the password fallback is refused -- the server insists on the strongest factor you own (except on deployments with MFA disabled platform-wide, where the password path remains available). A newly registered device shows a **"pending — activates on first approval"** badge until it decides its first request.
+- **From the mobile app**, no separate ceremony is needed: signing in (including completing your MFA challenge) authorises the app to register itself as your approver device on that login. If registration couldn't happen at sign-in, the app shows a banner and completes it on your **next login**.
+
+<Aside type="note">
+  Mobile app builds older than v0.99.0 used a flow the server no longer accepts, so registration from an outdated app fails until the app is updated. If a technician's phone stops registering as an approver device after a server upgrade, update the Breeze mobile app.
+</Aside>
+
 ## How it interacts with PAM and Breeze Authenticator
 
 When an approver acts on a request from any surface (the [Privileged Access](/features/pam/) console, the Helper desktop app, or the mobile app), Breeze looks up the request's risk tier, resolves the required assurance level from this policy, and demands that level of verification on the approver's **Breeze Authenticator** device before recording the decision.

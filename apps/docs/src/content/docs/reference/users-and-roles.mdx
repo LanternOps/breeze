@@ -222,6 +222,23 @@ Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS dependi
 
 Recovery codes are generated during MFA setup and stored as hashed values. To regenerate codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This replaces all existing codes.
 
+### Admin MFA Reset (Lost Authenticator)
+
+When a user has lost their authenticator **and** has no recovery codes, an administrator can reset their MFA so they can sign in again: open **Settings → Users**, find the user, and choose **Reset MFA** (also available as `POST /users/:id/mfa/reset`).
+
+The reset:
+
+- Clears the user's MFA factor, phone number, and recovery codes, forcing **fresh MFA enrollment at their next login** (immediately, if the org or their role enforces MFA).
+- **Revokes the user's active sessions and refresh tokens** and tears down their remote sessions, so a device holding old tokens can't ride out the reset.
+- Is recorded in the [audit log](/reference/audit-logs/) as `user.mfa_reset`, including which method was cleared.
+
+Guardrails:
+
+- Requires the `users:write` permission, and the acting admin's **own session must have satisfied MFA** — a stolen access token alone cannot strip another user's second factor.
+- Tenant-scoped: an admin can only reset users within their own organisation or partner.
+- **Self-reset is refused** — changing your own factor goes through the code-verified self-service flow above.
+- Deliberately works even when the organisation enforces MFA or the platform has `ENABLE_2FA=false`: it is the recovery lever for exactly those situations, and an enforced policy simply forces re-enrollment at next login.
+
 ---
 
 ## Password Management
@@ -438,6 +455,7 @@ All user endpoints are mounted under `/api/v1/users` and require JWT authenticat
 | `PATCH` | `/users/:id` | `users:write` | Update a user's name or status. |
 | `DELETE` | `/users/:id` | `users:delete` | Remove a user from the current scope. |
 | `POST` | `/users/:id/role` | `users:write` | Assign a different role to a user. |
+| `POST` | `/users/:id/mfa/reset` | `users:write` + MFA-satisfied session | Clear another user's MFA so they re-enroll at next login (lost-authenticator recovery). Refused for your own account. |
 | `GET` | `/users/roles` | `users:read` | List available roles for the current scope. |
 
 ### Role Endpoints
