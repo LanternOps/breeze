@@ -2037,6 +2037,65 @@
       "docs": [
         "features/quotes.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiGuardrails.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/mcp-server.mdx",
+        "features/ai-computer-control.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/oauth/redirectUriPolicy.ts",
+      "docs": [
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/authenticator.ts",
+      "docs": [
+        "features/approval-security.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/dashboard/**",
+      "docs": [
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/utils/s3Endpoint.ts",
+      "docs": [
+        "backup/storage.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/types/postureReport.ts",
+      "docs": [
+        "features/reports.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/portal/quotes.ts",
+      "docs": [
+        "features/quotes.mdx",
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/docs.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/actionIntents.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/identity-console.mdx"
+      ]
     }
   ]
 }

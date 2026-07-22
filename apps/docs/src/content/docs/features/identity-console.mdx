@@ -127,6 +127,20 @@ Every identity action carries one of two tiers:
   Microsoft 365 mutating actions are intentionally limited to disabling a user and resetting a password. The Google Workspace action set is much broader -- the two providers are not at parity.
 </Aside>
 
+### Retrieving a Microsoft 365 reset password
+
+When an approved Microsoft 365 password reset runs through the durable approval path (for example, it was approved after your chat session ended), the temporary password is stored encrypted and surfaced as a **one-time reveal**:
+
+- Open **Monitoring → AI Risk Engine → Approval History** and find the executed reset. A **Reveal temporary password** button appears on it.
+- Only the technician who **requested** the reset can reveal it, and it can be revealed **exactly once** -- copy it when it is shown, because it will not be shown again.
+- An un-revealed password expires after **7 days** and is then permanently discarded.
+
+The reset always sets **force-change at next sign-in**, so the temporary credential is only good for one first login.
+
+<Aside type="caution">
+  Self-hosted operators: the one-time reveal requires `APP_ENCRYPTION_KEY_ID` to be configured on the API. Without it, the reset itself still succeeds but the temporary password is deliberately discarded rather than stored, and the reveal reports it as unavailable. See [Environment Variables](/deploy/environment/).
+</Aside>
+
 ---
 
 ## Fix with AI

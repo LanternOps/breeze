@@ -96,6 +96,8 @@ OAuth is enabled with the `MCP_OAUTH_ENABLED=true` server setting. Once enabled,
 | `/oauth/token/revocation` | Token revocation (RFC 7009) |
 | `/oauth/token/introspection` | Token introspection (RFC 7662) |
 
+Registered redirect URIs must be **HTTPS**, with one exception: native/CLI clients that bind a local callback server may register plain-HTTP **loopback** redirect URIs — `http://127.0.0.1:<port>`, `http://[::1]:<port>`, or `http://localhost:<port>` (any port, any path). This is what lets **Claude Code** (the CLI) complete its OAuth handshake; hostname matching is exact, so lookalike hosts such as `localhost.example.com` are still rejected.
+
 OAuth sessions use the `mcp:read`, `mcp:write`, and `mcp:execute` scopes (plus `openid` and `offline_access`), which map to the same Tier 1 / 2 / 3 model as the `ai:*` API-key scopes. Access tokens are short-lived (30 minutes) and signed with EdDSA; refresh tokens last 14 days and **rotate on every use**. Revoking a grant invalidates all of its sibling access and refresh tokens immediately.
 
 When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <access_token>` header and return a `WWW-Authenticate` challenge pointing OAuth-capable clients at the protected-resource metadata.
@@ -224,7 +226,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 | Tool | Tier | Description |
 |---|---|---|
-| `file_operations` | 1/3 | List and read files (Tier 1). Write, delete, mkdir, rename (Tier 3). |
+| `file_operations` | 2/3 | List directory contents (Tier 2, auto-execute + audit). Read, write, delete, mkdir, rename (Tier 3 — reading file contents requires approval because the agent reads as root/LocalSystem). |
 | `analyze_disk_usage` | 1 | Filesystem analysis with cleanup candidate detection. Can trigger fresh scans on online devices. |
 | `disk_cleanup` | 1/3 | Preview cleanup candidates (Tier 1). Execute cleanup by deleting selected paths (Tier 3). |
 
@@ -241,7 +243,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 |---|---|---|
 | `manage_policies` | 1/2/3 | Compliance policy lifecycle: list, get, compliance status/summary, evaluate, create, update, activate/deactivate, delete, remediate. |
 | `manage_deployments` | 1/2/3 | Staged software deployments: list, get, device status, create, start, pause, resume, cancel. |
-| `manage_patches` | 1/2/3 | Patch management: list, compliance, scan, approve/decline/defer, bulk approve, install, rollback. |
+| `manage_patches` | 1/2/3 | Patch management. List and compliance are Tier 1. Scan, approve/decline/defer, and bulk approve are Tier 2. Install and rollback are Tier 3. |
 | `manage_groups` | 1/2/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
 | `manage_maintenance_windows` | 1/2/3 | Maintenance windows: list, get, check active, create, update, delete. |
 | `manage_automations` | 1/2/3 | Automation lifecycle: list, get, history, create, update, delete, enable, disable, manual run. |
@@ -275,7 +277,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 | Tool | Tier | Description |
 |---|---|---|
-| `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, and edit/delete comments are Tier 2. Time tracking (log time entry, start/stop timer) and moving a ticket to a different organization are Tier 3. |
+| `manage_tickets` | 1/2/3 | Full ticket lifecycle. List/get are Tier 1. Create, comment, assign, update status, update fields (subject, description, category, priority, due date, tags, device, submitter), link/unlink alerts, create a ticket from an alert, edit/delete comments, and time tracking (log time entry, start/stop timer) are Tier 2. Moving a ticket to a different organization is Tier 3. |
 
 ### Billing tools
 

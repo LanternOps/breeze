@@ -14,6 +14,10 @@ All configuration is done through environment variables, defined in your `.env.p
   Never commit `.env.prod` to version control. Use `.env.example` as a template.
 </Aside>
 
+<Aside type="caution" title="Keep your compose file current">
+  The stock `docker-compose.yml` hand-maps each variable into the `api` service's `environment:` block — a value in `.env` that isn't mapped there **silently does nothing**. Compose files from releases before v0.99.0 were missing the mappings for a number of documented variables (including `ENABLE_2FA`, `BREEZE_PLATFORM_ADMINS`, `CORS_ALLOWED_ORIGINS`, the Twilio SMS, Mailgun, and several M365 families). If a documented setting appears to have no effect, update to the current compose file — or add the variable to the `environment:` block yourself.
+</Aside>
+
 ## Database
 
 | Variable | Default | Required | Description |
@@ -44,14 +48,14 @@ In production, Breeze runs request handlers as an unprivileged, row-level-securi
 | `JWT_SECRET` | — | Yes | JWT signing key (min 32 chars). Generate: `openssl rand -base64 64` |
 | `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
 | `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
+| `APP_ENCRYPTION_KEY_ID` | — | | Optional identifier for the active encryption key (letters, digits, `.`/`_`/`-`). Setting it enables versioned, context-bound ciphertext for newly stored secrets and is **required for the Microsoft 365 reset-password one-time credential reveal** — without it the reset still succeeds but the temporary password is deliberately discarded rather than stored. Not present in the stock compose file: add it to `.env` **and** to the `api` service `environment:` block. |
 | `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |
 | `ENROLLMENT_KEY_PEPPER` | — | Yes | HMAC pepper for enrollment key hashing |
 | `MFA_RECOVERY_CODE_PEPPER` | — | Yes | HMAC pepper for recovery code hashing |
 | `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | | Default enrollment key expiry |
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
-| `SESSION_SECRET` | — | Yes | Express session signing secret |
-| `SESSION_MAX_AGE` | `86400000` | | Session max age in ms (24h) |
+| `SESSION_SECRET` | — | Yes | Session signing secret |
 
 Access-token (15m) and refresh-token (7d) lifetimes are fixed in code
 (`apps/api/src/services/jwt.ts`) — short-lived access tokens backed by
@@ -200,13 +204,15 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 
 ## Rate Limiting
 
-Two rate-limit tiers protect the API. The generic per-user limit covers logged-in dashboard usage; the per-org agent limit caps how much traffic a single tenant's fleet can generate, even with thousands of agents.
+Per-user and per-endpoint rate limits (login, MFA, dashboard usage) are fixed in code and not configurable via environment variables. The one deployment-tunable limit is the per-org agent cap, which bounds how much traffic a single tenant's fleet can generate, even with thousands of agents.
 
 | Variable | Default | Description |
 |---|---|---|
-| `RATE_LIMIT_WINDOW_MS` | `60000` | Sliding window duration (ms) |
-| `RATE_LIMIT_MAX_REQUESTS` | `100` | Max requests per window |
-| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | Per-organization sliding-window rate limit on agent-authenticated endpoints. Returns `429` with `Retry-After: 60` when exceeded. Sized for ~5 active agents per org; raise for MSPs with very large fleets. |
+| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | Per-organization sliding-window rate limit on agent-authenticated endpoints. Returns `429` with `Retry-After: 60` when exceeded. Sized for ~5 active agents per org; raise for MSPs with very large fleets. Not mapped in the stock compose file — to change it, add it to the `api` service `environment:` block as well as `.env`. |
+
+<Aside type="note">
+  Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.
+</Aside>
 
 ## Database
 
@@ -228,8 +234,7 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 |---|---|---|
 | `ENABLE_REGISTRATION` | `true` | Allow new user registration |
 | `ENABLE_2FA` | `true` | Enable two-factor authentication |
-| `ENABLE_API_DOCS` | `false` | Enable Swagger API documentation |
-| `ENABLE_API_DOCS_UI` | `false` | Enable interactive Swagger UI (requires `ENABLE_API_DOCS=true`) |
+| `ENABLE_API_DOCS_UI` | on outside production, off in production | Serve the interactive Swagger UI and OpenAPI spec at `/api/v1/docs`. The UI loads its scripts and styles from unpkg, which is why it defaults off in production. (The former `ENABLE_API_DOCS` variable was never read and has been removed.) |
 | `USE_AGENT_SDK` | — | Use Claude Agent SDK for AI chat |
 | `PORTAL_STATE_BACKEND` | `memory` | Portal state backend: `memory` or `redis` (auto `redis` in production) |
 | `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
