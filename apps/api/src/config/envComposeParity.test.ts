@@ -99,7 +99,7 @@ function activeEnvExampleVars(relPath: string): string[] {
   const names = new Set<string>();
   for (const line of text.split('\n')) {
     const m = /^([A-Z][A-Z0-9_]*)=/.exec(line); // uncommented assignments only
-    if (m) names.add(m[1]);
+    if (m?.[1]) names.add(m[1]);
   }
   return [...names].sort();
 }
