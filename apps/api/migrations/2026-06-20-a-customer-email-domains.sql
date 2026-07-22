@@ -1,5 +1,5 @@
 -- Phase 5 (native ticketing): sender-domain -> customer-org routing for email-to-ticket
--- Spec: docs/superpowers/specs/ticketing/2026-06-20-ticketing-phase5-email-customer-routing-design.md
+-- Spec: docs/superpowers/specs/2026-06-20-ticketing-phase5-email-customer-routing-design.md
 
 CREATE TABLE IF NOT EXISTS customer_email_domains (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

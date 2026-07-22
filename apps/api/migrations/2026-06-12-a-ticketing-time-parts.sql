@@ -1,5 +1,5 @@
 -- Phase 3 (native ticketing): time_entries + ticket_parts
--- Spec: docs/superpowers/specs/ticketing/2026-06-11-ticketing-phase3-time-tracking-parts-design.md
+-- Spec: docs/superpowers/specs/2026-06-11-ticketing-phase3-time-tracking-parts-design.md
 
 DO $$ BEGIN
   CREATE TYPE billing_status AS ENUM ('not_billed','billed','no_charge','contract');

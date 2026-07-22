@@ -1,5 +1,5 @@
 -- Ticketing configuration: custom statuses, priority SLA settings, org overrides.
--- Spec: docs/superpowers/specs/ticketing/2026-06-12-ticketing-configuration-design.md
+-- Spec: docs/superpowers/specs/2026-06-12-ticketing-configuration-design.md
 
 CREATE TABLE IF NOT EXISTS ticket_statuses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

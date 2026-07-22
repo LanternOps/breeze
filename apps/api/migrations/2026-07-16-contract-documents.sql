@@ -1,5 +1,5 @@
 -- Contract template library + executed contract documents (spec:
--- docs/superpowers/specs/billing/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
+-- docs/superpowers/specs/2026-07-16-contract-documents-and-enhanced-proposals-design.md).
 --
 -- contract_templates / contract_template_versions are PARTNER-WIDE-FIRST config
 -- tables (epic #2135 shape): org_id XOR partner_id, one dual-axis RLS policy,

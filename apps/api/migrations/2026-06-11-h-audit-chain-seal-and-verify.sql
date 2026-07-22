@@ -7,7 +7,7 @@
 --    lock; the DEFERRED constraint trigger calls it at COMMIT, so the lock is
 --    held only through commit processing — never across application awaits.
 --    (The held-to-commit variant deadlocks; see draft PR #1240 and the design
---    spec docs/superpowers/specs/security-auth/2026-06-11-audit-chain-deferred-sealing-design.md.)
+--    spec docs/superpowers/specs/2026-06-11-audit-chain-deferred-sealing-design.md.)
 -- 3. Backfill seals every existing audit row per org in (timestamp, id) order,
 --    ignoring the legacy (possibly forked) prev_checksum values entirely.
 -- 4. audit_log_verify_chain keeps its signature but walks the side table.
