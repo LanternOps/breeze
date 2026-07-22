@@ -1,5 +1,5 @@
 -- Native ticketing Phase 1 (core).
--- Spec: docs/superpowers/specs/ticketing/2026-06-09-native-ticketing-design.md
+-- Spec: docs/superpowers/specs/2026-06-09-native-ticketing-design.md
 -- Extends tickets/ticket_comments, adds ticket_categories (partner-axis),
 -- ticket_alert_links (org-axis), partner_ticket_sequences (partner-axis),
 -- seeds tickets permissions, adds 'ticket' notification type.

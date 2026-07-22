@@ -1,5 +1,5 @@
 -- Org allowlist for partner-wide ticket_forms (spec §5, epic #2135 follow-on;
--- plan: docs/superpowers/plans/ticketing/2026-07-11-ticket-intake-forms-phase2.md).
+-- plan: docs/superpowers/plans/2026-07-11-ticket-intake-forms-phase2.md).
 --
 -- Semantics: no link rows for a form = visible to every org under the owning
 -- partner; rows present = allowlist (only the linked orgs see the form).

@@ -5,7 +5,7 @@
 -- the BEFORE INSERT trigger — deadlocks against the codebase's two-connection
 -- audit-write pattern (caller-tx insert + logSessionAudit on a separate pooled
 -- connection; see draft PR #1240 and
--- docs/superpowers/specs/security-auth/2026-06-11-audit-chain-deferred-sealing-design.md).
+-- docs/superpowers/specs/2026-06-11-audit-chain-deferred-sealing-design.md).
 --
 -- Linkage moves into this append-only side table, written by a DEFERRED
 -- commit-time trigger (the -h- migration). chain_seq (bigserial) is the chain
