@@ -2912,7 +2912,10 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ stepUpGrantId: 'grant-abc' });
+      expect(body).toEqual({
+        stepUpGrantId: 'grant-abc',
+        grants: [{ operation: 'add_factor', stepUpGrantId: 'grant-abc' }],
+      });
       expect(verifyStepUpPasskeyAssertion).toHaveBeenCalledWith('user-123', { id: 'credential-1', response: {} });
       expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
         userId: 'user-123',
@@ -2953,7 +2956,10 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ stepUpGrantId: 'grant-totp' });
+      expect(body).toEqual({
+        stepUpGrantId: 'grant-totp',
+        grants: [{ operation: 'add_factor', stepUpGrantId: 'grant-totp' }],
+      });
     });
 
     // C1 (exploit-chain half 1 — the SMS factor allowlist): the SMS branch must
@@ -3016,7 +3022,10 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(checkVerificationCode).toHaveBeenCalledWith('+15550000009', '123456');
-      expect(await res.json()).toEqual({ stepUpGrantId: 'grant-sms' });
+      expect(await res.json()).toEqual({
+        stepUpGrantId: 'grant-sms',
+        grants: [{ operation: 'add_factor', stepUpGrantId: 'grant-sms' }],
+      });
     });
 
     // I2: /mfa/step-up must be per-user rate-limited like every other MFA
