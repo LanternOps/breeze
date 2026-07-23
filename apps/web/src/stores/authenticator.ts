@@ -163,15 +163,33 @@ export async function registerApproverDevice(label: string, reauth: RegisterReau
  * this reuses the authenticated step-up challenge (`/auth/mfa/step-up/options`)
  * to run a fresh assertion ceremony proving control of that same passkey, then
  * posts it straight to the adopt route in one call.
+ *
+ * `credentialId` pins the ceremony to the specific row the caller clicked: the
+ * step-up challenge's `allowCredentials` lists ALL of the user's passkeys, so
+ * on a 2+ passkey account an unfiltered ceremony lets the platform's picker
+ * assert a different credential than the one the user meant to adopt — the
+ * server would then happily adopt THAT credential instead. Filter down to the
+ * single matching entry before the ceremony ever runs; if none match, fail
+ * closed with a 404 rather than falling back to the full list.
  */
-export async function adoptPasskeyAsApprover(registerGrantId: string, label?: string): Promise<void> {
+export async function adoptPasskeyAsApprover(
+  registerGrantId: string,
+  credentialId: string,
+  label?: string
+): Promise<void> {
   const challengeData = await jsonOrThrow(
     await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' }),
     'Could not start passkey verification.'
   );
   const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
     challengeData.options ?? challengeData.optionsJSON ?? challengeData;
-  const credential = await startAuthentication({ optionsJSON });
+  const matchingCredentials = (optionsJSON.allowCredentials ?? []).filter((c) => c.id === credentialId);
+  if (matchingCredentials.length === 0) {
+    throw new RegisterStepError('Passkey not found.', 404);
+  }
+  const credential = await startAuthentication({
+    optionsJSON: { ...optionsJSON, allowCredentials: matchingCredentials },
+  });
 
   await jsonOrThrow(
     await fetchWithAuth('/authenticator/devices/webauthn/adopt', {

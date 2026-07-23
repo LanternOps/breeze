@@ -347,20 +347,36 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
   });
 
-  it('adoptPasskeyAsApprover: fetches step-up options, runs startAuthentication, then POSTs the adopt route', async () => {
+  it('adoptPasskeyAsApprover: filters allowCredentials to the requested credentialId, runs startAuthentication with ONLY that entry, then POSTs the adopt route', async () => {
     const credential = { id: 'cred-1', response: { signature: 's' } };
     webauthnMocks.startAuthentication.mockResolvedValueOnce(credential);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'auth-challenge' } })) // step-up options
+      .mockResolvedValueOnce(
+        makeResponse({
+          options: {
+            challenge: 'auth-challenge',
+            // Multi-passkey account: the unfiltered challenge lists BOTH
+            // credentials — only 'cred-1' (the clicked row) must reach
+            // startAuthentication.
+            allowCredentials: [
+              { id: 'cred-1', type: 'public-key' },
+              { id: 'cred-2', type: 'public-key' },
+            ],
+          },
+        }),
+      ) // step-up options
       .mockResolvedValueOnce(makeResponse({ success: true, device: { id: 'ad-1' } }));   // adopt
     vi.stubGlobal('fetch', fetchMock);
 
-    await adoptPasskeyAsApprover('g-1', 'Laptop');
+    await adoptPasskeyAsApprover('g-1', 'cred-1', 'Laptop');
 
     expect(fetchMock.mock.calls[0][0]).toContain('/auth/mfa/step-up/options');
     expect(webauthnMocks.startAuthentication).toHaveBeenCalledWith({
-      optionsJSON: { challenge: 'auth-challenge' },
+      optionsJSON: {
+        challenge: 'auth-challenge',
+        allowCredentials: [{ id: 'cred-1', type: 'public-key' }],
+      },
     });
     expect(fetchMock.mock.calls[1][0]).toContain('/authenticator/devices/webauthn/adopt');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'POST', skipUnauthorizedRetry: true });
@@ -371,15 +387,37 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
     });
   });
 
+  it('adoptPasskeyAsApprover rejects with 404 and never runs the ceremony when no allowCredentials entry matches the requested credentialId', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResponse({
+          options: {
+            challenge: 'auth-challenge',
+            allowCredentials: [{ id: 'cred-other', type: 'public-key' }],
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adoptPasskeyAsApprover('g-1', 'cred-missing', 'Laptop')).rejects.toMatchObject({
+      status: 404,
+      message: 'Passkey not found.',
+    });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+    // Only the step-up options fetch happened — no adopt POST was ever fired.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('adoptPasskeyAsApprover rejects with the status attached on a 409 (already registered)', async () => {
     webauthnMocks.startAuthentication.mockResolvedValueOnce({ id: 'cred-1', response: {} });
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'c' } }))
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'c', allowCredentials: [{ id: 'cred-1', type: 'public-key' }] } }))
       .mockResolvedValueOnce(makeResponse({ error: 'already_registered' }, false, 409));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(adoptPasskeyAsApprover('g-1')).rejects.toMatchObject({ status: 409 });
+    await expect(adoptPasskeyAsApprover('g-1', 'cred-1')).rejects.toMatchObject({ status: 409 });
   });
 
   it('a 2xx with an unparseable body throws a clean RegisterStepError instead of returning null (no downstream null-deref)', async () => {

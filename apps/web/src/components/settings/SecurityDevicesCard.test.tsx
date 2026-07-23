@@ -870,9 +870,16 @@ describe('SecurityDevicesCard', () => {
 
     it('TOTP tier: mints a register_approver_device grant via mintStepUpGrants then adopts, refreshing both lists', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
-        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: null }] }),
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: 'cred-1' }] }),
       );
       mintStepUpGrantsMock.mockResolvedValueOnce({ register_approver_device: 'g-adopt-1' });
+      // Initial load: no approver devices yet — this row shows "Enable approvals".
+      listApproverDevicesMock.mockResolvedValueOnce([]);
+      // Post-adopt refresh: the "adopted" approver shares this row's
+      // credentialId, so mergeSecurityDevices attaches it to the SAME row —
+      // asserting on this (not just the call count) proves the actual
+      // acceptance criterion: the badge appears after enabling approvals.
+      listApproverDevicesMock.mockResolvedValueOnce([approverFixture({ credentialId: 'cred-1' })]);
 
       render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
@@ -887,7 +894,9 @@ describe('SecurityDevicesCard', () => {
           ['register_approver_device'],
         ),
       );
-      await waitFor(() => expect(adoptPasskeyAsApproverMock).toHaveBeenCalledWith('g-adopt-1', 'Laptop'));
+      await waitFor(() =>
+        expect(adoptPasskeyAsApproverMock).toHaveBeenCalledWith('g-adopt-1', 'cred-1', 'Laptop'),
+      );
       await waitFor(() =>
         expect(showToastMock).toHaveBeenCalledWith({
           type: 'success',
@@ -896,11 +905,13 @@ describe('SecurityDevicesCard', () => {
       );
       // Approver list refetched (initial load + post-adopt refresh).
       await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+      // The real merge outcome: the row now carries the Approvals badge.
+      await waitFor(() => expect(within(row).getByTestId('secdev-badge-approvals')).toBeTruthy());
     });
 
     it('maps a 409 from adopt to the already-registered message', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
-        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: null }] }),
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: 'cred-1' }] }),
       );
       mintStepUpGrantsMock.mockResolvedValueOnce({ register_approver_device: 'g-adopt-2' });
       const err = Object.assign(new Error('already_registered'), { status: 409 });

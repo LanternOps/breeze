@@ -300,6 +300,18 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
       await runAction({
         request: async () => {
           try {
+            // Legacy rows predating the Task 3 `credentialId` DTO field carry
+            // no credential to pin the adopt ceremony to (adoptPasskeyAsApprover
+            // requires one, to filter the step-up challenge's allowCredentials
+            // down to this exact passkey). Surface the generic register error
+            // instead of calling the store fn with an unusable id.
+            if (!row.passkey?.credentialId) {
+              return {
+                ok: false,
+                status: 500,
+                json: async () => ({ error: t('approverDevicesSection.failedToRegisterThisDevice') }),
+              } as Response;
+            }
             let grantId: string;
             if (reauth.method === 'password') {
               grantId = await mintApproverGrantViaPassword(reauth.password);
@@ -309,7 +321,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
               const grants = await mintStepUpGrants(proof, ['register_approver_device']);
               grantId = grants.register_approver_device!;
             }
-            await adoptPasskeyAsApprover(grantId, row.name);
+            await adoptPasskeyAsApprover(grantId, row.passkey.credentialId, row.name);
             return OK_RESPONSE;
           } catch (err) {
             const status = (err as { status?: number })?.status ?? 500;
@@ -322,6 +334,9 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
       });
       setEnablingApprovalsRowKey(null);
       setEnableApprovalsReauthValue('');
+      // Adopting doesn't mutate the passkey row itself (name/credentialId are
+      // unchanged) — only the approver list needs refetching for the merge in
+      // `rows` to attach this row's Approvals badge.
       await loadApprovers();
     } catch (err) {
       if (err instanceof ActionError) {
