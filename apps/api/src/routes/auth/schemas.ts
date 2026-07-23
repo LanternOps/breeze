@@ -133,10 +133,20 @@ const STEP_UP_OPERATIONS = ['add_factor', 'register_approver_device'] as const s
 const stepUpOperation = z
   .enum(STEP_UP_OPERATIONS)
   .default('add_factor');
+// Multi-operation mint (unified-security-devices §4.1): one factor proof may
+// request 1–2 grants, one per operation. Takes precedence over the legacy
+// singular `operation` when present. Each minted grant is STILL bound to
+// exactly one operation — this widens how many grants a proof yields, never
+// what any single grant can do.
+const stepUpOperations = z
+  .array(z.enum(STEP_UP_OPERATIONS))
+  .min(1)
+  .max(2)
+  .optional();
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
-  z.object({ method: z.literal('totp'), code: stepUpSixDigit, operation: stepUpOperation }),
-  z.object({ method: z.literal('sms'), code: stepUpSixDigit, operation: stepUpOperation }),
-  z.object({ method: z.literal('passkey'), credential: stepUpAssertion, operation: stepUpOperation }),
+  z.object({ method: z.literal('totp'), code: stepUpSixDigit, operation: stepUpOperation, operations: stepUpOperations }),
+  z.object({ method: z.literal('sms'), code: stepUpSixDigit, operation: stepUpOperation, operations: stepUpOperations }),
+  z.object({ method: z.literal('passkey'), credential: stepUpAssertion, operation: stepUpOperation, operations: stepUpOperations }),
 ]);
 
 export const acceptInviteSchema = z.object({

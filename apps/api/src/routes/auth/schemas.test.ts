@@ -81,4 +81,27 @@ describe('mfaStepUpSchema operation field', () => {
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })
     ).toThrow();
   });
+
+  it('accepts operations[] alongside each method variant', () => {
+    const parsed = mfaStepUpSchema.safeParse({
+      method: 'totp',
+      code: '123456',
+      operations: ['add_factor', 'register_approver_device'],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.operations).toEqual(['add_factor', 'register_approver_device']);
+      // Legacy field still defaulted — the handler decides precedence.
+      expect(parsed.data.operation).toBe('add_factor');
+    }
+  });
+
+  it('rejects an empty operations array and unknown operations', () => {
+    expect(mfaStepUpSchema.safeParse({ method: 'totp', code: '123456', operations: [] }).success).toBe(false);
+    expect(mfaStepUpSchema.safeParse({ method: 'totp', code: '123456', operations: ['reset_password'] }).success).toBe(false);
+    expect(mfaStepUpSchema.safeParse({
+      method: 'totp', code: '123456',
+      operations: ['add_factor', 'register_approver_device', 'add_factor'],
+    }).success).toBe(false); // max 2
+  });
 });

@@ -25,7 +25,7 @@ import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from '.
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { mintStepUpGrant } from '../../services/mfaStepUpGrant';
+import { mintStepUpGrant, type StepUpOperation } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -800,15 +800,22 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   if (!epochs || !auth.token.sid) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
-  const grantId = await mintStepUpGrant({
-    userId: auth.user.id,
-    operation: body.operation,
-    authEpoch: epochs.authEpoch,
-    mfaEpoch: epochs.mfaEpoch,
-    sid: auth.token.sid
-  });
-  if (!grantId) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  // Multi-op (unified-security-devices §4.1): `operations` wins over the
+  // legacy `operation`; dedupe so a repeated entry can't double-mint.
+  const requestedOps: StepUpOperation[] = [...new Set(body.operations ?? [body.operation])];
+  const grants: Array<{ operation: StepUpOperation; stepUpGrantId: string }> = [];
+  for (const operation of requestedOps) {
+    const grantId = await mintStepUpGrant({
+      userId: auth.user.id,
+      operation,
+      authEpoch: epochs.authEpoch,
+      mfaEpoch: epochs.mfaEpoch,
+      sid: auth.token.sid
+    });
+    if (!grantId) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    grants.push({ operation, stepUpGrantId: grantId });
   }
 
   writeAuthAudit(c, {
@@ -817,10 +824,14 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: body.method, operation: body.operation }
+    details: { method: body.method, operations: requestedOps }
   });
 
-  return c.json({ stepUpGrantId: grantId });
+  return c.json(
+    body.operations
+      ? { grants }
+      : { stepUpGrantId: grants[0].stepUpGrantId, grants }
+  );
 });
 
 // Generate new MFA recovery codes for the authenticated user
