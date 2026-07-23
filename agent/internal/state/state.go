@@ -38,6 +38,21 @@ type AgentState struct {
 	Timestamp     time.Time `json:"timestamp"`
 }
 
+// Rename retry bounds. On Windows, MoveFileEx(REPLACE_EXISTING) fails with
+// ERROR_SHARING_VIOLATION while any other process holds the destination open
+// without FILE_SHARE_DELETE (third-party AV/search indexers scanning the
+// fresh file, or pre-fix watchdog builds reading it). The collision window is
+// milliseconds, so a short bounded backoff absorbs it instead of dropping the
+// whole update — a dropped heartbeat update is what the watchdog reads as a
+// wedged agent (2026-07-22 US prod restart-storm incident).
+const (
+	renameAttempts    = 4
+	renameBackoffBase = 25 * time.Millisecond
+)
+
+// renameStateFile is a seam for tests to inject rename failures.
+var renameStateFile = os.Rename
+
 // Write atomically writes the state file as JSON.
 func Write(path string, s *AgentState) error {
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -48,16 +63,22 @@ func Write(path string, s *AgentState) error {
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return fmt.Errorf("write temp state: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename state file: %w", err)
+	var renameErr error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(renameBackoffBase << (attempt - 1))
+		}
+		if renameErr = renameStateFile(tmpPath, path); renameErr == nil {
+			return nil
+		}
 	}
-	return nil
+	os.Remove(tmpPath)
+	return fmt.Errorf("rename state file: %w", renameErr)
 }
 
 // Read reads the state file. Returns nil, nil if the file doesn't exist.
 func Read(path string) (*AgentState, error) {
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

@@ -644,8 +644,13 @@ describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)',
   let capturedInsertTable: unknown;
   let capturedInsertValues: unknown;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+
+    // The restart-log dedupe cache is module-global; clear it so each test
+    // sees first-occurrence behavior.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
 
     // Device lookup → returns a row with watchdog columns.
     selectMock.mockReturnValueOnce(
@@ -741,6 +746,105 @@ describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)',
     // insertMock should NOT have been called for agentLogs — no restart activity.
     expect(capturedInsertTable).toBeUndefined();
     expect(capturedInsertValues).toBeUndefined();
+  });
+
+  it('suppresses a repeat heartbeat with an identical restart signature (flap-log dedupe)', async () => {
+    const body = JSON.stringify({
+      role: 'watchdog',
+      agentVersion: '0.65.20',
+      watchdogState: 'FAILOVER',
+      mainAgentRestartCount24h: 5,
+      mainAgentLastRestartAt: '2026-05-22T10:00:00Z',
+      flapDetected: true,
+    });
+    const app = buildWatchdogApp();
+
+    const first = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    expect(capturedInsertValues).toBeDefined();
+
+    // Same signature 30s later must not write another row.
+    capturedInsertTable = undefined;
+    capturedInsertValues = undefined;
+    selectMock.mockReturnValueOnce(selectChainResolving([watchdogDeviceRow]));
+    const second = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    expect(capturedInsertTable).toBeUndefined();
+    expect(capturedInsertValues).toBeUndefined();
+  });
+
+  it('writes again when the restart signature changes', async () => {
+    const app = buildWatchdogApp();
+    const first = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.20',
+        watchdogState: 'RECOVERING',
+        mainAgentRestartCount24h: 3,
+        mainAgentLastRestartAt: '2026-05-22T10:00:00Z',
+        flapDetected: false,
+      }),
+    });
+    expect(first.status).toBe(200);
+    expect(capturedInsertValues).toBeDefined();
+
+    capturedInsertTable = undefined;
+    capturedInsertValues = undefined;
+    selectMock.mockReturnValueOnce(selectChainResolving([watchdogDeviceRow]));
+    const second = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.20',
+        watchdogState: 'RECOVERING',
+        mainAgentRestartCount24h: 4,
+        mainAgentLastRestartAt: '2026-05-22T11:00:00Z',
+        flapDetected: false,
+      }),
+    });
+    expect(second.status).toBe(200);
+    const vals = capturedInsertValues as Record<string, unknown>;
+    expect(vals).toBeDefined();
+    expect((vals.fields as Record<string, unknown>).count24h).toBe(4);
+  });
+});
+
+describe('shouldLogWatchdogRestartActivity (flap-log dedupe unit)', () => {
+  beforeEach(async () => {
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+  });
+
+  it('logs first occurrence, suppresses identical signature within the hour, re-logs after', async () => {
+    const { shouldLogWatchdogRestartActivity } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0)).toBe(true);
+    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 30_000)).toBe(false);
+    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 59 * 60_000)).toBe(false);
+    // Hourly keep-alive: same signature past the interval logs again.
+    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 61 * 60_000)).toBe(true);
+  });
+
+  it('a changed signature logs immediately and devices are independent', async () => {
+    const { shouldLogWatchdogRestartActivity } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    expect(shouldLogWatchdogRestartActivity('dev-a', '3|false|x', t0)).toBe(true);
+    expect(shouldLogWatchdogRestartActivity('dev-a', '4|false|y', t0 + 1_000)).toBe(true);
+    // Different device with the same signature is not deduped against dev-a.
+    expect(shouldLogWatchdogRestartActivity('dev-b', '4|false|y', t0 + 2_000)).toBe(true);
+    // Suppression re-arms after each write.
+    expect(shouldLogWatchdogRestartActivity('dev-a', '4|false|y', t0 + 3_000)).toBe(false);
   });
 });
 

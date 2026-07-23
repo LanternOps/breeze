@@ -134,3 +134,81 @@ func TestTier3HeartbeatNeverSet(t *testing.T) {
 		t.Fatalf("expected %q for zero heartbeat (grace period), got %q", CheckOK, got)
 	}
 }
+
+func TestShouldRestartOnStaleHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ipc disconnected allows restart immediately", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{}, 3*time.Minute)
+		if !hc.ShouldRestartOnStaleHeartbeat(false) {
+			t.Error("disconnected IPC should allow restart")
+		}
+	})
+
+	t.Run("ipc connected but probe failing allows restart immediately", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: false}, 3*time.Minute)
+		hc.CheckIPC() // records one probe failure
+		if hc.IPCFailCount() != 1 {
+			t.Fatalf("IPCFailCount = %d, want 1", hc.IPCFailCount())
+		}
+		if !hc.ShouldRestartOnStaleHeartbeat(true) {
+			t.Error("failing IPC probes should allow restart")
+		}
+	})
+
+	t.Run("ipc alive vetoes until staleVetoLimit consecutive verdicts", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		for i := 1; i < staleVetoLimit; i++ {
+			if hc.ShouldRestartOnStaleHeartbeat(true) {
+				t.Fatalf("veto %d/%d should suppress restart", i, staleVetoLimit)
+			}
+			if hc.StaleVetoCount() != i {
+				t.Fatalf("StaleVetoCount = %d, want %d", hc.StaleVetoCount(), i)
+			}
+		}
+		// The limit-th consecutive stale verdict escalates despite live IPC.
+		if !hc.ShouldRestartOnStaleHeartbeat(true) {
+			t.Error("stale verdicts past the veto limit must force a restart")
+		}
+		if hc.StaleVetoCount() != 0 {
+			t.Errorf("StaleVetoCount = %d after escalation, want 0", hc.StaleVetoCount())
+		}
+	})
+
+	t.Run("fresh heartbeat re-arms the veto budget", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		if hc.ShouldRestartOnStaleHeartbeat(true) {
+			t.Fatal("first veto should suppress restart")
+		}
+		// A fresh heartbeat clears the consecutive-veto count...
+		fresh := &state.AgentState{LastHeartbeat: time.Now()}
+		if got := hc.CheckHeartbeatStaleness(fresh); got != CheckOK {
+			t.Fatalf("CheckHeartbeatStaleness = %q, want %q", got, CheckOK)
+		}
+		if hc.StaleVetoCount() != 0 {
+			t.Fatalf("StaleVetoCount = %d after fresh heartbeat, want 0", hc.StaleVetoCount())
+		}
+		// ...so sporadic stale verdicts hours apart don't accumulate.
+		if hc.ShouldRestartOnStaleHeartbeat(true) {
+			t.Error("veto budget should restart from zero after a fresh heartbeat")
+		}
+	})
+
+	t.Run("restart decision resets the veto count", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		if hc.ShouldRestartOnStaleHeartbeat(true) {
+			t.Fatal("first veto should suppress restart")
+		}
+		if !hc.ShouldRestartOnStaleHeartbeat(false) {
+			t.Fatal("disconnected IPC should allow restart")
+		}
+		if hc.StaleVetoCount() != 0 {
+			t.Errorf("StaleVetoCount = %d after restart decision, want 0", hc.StaleVetoCount())
+		}
+	})
+}

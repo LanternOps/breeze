@@ -550,8 +550,18 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 			result := healthChecker.CheckHeartbeatStaleness(agentState)
 			if result == watchdog.CheckHeartbeatStale {
-				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", nil)
-				wd.HandleEvent(watchdog.EventAgentUnhealthy)
+				// Corroborate over IPC before declaring unhealthy — see
+				// ShouldRestartOnStaleHeartbeat for why a stale state
+				// file alone must not trigger a restart, and why the
+				// veto is bounded.
+				if healthChecker.ShouldRestartOnStaleHeartbeat(ipcClient.IsConnected()) {
+					journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", nil)
+					wd.HandleEvent(watchdog.EventAgentUnhealthy)
+				} else {
+					journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
+						"consecutive_vetoes": healthChecker.StaleVetoCount(),
+					})
+				}
 			}
 
 		case env := <-ipcMessages:

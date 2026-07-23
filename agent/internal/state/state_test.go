@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -235,5 +236,65 @@ func TestWriteAtomicNoTmpOnSuccess(t *testing.T) {
 	tmpPath := path + ".tmp"
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
 		t.Errorf("tmp file %q should not exist after successful write", tmpPath)
+	}
+}
+
+func TestWriteRetriesTransientRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+
+	// Fail the first two rename attempts the way a Windows sharing violation
+	// would, then let the real rename through.
+	calls := 0
+	renameStateFile = func(oldpath, newpath string) error {
+		calls++
+		if calls <= 2 {
+			return fmt.Errorf("simulated sharing violation")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	defer func() { renameStateFile = os.Rename }()
+
+	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
+	if err := Write(path, s); err != nil {
+		t.Fatalf("Write should succeed after transient rename failures: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("rename calls = %d, want 3", calls)
+	}
+
+	got, err := Read(path)
+	if err != nil || got == nil {
+		t.Fatalf("Read after retried write: state=%+v err=%v", got, err)
+	}
+	if got.PID != 7 {
+		t.Errorf("PID = %d, want 7", got.PID)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("tmp file should not remain after successful retried write")
+	}
+}
+
+func TestWritePersistentRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+
+	calls := 0
+	renameStateFile = func(oldpath, newpath string) error {
+		calls++
+		return fmt.Errorf("simulated persistent sharing violation")
+	}
+	defer func() { renameStateFile = os.Rename }()
+
+	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
+	err := Write(path, s)
+	if err == nil {
+		t.Fatal("Write should fail when every rename attempt fails")
+	}
+	if calls != renameAttempts {
+		t.Errorf("rename calls = %d, want %d", calls, renameAttempts)
+	}
+	if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
+		t.Errorf("tmp file should be removed after exhausting rename attempts")
 	}
 }

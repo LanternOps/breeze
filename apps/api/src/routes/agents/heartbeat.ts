@@ -65,6 +65,52 @@ export function detectWatchdogStateCollapse(
   return { field: 'watchdogState', rawValue };
 }
 
+/**
+ * #799 flap-log dedupe. Watchdog failover heartbeats arrive every ~30s and
+ * carry the same restart counters for hours, and each one wrote an
+ * agent_logs row — thousands of identical rows per device per day during the
+ * 2026-07-22 restart-storm incident. Only write when the restart signature
+ * changes, or hourly as a keep-alive trail while the condition persists.
+ * In-memory (single API instance per region); a process restart costs at
+ * most one duplicate row per device. Exported for unit tests.
+ */
+const WATCHDOG_RESTART_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const WATCHDOG_RESTART_LOG_CACHE_MAX = 10_000;
+const watchdogRestartLogCache = new Map<string, { signature: string; loggedAt: number }>();
+
+export function shouldLogWatchdogRestartActivity(
+  deviceId: string,
+  signature: string,
+  nowMs: number,
+): boolean {
+  const prev = watchdogRestartLogCache.get(deviceId);
+  if (
+    prev &&
+    prev.signature === signature &&
+    nowMs - prev.loggedAt < WATCHDOG_RESTART_LOG_INTERVAL_MS
+  ) {
+    return false;
+  }
+  if (watchdogRestartLogCache.size >= WATCHDOG_RESTART_LOG_CACHE_MAX) {
+    const cutoff = nowMs - 24 * 60 * 60 * 1000;
+    for (const [key, entry] of watchdogRestartLogCache) {
+      if (entry.loggedAt < cutoff) watchdogRestartLogCache.delete(key);
+    }
+    // Pathological case: cache full of fresh entries — drop oldest-inserted
+    // rather than grow unbounded.
+    if (watchdogRestartLogCache.size >= WATCHDOG_RESTART_LOG_CACHE_MAX) {
+      const oldest = watchdogRestartLogCache.keys().next().value;
+      if (oldest !== undefined) watchdogRestartLogCache.delete(oldest);
+    }
+  }
+  watchdogRestartLogCache.set(deviceId, { signature, loggedAt: nowMs });
+  return true;
+}
+
+export function resetWatchdogRestartLogCacheForTests(): void {
+  watchdogRestartLogCache.clear();
+}
+
 export const heartbeatRoutes = new Hono();
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
@@ -268,7 +314,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // agent_logs so on-call has a queryable trail of flap-loop scenarios.
     // Do not block the heartbeat path on logging failure.
     const restartCount = data.mainAgentRestartCount24h ?? 0;
-    if (restartCount > 0 || data.flapDetected === true) {
+    const restartSignature = `${restartCount}|${data.flapDetected === true}|${data.mainAgentLastRestartAt ?? ''}`;
+    if (
+      (restartCount > 0 || data.flapDetected === true) &&
+      shouldLogWatchdogRestartActivity(device.id, restartSignature, now.getTime())
+    ) {
       try {
         await db.insert(agentLogs).values({
           deviceId: device.id,
