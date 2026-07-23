@@ -711,9 +711,10 @@ describe('createConnectionService factory (non-read profile)', () => {
     const listed = await service.listConnections(ORG_ID);
 
     expect(listed).toHaveLength(1);
-    expect(listed[0].profile).toBe('customer-graph-actions');
-    expect(listed[0].grantHealth.requiredGrants).toEqual(ACTIONS_REQUIRED);
-    expect(listed[0].grantHealth.state).toBe('active');
+    const [connection] = listed;
+    expect(connection!.profile).toBe('customer-graph-actions');
+    expect(connection!.grantHealth.requiredGrants).toEqual(ACTIONS_REQUIRED);
+    expect(connection!.grantHealth.state).toBe('active');
   });
 
   it('drops rows whose stored profile does not match the bound profile', async () => {

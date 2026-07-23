@@ -18,6 +18,7 @@ import {
   createAdminConsentSessionInTransaction,
   deleteConsentSessionsForAttemptInTransaction,
   insertPreparedIdentityVerificationSessionInTransaction,
+  type M365ConsentSessionProfile,
   type PreparedIdentityVerificationSession,
 } from './consentSessionService';
 import {
@@ -192,7 +193,7 @@ export interface ConnectionRuntimeConfig {
 }
 
 export interface ConnectionServiceDeps<
-  P extends M365ConnectionProfile,
+  P extends M365ConsentSessionProfile,
   Config extends ConnectionRuntimeConfig,
   Client,
 > {
@@ -222,7 +223,7 @@ export interface InitiatedConsent<P extends M365ConnectionProfile = M365Connecti
   consentUrl: string;
 }
 
-export interface ConnectionService<P extends M365ConnectionProfile, Client> {
+export interface ConnectionService<P extends M365ConsentSessionProfile, Client> {
   initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>>;
   listConnections(orgId: string): Promise<Array<M365ConnectionSnapshot<P> & { grantHealth: GrantHealth }>>;
   markAdminConsentReturned(input: M365ConsentAttemptSnapshot<P>): Promise<M365ConnectionSnapshot<P>>;
@@ -270,7 +271,7 @@ export interface ConnectionService<P extends M365ConnectionProfile, Client> {
  * `deps`, so the read and actions surfaces share exactly this implementation.
  */
 export function createConnectionService<
-  P extends M365ConnectionProfile,
+  P extends M365ConsentSessionProfile,
   Config extends ConnectionRuntimeConfig,
   Client,
 >(deps: ConnectionServiceDeps<P, Config, Client>): ConnectionService<P, Client> {
