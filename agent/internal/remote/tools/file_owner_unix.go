@@ -31,10 +31,13 @@ func getFileOwner(info os.FileInfo) string {
 	}
 
 	uid := strconv.FormatUint(uint64(stat.Uid), 10)
-	name := uid
-	if usr, err := user.LookupId(uid); err == nil {
-		name = usr.Username
+	usr, err := user.LookupId(uid)
+	if err != nil {
+		// Only successful resolutions are cached. A transient NSS/SSSD/LDAP
+		// failure must not pin this uid to its numeric fallback for the whole
+		// process lifetime — return the fallback but let the next file retry.
+		return uid
 	}
-	uidNameCache.Store(stat.Uid, name)
-	return name
+	uidNameCache.Store(stat.Uid, usr.Username)
+	return usr.Username
 }

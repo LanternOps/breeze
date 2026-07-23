@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -209,5 +210,74 @@ func TestAnalyzeFilesystemEndToEnd(t *testing.T) {
 	}
 	if !isSortedDescFiles(resp.TopLargestFiles) {
 		t.Fatalf("top files not sorted desc: %+v", resp.TopLargestFiles)
+	}
+}
+
+// TestAnalyzeFilesystemConcurrentManyDirs stresses the per-file hot-path
+// lock/atomic split: 600 files spread across 30 directories give 8 workers real
+// concurrent access to the shared counters, top-N slices, and candidate maps.
+// Under -race this is what actually exercises the split (the small end-to-end
+// test above barely contends). It also pins the aggregate totals and top-N
+// output so a mis-scoped mutation would corrupt a value, not just trip -race.
+func TestAnalyzeFilesystemConcurrentManyDirs(t *testing.T) {
+	root := t.TempDir()
+	const dirs, perDir = 30, 20
+
+	var wantFiles int64
+	var wantBytes int64
+	var maxSize int
+	for d := 0; d < dirs; d++ {
+		dir := filepath.Join(root, fmt.Sprintf("d%02d", d))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f := 0; f < perDir; f++ {
+			size := (d*perDir + f + 1) * 10 // strictly increasing, unique max
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.bin", f)), make([]byte, size), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			wantFiles++
+			wantBytes += int64(size)
+			maxSize = size
+		}
+	}
+
+	res := AnalyzeFilesystem(map[string]any{
+		"path":     root,
+		"workers":  8,
+		"topFiles": 25,
+		"topDirs":  10,
+		"maxDepth": 32,
+	})
+	if res.Status != "completed" {
+		t.Fatalf("scan status = %q (err=%q)", res.Status, res.Error)
+	}
+
+	var resp FilesystemAnalysisResponse
+	if err := json.Unmarshal([]byte(res.Stdout), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if resp.Summary.FilesScanned != wantFiles {
+		t.Fatalf("FilesScanned = %d, want %d", resp.Summary.FilesScanned, wantFiles)
+	}
+	if resp.Summary.BytesScanned != wantBytes {
+		t.Fatalf("BytesScanned = %d, want %d", resp.Summary.BytesScanned, wantBytes)
+	}
+	if len(resp.TopLargestFiles) != 25 || resp.TopLargestFiles[0].SizeBytes != int64(maxSize) {
+		t.Fatalf("top files wrong (len=%d, head=%+v)", len(resp.TopLargestFiles), resp.TopLargestFiles)
+	}
+	if !isSortedDescFiles(resp.TopLargestFiles) {
+		t.Fatalf("top files not sorted desc: %+v", resp.TopLargestFiles)
+	}
+	// Directory aggregation ran in the same pass as the parent-fold; assert it
+	// produced sorted, non-empty candidates.
+	if len(resp.TopLargestDirs) == 0 {
+		t.Fatalf("expected directory candidates, got none")
+	}
+	if !sort.SliceIsSorted(resp.TopLargestDirs, func(i, j int) bool {
+		return resp.TopLargestDirs[i].SizeBytes > resp.TopLargestDirs[j].SizeBytes
+	}) {
+		t.Fatalf("top dirs not sorted desc: %+v", resp.TopLargestDirs)
 	}
 }
