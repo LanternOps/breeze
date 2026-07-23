@@ -13,7 +13,7 @@ vi.mock('@simplewebauthn/browser', () => ({
   startRegistration: webauthnMocks.startRegistration,
 }));
 
-import { StepUpError, apiLogin, apiVerifyPasskeyMFA, mintAddFactorStepUpGrant, useAuthStore } from './auth';
+import { StepUpError, apiLogin, apiVerifyPasskeyMFA, mintAddFactorStepUpGrant, mintStepUpGrants, useAuthStore } from './auth';
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -148,7 +148,9 @@ describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
   });
 
   it('proves a TOTP code and returns the minted grant id', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ stepUpGrantId: 'grant-1' }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      makeResponse({ grants: [{ operation: 'add_factor', stepUpGrantId: 'grant-1' }] }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     const grantId = await mintAddFactorStepUpGrant({ method: 'totp', code: '123456' });
@@ -158,7 +160,7 @@ describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       method: 'totp',
       code: '123456',
-      operation: 'add_factor',
+      operations: ['add_factor'],
     });
   });
 
@@ -169,7 +171,9 @@ describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(makeResponse({ options }))
-      .mockResolvedValueOnce(makeResponse({ stepUpGrantId: 'grant-2' }));
+      .mockResolvedValueOnce(
+        makeResponse({ grants: [{ operation: 'add_factor', stepUpGrantId: 'grant-2' }] }),
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const grantId = await mintAddFactorStepUpGrant({ method: 'passkey' });
@@ -181,7 +185,7 @@ describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
       method: 'passkey',
       credential,
-      operation: 'add_factor',
+      operations: ['add_factor'],
     });
   });
 
@@ -204,5 +208,26 @@ describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(mintAddFactorStepUpGrant({ method: 'totp', code: '123456' })).rejects.toThrow('Verification failed.');
+  });
+
+  it('mints grants for multiple operations from one proof', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({
+      grants: [
+        { operation: 'add_factor', stepUpGrantId: 'g-add' },
+        { operation: 'register_approver_device', stepUpGrantId: 'g-reg' },
+      ],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const grants = await mintStepUpGrants({ method: 'totp', code: '123456' }, ['add_factor', 'register_approver_device']);
+    expect(grants).toEqual({ add_factor: 'g-add', register_approver_device: 'g-reg' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      method: 'totp', code: '123456',
+      operations: ['add_factor', 'register_approver_device'],
+    });
+  });
+
+  it('throws StepUpError when a requested grant is missing from the response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(makeResponse({ grants: [] })));
+    await expect(mintStepUpGrants({ method: 'totp', code: '123456' }, ['add_factor'])).rejects.toMatchObject({ name: 'StepUpError' });
   });
 });

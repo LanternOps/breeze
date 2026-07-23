@@ -702,18 +702,17 @@ export class StepUpError extends Error {
   }
 }
 
-/**
- * SR2-20: mint a single-use `add_factor` step-up grant by proving an EXISTING
- * factor (TOTP code or a WebAuthn assertion from an existing passkey). The
- * factor-addition endpoints (`/auth/passkeys/register/*`, `/auth/mfa/enable`)
- * 403 `existing_factor_step_up_required` on already-protected accounts unless
- * the returned grant id is presented as `stepUpGrantId`. Mirrors the
- * `register_approver_device` mint in stores/authenticator.ts.
- */
-export async function mintAddFactorStepUpGrant(stepUp: AddFactorStepUp): Promise<string> {
+export type StepUpOperation = 'add_factor' | 'register_approver_device';
+
+/** Multi-operation variant of the step-up mint (unified-security-devices
+ * §4.1): one factor proof, one grant per requested operation. */
+export async function mintStepUpGrants(
+  stepUp: AddFactorStepUp,
+  operations: StepUpOperation[]
+): Promise<Partial<Record<StepUpOperation, string>>> {
   let stepUpBody: Record<string, unknown>;
   if (stepUp.method === 'totp') {
-    stepUpBody = { method: 'totp', code: stepUp.code, operation: 'add_factor' };
+    stepUpBody = { method: 'totp', code: stepUp.code, operations };
   } else {
     // Passkey: fetch an authenticated step-up challenge, run the assertion
     // ceremony, then prove it to /auth/mfa/step-up.
@@ -728,7 +727,7 @@ export async function mintAddFactorStepUpGrant(stepUp: AddFactorStepUp): Promise
     const optionsJSON: PasskeyAuthenticationOptions =
       challengeData?.options ?? challengeData?.optionsJSON ?? challengeData;
     const credential = await startAuthentication({ optionsJSON });
-    stepUpBody = { method: 'passkey', credential, operation: 'add_factor' };
+    stepUpBody = { method: 'passkey', credential, operations };
   }
 
   const response = await fetchWithAuth('/auth/mfa/step-up', {
@@ -743,10 +742,27 @@ export async function mintAddFactorStepUpGrant(stepUp: AddFactorStepUp): Promise
   if (!response.ok) {
     throw new StepUpError(data?.error ?? 'Verification failed.', response.status);
   }
-  if (!data?.stepUpGrantId) {
-    throw new StepUpError('Verification failed.');
+  const out: Partial<Record<StepUpOperation, string>> = {};
+  for (const g of data?.grants ?? []) {
+    if (g?.operation && g?.stepUpGrantId) out[g.operation as StepUpOperation] = g.stepUpGrantId;
   }
-  return data.stepUpGrantId;
+  for (const op of operations) {
+    if (!out[op]) throw new StepUpError('Verification failed.');
+  }
+  return out;
+}
+
+/**
+ * SR2-20: mint a single-use `add_factor` step-up grant by proving an EXISTING
+ * factor (TOTP code or a WebAuthn assertion from an existing passkey). The
+ * factor-addition endpoints (`/auth/passkeys/register/*`, `/auth/mfa/enable`)
+ * 403 `existing_factor_step_up_required` on already-protected accounts unless
+ * the returned grant id is presented as `stepUpGrantId`. Mirrors the
+ * `register_approver_device` mint in stores/authenticator.ts.
+ */
+export async function mintAddFactorStepUpGrant(stepUp: AddFactorStepUp): Promise<string> {
+  const grants = await mintStepUpGrants(stepUp, ['add_factor']);
+  return grants.add_factor!;
 }
 
 export async function apiLogin(email: string, password: string): Promise<{
