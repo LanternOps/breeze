@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { authenticatorDevices, authenticatorPolicies } from '../db/schema';
+import { authenticatorDevices, authenticatorPolicies, userPasskeys } from '../db/schema';
 import { authMiddleware, requirePermission, requireMfa } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -18,6 +18,7 @@ import {
   enforceApproverRegisterStepUp,
   userHasStrongerReauthFactor,
 } from './auth/helpers';
+import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
 import { getUserEpochs } from '../services';
 import { authenticatorPolicySchema, mobileHwKeyRegisterSchema } from '@breeze/shared';
@@ -52,6 +53,14 @@ const registerVerifySchema = z.object({
 });
 const registerGrantMintSchema = z.object({
   currentPassword: z.string().min(1).max(256),
+});
+const adoptSchema = z.object({
+  registerGrantId: z.string().min(1),
+  credential: z.any().refine(
+    (v): boolean => typeof v?.id === 'string' && v.id.length > 0,
+    { message: 'credential.id is required' }
+  ),
+  label: z.string().trim().min(1).max(255).optional(),
 });
 
 // Mobile hardware-key registration — requires a register_approver_device grant
@@ -272,6 +281,85 @@ authenticatorRoutes.post(
         deviceId: inserted.id,
         kind: 'webauthn_platform',
         isPlatformBound: fields.isPlatformBound,
+      },
+    });
+
+    return c.json({ success: true, device: toPublicDevice(inserted) });
+  }
+);
+
+// Retrofit (unified-security-devices §4.4): promote an EXISTING login passkey
+// to an approver device. Requires BOTH proofs at this single terminal write:
+// the no-bypass register grant (step-up) AND a live assertion from the passkey
+// itself (proof the key is present on THIS device NOW — a bearer token alone
+// must never copy a credential into the approver store). Because possession
+// was just proven live, the row is inserted ACTIVE (last_used_at set), not
+// pending: the assertion IS the possession proof deferred-PoP normally waits for.
+authenticatorRoutes.post(
+  '/devices/webauthn/adopt',
+  authMiddleware,
+  zValidator('json', adoptSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { registerGrantId, credential, label } = c.req.valid('json');
+
+    const grantError = await enforceApproverRegisterStepUp(c, auth, registerGrantId, { consume: true });
+    if (grantError) return grantError;
+
+    const ok = await verifyStepUpPasskeyAssertion(auth.user.id, credential);
+    if (!ok) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+
+    const [pk] = await db
+      .select()
+      .from(userPasskeys)
+      .where(and(
+        eq(userPasskeys.userId, auth.user.id),
+        eq(userPasskeys.credentialId, credential.id as string),
+        isNull(userPasskeys.disabledAt)
+      ))
+      .limit(1);
+    if (!pk) {
+      return c.json({ error: 'Passkey not found' }, 404);
+    }
+
+    let inserted;
+    try {
+      [inserted] = await db
+        .insert(authenticatorDevices)
+        .values({
+          userId: auth.user.id,
+          kind: 'webauthn_platform',
+          label: label ?? pk.name ?? 'This device',
+          publicKey: pk.publicKey,
+          credentialId: pk.credentialId,
+          signCount: pk.counter,
+          aaguid: pk.aaguid,
+          transports: (pk.transports ?? undefined) as ApproverDeviceRow['transports'],
+          isPlatformBound: pk.deviceType === 'singleDevice' && !pk.backedUp,
+          lastUsedAt: new Date(),
+        })
+        .returning();
+    } catch (err) {
+      if ((err as { code?: string })?.code === '23505') {
+        return c.json({ error: 'already_registered' }, 409);
+      }
+      throw err;
+    }
+    if (!inserted) throw new Error('Approver device insert returned no row');
+
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.authenticator.device.register',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: {
+        deviceId: inserted.id,
+        kind: 'webauthn_platform',
+        isPlatformBound: inserted.isPlatformBound,
+        via: 'passkey_adopt',
       },
     });
 

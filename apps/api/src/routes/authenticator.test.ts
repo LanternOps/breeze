@@ -82,6 +82,15 @@ vi.mock('./auth/helpers', () => ({
   ...helperMocks,
 }));
 
+// authenticator.ts imports verifyStepUpPasskeyAssertion (for the adopt route,
+// covered by authenticator.adopt.test.ts) — mock it here too so loading
+// authenticator.ts never pulls in the real auth/passkeys.ts module graph
+// (which transitively needs runOutsideDbContext from '../db', not part of
+// this file's minimal db mock).
+vi.mock('./auth/passkeys', () => ({
+  verifyStepUpPasskeyAssertion: vi.fn(),
+}));
+
 vi.mock('../services/mfaStepUpGrant', () => ({
   ...grantMocks,
 }));
