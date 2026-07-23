@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApproverDevice } from '../../stores/authenticator';
 
-const { fetchWithAuthMock, createPasskeyCredentialMock, mintAddFactorStepUpGrantMock, MockStepUpError } = vi.hoisted(() => {
+const { fetchWithAuthMock, createPasskeyCredentialMock, mintStepUpGrantsMock, MockStepUpError } = vi.hoisted(() => {
   class MockStepUpError extends Error {
     status?: number;
     constructor(message: string, status?: number) {
@@ -14,7 +14,7 @@ const { fetchWithAuthMock, createPasskeyCredentialMock, mintAddFactorStepUpGrant
   return {
     fetchWithAuthMock: vi.fn(),
     createPasskeyCredentialMock: vi.fn(),
-    mintAddFactorStepUpGrantMock: vi.fn(),
+    mintStepUpGrantsMock: vi.fn(),
     MockStepUpError,
   };
 });
@@ -34,7 +34,7 @@ const {
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: fetchWithAuthMock,
   createPasskeyCredential: createPasskeyCredentialMock,
-  mintAddFactorStepUpGrant: mintAddFactorStepUpGrantMock,
+  mintStepUpGrants: mintStepUpGrantsMock,
   StepUpError: MockStepUpError,
 }));
 
@@ -243,11 +243,14 @@ describe('SecurityDevicesCard', () => {
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    // Unchecked: single-purpose add, byte-identical to pre-Task-6 behavior —
+    // no /authenticator/register-grant call, no approverRegisterGrantId.
+    fireEvent.click(screen.getByTestId('secdev-also-approver'));
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
 
     await screen.findByText('Passkey added');
 
-    expect(mintAddFactorStepUpGrantMock).not.toHaveBeenCalled();
+    expect(mintStepUpGrantsMock).not.toHaveBeenCalled();
     expect(fetchWithAuthMock.mock.calls[1]).toEqual([
       '/auth/passkeys/register/options',
       expect.objectContaining({
@@ -275,7 +278,7 @@ describe('SecurityDevicesCard', () => {
       .mockResolvedValueOnce(makeJsonResponse({ passkey: { id: 'credential-2', name: 'Work laptop' } }))
       .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'Work laptop', lastUsedAt: null }] }));
     createPasskeyCredentialMock.mockResolvedValueOnce(credential);
-    mintAddFactorStepUpGrantMock.mockResolvedValueOnce('grant-123');
+    mintStepUpGrantsMock.mockResolvedValueOnce({ add_factor: 'grant-123' });
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
@@ -285,11 +288,14 @@ describe('SecurityDevicesCard', () => {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
+    // Unchecked: single-purpose add_factor only — the dual-enroll (both grants)
+    // path is covered separately below.
+    fireEvent.click(screen.getByTestId('secdev-also-approver'));
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
 
     await screen.findByText('Passkey added');
 
-    expect(mintAddFactorStepUpGrantMock).toHaveBeenCalledWith({ method: 'totp', code: '123456' });
+    expect(mintStepUpGrantsMock).toHaveBeenCalledWith({ method: 'totp', code: '123456' }, ['add_factor']);
     expect(fetchWithAuthMock.mock.calls[1]).toEqual([
       '/auth/passkeys/register/options',
       expect.objectContaining({
@@ -318,6 +324,211 @@ describe('SecurityDevicesCard', () => {
 
     const addButton = screen.getByRole('button', { name: 'Add passkey' }) as HTMLButtonElement;
     expect(addButton.disabled).toBe(true);
-    expect(mintAddFactorStepUpGrantMock).not.toHaveBeenCalled();
+    expect(mintStepUpGrantsMock).not.toHaveBeenCalled();
+    // Tier 'sms': add is already fully disabled, so the dual-enroll checkbox
+    // is hidden rather than offered-and-disabled.
+    expect(screen.queryByTestId('secdev-also-approver')).toBeNull();
+  });
+
+  it('mints both grants in one step-up and sends approverRegisterGrantId to verify (protected account)', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-3', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-3', name: 'Work laptop' },
+        approver: { registered: true, isPlatformBound: true, deviceId: 'ad-9' },
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-3', name: 'Work laptop', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+    mintStepUpGrantsMock.mockResolvedValueOnce({ add_factor: 'g-add', register_approver_device: 'g-reg' });
+
+    render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
+    // Checkbox is checked by default — leave it as-is.
+    expect((screen.getByTestId('secdev-also-approver') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await screen.findByText('Passkey added');
+
+    expect(mintStepUpGrantsMock).toHaveBeenCalledWith(
+      { method: 'totp', code: '123456' },
+      ['add_factor', 'register_approver_device'],
+    );
+    const optionsCall = fetchWithAuthMock.mock.calls[1];
+    expect(optionsCall[0]).toBe('/auth/passkeys/register/options');
+    expect(JSON.parse(optionsCall[1].body).stepUpGrantId).toBe('g-add');
+    expect(JSON.parse(optionsCall[1].body).approverRegisterGrantId).toBeUndefined();
+
+    const verifyCall = fetchWithAuthMock.mock.calls[2];
+    expect(verifyCall[0]).toBe('/auth/passkeys/register/verify');
+    const verifyBody = JSON.parse(verifyCall[1].body);
+    expect(verifyBody.stepUpGrantId).toBe('g-add');
+    expect(verifyBody.approverRegisterGrantId).toBe('g-reg');
+
+    // Approver list gets refreshed alongside the passkey list on success.
+    await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('unchecking the box keeps the flow single-purpose', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-4', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, passkey: { id: 'credential-4', name: 'Work laptop' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-4', name: 'Work laptop', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+    mintStepUpGrantsMock.mockResolvedValueOnce({ add_factor: 'g-add' });
+
+    render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByTestId('secdev-also-approver'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await screen.findByText('Passkey added');
+
+    expect(mintStepUpGrantsMock).toHaveBeenCalledWith({ method: 'totp', code: '123456' }, ['add_factor']);
+    const verifyCall = fetchWithAuthMock.mock.calls[2];
+    expect(JSON.parse(verifyCall[1].body).approverRegisterGrantId).toBeUndefined();
+  });
+
+  it('uses the password register-grant fallback for unprotected accounts', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-5', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ registerGrantId: 'g-reg-password' }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-5', name: 'MacBook Touch ID' },
+        approver: { registered: true, isPlatformBound: true, deviceId: 'ad-10' },
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-5', name: 'MacBook Touch ID', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+
+    render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'MacBook Touch ID' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    expect((screen.getByTestId('secdev-also-approver') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await screen.findByText('Passkey added');
+
+    expect(mintStepUpGrantsMock).not.toHaveBeenCalled();
+    const grantCall = fetchWithAuthMock.mock.calls[1];
+    expect(grantCall[0]).toBe('/authenticator/register-grant');
+    expect(JSON.parse(grantCall[1].body)).toEqual({ currentPassword: 'current-password' });
+
+    const optionsCall = fetchWithAuthMock.mock.calls[2];
+    expect(optionsCall[0]).toBe('/auth/passkeys/register/options');
+
+    const verifyCall = fetchWithAuthMock.mock.calls[3];
+    expect(verifyCall[0]).toBe('/auth/passkeys/register/verify');
+    expect(JSON.parse(verifyCall[1].body).approverRegisterGrantId).toBe('g-reg-password');
+  });
+
+  it('degrades to passkey-only when the password register-grant fallback 403s stronger_factor_required', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-6', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'stronger_factor_required' }, false, 403))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, passkey: { id: 'credential-6', name: 'MacBook Touch ID' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-6', name: 'MacBook Touch ID', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+
+    render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'MacBook Touch ID' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    // Partial outcome, not a failure — the passkey add still proceeds.
+    await screen.findByText(/Passkey added/);
+
+    const verifyCall = fetchWithAuthMock.mock.calls[3];
+    expect(verifyCall[0]).toBe('/auth/passkeys/register/verify');
+    expect(JSON.parse(verifyCall[1].body).approverRegisterGrantId).toBeUndefined();
+  });
+
+  it('surfaces the degraded outcome when the server reports the approver grant was invalid', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-7', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-7', name: 'Work laptop' },
+        approver: { registered: false, reason: 'grant_invalid' },
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-7', name: 'Work laptop', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+    mintStepUpGrantsMock.mockResolvedValueOnce({ add_factor: 'g-add', register_approver_device: 'g-reg' });
+
+    render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    // Partial-success message: passkey added, approvals not enabled.
+    await screen.findByText(/Passkey added.*Failed to register this device/);
+  });
+
+  it('appends a synced note when the newly-registered approver device is not platform-bound', async () => {
+    const registrationOptions = { challenge: 'register-challenge' };
+    const credential = { id: 'credential-8', type: 'public-key' };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-8', name: 'iCloud Keychain' },
+        approver: { registered: true, isPlatformBound: false, deviceId: 'ad-11' },
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-8', name: 'iCloud Keychain', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+    mintStepUpGrantsMock.mockResolvedValueOnce({ add_factor: 'g-add', register_approver_device: 'g-reg' });
+
+    render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iCloud Keychain' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await screen.findByText(/Passkey added.*Registered/);
   });
 });

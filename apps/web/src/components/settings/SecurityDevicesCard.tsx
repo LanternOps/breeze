@@ -5,8 +5,10 @@ import {
   StepUpError,
   createPasskeyCredential,
   fetchWithAuth,
-  mintAddFactorStepUpGrant,
+  mintStepUpGrants,
+  type AddFactorStepUp,
   type PasskeyRegistrationOptions,
+  type StepUpOperation,
 } from '../../stores/auth';
 import {
   listApproverDevices,
@@ -23,10 +25,11 @@ import { mergeSecurityDevices, type PasskeySummary, type SecurityDeviceRow } fro
  *
  * Renders the merge of `GET /auth/passkeys` (sign-in factors) and
  * `GET /me/approver-devices` (approval factors) as one list, with a badge per
- * capability a row carries. This task moves the two capabilities' state/
- * handlers over UNCHANGED — no dual-enroll checkbox yet (Task 6) and no
- * "register this browser as approver" form (that stays behind in
- * ApproverDevicesSection until a later task decides its fate).
+ * capability a row carries. Task 5 moved the two capabilities' state/handlers
+ * over unchanged; Task 6 adds the "also register this browser as an approver"
+ * dual-enroll checkbox (`secdev-also-approver`, default checked) to the add
+ * flow. No standalone "register this browser as approver" form here — that
+ * stays behind in ApproverDevicesSection until a later task decides its fate.
  *
  * i18n note: every string below reuses an EXISTING `profilePage.*` /
  * `approverDevicesSection.*` / `stepUpPrompt.*` key rather than inventing a
@@ -61,6 +64,9 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
   const [isAddingPasskey, setIsAddingPasskey] = useState(false);
+  // Dual-enroll (unified-security-devices §7.1): default checked — most users
+  // adding a passkey want it to also work as an approval device.
+  const [alsoRegisterApprover, setAlsoRegisterApprover] = useState(true);
 
   // --- Approver (approval) state — list-only, moved from ApproverDevicesSection.tsx. ---
   const [devices, setDevices] = useState<import('../../stores/authenticator').ApproverDevice[]>([]);
@@ -130,11 +136,50 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
+
+      // Dual-enroll (unified-security-devices §7.1/§4.2). The early `return`
+      // above for tier 'sms' means every path below only ever sees
+      // 'none' | 'passkey' | 'totp'.
+      const wantsApprover = alsoRegisterApprover;
       let stepUpGrantId: string | undefined;
-      if (passkeyStepUpTier === 'passkey') {
-        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'passkey' });
-      } else if (passkeyStepUpTier === 'totp') {
-        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'totp', code: passkeyStepUpCode });
+      let approverRegisterGrantId: string | undefined;
+      // Tier 'none' password-fallback degrade: the account turned out to
+      // already have a stronger factor (race with another tab/session) — the
+      // server's /authenticator/register-grant 403s `stronger_factor_required`.
+      // Proceed with the passkey add and surface the partial outcome instead
+      // of failing the whole request.
+      let approverGrantDegraded = false;
+
+      if (passkeyStepUpTier === 'passkey' || passkeyStepUpTier === 'totp') {
+        const proof: AddFactorStepUp = passkeyStepUpTier === 'passkey'
+          ? { method: 'passkey' }
+          : { method: 'totp', code: passkeyStepUpCode };
+        const ops: StepUpOperation[] = wantsApprover
+          ? ['add_factor', 'register_approver_device']
+          : ['add_factor'];
+        const grants = await mintStepUpGrants(proof, ops);
+        stepUpGrantId = grants.add_factor;
+        approverRegisterGrantId = grants.register_approver_device;
+      } else if (passkeyStepUpTier === 'none' && wantsApprover) {
+        // Unprotected account: add_factor bypasses step-up entirely on the
+        // server, but the approver grant still needs a fresh password proof.
+        const grantResponse = await fetchWithAuth('/authenticator/register-grant', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword: passkeyPassword }),
+          // A 401/403 here means the password/state check failed for THIS
+          // proof — replaying it after a token refresh can only fail again.
+          skipUnauthorizedRetry: true,
+        });
+        const grantData = await grantResponse.json().catch(() => ({}));
+        if (grantResponse.ok) {
+          approverRegisterGrantId = grantData.registerGrantId;
+        } else if (grantResponse.status === 403 && grantData?.error === 'stronger_factor_required') {
+          approverGrantDegraded = true;
+        } else {
+          throw new Error(
+            grantData.error ?? grantData.message ?? t('approverDevicesSection.failedToRegisterThisDevice')
+          );
+        }
       }
 
       const label = passkeyName.trim() || 'Passkey';
@@ -161,7 +206,10 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
         body: JSON.stringify({
           name: label,
           credential,
-          ...(stepUpGrantId ? { stepUpGrantId } : {})
+          ...(stepUpGrantId ? { stepUpGrantId } : {}),
+          // approverRegisterGrantId is a verify-only field — /register/options
+          // takes only stepUpGrantId (see apps/api/src/routes/auth/passkeys.ts).
+          ...(approverRegisterGrantId ? { approverRegisterGrantId } : {})
         })
       });
 
@@ -180,8 +228,27 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
       onFactorAdded({
         recoveryCodes: Array.isArray(verifyData.recoveryCodes) ? verifyData.recoveryCodes : undefined,
       });
-      setPasskeySuccess(t('profilePage.passkeyAdded'));
+
+      const approver = verifyData.approver as
+        | { registered: boolean; isPlatformBound?: boolean; deviceId?: string; reason?: string }
+        | undefined;
+      if (approverGrantDegraded || approver?.registered === false) {
+        // i18n compromise: no dedicated partial-success copy exists yet —
+        // composed from the two closest existing keys. Task 7 introduces a
+        // single `securityDevicesCard.*` string for this (see task report).
+        setPasskeySuccess(
+          `${t('profilePage.passkeyAdded')} — ${t('approverDevicesSection.failedToRegisterThisDevice')}`
+        );
+      } else if (approver?.registered && approver.isPlatformBound === false) {
+        // i18n compromise: reuses the same placeholder key as the "Synced"
+        // row badge above (approverDevicesSection.registered) — see task report.
+        setPasskeySuccess(`${t('profilePage.passkeyAdded')} — ${t('approverDevicesSection.registered')}`);
+      } else {
+        setPasskeySuccess(t('profilePage.passkeyAdded'));
+      }
+
       await loadPasskeys();
+      await loadApprovers();
     } catch (error) {
       // NotAllowedError/AbortError: a cancelled/timed-out WebAuthn prompt —
       // either the registration ceremony itself or the step-up assertion
@@ -553,6 +620,23 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
         {passkeyStepUpTier === 'sms' && (
           <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-sms-note">
             {t('profilePage.smsAccountsCannotAddPasskeysFromTheWebYet')}</p>
+        )}
+        {passkeyStepUpTier !== 'sms' && (
+          <label className="flex items-start gap-2 text-sm text-muted-foreground" htmlFor="secdev-also-approver">
+            <input
+              id="secdev-also-approver"
+              type="checkbox"
+              checked={alsoRegisterApprover}
+              onChange={event => setAlsoRegisterApprover(event.target.checked)}
+              disabled={isAddingPasskey}
+              data-testid="secdev-also-approver"
+              className="mt-0.5 h-4 w-4 rounded border"
+            />
+            {/* i18n compromise: no dedicated dual-enroll checkbox copy exists
+                yet — reuses the closest existing key (Task 7 adds a proper
+                "also register this device to approve requests" string). */}
+            <span>{t('approverDevicesSection.registerThisBrowser')}</span>
+          </label>
         )}
         <button
           type="button"
