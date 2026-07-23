@@ -35,6 +35,7 @@ export async function startConfiguredExecutor(): Promise<{ close(): void }> {
   const graphClient = createMicrosoftGraphClient({ applicationId: config.clientId });
   const operations = createExecutorOperations({
     clientId: config.clientId,
+    callbackUrl: config.callbackUrl,
     certificateProvider,
     graphClient,
   });
