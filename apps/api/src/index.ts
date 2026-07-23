@@ -965,7 +965,7 @@ api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
 api.route('/m365', m365ConsentCallbackRoutes); // Public two-phase consent callback; mount before authenticated M365 routes
 api.route('/m365', m365CustomerGraphReadRoutes);
-api.route('/m365', m365CustomerGraphActionsRoutes);
+api.route('/m365/customer-graph-actions', m365CustomerGraphActionsRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);

@@ -210,7 +210,7 @@ m365CustomerGraphActionsRoutes.get('/connections', requireOrgsRead, async (c) =>
 });
 
 m365CustomerGraphActionsRoutes.post(
-  '/connections/customer-graph-actions/consent',
+  '/connections/consent',
   requireOrgsWrite,
   requireMfa(),
   async (c) => {
