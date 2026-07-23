@@ -183,6 +183,11 @@ export async function adoptPasskeyAsApprover(
   );
   const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
     challengeData.options ?? challengeData.optionsJSON ?? challengeData;
+  // Hard dependency: adopt only works because the step-up options include
+  // allowCredentials to filter down to the one passkey being adopted (see the
+  // doc comment above). A server config that issues resident-key-only
+  // (empty/omitted allowCredentials) discovery would make `matchingCredentials`
+  // always empty here, and every adopt would 404 with "Passkey not found."
   const matchingCredentials = (optionsJSON.allowCredentials ?? []).filter((c) => c.id === credentialId);
   if (matchingCredentials.length === 0) {
     throw new RegisterStepError('Passkey not found.', 404);
