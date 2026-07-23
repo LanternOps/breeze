@@ -54,20 +54,24 @@ func TestWingetListParseWithAvailableColumn(t *testing.T) {
 	row := func(name, id, version, available, source string) string {
 		return fmt.Sprintf("%-11s%-14s%-11s%-12s%s", name, id, version, available, source)
 	}
+	// The last row's raw bytes end before the Available column position
+	// (right-trimmed output) — the version slice must clamp, not drop the row.
 	output := row("Name", "Id", "Version", "Available", "Source") + "\n" +
 		strings.Repeat("-", 55) + "\n" +
 		row("Git", "Git.Git", "2.51.0.2", "2.55.0.3", "winget") + "\n" +
 		row("7-Zip", "7zip.7zip", "26.00", "26.02", "winget") + "\n" +
-		row("Paint", "Corel.Paint", "1.2.3", "", "winget") + "\n"
+		row("Paint", "Corel.Paint", "1.2.3", "", "winget") + "\n" +
+		fmt.Sprintf("%-11s%-14s%s", "Short", "Short.App", "1.0") + "\n"
 
 	installed := parseWingetListOutput(output)
-	if len(installed) != 3 {
-		t.Fatalf("expected 3 installed, got %d: %+v", len(installed), installed)
+	if len(installed) != 4 {
+		t.Fatalf("expected 4 installed, got %d: %+v", len(installed), installed)
 	}
 	want := map[string]string{
 		"Git.Git":     "2.51.0.2",
 		"7zip.7zip":   "26.00",
 		"Corel.Paint": "1.2.3",
+		"Short.App":   "1.0",
 	}
 	for _, p := range installed {
 		if p.Version != want[p.ID] {

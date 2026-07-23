@@ -66,6 +66,12 @@ export default defineConfig({
       // the mocked `changes.test.ts` unit suite, so this drives the real
       // `changesRoutes` handler + RLS insert/select policies against Postgres.
       'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for #2725 (installed inventory must
+      // not erase pending third-party rows): proves the raw-SQL CASE guard in
+      // upsertInstalledPatches against the real device_patch_status enum and
+      // the sweep→installed self-heal across both ingest endpoints — the
+      // mocked patches.test.ts can only assert the generated SQL's shape.
+      'src/routes/agents/patches.integration.test.ts',
       // Co-located real-DB integration test for BREEZE-3: software report
       // wipe-and-reinsert with linked vuln findings — proves the SET NULL FK
       // (constraint name + delete action) and the re-link UPDATE under the

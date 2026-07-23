@@ -236,14 +236,19 @@ async function upsertInstalledPatches(
     }
 
     const installedAt = parseDate(patchData.installedAt);
+    // A Date bound inside a raw sql`` fragment bypasses drizzle's column
+    // mapper and postgres.js cannot serialize it (TypeError at query time) —
+    // bind the ISO string with an explicit cast instead.
+    const installedAtParam = installedAt ? sql`${installedAt.toISOString()}::timestamp` : sql`NULL::timestamp`;
     // Installed inventory must not downgrade an actionable 'pending' row.
     // Package managers report a pending upgrade and the installed package under
-    // the SAME (source, externalId) — e.g. `winget list` includes every package
-    // that `winget upgrade` just reported — so an unconditional flip erased all
-    // pending third-party rows moments after the pending submit wrote them.
+    // the SAME (source, externalId) — `winget list` covers every package the
+    // paired `winget upgrade` scan reports — so an unconditional flip would
+    // clobber every pending third-party row in the same scan cycle.
     // installedVersion still updates: it's the currently-installed version
-    // either way. A row whose upgrade completed self-heals on the next scan
-    // (pending sweep → 'missing' → this upsert → 'installed').
+    // either way. A row whose upgrade completed self-heals within one scan
+    // cycle: the pending sweep flips it to 'missing', then the paired
+    // installed submit lands in this upsert's ELSE branch as 'installed'.
     await executor
       .insert(devicePatches)
       .values({
@@ -259,7 +264,7 @@ async function upsertInstalledPatches(
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
           status: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
-          installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAt} END`,
+          installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
           installedVersion: patchData.version || null,
           lastCheckedAt: new Date(),
           updatedAt: new Date()
