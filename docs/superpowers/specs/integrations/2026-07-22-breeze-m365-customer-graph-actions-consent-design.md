@@ -97,12 +97,24 @@ body-hash internal auth, already shipped).
 
 ## 7. Data model and profile manifest
 
-**No new tables.** Reuse:
+**No new tables**, but **one migration is required**:
 
-- `m365_consent_sessions` — already carries a `profile` column; actions rows use
+- `m365_consent_sessions.profile` today carries a Postgres `CHECK (profile =
+  'customer-graph-read')` and a Drizzle `.$type<'customer-graph-read'>()`. Reusing the table
+  for actions requires an idempotent migration to widen the CHECK to
+  `profile IN ('customer-graph-read','customer-graph-actions')` and a schema type change to
+  the union. (`m365_connections` already permits `customer-graph-actions` — its
+  `verifiedTenantProfileUniq` lists it — so no change there.) Actions rows use
   `profile='customer-graph-actions'`.
 - `m365_connections` — profile-discriminated, dual-axis RLS; actions rows are org-owner,
   `profile='customer-graph-actions'`, `credential_domain='customer-graph-actions'`.
+
+The two app-role assignments added to the actions manifest (§7 below), for reference:
+`User.ReadWrite.All` → `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4`;
+`User-PasswordProfile.ReadWrite.All` → `56760768-b641-451f-8906-e1b8ab31bca7` (resource =
+Microsoft Graph `00000003-0000-0000-c000-000000000000`). These are asserted in
+`profiles.test.ts` and re-verified against the tenant's Graph service-principal `appRoles`
+during real-tenant acceptance.
 
 **`packages/shared/src/m365/profiles.ts`** — the only shared change:
 
@@ -123,19 +135,42 @@ the read-profile test pattern.
 
 ## 8. Consent protocol (hybrid implementation)
 
-**Parameterize the shared internals by profile:**
+**Parameterize the shared internals by profile.** Investigation showed the read internals are
+hardcoded more deeply than a single constant — `connectionService.ts` closes over `PROFILE =
+'customer-graph-read'`, the read executor client, the read config loader, and read-named
+metrics; the callback is single-profile by construction (its browser-binding cookie has no
+profile field). The hybrid is therefore a **factory**, not an in-place edit:
 
 - `services/m365ControlPlane/consentSessionService.ts` — replace the module-level
-  `CUSTOMER_GRAPH_READ_PROFILE` constant with a `profile: M365ConnectionProfile` parameter on
-  the create/lookup functions. All existing read call sites pass `'customer-graph-read'`
-  explicitly, so behavior is unchanged; the read test suite is the regression guard.
-- `services/m365ControlPlane/connectionService.ts` — the reconciliation/health helpers already
-  read the manifest via the profile; confirm they resolve the executor client
-  (`graphReadExecutorClient` vs `graphActionsExecutorClient`) and app `client_id` from the
-  profile/config rather than a read-only constant, and parameterize where they do not.
-- `routes/m365ConsentCallback.ts` — resolve the profile from the consent-session row (already
-  persisted) and dispatch to the profile's executor client + app config. No hardcoded read
-  assumption in the callback.
+  `CUSTOMER_GRAPH_READ_PROFILE` constant with a `profile: M365ConnectionProfile` field on the
+  input interfaces (`ConsentSessionOwnerInput`, `ConsentSessionAttemptInput`,
+  `ConsumeConsentSessionInput`), threaded to all five query sites. Read call sites pass
+  `'customer-graph-read'`; the read test suite is the regression guard.
+- `services/m365ControlPlane/connectionService.ts` — extract a
+  `createConnectionService({ profile, manifest, loadRuntimeConfig, createExecutorClient,
+  recordEvent, recordMetric })` factory returning the existing export set
+  (`initiateConsent`, `markAdminConsentReturned`, `transitionAdminConsentToIdentity`,
+  `applyIdentityVerificationResult`, `retestConnection`, `disconnectConnection`,
+  `listConnections`). `deriveGrantHealth` is already manifest-parameterized — no change.
+  `connectionService.ts` (read) becomes a thin instantiation; a new
+  `writeActionConnectionService.ts` is the actions instantiation.
+- **Executor consent endpoints (new work — not in the shipped actions executor).** The actions
+  executor (`apps/m365-graph-actions-executor/`) currently exposes only `execute-action`; the
+  consent flow calls `completeIdentityVerification` and `retest` on the executor client. Add
+  `POST /v1/complete-consent` and `POST /v1/retest` to the actions executor app (mirroring the
+  read executor's handlers + `reconcile.ts`, re-keyed to the actions certificate/audience), and
+  add `completeIdentityVerification(...)` + `retestCustomerGraphActions(...)` to
+  `graphActionsExecutorClient.ts`. The shared request/result types
+  (`CompleteConsentRequest/Result`, `RetestRequest/Result`) already exist and are
+  profile-agnostic.
+- `routes/m365ConsentCallback.ts` — the callback is a factory `createM365ConsentCallbackRoutes(
+  overrides)`. Instantiate a second, actions-profile instance (profile override +
+  actions redirect path `/integrations#m365/customer-graph-actions/<outcome>` + actions config
+  loader + actions executor client) rather than widening the read binding cookie. Mount it on
+  its own callback path.
+- `services/m365ControlPlane/metrics.ts` — read-named (`m365.customer_graph_read.*`); add an
+  actions metrics surface (or parameterize by profile) so consent/reconcile/disconnect events
+  emit under an actions-scoped name.
 - `services/m365ControlPlane/microsoftAuthorization.ts` — already takes `clientId`; no change.
 
 **Thin per-profile route** `routes/m365CustomerGraphActions.ts` (mirror of
@@ -155,12 +190,13 @@ boot-validated (see §10).
 
 ## 9. Grant reconciliation and health
 
-The executor's `reconcile.ts` already diffs granted app-roles against a manifest's
-`applicationPermissionAssignments`. Once the actions manifest carries its two assignments,
-reconciliation works for actions via `graphActionsExecutorClient` with no executor-side change.
+The read executor's `reconcile.ts` diffs granted app-roles against a manifest's
+`applicationPermissionAssignments`. That logic is re-keyed into the actions executor's new
+`complete-consent`/`retest` handlers (§8) against the actions certificate/audience; once the
+actions manifest carries its two assignments, reconciliation runs the same exact diff.
 Reconciliation is **exact** — a granted role beyond the two required is reported as drift, and
 a missing role blocks `active`. Health is surfaced on the management view and drives the
-connection lifecycle state (§10), reusing `deriveGrantHealth`.
+connection lifecycle state (§10), reusing the profile-agnostic `deriveGrantHealth`.
 
 ## 10. Lifecycle, config, and boot validation
 
