@@ -229,7 +229,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			return
 		}
 		entries, readErr := dirFile.ReadDir(-1)
-		dirFile.Close()
+		// Entries are already read into memory; the dir handle's Close error is
+		// not actionable (and `_ =` satisfies errcheck).
+		_ = dirFile.Close()
 		if readErr != nil {
 			statsMu.Lock()
 			markDirAndAncestorsIncomplete(dirStats, frame.path)
