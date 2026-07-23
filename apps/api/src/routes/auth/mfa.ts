@@ -830,7 +830,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   return c.json(
     body.operations
       ? { grants }
-      : { stepUpGrantId: grants[0].stepUpGrantId, grants }
+      // requestedOps is never empty (operations min(1), or the defaulted
+      // legacy operation), so grants[0] always exists here.
+      : { stepUpGrantId: grants[0]!.stepUpGrantId, grants }
   );
 });
 
