@@ -85,7 +85,8 @@ const FAKE_ACTIONS_CONFIG = {
 
 const PROFILE_MANIFEST = M365_PERMISSION_PROFILES['customer-graph-actions'];
 const REQUIRED_GRANTS: CanonicalAppRoleAssignment[] = [...PROFILE_MANIFEST.applicationPermissionAssignments];
-const [GRANT_USER_RW, GRANT_PASSWORD_RW] = REQUIRED_GRANTS;
+const GRANT_USER_RW = REQUIRED_GRANTS[0]!;
+const GRANT_PASSWORD_RW = REQUIRED_GRANTS[1]!;
 const EXTRA_GRANT: CanonicalAppRoleAssignment = {
   resourceApplicationId: '00000003-0000-0000-c000-000000000000',
   appRoleId: '99999999-1111-4222-8333-444444444444',
