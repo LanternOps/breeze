@@ -4,10 +4,6 @@ import {
   createGraphActionsExecutorClient,
   type GraphActionsExecutorClient,
 } from './graphActionsExecutorClient';
-import {
-  recordM365CustomerGraphActionsEvent,
-  recordM365CustomerGraphActionsMetric,
-} from './metrics';
 import { loadM365CustomerGraphActionsRuntimeConfig } from './writeActionRuntimeConfig';
 
 // --- customer-graph-actions instance -----------------------------------
@@ -26,8 +22,9 @@ const actionsConnectionService = createConnectionService({
     signingKid: config.executorSigningKid,
   }),
   retest: (client, request) => client.retestCustomerGraphActions(request),
-  recordEvent: recordM365CustomerGraphActionsEvent,
-  recordMetric: recordM365CustomerGraphActionsMetric,
+  // recordEvent/recordMetric intentionally omitted, mirroring the read instance:
+  // consent telemetry is emitted at the route layer, not inside the service.
+  // The actions metric siblings are consumed by the actions route (Task 10).
 });
 
 /** @deprecated shape retained for parity with the read surface — use InitiateConsentInput. */
