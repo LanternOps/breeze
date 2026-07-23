@@ -377,6 +377,17 @@ describe('manage_patches handler', () => {
     partnerOrgAccess: 'all',
   } as any;
 
+  // #2604: the conditional install requirement was enforced at runtime but not
+  // surfaced in the schema, so the model routinely called install without
+  // patchIds/deviceIds and burned a turn on the retry. The description must
+  // advertise the per-action required fields.
+  it('description advertises install requires both patchIds and deviceIds', () => {
+    expect(tool.definition.description).toMatch(/install requires BOTH patchIds and deviceIds/i);
+    const props = tool.definition.input_schema.properties as Record<string, { description?: string }>;
+    expect(props.action!.description).toMatch(/install needs patchIds AND deviceIds/i);
+    expect(props.deviceIds!.description).toMatch(/Required for scan, install, and rollback/i);
+  });
+
   it('setup_auto_approval is disabled (managed via configuration policies)', async () => {
     const result = JSON.parse(await tool.handler({ action: 'setup_auto_approval' }, noOrgAuth));
     expect(result.error).toContain('Action "setup_auto_approval" is disabled');
