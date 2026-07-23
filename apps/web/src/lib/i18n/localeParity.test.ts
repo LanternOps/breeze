@@ -332,7 +332,7 @@ describe('locale parity', () => {
 
   it('contains every supported locale catalog', () => {
     expect(locales).toEqual(
-      expect.arrayContaining(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE']),
+expect.arrayContaining(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']),
     );
   });
 

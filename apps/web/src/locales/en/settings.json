@@ -53,7 +53,9 @@
     "frCALabel": "Français (Canada)",
     "frCADescription": "French (Canada)",
     "deDELabel": "Deutsch (Deutschland)",
-    "deDEDescription": "German (Germany)"
+    "deDEDescription": "German (Germany)",
+    "itITLabel": "Italiano (Italia)",
+    "itITDescription": "Italian (Italy)"
   },
   "partner": {
     "regional": {

@@ -1,0 +1,625 @@
+{
+  "admin": {
+    "accountDeletionRequestDetail": {
+      "back": "Torna alle richieste di eliminazione",
+      "retry": "Riprova",
+      "errors": {
+        "network": "Errore di rete",
+        "requestFailed": "Richiesta non riuscita ({{status}})"
+      },
+      "toast": {
+        "emailMismatch": "L'email inserita non corrisponde.",
+        "rejectNoteRequired": "Per rifiutare è richiesta una nota.",
+        "actionFailed": "Azione non riuscita ({{status}})",
+        "approved": "Richiesta approvata e accodata per l'elaborazione.",
+        "rejected": "Richiesta rifiutata. L'utente è stato avvisato."
+      },
+      "unauthorized": {
+        "title": "Non consentito",
+        "description": "Non hai l'autorizzazione per esaminare questa richiesta."
+      },
+      "notFound": {
+        "title": "Richiesta non trovata",
+        "description": "Potrebbe essere stata rimossa o non esistere nel tuo tenant."
+      },
+      "header": {
+        "title": "Richiesta di eliminazione account",
+        "reference": "Riferimento"
+      },
+      "user": {
+        "title": "Utente richiedente",
+        "name": "Nome",
+        "email": "Email",
+        "joined": "Iscritto",
+        "userId": "User ID"
+      },
+      "request": {
+        "title": "Dettagli richiesta",
+        "status": "Stato",
+        "requested": "Richiesta",
+        "processBy": "Da elaborare entro",
+        "processed": "Elaborata",
+        "reasonFromUser": "Motivo indicato dall'utente",
+        "noReasonGiven": "Nessun motivo indicato",
+        "adminNote": "Nota amministratore"
+      },
+      "status": {
+        "pending": "In sospeso",
+        "processing": "In elaborazione",
+        "completed": "Completata",
+        "cancelled": "Annullata"
+      },
+      "actions": {
+        "reject": "Rifiuta",
+        "approveAndQueue": "Approva e accoda per l'elaborazione"
+      },
+      "processedNotice": {
+        "processing": "Approvata e accodata per l'elaborazione.",
+        "cancelled": "Rifiutata. L'utente è stato avvisato.",
+        "completed": "Completata.",
+        "processed": "Elaborata {{time}}."
+      },
+      "confirm": {
+        "approveTitle": "Approvare l'eliminazione?",
+        "rejectTitle": "Rifiutare l'eliminazione?",
+        "close": "Chiudi",
+        "approveDescription": "L'approvazione accoda questo account per l'eliminazione. L'eliminazione effettiva avviene fuori banda; non potrai annullarla dall'interfaccia una volta che la richiesta viene presa in carico.",
+        "rejectDescription": "Il rifiuto annulla la richiesta. L'utente riceverà via email la tua nota con il motivo del rifiuto.",
+        "emailLabel": "Digita l'email dell'utente per confermare",
+        "noteLabel": "Nota",
+        "optionalSuffix": "(facoltativa)",
+        "approvePlaceholder": "Contesto interno facoltativo per il registro di controllo…",
+        "rejectPlaceholder": "Perché stai rifiutando? Questo testo verrà inviato via email all'utente.",
+        "cancel": "Annulla",
+        "approving": "Approvazione…",
+        "rejecting": "Rifiuto…",
+        "approve": "Approva",
+        "reject": "Rifiuta"
+      }
+    },
+    "accountDeletionRequestsList": {
+      "title": "Richieste di eliminazione account",
+      "description": "Utenti nel tuo tenant che hanno chiesto di eliminare il proprio account Breeze. Approva per accodarli all'elaborazione oppure rifiuta con una nota che spiega il motivo.",
+      "filterLabel": "Filtra per stato",
+      "refresh": "Aggiorna",
+      "retry": "Riprova",
+      "errors": {
+        "network": "Errore di rete",
+        "requestFailed": "Richiesta non riuscita ({{status}})"
+      },
+      "status": {
+        "pending": "In sospeso",
+        "processing": "In elaborazione",
+        "cancelled": "Annullata",
+        "completed": "Completata"
+      },
+      "unauthorized": {
+        "title": "Non consentito",
+        "prefix": "Non hai",
+        "suffix": "l'autorizzazione richiesta per esaminare le richieste di eliminazione account."
+      },
+      "empty": {
+        "title": "Nessuna richiesta {{status}}",
+        "description": "Non ci sono richieste da gestire."
+      },
+      "table": {
+        "user": "Utente",
+        "requested": "Richiesta",
+        "processBy": "Da elaborare entro",
+        "reason": "Motivo",
+        "status": "Stato",
+        "action": "Azione"
+      },
+      "noReasonGiven": "Nessun motivo indicato",
+      "review": "Esamina",
+      "pagination": {
+        "showing": "Visualizzazione {{from}}-{{to}}",
+        "previous": "Precedente",
+        "next": "Avanti"
+      }
+    },
+    "orgConnectedAppsPage": {
+      "title": "App connesse (a livello organizzazione)",
+      "description": {
+        "prefix": "Assistenti AI e altri client MCP che gli utenti in",
+        "yourOrganization": "la tua organizzazione",
+        "suffix": "hanno autorizzato. Blocca qualsiasi client per revocare immediatamente ogni concessione attiva."
+      },
+      "refresh": "Aggiorna",
+      "retry": "Riprova",
+      "noOrg": "Scegli un'organizzazione dal selettore organizzazione per visualizzarne le app connesse.",
+      "thisOrganization": "questa organizzazione",
+      "errors": {
+        "network": "Errore di rete",
+        "requestFailed": "Richiesta non riuscita ({{status}})"
+      },
+      "toast": {
+        "reasonRequired": "Il motivo è obbligatorio.",
+        "blockFailed": "Blocco non riuscito ({{status}})",
+        "blocked": "{{name}} bloccata per l'organizzazione. Gli utenti verranno disconnessi entro il TTL dei loro token (≤15 min).",
+        "unblockFailed": "Sblocco non riuscito ({{status}})",
+        "unblocked": "{{name}} sbloccata. Gli utenti devono autorizzare di nuovo prima che vengano emessi altri token."
+      },
+      "unauthorized": {
+        "title": "Non consentito",
+        "prefix": "Non hai",
+        "suffix": "l'autorizzazione richiesta per gestire i blocchi delle app connesse a livello organizzazione."
+      },
+      "empty": {
+        "title": "Nessun client autorizzato",
+        "description": "Quando un utente di questa organizzazione autorizza un client MCP, verrà mostrato qui."
+      },
+      "table": {
+        "app": "App",
+        "activeUsers": "Utenti attivi",
+        "lastUsed": "Ultimo utilizzo",
+        "status": "Stato",
+        "actions": "Azioni"
+      },
+      "everUsers": "{{count}} totali",
+      "blockReasonTitle": "Motivo: {{reason}}",
+      "status": {
+        "blocked": "Bloccata",
+        "until": "fino a {{time}}",
+        "allowed": "Consentita"
+      },
+      "actions": {
+        "unblock": "Sblocca",
+        "blockOrgWide": "Blocca a livello organizzazione"
+      },
+      "blockDialog": {
+        "title": "Bloccare {{name}}?",
+        "close": "Chiudi",
+        "descriptionPrefix": "Questa azione blocca",
+        "descriptionMiddle": "per ogni utente in",
+        "descriptionSuffix": "Tutte le concessioni attive e i refresh token vengono revocati immediatamente. Gli utenti vedranno una disconnessione entro il TTL dell'access-token (~15 min). Non potranno autorizzare di nuovo finché non la sblocchi.",
+        "authorizedUsers": "utenti attualmente autorizzati: perderanno l'accesso in questa app.",
+        "authorizedUsers_one": "utente attualmente autorizzato: perderà l'accesso in questa app.",
+        "authorizedUsers_other": "utenti attualmente autorizzati: perderanno l'accesso in questa app.",
+        "reason": "Motivo",
+        "reasonPlaceholder": "Revisione rischio fornitore, sospetta compromissione, modifica delle policy…",
+        "cancel": "Annulla",
+        "blocking": "Blocco…",
+        "blockOrgWide": "Blocca a livello organizzazione"
+      },
+      "unblockDialog": {
+        "title": "Sbloccare {{name}}?",
+        "close": "Chiudi",
+        "descriptionPrefix": "Gli utenti di questa organizzazione potranno autorizzare",
+        "descriptionSuffix": "di nuovo. Le concessioni esistenti restano revocate: ogni utente deve accedere nuovamente tramite il flusso OAuth.",
+        "cancel": "Annulla",
+        "unblocking": "Sblocco…",
+        "unblock": "Sblocca"
+      }
+    },
+    "quarantinedDevices": {
+      "title": "Dispositivi in quarantena",
+      "description": "Dispositivi messi in quarantena per certificati mTLS scaduti o non validi. Approva per riemettere i certificati oppure nega per dismettere il dispositivo.",
+      "loading": "Caricamento dispositivi in quarantena...",
+      "refresh": "Aggiorna",
+      "retry": "Riprova",
+      "errors": {
+        "fetch": "Impossibile recuperare i dispositivi in quarantena",
+        "generic": "Si è verificato un errore",
+        "approve": "Impossibile approvare il dispositivo",
+        "deny": "Impossibile negare il dispositivo"
+      },
+      "empty": {
+        "title": "Nessun dispositivo in quarantena",
+        "description": "Tutti i dispositivi hanno certificati mTLS validi. I dispositivi con certificati scaduti o revocati appariranno qui per la revisione."
+      },
+      "table": {
+        "hostname": "Hostname",
+        "os": "OS",
+        "quarantinedAt": "Messo in quarantena il",
+        "reason": "Motivo",
+        "actions": "Azioni"
+      },
+      "actions": {
+        "approve": "Approva",
+        "deny": "Nega"
+      },
+      "count": "{{count}} dispositivo in quarantena",
+      "count_one": "{{count}} dispositivo in quarantena",
+      "count_other": "{{count}} dispositivi in quarantena",
+      "denyDialog": {
+        "title": "Nega dispositivo",
+        "descriptionPrefix": "Vuoi davvero negare",
+        "descriptionSuffix": "Il dispositivo verrà dismesso definitivamente e il suo certificato verrà revocato. L'agent smetterà di inviare dati e il dispositivo non sarà più gestito.",
+        "cancel": "Annulla",
+        "denying": "Negazione...",
+        "confirm": "Nega e dismetti"
+      }
+    },
+    "thirdPartyCatalog": {
+      "title": "Catalogo pacchetti di terze parti",
+      "description": "Metadati curati da Breeze per software di terze parti rilevato da winget sugli agent.",
+      "totalEntries": "Voci totali:",
+      "refresh": "Aggiorna",
+      "addPackage": "Aggiungi pacchetto",
+      "searchPlaceholder": "Cerca per nome, fornitore o winget ID…",
+      "breezeTestedOnly": "Solo testati da Breeze",
+      "breezeTested": "Testato da Breeze",
+      "dismiss": "Ignora",
+      "loading": "Caricamento catalogo…",
+      "empty": "Nessuna voce del catalogo corrisponde ai filtri correnti.",
+      "confirmDelete": "Eliminare \"{{name}}\" dal catalogo?",
+      "errors": {
+        "load": "Impossibile caricare il catalogo",
+        "generic": "Si è verificato un errore",
+        "queueTestStatus": "Impossibile accodare il test ({{status}})",
+        "queueTest": "Impossibile accodare il test",
+        "deleteEntry": "Impossibile eliminare la voce",
+        "delete": "Eliminazione non riuscita"
+      },
+      "notice": {
+        "testComplete": "Test completato: {{summary}}",
+        "testQueued": "Test accodato per {{name}}. Polling del risultato…"
+      },
+      "prompt": {
+        "runSmokeTest": "Per quale versione vuoi eseguire lo smoke test di {{name}}?"
+      },
+      "platformAdmin": {
+        "title": "Accesso amministratore piattaforma richiesto",
+        "prefix": "Il catalogo di terze parti è gestito dagli amministratori della piattaforma Breeze. Il tuo account",
+        "role": "amministratore organizzazione/partner",
+        "suffix": "può visualizzare il catalogo curato nei normali flussi di patch, ma non può modificarlo direttamente."
+      },
+      "table": {
+        "vendor": "Fornitore",
+        "package": "Pacchetto",
+        "wingetId": "Winget ID",
+        "severity": "Severità",
+        "status": "Stato",
+        "lastTest": "Ultimo test",
+        "actions": "Azioni"
+      },
+      "severity": {
+        "critical": "critica",
+        "important": "importante",
+        "moderate": "moderata",
+        "low": "bassa",
+        "unknown": "sconosciuta"
+      },
+      "test": {
+        "running": "in esecuzione…",
+        "versionTitle": "v{{version}}",
+        "pass": "superato",
+        "fail": "non riuscito",
+        "inconclusive": "non conclusivo",
+        "skipped": "saltato"
+      },
+      "actions": {
+        "retest": "Ripeti test",
+        "runSmokeTest": "Esegui smoke test",
+        "edit": "Modifica",
+        "delete": "Elimina"
+      }
+    },
+    "thirdPartyCatalogEditor": {
+      "title": {
+        "edit": "Modifica voce catalogo",
+        "add": "Aggiungi voce catalogo"
+      },
+      "errors": {
+        "saveStatus": "Salvataggio non riuscito ({{status}})",
+        "save": "Impossibile salvare"
+      },
+      "fields": {
+        "packageId": "Winget package ID",
+        "vendor": "Fornitore",
+        "friendlyName": "Nome descrittivo",
+        "defaultSeverity": "Severità predefinita",
+        "breezeTested": "Testato da Breeze",
+        "homepageUrl": "Homepage URL",
+        "notes": "Note"
+      },
+      "placeholders": {
+        "packageId": "es. Mozilla.Firefox",
+        "vendor": "Mozilla",
+        "friendlyName": "Mozilla Firefox",
+        "homepageUrl": "https://example.com"
+      },
+      "severity": {
+        "critical": "critica",
+        "important": "importante",
+        "moderate": "moderata",
+        "low": "bassa",
+        "unknown": "sconosciuta"
+      },
+      "packageIdLocked": "Il Package ID non può essere modificato dopo il salvataggio.",
+      "cancel": "Annulla",
+      "saveChanges": "Salva modifiche",
+      "addPackage": "Aggiungi pacchetto"
+    },
+    "userDevicesPage": {
+      "title": "Dispositivi attendibili",
+      "backToUsers": "Torna agli utenti",
+      "retry": "Riprova",
+      "unknownDevice": "Dispositivo sconosciuto",
+      "thisUser": "questo utente",
+      "blockThisDevice": "Blocca questo dispositivo",
+      "empty": "Questo utente non ha dispositivi associati.",
+      "auditLink": "Vedi eventi di audit correlati",
+      "auditSuffix": "per la cronologia completa di approvazioni, accessi e blocchi.",
+      "errors": {
+        "missingUserId": "ID utente mancante",
+        "requestFailed": "Richiesta non riuscita ({{status}})",
+        "network": "Errore di rete"
+      },
+      "toast": {
+        "reasonRequired": "Il motivo è obbligatorio.",
+        "blockFailed": "Blocco non riuscito ({{status}})",
+        "blocked": "Dispositivo bloccato. {{name}} non può più approvare da questo dispositivo finché non lo associa di nuovo."
+      },
+      "unauthorized": {
+        "title": "Non consentito",
+        "description": "Non hai l'autorizzazione per gestire questo utente. Assicurati di aver effettuato l'accesso come amministratore organizzazione o partner e che questo utente appartenga al tuo tenant."
+      },
+      "description": {
+        "prefix": "Dispositivi mobili associati da",
+        "suffix": "Il blocco di un dispositivo cancella i suoi push token e forza una nuova associazione."
+      },
+      "selfWarning": {
+        "prefix": "Questo è",
+        "own": "il tuo",
+        "middle": "account. Usa",
+        "suffix": "per gestire i tuoi dispositivi: il blocco amministratore non può essere applicato a se stessi."
+      },
+      "status": {
+        "active": "Attivo",
+        "blocked": "Bloccato"
+      },
+      "fields": {
+        "platform": "Piattaforma",
+        "appVersion": "app {{version}}",
+        "lastActive": "Ultima attività",
+        "paired": "Associato",
+        "blocked": "Bloccato",
+        "installId": "Install ID"
+      },
+      "blockDialog": {
+        "title": "Blocca dispositivo",
+        "close": "Chiudi",
+        "descriptionPrefix": "Questa azione bloccherà",
+        "descriptionMiddle": "per",
+        "descriptionSuffix": "I push token vengono cancellati immediatamente e l'utente dovrà associare di nuovo il dispositivo prima di approvare qualsiasi cosa dal telefono.",
+        "reason": "Motivo",
+        "reasonPlaceholder": "Telefono smarrito, dipendente uscito, sospetta compromissione…",
+        "reasonRequired": "Per il registro di controllo è richiesto un motivo.",
+        "cancel": "Annulla",
+        "blocking": "Blocco…",
+        "blockDevice": "Blocca dispositivo"
+      }
+    }
+  },
+  "audit": {
+    "auditExport": {
+      "title": "Esporta log di audit",
+      "description": "Scarica le voci usando i filtri e le colonne correnti.",
+      "dateRange": "Intervallo date",
+      "defaultRange": "Ultimi 30 giorni",
+      "format": "Formato",
+      "columns": "Colonne",
+      "includeDetails": "Includi dettagli e modifiche",
+      "exporting": "Esportazione...",
+      "exportFormat": "Esporta {{format}}",
+      "formats": {
+        "csv": "CSV",
+        "json": "JSON"
+      },
+      "columnLabels": {
+        "timestamp": "Timestamp",
+        "user": "Utente",
+        "action": "Azione",
+        "resource": "Risorsa",
+        "details": "Dettagli",
+        "ipAddress": "Indirizzo IP"
+      },
+      "errors": {
+        "status": "{{status}} {{statusText}}",
+        "export": "Impossibile esportare i log di audit"
+      }
+    },
+    "auditFilters": {
+      "title": "Filtri audit",
+      "description": "Affina le voci di audit per utente, azione e risorsa.",
+      "dateRange": "Intervallo date",
+      "start": "Inizio",
+      "end": "Fine",
+      "user": "Utente",
+      "searchUsers": "Cerca utenti",
+      "loadingUsers": "Caricamento utenti...",
+      "noUsersFound": "Nessun utente trovato",
+      "filteringBy": "Filtro per",
+      "clear": "Cancella",
+      "actionTypes": "Tipi di azione",
+      "resourceTypes": "Tipi di risorsa",
+      "searchDetails": "Cerca nei dettagli",
+      "searchDetailsPlaceholder": "Cerca nei dettagli attività",
+      "applyFilters": "Applica filtri",
+      "clearAll": "Cancella tutto",
+      "presets": {
+        "today": "Oggi",
+        "last7Days": "Ultimi 7 giorni",
+        "last30Days": "Ultimi 30 giorni",
+        "custom": "Personalizzato"
+      },
+      "actions": {
+        "login": "accesso",
+        "update": "aggiornamento",
+        "delete": "eliminazione",
+        "create": "creazione",
+        "export": "esportazione",
+        "access": "accesso"
+      },
+      "resources": {
+        "policy": "policy",
+        "report": "report",
+        "dataset": "dataset",
+        "identity": "identità",
+        "automation": "automazione",
+        "asset": "asset"
+      }
+    },
+    "auditLogDetail": {
+      "title": "Dettaglio log di audit",
+      "subtitle": "{{action}} su {{resource}}",
+      "close": "Chiudi",
+      "activitySummary": "Riepilogo attività",
+      "changesSnapshot": "Snapshot modifiche",
+      "before": "Prima",
+      "after": "Dopo",
+      "userInfo": "Informazioni utente",
+      "requestMetadata": "Metadati richiesta",
+      "fields": {
+        "timestamp": "Timestamp:",
+        "action": "Azione:",
+        "resource": "Risorsa:",
+        "details": "Dettagli:",
+        "ip": "IP:",
+        "userAgent": "User Agent:",
+        "session": "Sessione:"
+      }
+    },
+    "auditLogViewer": {
+      "title": "Audit trail",
+      "description": "Monitora azioni degli utenti, operazioni sensibili e modifiche di sistema.",
+      "retry": "Riprova",
+      "filters": "Filtri",
+      "clear": "Cancella",
+      "exportLogs": "Esporta log",
+      "empty": "Nessun log di audit trovato.",
+      "viewDetails": "Visualizza dettagli",
+      "errors": {
+        "fetch": "Impossibile recuperare i log di audit",
+        "load": "Impossibile caricare i log di audit"
+      },
+      "columns": {
+        "timestamp": "Timestamp",
+        "user": "Utente",
+        "action": "Azione",
+        "resource": "Risorsa",
+        "details": "Dettagli",
+        "ipAddress": "IP"
+      },
+      "expanded": {
+        "fullDetails": "Dettagli completi",
+        "session": "Sessione",
+        "changes": "Modifiche",
+        "fieldsUpdated": "{{count}} campi aggiornati",
+        "fieldsUpdated_one": "{{count}} campo aggiornato",
+        "fieldsUpdated_other": "{{count}} campi aggiornati",
+        "reviewFullSnapshot": "Rivedi snapshot completo"
+      },
+      "pagination": {
+        "showingRange": "Visualizzazione {{from}}-{{to}}",
+        "showingOf": "Visualizzazione {{from}}-{{to}} di {{total}}",
+        "previous": "Precedente",
+        "page": "Pagina {{page}}",
+        "next": "Avanti"
+      }
+    },
+    "complianceReport": {
+      "title": "Report di conformità",
+      "description": "Genera riepiloghi pronti per audit allineati ai controlli di conformità.",
+      "generateReport": "Genera report",
+      "dataAccessAudit": "Audit accesso ai dati",
+      "sensitiveOperations": "Operazioni sensibili",
+      "reviewRequired": "Revisione richiesta",
+      "categories": {
+        "gdpr": { "label": "GDPR" },
+        "soc2": { "label": "SOC 2" },
+        "hipaa": { "label": "HIPAA" }
+      },
+      "summary": {
+        "gdpr": {
+          "dataAccessEvents": "Eventi di accesso ai dati",
+          "dsarRequests": "Richieste DSAR",
+          "retentionAlerts": "Avvisi di conservazione"
+        },
+        "soc2": {
+          "controlExceptions": "Eccezioni di controllo",
+          "privilegedActions": "Azioni privilegiate",
+          "policyAttestations": "Attestazioni policy"
+        },
+        "hipaa": {
+          "phiAccessEvents": "Eventi di accesso PHI",
+          "roleChanges": "Modifiche ruolo",
+          "encryptionChecks": "Controlli crittografia"
+        },
+        "helpers": {
+          "past30Days": "ultimi 30 giorni",
+          "pending2": "2 in sospeso",
+          "overdue": "scaduto",
+          "last7Days": "ultimi 7 giorni",
+          "withinScope": "nell'ambito",
+          "complete": "completo",
+          "past14Days": "ultimi 14 giorni",
+          "requiresReview": "richiede revisione",
+          "compliant": "conforme"
+        }
+      },
+      "table": {
+        "user": "Utente",
+        "data": "Dati",
+        "purpose": "Finalità",
+        "time": "Ora"
+      },
+      "data": {
+        "customerRecords": "Record clienti",
+        "adminPortal": "Portale admin",
+        "payrollRecords": "Record paghe",
+        "deviceGroupVip": "Gruppo dispositivi - VIP"
+      },
+      "purpose": {
+        "billingReview": "Revisione fatturazione",
+        "securityAudit": "Audit di sicurezza",
+        "complianceSampling": "Campionamento conformità",
+        "accessProvisioning": "Provisioning accessi"
+      },
+      "operations": {
+        "exportedCustomerDataset": "Dataset clienti esportato in CSV",
+        "mfaWindowReduced": "Finestra MFA ridotta a 15 minuti",
+        "roleChangedExternalContractor": "Ruolo modificato per collaboratore esterno"
+      },
+      "severity": {
+        "high": "Alta",
+        "medium": "Media"
+      }
+    },
+    "userActivityReport": {
+      "title": "Report attività utente",
+      "description": "Rivedi le tendenze di attività ed esporta la cronologia.",
+      "allUsers": "Tutti gli utenti",
+      "unknown": "Sconosciuto",
+      "retry": "Riprova",
+      "exportActivity": "Esporta attività",
+      "selectedActivity": "Attività di {{user}}",
+      "totalActions": "Azioni totali",
+      "topAction": "Azione principale",
+      "notApplicable": "n/d",
+      "occurrences": "{{count}} occorrenze",
+      "occurrences_one": "{{count}} occorrenza",
+      "occurrences_other": "{{count}} occorrenze",
+      "distinctActions": "Azioni distinte",
+      "activityTimeline": "Timeline attività",
+      "noActivity": "Nessuna attività trovata.",
+      "actionsByType": "Azioni per tipo",
+      "noActionsRecorded": "Nessuna azione registrata.",
+      "recentActions": "Azioni recenti",
+      "noRecentActions": "Nessuna azione recente trovata.",
+      "errors": {
+        "fetchUsers": "Impossibile recuperare gli utenti",
+        "fetchActivity": "Impossibile recuperare l'attività",
+        "loadData": "Impossibile caricare i dati"
+      },
+      "table": {
+        "time": "Ora",
+        "action": "Azione",
+        "resource": "Risorsa",
+        "ip": "IP"
+      }
+    }
+  }
+}

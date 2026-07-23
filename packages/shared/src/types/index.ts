@@ -12,7 +12,7 @@ export type PartnerType = 'msp' | 'enterprise' | 'internal';
 export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
 export type OrgType = 'customer' | 'internal';
 export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned';
-export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE';
+export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE' | 'it-IT';
 
 export interface Partner {
   id: string;

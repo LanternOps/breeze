@@ -1,0 +1,104 @@
+{
+  "peripheralPage": {
+    "title": "Controllo periferiche",
+    "tabs": {
+      "policies": "Criteri",
+      "activity": "Registro attività"
+    }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Impossibile recuperare l'attività",
+      "generic": "Si è verificato un errore"
+    },
+    "allEvents": "Tutti gli eventi",
+    "events": {
+      "connected": "Connessa",
+      "disconnected": "Disconnessa",
+      "blocked": "Bloccata",
+      "mounted_read_only": "Sola lettura",
+      "policy_override": "Override criterio"
+    },
+    "peripheralType": "Tipo di periferica",
+    "vendor": "Fornitore",
+    "empty": "Nessuna attività delle periferiche trovata.",
+    "columns": {
+      "occurredAt": "Data/ora evento",
+      "eventType": "Tipo di evento",
+      "product": "Prodotto",
+      "serialNumber": "Numero di serie",
+      "device": "Dispositivo",
+      "policy": "Criterio"
+    },
+    "pagination": "Visualizzazione di {{from}}-{{to}} su {{total}}",
+    "prev": "Prec."
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Impossibile recuperare i criteri",
+      "generic": "Si è verificato un errore"
+    },
+    "allClasses": "Tutte le classi",
+    "classes": {
+      "storage": "Archiviazione",
+      "all_usb": "Tutti USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "allActions": "Tutte le azioni",
+    "actions": {
+      "allow": "Consenti",
+      "block": "Blocca",
+      "read_only": "Sola lettura",
+      "alert": "Avviso"
+    },
+    "allStatus": "Tutti gli stati",
+    "createPolicy": "Crea criterio",
+    "empty": "Nessun criterio per periferiche trovato. Creane uno per iniziare.",
+    "columns": {
+      "deviceClass": "Classe dispositivo",
+      "action": "Azione",
+      "exceptions": "Eccezioni",
+      "created": "Creato"
+    },
+    "partnerWideTitle": "Criterio a livello partner - applicato ai dispositivi di ogni organizzazione",
+    "allOrgs": "A livello partner"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Impossibile salvare il criterio",
+      "generic": "Si è verificato un errore"
+    },
+    "editTitle": "Modifica criterio periferiche",
+    "createTitle": "Crea criterio periferiche",
+    "scope": "Ambito",
+    "allOrganizations": "Tutte le organizzazioni",
+    "partnerWide": "(criterio a livello partner)",
+    "thisOrganization": "Solo questa organizzazione",
+    "deviceClass": "Classe dispositivo",
+    "classes": {
+      "storage": "Archiviazione",
+      "all_usb": "Tutti USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "action": "Azione",
+    "actions": {
+      "allow": "Consenti",
+      "block": "Blocca",
+      "read_only": "Sola lettura",
+      "alert": "Avviso"
+    },
+    "exceptions": "Eccezioni",
+    "addException": "Aggiungi eccezione",
+    "noExceptions": "Nessuna eccezione configurata.",
+    "exceptionNumber": "Eccezione {{number}}",
+    "vendor": "Fornitore",
+    "product": "Prodotto",
+    "serialNumber": "Numero di serie",
+    "allow": "Consenti:",
+    "reason": "Motivo",
+    "updatePolicy": "Aggiorna criterio",
+    "createPolicy": "Crea criterio"
+  }
+}

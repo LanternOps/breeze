@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Data di restituzione prevista",
+    "notes": "Note (opzionali)",
+    "notesPlaceholder": "Aggiungi eventuali dettagli di ritiro o consegna",
+    "requesting": "Richiesta: {{assetName}}",
+    "submit": "Richiedi assegnazione",
+    "submitting": "Invio della richiesta...",
+    "title": "Assegnazione asset",
+    "validation": {
+      "expectedReturnDate": "Seleziona una data di restituzione prevista"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "restituzione",
+      "check-out": "assegnazione"
+    },
+    "description": "Attività recenti di assegnazione e restituzione",
+    "title": "Cronologia asset"
+  },
+  "branding": {
+    "defaultName": "Breeze Portal"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} dispositivi collegati al tuo account",
+    "deviceCount_one": "{{count}} dispositivo collegato al tuo account",
+    "deviceCount_other": "{{count}} dispositivi collegati al tuo account",
+    "title": "I miei dispositivi"
+  },
+  "deviceStatus": {
+    "lastSeen": "Ultimo contatto {{lastSeen}}",
+    "status": {
+      "maintenance": "manutenzione",
+      "offline": "offline",
+      "online": "online"
+    },
+    "unknown": "Sconosciuto"
+  },
+  "header": {
+    "customerPortal": "Portale clienti",
+    "profile": "Profilo",
+    "signOut": "Esci"
+  },
+  "login": {
+    "email": "Email",
+    "emailPlaceholder": "you@company.com",
+    "forgotPassword": "Password dimenticata?",
+    "lookup": "Cerca",
+    "needHelp": "Hai bisogno di assistenza?",
+    "organization": "Organizzazione",
+    "organizationPlaceholder": "Acme Corp o ORG-123",
+    "password": "Password",
+    "passwordPlaceholder": "Inserisci la password",
+    "signingIn": "Accesso in corso...",
+    "submit": "Accedi",
+    "validation": {
+      "email": "Inserisci un indirizzo email valido",
+      "organization": "Inserisci il nome o il codice della tua organizzazione",
+      "passwordLength": "La password deve contenere almeno 8 caratteri"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Codice di reimpostazione",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Conferma password",
+      "confirmPasswordPlaceholder": "Reinserisci la nuova password",
+      "newPassword": "Nuova password",
+      "newPasswordPlaceholder": "Inserisci una nuova password",
+      "resetting": "Reimpostazione della password...",
+      "submit": "Reimposta password"
+    },
+    "email": "Email",
+    "emailPlaceholder": "you@company.com",
+    "rememberedPassword": "Ti sei ricordato la password?",
+    "request": {
+      "sending": "Invio dell'email di reimpostazione...",
+      "submit": "Invia link di reimpostazione"
+    },
+    "signIn": "Accedi",
+    "validation": {
+      "code": "Inserisci il codice di reimpostazione a 6 cifre",
+      "email": "Inserisci un indirizzo email valido",
+      "passwordLength": "La password deve contenere almeno 8 caratteri",
+      "passwordsMatch": "Le password non corrispondono"
+    }
+  },
+  "sidebar": {
+    "collapse": "Comprimi navigazione del portale",
+    "expand": "Espandi navigazione del portale",
+    "items": {
+      "assetCheckout": "Assegnazione asset",
+      "helpCenter": "Centro assistenza",
+      "myDevices": "I miei dispositivi",
+      "overview": "Panoramica",
+      "supportTickets": "Ticket di assistenza"
+    },
+    "navigation": "Navigazione del portale"
+  }
+}

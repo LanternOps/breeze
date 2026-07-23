@@ -1,0 +1,2078 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "devices": "Dispositivi",
+    "alerts": "Avvisi",
+    "tickets": "Ticket",
+    "incidents": "Incidenti",
+    "remoteAccess": "Accesso remoto",
+    "scripts": "Script",
+    "patches": "Patch",
+    "vulnerabilities": "Vulnerabilità",
+    "oneDrive": "OneDrive",
+    "fleet": "Flotta",
+    "aiWorkspace": "Area di lavoro AI",
+    "aiForOffice": "AI per Office",
+      "networkMonitor": "Monitoraggio rete",
+      "networkDiscovery": "Rilevamento rete",
+    "security": "Sicurezza",
+    "edr": "EDR",
+      "dnsSecurity": "Sicurezza DNS",
+    "pam": "PAM",
+    "userRisk": "Rischio utente",
+    "sensitiveData": "Dati sensibili",
+    "peripherals": "Periferiche",
+    "aiRiskEngine": "Motore di rischio AI",
+    "cisBenchmarks": "CIS Benchmarks",
+    "complianceBaselines": "Linee di base di conformità",
+    "quotes": "Preventivi",
+    "invoices": "Fatture",
+    "contracts": "Contratti",
+    "timesheets": "Fogli ore",
+    "productCatalog": "Catalogo prodotti",
+    "softwareLibrary": "Libreria software",
+    "softwarePolicies": "Criteri software",
+    "configPolicies": "Criteri di configurazione",
+    "integrations": "Integrazioni",
+    "backup": "Backup",
+    "cloudBackup": "Backup sul cloud",
+    "disasterRecovery": "Ripristino di emergenza",
+    "reports": "Report",
+    "analytics": "Analisi",
+    "auditTrail": "Registro di controllo",
+    "eventLogs": "Registri eventi",
+    "partner": "Partner",
+    "organizations": "Organizzazioni",
+    "aiUsageBudget": "Utilizzo e budget AI",
+    "customFields": "Campi personalizzati",
+    "savedFilters": "Filtri salvati",
+    "users": "Utenti",
+    "roles": "Ruoli",
+    "sso": "SSO",
+    "accessReviews": "Revisioni degli accessi",
+    "enrollmentKeys": "Chiavi di registrazione",
+    "deletionRequests": "Richieste di cancellazione",
+    "quarantinedDevices": "Dispositivi in quarantena",
+    "thirdPartyCatalog": "Catalogo di terze parti",
+    "connectedAppsAdmin": "App connesse (amministratore)",
+    "sectionAiFleet": "AI e flotta",
+    "sectionMonitoring": "Monitoraggio",
+    "sectionSecurity": "Sicurezza",
+    "sectionOperations": "Operazioni",
+    "sectionBackup": "Backup",
+    "sectionReporting": "Reportistica",
+    "sectionSettings": "Impostazioni",
+    "sectionExtensions": "Estensioni"
+  },
+  "documentTitles": {
+    "dashboard": "Dashboard",
+    "profileSettings": "Impostazioni del profilo"
+  },
+  "richTextEditor": {
+    "toolbarAria": "Formattazione",
+    "bold": "Grassetto",
+    "italic": "Corsivo",
+    "underline": "Sottolineato",
+    "heading3": "Intestazione",
+    "heading4": "Sottotitolo",
+    "bulletList": "Elenco puntato",
+    "orderedList": "Elenco numerato",
+    "link": "Collegamento",
+    "linkPrompt": "Inserisci un URL (http:// o https://)",
+    "linkInvalid": "Sono consentiti solo i collegamenti http:// e https://"
+  },
+  "actions": {
+    "save": "Salva",
+    "cancel": "Annulla",
+    "delete": "Elimina",
+    "edit": "Modifica",
+    "create": "Crea",
+    "add": "Aggiungi",
+    "remove": "Rimuovi",
+    "close": "Chiudi",
+    "confirm": "Conferma",
+    "search": "Cerca",
+    "filter": "Filtra",
+    "refresh": "Aggiorna",
+    "export": "Esporta",
+    "download": "Scarica",
+    "upload": "Carica",
+    "copy": "Copia",
+    "retry": "Riprova",
+    "back": "Indietro",
+    "next": "Avanti",
+    "done": "Fatto",
+    "apply": "Applica",
+    "enable": "Abilita",
+    "disable": "Disabilita",
+    "view": "Visualizza",
+    "run": "Esegui",
+    "clear": "Cancella"
+  },
+  "states": {
+    "loading": "Caricamento…",
+    "saving": "Salvataggio…",
+    "saved": "Salvato",
+    "error": "Qualcosa è andato storto",
+    "empty": "Nessun risultato trovato",
+    "enabled": "Abilitato",
+    "disabled": "Disabilitato",
+    "active": "Attivo",
+    "inactive": "Inattivo",
+    "online": "Online",
+    "offline": "Offline",
+    "pending": "In sospeso",
+    "unknown": "Sconosciuto",
+    "processing": "Elaborazione...",
+    "copied": "Copiato",
+    "resolving": "Risoluzione..."
+  },
+  "labels": {
+    "name": "Nome",
+    "description": "Descrizione",
+    "status": "Stato",
+    "type": "Tipo",
+    "organization": "Organizzazione",
+    "site": "Sito",
+    "device": "Dispositivo",
+    "user": "Utente",
+    "createdAt": "Creato",
+    "updatedAt": "Aggiornato",
+    "actions": "Azioni",
+    "all": "Tutto",
+    "yes": "Sì",
+    "no": "No",
+    "none": "Nessuno",
+    "optional": "Facoltativo",
+    "required": "Obbligatorio"
+  },
+  "shared": {
+    "accessDenied": {
+      "title": "Accesso negato",
+      "message": "Non hai il permesso per visualizzarlo.",
+      "contactAdmin": "Se ritieni di dover avere accesso, contatta il tuo amministratore."
+    },
+    "help": "Assistenza",
+    "more": "Altro",
+    "alpha": {
+      "label": "Alpha",
+      "disclaimer": "Questa funzionalità è in accesso anticipato. Il comportamento potrebbe cambiare e alcune operazioni potrebbero non funzionare come previsto. Non è consigliata per l'uso in produzione senza test."
+    },
+    "mcp": {
+      "connecting": "Stai connettendo un agente AI?",
+      "title": "Indirizza qui il tuo agente AI",
+      "description": "Incolla questo URL nel tuo client MCP (Claude.ai, ChatGPT, Cursor, ...). Verrai rimandato qui per autorizzare la connessione tramite OAuth."
+    },
+    "progress": {
+      "count": "{{current}} di {{total}}",
+      "remaining": "e altri {{count}}...",
+      "remaining_one": "e {{count}} altro...",
+      "remaining_other": "e altri {{count}}...",
+      "status": {
+        "pending": "In sospeso",
+        "running": "In esecuzione",
+        "success": "Completato",
+        "failed": "Fallito"
+      }
+    },
+    "scope": {
+      "system": "Sistema",
+      "partnerWide": "A livello di partner"
+    },
+    "toast": {
+      "undo": "Annulla",
+      "dismiss": "Ignora"
+    }
+  },
+  "dashboard": {
+    "greeting": {
+      "welcome": "Benvenuto",
+      "morning": "Buongiorno",
+      "afternoon": "Buon pomeriggio",
+      "evening": "Buonasera"
+    },
+    "updated": {
+      "justNow": "Proprio adesso",
+      "secondsAgo": "{{count}}s fa",
+      "secondsAgo_one": "{{count}}s fa",
+      "secondsAgo_other": "{{count}}s fa",
+      "minutesAgo": "{{count}}m fa",
+      "minutesAgo_one": "{{count}}m fa",
+      "minutesAgo_other": "{{count}}m fa",
+      "hoursAgo": "{{count}}h fa",
+      "hoursAgo_one": "{{count}}h fa",
+      "hoursAgo_other": "{{count}}h fa"
+    },
+    "refresh": "Aggiorna dashboard",
+    "stats": {
+      "totalDevices": "Dispositivi totali",
+      "warnings": "Avvisi",
+      "critical": "Critico"
+    },
+    "emptyDevices": {
+      "title": "Nessun dispositivo ancora registrato",
+      "description": "Registra il tuo primo dispositivo per iniziare a monitorare la tua flotta.",
+      "add": "Aggiungi dispositivo"
+    },
+    "fleetStatus": {
+      "title": "Stato della flotta",
+      "onlineCount": "{{online}}/{{total}} online",
+      "allOnline": "Tutti i dispositivi online",
+      "healthy": "La flotta è operativa",
+      "viewOffline": "Visualizza tutti gli {{count}} offline"
+    },
+    "activity": {
+      "title": "Attività recente",
+      "viewAuditLog": "Visualizza il registro di controllo",
+      "empty": "Nessuna attività ancora",
+      "emptyDescription": "Qui verranno visualizzate azioni come la registrazione del dispositivo, l'esecuzione di script e le modifiche alla configurazione.",
+      "action": "Azione",
+      "target": "Destinazione",
+      "time": "Ora"
+    },
+    "alerts": {
+      "title": "Avvisi recenti",
+      "viewAll": "Visualizza tutto",
+      "allClear": "Tutto chiaro",
+      "empty": "Nessun avviso attivo nella tua flotta",
+      "fallbackTitle": "Avviso"
+    },
+    "customizer": {
+      "title": "Personalizzazione del dashboard",
+      "newName": "Nuovo nome della dashboard",
+      "widgetLibrary": "Libreria di widget",
+      "widgetLibraryHint": "Trascina i widget sulla griglia o tocca per aggiungerli.",
+      "emailPlaceholder": "email@company.com",
+      "noSharedUsers": "Nessun utente condiviso ancora.",
+      "grid": "Griglia della dashboard",
+      "gridHint": "Trascina per spostare. Ridimensiona dalla maniglia nell'angolo.",
+      "emptyGrid": "Trascina qui i widget per iniziare a creare la dashboard.",
+      "trendChart": "Grafico delle tendenze",
+      "revertLayout": "Ripristina layout",
+      "saveDashboards": "Salva dashboard",
+      "saveFailed": "Salvataggio non riuscito",
+      "shareDashboard": "Condividi dashboard",
+      "widgetsPlaced": "{{count}} widget posizionati",
+      "widgetsPlaced_one": "{{count}} widget posizionato",
+      "widgetsPlaced_other": "{{count}} widget posizionati",
+      "dashboardSettings": "Impostazioni della dashboard",
+      "layout": "Disposizione",
+      "dashboardName": "Nome della dashboard",
+      "widgetSettings": "Impostazioni del widget",
+      "widgetTitle": "Titolo",
+      "refreshInterval": "Intervallo di aggiornamento (minuti)",
+      "severityFilter": "Filtro gravità",
+      "chartType": "Tipo di grafico",
+      "timeRange": "Intervallo di tempo",
+      "showTrend": "Mostra la linea di tendenza del dispositivo",
+      "showLegend": "Mostra legenda",
+      "removeWidget": "Rimuovi il widget",
+      "selectWidget": "Seleziona un widget per configurarne le impostazioni.",
+      "summary": "Widget: {{widgets}} · Condiviso con: {{shared}}",
+      "preview": {
+        "devices": "{{count}} dispositivi",
+        "online": "{{percent}}% online",
+        "activeAlerts": "{{count}} avvisi attivi",
+        "filter": "Filtro: {{filter}}",
+        "lastRefresh": "Ultimo aggiornamento: {{minutes}}m"
+      },
+      "severity": {
+        "all": "Tutte le gravità",
+        "critical": "Solo critica",
+        "high": "Solo alta",
+        "medium": "Solo media",
+        "low": "Solo bassa"
+      },
+      "chart": {
+        "line": "Linea",
+        "bar": "Barre",
+        "area": "Area"
+      },
+      "ranges": {
+        "24h": "Ultime 24 ore",
+        "7d": "Ultimi 7 giorni",
+        "30d": "Ultimi 30 giorni"
+      },
+      "defaultPerRole": "Dashboard predefinita per ruolo"
+    }
+  },
+  "filters": {
+    "advanced": "Filtro avanzato",
+    "collapse": "Comprimi",
+    "computed": "Calcolato",
+    "match": "Corrispondenza",
+    "allConditions": "Tutte le condizioni (AND)",
+    "anyCondition": "Qualsiasi condizione (OR)",
+    "condition": "Condizione",
+    "addCondition": "Aggiungi condizione",
+    "removeCondition": "Rimuovi condizione",
+    "addGroup": "Aggiungi gruppo",
+    "conditionCount": "{{count}} condizioni",
+    "conditionCount_one": "{{count}} condizione",
+    "conditionCount_other": "{{count}} condizioni",
+    "activeConditionCount": "{{count}} condizioni attive",
+    "activeConditionCount_one": "{{count}} condizione attiva",
+    "activeConditionCount_other": "{{count}} condizioni attive",
+    "selectField": "Seleziona campo",
+    "searchFields": "Cerca campi...",
+    "noFields": "Nessun campo corrisponde alla tua ricerca",
+    "group": {
+      "label": "Gruppo",
+      "match": "Gruppo: corrispondenza",
+      "all": "Tutti (AND)",
+      "any": "Qualsiasi (OR)",
+      "remove": "Rimuovi gruppo"
+    },
+    "saved": {
+      "title": "Filtri salvati",
+      "edit": "Modifica filtro",
+      "create": "Crea filtro",
+      "new": "Nuovo filtro",
+      "nameRequired": "Il nome è obbligatorio",
+      "namePlaceholder": "ad esempio, Windows Server",
+      "description": "Descrizione (facoltativa)",
+      "descriptionPlaceholder": "Descrivi cosa deve intercettare questo filtro",
+      "conditions": "Condizioni",
+      "saveChanges": "Salva modifiche",
+      "search": "Filtri di ricerca...",
+      "noMatches": "Nessun filtro corrisponde alla tua ricerca",
+      "empty": "Nessun filtro ancora salvato. Creane uno da riutilizzare tra gruppi e distribuzioni.",
+      "createFirst": "Crea il tuo primo filtro",
+      "created": "Creato {{date}}",
+      "deleteConfirm": "Eliminare questo filtro?",
+      "duplicate": "Duplicato"
+    },
+    "targets": {
+      "modes": {
+        "all": "Tutti i dispositivi",
+        "manual": "Seleziona dispositivi",
+        "groups": "Gruppi di dispositivi",
+        "filter": "Filtro avanzato"
+      },
+      "allManaged": "Include tutti i dispositivi gestiti",
+      "totalDevices": "{{count}} dispositivi totali",
+      "selectedDevices": "{{count}} dispositivi selezionati",
+      "searchDevices": "Cerca dispositivi…",
+      "noDevices": "Nessun dispositivo trovato",
+      "selectedGroups": "{{count}} gruppi selezionati",
+      "noGroups": "Nessun gruppo di dispositivi disponibile",
+      "deviceCount": "{{count}} dispositivi",
+      "loadSaved": "Carica filtro salvato:",
+      "select": "Seleziona"
+    },
+    "preview": {
+      "title": "Dispositivi corrispondenti",
+      "addConditions": "Aggiungi condizioni di filtro per vedere i dispositivi corrispondenti",
+      "matchCount": "dispositivi corrispondenti",
+      "matchCount_one": "dispositivo corrispondente",
+      "matchCount_other": "dispositivi corrispondenti",
+      "showing": "Visualizzazione di {{shown}} su {{total}}",
+      "noMatches": "Nessun dispositivo corrisponde ai criteri di filtro attuali"
+    },
+    "operators": {
+      "equals": "è uguale",
+      "notEquals": "non è uguale",
+      "greaterThan": "maggiore di",
+      "greaterThanOrEquals": "maggiore o uguale",
+      "lessThan": "meno di",
+      "lessThanOrEquals": "inferiore o uguale",
+      "contains": "contiene",
+      "notContains": "non contiene",
+      "startsWith": "inizia con",
+      "endsWith": "termina con",
+      "matches": "corrisponde all'espressione regolare",
+      "in": "è uno di",
+      "notIn": "non è uno di",
+      "hasAny": "contiene almeno uno tra",
+      "hasAll": "contiene tutti",
+      "isEmpty": "è vuoto",
+      "isNotEmpty": "non è vuoto",
+      "isNull": "è vuoto",
+      "isNotNull": "non è vuoto",
+      "before": "è prima",
+      "after": "è dopo",
+      "between": "è tra",
+      "withinLast": "negli ultimi",
+      "notWithinLast": "non negli ultimi"
+    },
+    "value": {
+      "noValue": "Nessun valore necessario",
+      "enterNumber": "Inserisci un numero",
+      "to": "a",
+      "typeAndEnter": "Digita e premi Invio",
+      "regex": "Espressione regolare",
+      "ipExample": "ad esempio, 192.168.1.",
+      "macExample": "ad esempio, AA:BB:CC",
+      "hostnameExample": "ad esempio, srv-web-01",
+      "softwareExample": "ad esempio, Chrome",
+      "enterValue": "Inserisci il valore",
+      "units": {
+        "minutes": "minuti",
+        "hours": "ore",
+        "days": "giorni",
+        "weeks": "settimane",
+        "months": "mesi"
+      }
+    }
+  },
+  "account": {
+    "nav": {
+      "label": "Sezioni dell'account",
+      "devices": "Dispositivi affidabili",
+      "connectedApps": "App connesse",
+      "delete": "Elimina account"
+    },
+    "backToSettings": "Torna alle impostazioni",
+    "returnDashboard": "Torna alla dashboard",
+    "signedInAs": "Accesso effettuato come",
+    "email": "email",
+    "reason": "Motivo (facoltativo)",
+    "revoke": "Revoca",
+    "revoked": "Revocato",
+    "revoking": "Revoca…",
+    "errors": {
+        "network": "Errore di rete. Riprova.",
+      "revokeNetwork": "Errore di rete durante la revoca"
+    },
+    "approval": {
+      "title": "Testa il flusso di approvazione",
+      "description": "Invia una richiesta di approvazione sandbox ai tuoi dispositivi mobili Breeze. Toccando il pulsante, il telefono mostrerà la schermata di approvazione per 60 secondi. L'approvazione o il rifiuto non eseguiranno alcuna azione reale: serve solo per il test.",
+      "sendTitle": "Invia un'approvazione di test al tuo telefono",
+      "sendDescription": "Invieremo una notifica push entro pochi secondi. L'approvazione scade automaticamente dopo 60 secondi se non intervieni.",
+      "sending": "Invio…",
+      "send": "Invia l'approvazione di test al mio telefono",
+      "sent": "Inviato. Controlla il tuo telefono in pochi secondi.",
+      "delivered": "Push consegnato a {{sent}} di {{count}} dispositivi registrati. L'approvazione scade tra 60 secondi.",
+      "delivered_one": "Push consegnato a {{sent}} di {{count}} dispositivo registrato. L'approvazione scade tra 60 secondi.",
+      "delivered_other": "Push consegnato a {{sent}} di {{count}} dispositivi registrati. L'approvazione scade tra 60 secondi.",
+      "noDevices": "Non vediamo alcun dispositivo mobile Breeze registrato sul tuo account. Accedi all'app almeno una volta, quindi riprova.",
+      "tip": "Suggerimento: è sicuro condividere questa pagina con i revisori dell'App Store. Possono accedere con l'account di prova fornito, fare clic sul pulsante e verificare l'acquisizione dell'approvazione end-to-end.",
+      "errors": {
+        "send": "Non è stato possibile inviare l'approvazione di test. Riprova."
+      }
+    },
+    "deletion": {
+      "title": "Elimina il tuo account",
+      "description": "L'invio di una richiesta di eliminazione invia una notifica a un amministratore della tua organizzazione. Il tuo account verrà elaborato e rimosso entro 30 giorni. Puoi annullare in qualsiasi momento prima di allora.",
+      "warningTitle": "Questa è una richiesta, non una cancellazione immediata.",
+      "warningDescription": "Una volta inviato, un amministratore della tua organizzazione riceverà una notifica via email. Il tuo account verrà elaborato entro 30 giorni. Puoi accedere e annullare in qualsiasi momento prima di allora.",
+      "confirmPassword": "Conferma la tua password",
+      "typePrefix": "Digita",
+      "typeSuffix": "per confermare",
+      "reason": "Motivo (facoltativo)",
+      "reasonPlaceholder": "Aiutaci a migliorare: cosa ti ha portato a decidere di andartene?",
+      "submitting": "Invio...",
+      "submit": "Richiedi la cancellazione dell'account",
+      "received": "Richiesta di cancellazione ricevuta",
+      "processedByPrefix": "Abbiamo inviato una notifica a un amministratore della tua organizzazione. Il tuo account verrà elaborato da",
+      "reference": "Riferimento",
+      "submitted": "Inviato",
+      "processesBy": "Elaborazione entro",
+      "cancelling": "Annullamento…",
+      "cancelRequest": "Annulla la richiesta di cancellazione",
+      "errors": {
+        "load": "Impossibile caricare lo stato del tuo account. Aggiorna.",
+        "submit": "Non è stato possibile inviare la tua richiesta. Riprova.",
+        "cancel": "Non è stato possibile annullare la tua richiesta. Riprova."
+      }
+    },
+    "devices": {
+      "title": "Dispositivi affidabili",
+      "description": "Telefoni e tablet che hai accoppiato con l'app mobile Breeze. Questi dispositivi possono approvare richieste MCP ad alto rischio per tuo conto. Revoca qualsiasi dispositivo che non usi più.",
+      "empty": "Nessun dispositivo accoppiato",
+      "emptyDescription": "Installa l'app mobile Breeze e accedi per associare un dispositivo. Le approvazioni verranno quindi visualizzate sul tuo telefono.",
+      "thisDevice": "Questo dispositivo",
+      "blocked": "Bloccato",
+      "platform": "Piattaforma",
+      "lastActive": "Ultimo attivo",
+      "revokeElsewhere": "Revoca da un altro dispositivo",
+      "revokedToast": "Dispositivo revocato.",
+      "revokeTitle": "Revoca {{device}}?",
+      "revokeDescription": "I token push del dispositivo verranno cancellati immediatamente e qualsiasi approvazione in corso non riuscirà. Per utilizzare nuovamente l'app dovrai associarla di nuovo effettuando l'accesso.",
+      "onlyDeviceTitle": "Questo è il tuo unico dispositivo affidabile.",
+      "onlyDeviceDescription": "Finché non esegui nuovamente l'associazione da un nuovo accesso, non potrai approvare nulla dal tuo telefono.",
+      "reasonPlaceholder": "Telefono smarrito, dispositivo sostituito...",
+      "revokeAction": "Revoca dispositivo"
+    },
+    "apps": {
+      "title": "App connesse",
+      "description": "Assistenti AI e altri client MCP (Claude.ai, ChatGPT, Cursor, ...) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento: i token smettono di funzionare entro 10 minuti.",
+      "empty": "Nessuna app connessa",
+      "emptyDescription": "Quando autorizzi una chat Claude.ai, ChatGPT, Cursor o qualsiasi altro client MCP, apparirà qui in modo da poterlo revocare in seguito.",
+      "authorized": "Autorizzato",
+      "lastUsed": "Ultimo usato",
+      "lastDecision": "Ultima decisione",
+      "revokedToast": "{{app}} accesso revocato. I token smettono di funzionare entro 10 minuti.",
+      "revokeTitle": "Revoca {{app}}?",
+      "revokeDescription": "Tutte le concessioni e i token di aggiornamento per questo client verranno cancellati. I token smettono di funzionare entro 10 minuti. Dovrai autorizzare nuovamente la prossima volta che lo utilizzerai.",
+      "onlyAppTitle": "Questa è la tua unica app autorizzata.",
+      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi assistente AI possa agire sul tuo tenant.",
+      "reasonPlaceholder": "Non più necessario, attività sospetta...",
+      "revokeAction": "Revoca l'accesso"
+    }
+  },
+  "layout": {
+    "logoAlt": "Logo {{brand}}.",
+    "breadcrumb": "Breadcrumb",
+    "redirectingToLogin": "Reindirizzamento all'accesso...",
+    "scope": {
+      "catalogLine": "Catalogo: lo stesso per ogni organizzazione",
+      "fleetLine": "Visualizzazione di tutte le organizzazioni · {{count}}",
+      "orgRequiredLine": "Questa pagina mostra un'organizzazione alla volta: scegline una per continuare."
+    },
+    "org": {
+      "allOrganizations": "Tutte le organizzazioni",
+      "selectTitle": "Seleziona organizzazione (Cmd+O)",
+      "switching": "Cambio…",
+      "organizations": "Organizzazioni",
+      "noneAvailable": "Nessuna organizzazione disponibile",
+      "status": {
+        "active": "Attivo",
+        "trial": "Prova",
+        "suspended": "Sospeso",
+        "inactive": "Inattivo"
+      },
+      "toast": {
+        "showingAll": "Visualizzazione di tutte le organizzazioni",
+        "showing": "Visualizzazione di {{name}}",
+        "switched": "Passato a {{name}}"
+      },
+      "fleetView": "Visualizzazione flotta · {{count}} organizzazioni",
+      "noSelection": "Seleziona organizzazione",
+      "searchOrganizations": "Cerca organizzazioni…",
+      "noMatches": "Nessuna organizzazione corrisponde",
+      "legacyFilterNotice": "Il filtro dell'organizzazione ora segue il selettore dell'intestazione."
+    },
+    "header": {
+      "menu": "Menù",
+      "openMenu": "Apri il menu di navigazione",
+      "ai": "Assistente AI",
+      "aiTitle": "Assistente AI (Cmd+Shift+A)",
+      "help": "Aiuto e documenti",
+      "helpTitle": "Guida e documenti (Cmd+Shift+H)",
+      "theme": "Tema",
+      "themeOptions": {
+        "light": "Chiaro",
+        "dark": "Scuro",
+        "system": "Sistema"
+      },
+      "density": "Densità dell'interfaccia",
+      "densityOptions": {
+        "comfortable": "Confortevole",
+        "compact": "Compatto",
+        "dense": "Denso"
+      },
+      "densityOptionLabel": "{{label}} densità dell'interfaccia",
+      "densityDescription": "Si applica a tutta l'app.",
+      "accountMenu": "Menu account",
+      "userAvatar": "Avatar dell'utente",
+      "guest": "Ospite",
+      "notSignedIn": "Accesso non effettuato",
+      "mfaEnabled": "2FA abilitato",
+      "account": "Account",
+      "profile": "Profilo",
+      "apiKeys": "Chiavi API",
+      "partnerServicePrincipals": "Service principal partner",
+      "billingSupport": "Fatturazione e assistenza",
+      "opening": "Apertura…",
+      "billing": "Fatturazione",
+      "contactSupport": "Contatta l'assistenza",
+      "activityLog": "Registro delle attività",
+      "signingOut": "Uscita…",
+      "signOut": "Esci",
+      "billingErrors": {
+        "noRecord": "Nessun abbonamento attivo. Contatta l'assistenza.",
+        "notConfigured": "La fatturazione non è disponibile per questa distribuzione.",
+        "unavailable": "Il servizio di fatturazione è temporaneamente non disponibile. Riprova tra poco.",
+        "rateLimited": "Troppe richieste. Attendi qualche minuto e riprova.",
+        "open": "Impossibile aprire il portale di fatturazione",
+        "missingUrl": "URL del portale di fatturazione mancante nella risposta"
+      }
+    },
+    "search": {
+      "prompt": "Cerca dispositivi, script, avvisi, utenti, impostazioni",
+      "placeholder": "Cerca dispositivi, script, avvisi, utenti, impostazioni...",
+      "searching": "Ricerca…",
+      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi, utenti e impostazioni.",
+      "noResults": "Nessun risultato trovato. Prova una query diversa.",
+      "navigationHint": "Usa le frecce per navigare, Invio per aprire",
+      "closeHint": "Esc per chiudere",
+      "sections": {
+        "quick-actions": "Azioni rapide",
+        "recent": "Recente",
+        "devices": "Dispositivi",
+        "scripts": "Script",
+        "alerts": "Avvisi",
+        "users": "Utenti",
+        "settings": "Impostazioni"
+      }
+    },
+    "notifications": {
+      "title": "Notifiche",
+      "ariaUnread": "Notifiche, {{count}} non lette",
+      "ariaUnread_one": "Notifiche, {{count}} non lette",
+      "ariaUnread_other": "Notifiche, {{count}} non lette",
+      "unread": "{{count}} non letto",
+      "unread_one": "{{count}} non letto",
+      "unread_other": "{{count}} non lette",
+      "markAllRead": "Segna tutto letto",
+      "markAllUnread": "Segna tutto come non letto",
+      "confirmClear": "Conferma cancellazione",
+      "clearAll": "Cancella tutto",
+      "loading": "Caricamento notifiche...",
+      "empty": "Nessuna notifica ancora.",
+      "recently": "Recentemente",
+      "markUnread": "Segna come non letto",
+      "markRead": "Segna come letto",
+      "preferences": "Preferenze di notifica"
+    },
+    "sidebar": {
+      "autoHide": "Nascondi automaticamente la barra laterale",
+      "collapse": "Comprimi la barra laterale",
+      "expand": "Espandi la barra laterale",
+      "collapseSections": "Comprimi tutte le sezioni",
+      "closeMenu": "Chiudi menu"
+    },
+    "orgRequired": {
+      "title": "Seleziona un'organizzazione",
+      "description": "Questa pagina mostra un'organizzazione alla volta.",
+      "moreHint": "Cerchi un'altra organizzazione? Usa lo switcher sopra (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Impossibile caricare le tue organizzazioni",
+      "description": "Qualcosa è andato storto durante il caricamento dell'elenco della tua organizzazione. Controlla la connessione e riprova.",
+      "retry": "Riprova"
+    }
+  },
+  "longTail": {
+    "catalog": {
+      "CatalogEnrichButton": {
+        "aiEstimate": "Stima AI: {{guidance}}{{suffix}}",
+        "autoFill": "Cerca prodotto",
+        "busyMessage": "Ricerca dei dettagli del prodotto: in genere 5-15 secondi.",
+        "defaultGuidanceSuffix": "- inserisci il prezzo qui sotto.",
+        "errors": {
+          "autoFill": "Impossibile compilare automaticamente: inserisci i dettagli manualmente."
+        },
+        "placeholder": "Nome del prodotto o SKU",
+        "searching": "Ricerca sul Web…"
+      },
+      "CatalogItemPicker": {
+        "bundle": "Bundle",
+        "itemTypes": {
+          "hardware": "Hardware",
+          "software": "Software",
+          "service": "Servizio"
+        },
+        "noResults": "Nessun articolo del catalogo corrispondente.",
+        "placeholder": "Cerca nel catalogo per nome o SKU"
+      },
+      "PolishButton": {
+        "actions": {
+          "applyChanges": "Applica modifiche"
+        },
+        "defaultLabel": "Perfeziona descrizione",
+        "empty": "vuoto",
+        "errors": {
+          "enterText": "Inserisci prima un nome o una descrizione da perfezionare.",
+          "polishFailed": "Non è stato possibile perfezionare il testo: prova a modificarlo manualmente."
+        },
+        "messages": {
+          "applied": "Testo perfezionato applicato.",
+          "noChanges": "Il testo sembra già a posto: nessuna modifica suggerita."
+        },
+        "noChange": "Nessuna modifica",
+        "polishing": "Perfezionamento…",
+        "preview": {
+          "addedLabel": "Aggiunto (verificare che siano reali):",
+          "description": "Questa funzione ripulisce formulazione e formattazione. Numeri, misure e prezzi vengono mantenuti come inseriti: controlla il prima/dopo qui sotto prima di applicare.",
+          "dialogTitle": "Anteprima del testo perfezionato",
+          "removedLabel": "Rimosso:",
+          "title": "Rivedi il testo raffinato",
+          "warningDescription": "Il nostro controllo automatico ritiene che un numero, una misura o un codice potrebbero essere cambiati. Confronta attentamente il prima e il dopo: l'AI può riformulare il testo, ma non deve alterare specifiche, prezzo o modello.",
+          "warningTitle": "⚠️ Ricontrolla i dettagli prima di applicare."
+        },
+        "title": "Ripulisci la formulazione con l'AI: numeri e specifiche restano invariati; rivedi l'anteprima prima di applicare"
+      }
+    },
+    "monitors": {
+      "CreateMonitorForm": {
+        "actions": {
+          "createMonitor": "Crea monitor",
+          "creating": "Creazione..."
+        },
+        "errors": {
+          "createMonitor": "Impossibile creare il monitor",
+          "generic": "Si è verificato un errore",
+          "nameRequired": "Il nome è obbligatorio",
+          "targetRequired": "L'obiettivo è obbligatorio"
+        },
+        "fields": {
+          "expectedBanner": "Banner previsto (facoltativo)",
+          "expectedBody": "Corpo previsto (facoltativo)",
+          "expectedStatus": "Stato previsto",
+          "expectedValue": "Valore previsto (facoltativo)",
+          "followRedirects": "Segui i reindirizzamenti",
+          "hostname": "Nome host da risolvere",
+          "method": "Metodo",
+          "monitorType": "Tipo di monitor",
+          "nameserver": "Server dei nomi personalizzato (facoltativo)",
+          "pingCount": "Conteggio ping",
+          "pollingInterval": "Intervallo di polling (secondi)",
+          "port": "Porta",
+          "recordType": "Tipo di record",
+          "target": "Destinazione (IP/Nome host)",
+          "timeout": "Timeout (secondi)",
+          "url": "URL",
+          "verifySsl": "Verifica SSL"
+        },
+        "monitorTypes": {
+          "dnsCheck": {
+            "description": "Verifica che i record DNS vengano risolti correttamente",
+            "label": "Controllo DNS"
+          },
+          "httpCheck": {
+            "description": "Monitora gli endpoint HTTP/HTTPS",
+            "label": "Controllo HTTP"
+          },
+          "icmpPing": {
+            "description": "Controlla se un host è raggiungibile tramite ping",
+            "label": "ICMP Ping"
+          },
+          "tcpPort": {
+            "description": "Controlla se una porta TCP è aperta e risponde",
+            "label": "Porta TCP"
+          }
+        },
+        "placeholders": {
+          "expectedBanner": "ad es. SSH-",
+          "expectedBody": "ad es. \"stato\": \"ok\"",
+          "expectedValue": "ad es. 93.184.216.34",
+          "hostname": "esempio.com",
+          "name": "ad es. Server Web di produzione",
+          "nameserver": "8.8.8.8",
+          "target": "192.168.1.1 o server.esempio.com",
+          "url": "https://example.com/health"
+        },
+        "subtitle": "Configura un nuovo controllo di monitoraggio per una destinazione di rete.",
+        "title": "Crea monitoraggio della rete"
+      },
+      "MonitorDetailModal": {
+        "actions": {
+          "cancelEdit": "Annulla modifica",
+          "checkNow": "Controlla ora",
+          "deleteMonitor": "Elimina monitor",
+          "deleting": "Eliminazione...",
+          "yesDelete": "Sì, cancella"
+        },
+        "alertRules": {
+          "disabled": "(disabilitato)",
+          "title": "Regole di avviso"
+        },
+        "consecutiveFailures": "{{count}} errore consecutivo",
+        "consecutiveFailures_plural": "{{count}} errori consecutivi",
+        "delete": {
+          "confirmShort": "Sei sicuro?"
+        },
+        "errors": {
+          "deleteMonitor": "Impossibile eliminare il monitor",
+          "generic": "Si è verificato un errore",
+          "loadDetails": "Impossibile caricare i dettagli del monitor",
+          "triggerCheck": "Impossibile attivare il controllo",
+          "updateMonitor": "Impossibile aggiornare il monitor"
+        },
+        "fallbackTitle": "Monitor",
+        "fields": {
+          "interval": "Intervallo (s)",
+          "timeout": "Timeout (s)"
+        },
+        "labels": {
+          "lastChecked": "Ultimo controllo: {{time}}",
+          "response": "Risposta: {{response}}",
+          "status": "Stato:"
+        },
+        "notFound": "Monitor non trovato",
+        "recentResults": {
+          "response": "Risposta",
+          "time": "Ora",
+          "title": "Risultati recenti"
+        },
+        "status": {
+          "degraded": "Degradato"
+        },
+        "time": {
+          "daysAgo": "{{count}}d fa",
+          "hoursAgo": "{{count}}h fa",
+          "justNow": "Proprio adesso",
+          "minutesAgo": "{{count}}m fa",
+          "never": "Mai"
+        },
+        "types": {
+          "dnsCheck": "Controllo DNS",
+          "httpCheck": "Controllo HTTP",
+          "icmpPing": "ICMP Ping",
+          "tcpPort": "TCP Porta"
+        }
+      },
+      "NetworkMonitorList": {
+        "actions": {
+          "addMonitor": "Aggiungi monitor",
+          "deleteMonitor": "Elimina monitor",
+          "runCheckNow": "Esegui il controllo adesso",
+          "viewDetails": "Visualizza i dettagli"
+        },
+        "assetFilter": "Filtraggio dei monitor in base alla risorsa selezionata.",
+        "delete": {
+          "confirmLabel": "Elimina monitor",
+          "message": "Sei sicuro di voler eliminare questo monitor? Verranno rimossi anche tutti i risultati e le regole di avviso. Questa azione non può essere annullata.",
+          "title": "Elimina Monitoraggio della rete"
+        },
+        "empty": {
+          "action": "Creane uno adesso.",
+          "prefix": "Nessun monitor di rete configurato."
+        },
+        "errors": {
+          "deleteMonitor": "Impossibile eliminare il monitor",
+          "fetchMonitors": "Impossibile recuperare i monitor",
+          "generic": "Si è verificato un errore",
+          "triggerCheck": "Impossibile attivare il controllo"
+        },
+        "filters": {
+          "allStatus": "Tutti gli stati",
+          "allTypes": "Tutti i tipi"
+        },
+        "headers": {
+          "interval": "Intervallo",
+          "lastChecked": "Ultimo controllo",
+          "response": "Risposta",
+          "target": "Obiettivo"
+        },
+        "loading": "Caricamento monitor...",
+        "messages": {
+          "monitorDeleted": "Monitor eliminato"
+        },
+        "status": {
+          "degraded": "Degradato"
+        },
+        "time": {
+          "daysAgo": "{{count}}d fa",
+          "hoursAgo": "{{count}}h fa",
+          "justNow": "Proprio adesso",
+          "minutesAgo": "{{count}}m fa",
+          "never": "Mai"
+        },
+        "types": {
+          "dnsCheck": "Controllo DNS",
+          "httpCheck": "Controllo HTTP",
+          "icmpPing": "ICMP Ping",
+          "tcpPort": "TCP Porta"
+        }
+      }
+    },
+    "psa": {
+      "PsaConnectionForm": {
+        "actions": {
+          "testConnection": "Testare la connessione",
+          "testing": "Prova..."
+        },
+        "defaultSubmitLabel": "Salva connessione",
+        "fields": {
+          "apiToken": "Token o chiave API",
+          "clientId": "ID client",
+          "clientSecret": "Segreto del cliente",
+          "connectionName": "Nome della connessione",
+          "defaultQueue": "Progetto o coda predefinito",
+          "instanceUrl": "URL istanza",
+          "password": "Password",
+          "provider": "Fornitore",
+          "syncDirection": "Direzione di sincronizzazione",
+          "syncInterval": "Intervallo di sincronizzazione",
+          "username": "Nome utente o email"
+        },
+        "help": {
+          "defaultQueue": "Facoltativo. Utilizzato durante la creazione di ticket dagli avvisi Breeze."
+        },
+        "keepExisting": "(lascia vuoto per continuare a esistere)",
+        "placeholders": {
+          "apiToken": "api-token",
+          "clientId": "oauth-client-id",
+          "clientSecret": "client-secret",
+          "connectionName": "ad esempio, Jira Production",
+          "defaultQueue": "ad esempio, supporto IT",
+          "existingCredential": "********",
+          "password": "password",
+          "username": "admin@example.com"
+        },
+        "providerHints": {
+          "autotask": "Utilizza le tue credenziali utente Autotask API.",
+          "connectwise": "Utilizza le tue credenziali ConnectWise Manage o le chiavi API.",
+          "freshservice": "Utilizza la chiave Freshservice API o le credenziali OAuth.",
+          "jira": "Utilizza un token Atlassian API e l'email del tuo account Jira per l'autenticazione.",
+          "servicenow": "Utilizza un utente ServiceNow con le autorizzazioni REST API.",
+          "zendesk": "Utilizza un token API o le credenziali del client OAuth."
+        },
+        "sections": {
+          "basicInformation": "Informazioni di base",
+          "connectionDetails": "Dettagli di connessione",
+          "credentials": "Credenziali",
+          "syncSettings": "Sincronizza impostazioni"
+        },
+        "sync": {
+          "autoClose": "Chiudi automaticamente i ticket PSA.",
+          "autoCloseHelp": "Chiudi i ticket collegati quando gli avvisi Breeze vengono risolti.",
+          "enable": "Abilita la sincronizzazione",
+          "enableHelp": "Mantieni aggiornati i ticket e i collegamenti di avviso secondo una pianificazione.",
+          "notes": "Sincronizza le note di avviso",
+          "notesHelp": "Invia commenti e aggiornamenti da Breeze alla cronologia dei ticket PSA."
+        },
+        "syncDirections": {
+          "bidirectional": "Bidirezionale",
+          "inbound": "PSA → Breeze",
+          "outbound": "Breeze → PSA"
+        },
+        "syncIntervals": {
+          "daily": "Ogni giorno",
+          "every15Minutes": "Ogni 15 minuti",
+          "every30Minutes": "Ogni 30 minuti",
+          "every6Hours": "Ogni 6 ore",
+          "everyHour": "Ogni ora"
+        },
+        "validation": {
+          "nameRequired": "Il nome della connessione è obbligatorio",
+          "validUrl": "Deve essere un URL valido"
+        }
+      },
+      "PsaConnectionList": {
+        "actions": {
+          "pause": "Pausa",
+          "resume": "Riprendi",
+          "syncNow": "Sincronizza ora"
+        },
+        "connectionCount": "{{filtered}} di {{total}} connessioni",
+        "empty": {
+          "noConnections": "Connetti un provider PSA per avviare la sincronizzazione dei ticket.",
+          "noMatches": "Nessuna connessione corrisponde alla tua ricerca o ai tuoi filtri.",
+          "title": "Nessuna connessione PSA configurata"
+        },
+        "filters": {
+          "allStatuses": "Tutti gli stati"
+        },
+        "headers": {
+          "connection": "Connessione",
+          "lastSync": "Ultima sincronizzazione",
+          "provider": "Fornitore"
+        },
+        "never": "Mai",
+        "searchPlaceholder": "Cerca connessioni",
+        "status": {
+          "paused": "In pausa",
+          "syncing": "Sincronizzazione"
+        },
+        "title": "Connessioni PSA"
+      },
+      "PsaConnectionsPage": {
+        "actions": {
+          "addConnection": "Aggiungi connessione",
+          "createConnection": "Crea connessione",
+          "deleteConnection": "Elimina connessione",
+          "deleting": "Eliminazione...",
+          "saveChanges": "Salva modifiche",
+          "tryAgain": "Riprova"
+        },
+        "delete": {
+          "activeWarning": "Questa connessione è attiva. La sincronizzazione dei ticket verrà interrotta immediatamente.",
+          "confirm": "Sei sicuro di voler eliminare {{name}}?",
+          "irreversible": "Questa azione non può essere annullata.",
+          "title": "Elimina la connessione PSA",
+          "warningLabel": "Avviso:"
+        },
+        "errors": {
+          "deleteConnection": "Impossibile eliminare la connessione",
+          "fetchConnections": "Impossibile recuperare le connessioni PSA.",
+          "generic": "Si è verificato un errore",
+          "saveConnection": "Impossibile salvare la connessione",
+          "startSync": "Impossibile avviare la sincronizzazione",
+          "testFailed": "Prova fallita",
+          "updateStatus": "Impossibile aggiornare lo stato della connessione"
+        },
+        "loading": "Caricamento delle connessioni PSA...",
+        "modal": {
+          "addDescription": "Configura una nuova connessione PSA per la tua organizzazione.",
+          "addTitle": "Aggiungi connessione PSA",
+          "editDescription": "Aggiorna i dettagli di connessione e le preferenze di sincronizzazione di PSA",
+          "editTitle": "Modifica la connessione PSA"
+        },
+        "subtitle": "Collega il tuo PSA per sincronizzare i ticket e collegare gli avvisi.",
+        "test": {
+          "failedMessage": "Impossibile connettersi al provider PSA.",
+          "failedTitle": "Connessione non riuscita",
+          "successMessage": "Le credenziali PSA sono valide.",
+          "successTitle": "Connessione riuscita",
+          "testing": "Test {{name}}",
+          "title": "Risultato del test di connessione",
+          "verifyHelp": "Verifica le credenziali e le autorizzazioni API per questa connessione."
+        },
+        "title": "Integrazioni PSA"
+      },
+      "PsaTicketList": {
+        "empty": {
+          "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
+          "noTickets": "Sincronizza la tua prima connessione PSA per vedere i ticket qui.",
+          "title": "Nessun ticket PSA sincronizzato"
+        },
+        "filters": {
+          "allStatuses": "Tutti gli stati"
+        },
+        "headers": {
+          "linkedAlert": "Avviso collegato",
+          "ticket": "Ticket",
+          "updated": "Aggiornato"
+        },
+        "searchPlaceholder": "Cerca ticket",
+        "status": {
+          "closed": "Chiuso",
+          "inProgress": "In corso",
+          "open": "Aperto",
+          "resolved": "Risolto",
+          "waiting": "In attesa"
+        },
+        "ticketCount": "{{filtered}} di {{total}} ticket",
+        "title": "Ticket sincronizzati",
+        "unlinked": "Scollegato"
+      }
+    },
+    "webhooks": {
+      "WebhookDeliveryHistory": {
+        "deliveryAttempts": "{{count}} tentativi di consegna",
+        "empty": "Nessun tentativo di consegna ancora.",
+        "headers": {
+          "action": "Azione",
+          "event": "Evento",
+          "response": "Risposta",
+          "timestamp": "Timestamp"
+        },
+        "retrying": "Nuovo tentativo...",
+        "status": {
+          "failed": "Fallito",
+          "pending": "In sospeso",
+          "success": "Completato"
+        },
+        "title": "Cronologia delle consegne"
+      },
+      "WebhookForm": {
+        "actions": {
+          "addHeader": "Aggiungi header",
+          "autoGenerate": "Genera automaticamente"
+        },
+        "authentication": {
+          "bearer": {
+            "description": "Invia un token statico nell'header.",
+            "title": "Bearer token"
+          },
+          "hmac": {
+            "description": "Firma le richieste con un segreto condiviso.",
+            "title": "Firma HMAC"
+          },
+          "subtitle": "Scegli il modo in cui la tua destinazione verifica l'autenticità del webhook.",
+          "title": "Autenticazione"
+        },
+        "defaultSubmitLabel": "Salva webhook",
+        "events": {
+          "alertCreated": {
+            "description": "Attivato quando viene creato un avviso.",
+            "label": "Avviso creato"
+          },
+          "alertResolved": {
+            "description": "Attivato quando un avviso viene risolto.",
+            "label": "Avviso risolto"
+          },
+          "deviceOffline": {
+            "description": "Si attiva quando un dispositivo si disconnette.",
+            "label": "Dispositivo offline"
+          },
+          "deviceOnline": {
+            "description": "Attivato quando un dispositivo si connette.",
+            "label": "Dispositivo online"
+          },
+          "scriptCompleted": {
+            "description": "Attivato al termine di uno script.",
+            "label": "Script completato"
+          },
+          "ticketCreated": {
+            "description": "Attivato quando viene creato un ticket.",
+            "label": "Ticket creato"
+          }
+        },
+        "fields": {
+          "bearerToken": "Bearer token",
+          "endpointUrl": "URL endpoint",
+          "events": "Eventi",
+          "jsonPreview": "Anteprima JSON",
+          "name": "Nome del webhook",
+          "signingSecret": "Segreto di firma",
+          "templateJson": "Modello (JSON)"
+        },
+        "headers": {
+          "empty": "Nessun header personalizzato configurato.",
+          "subtitle": "Header facoltativi inviati con ogni richiesta.",
+          "title": "Header personalizzati"
+        },
+        "help": {
+          "bearerToken": "Questo token viene inviato come intestazione di autorizzazione.",
+          "signingSecret": "Utilizza questo segreto per verificare le firme dei webhook."
+        },
+        "invalidJsonPreview": "JSON non valido nel modello.",
+        "payload": {
+          "previewEmpty": "L'anteprima viene visualizzata una volta che JSON è valido.",
+          "subtitle": "Definisci la forma del payload JSON inviato alla tua destinazione.",
+          "title": "Modello di carico utile"
+        },
+        "placeholders": {
+          "bearerToken": "Inserisci un bearer token",
+          "endpointUrl": "https://api.example.com/webhooks",
+          "headerKey": "Chiave header",
+          "headerValue": "Valore header",
+          "name": "Webhook di produzione",
+          "signingSecret": "Inserisci un segreto per la firma"
+        },
+        "subtitle": "Imposta il comportamento di consegna, autenticazione e payload.",
+        "title": "Configurazione del webhook",
+        "validation": {
+          "eventRequired": "Seleziona almeno un evento",
+          "headerKeyRequired": "La chiave header è obbligatoria",
+          "invalidUrl": "URL non valido",
+          "nameRequired": "Il nome del webhook è obbligatorio",
+          "payloadJsonRequired": "Il modello di carico utile deve essere valido JSON",
+          "secretRequired": "Il segreto è richiesto per l'autenticazione HMAC.",
+          "tokenRequired": "Il token è obbligatorio per l'autenticazione bearer",
+          "urlRequired": "L'URL è obbligatorio"
+        }
+      },
+      "WebhookList": {
+        "actions": {
+          "deleteWebhook": "Elimina webhook",
+          "editWebhook": "Modifica webhook",
+          "test": "Prova"
+        },
+        "empty": "Nessun webhook trovato.",
+        "failedCount": "{{count}} non riuscito",
+        "filters": {
+          "allStatuses": "Tutti gli stati"
+        },
+        "headers": {
+          "events": "Eventi",
+          "lastTriggered": "Ultimo trigger",
+          "url": "URL"
+        },
+        "moreEvents": "+ altri {{count}}",
+        "notAvailable": "N/D",
+        "searchPlaceholder": "Cerca per nome o URL",
+        "successCount": "{{count}} riuscito",
+        "title": "Webhook",
+        "webhookCount": "{{filtered}} di {{total}} webhook"
+      },
+      "WebhooksPage": {
+        "actions": {
+          "createWebhook": "Crea webhook",
+          "deleting": "Eliminazione...",
+          "editWebhook": "Modifica webhook",
+          "newWebhook": "Nuovo webhook",
+          "saveChanges": "Salva modifiche",
+          "testWebhook": "Prova il webhook",
+          "tryAgain": "Riprova"
+        },
+        "auth": {
+          "bearerToken": "Bearer token",
+          "header": "Header: {{header}}",
+          "hmacSignature": "Firma HMAC"
+        },
+        "delete": {
+          "confirm": "Sei sicuro di voler eliminare <strong>{{name}}</strong>? Questa azione non può essere annullata.",
+          "title": "Elimina webhook"
+        },
+        "details": {
+          "authentication": "Autenticazione",
+          "endpoint": "Punto finale",
+          "noPayloadTemplate": "Nessun modello di payload ancora salvato.",
+          "payloadPreview": "Anteprima del modello di carico utile",
+          "testEvent": "Evento di prova",
+          "testEventHelp": "I test utilizzano l'evento selezionato e il modello di payload.",
+          "title": "Dettagli del webhook"
+        },
+        "emptySelection": "Seleziona un webhook per visualizzare la cronologia di consegna e gli strumenti di test.",
+        "errors": {
+          "deleteWebhook": "Impossibile eliminare il webhook",
+          "disableWebhook": "Impossibile disabilitare il webhook",
+          "enableWebhook": "Impossibile abilitare il webhook",
+          "fetchDeliveries": "Impossibile recuperare la cronologia delle consegne",
+          "fetchWebhooks": "Impossibile recuperare i webhook",
+          "generic": "Si è verificato un errore",
+          "invalidPayloadTemplate": "Il modello di carico utile non è valido JSON.",
+          "loadDeliveries": "Impossibile caricare la cronologia delle consegne",
+          "retryDelivery": "Impossibile riprovare la consegna",
+          "saveWebhook": "Impossibile salvare il webhook",
+          "testFailed": "Prova fallita"
+        },
+        "loading": "Caricamento webhook...",
+        "loadingDeliveryHistory": "Caricamento cronologia consegne...",
+        "modal": {
+          "createTitle": "Crea webhook",
+          "editTitle": "Modifica webhook"
+        },
+        "subtitle": "Invia eventi a sistemi esterni.",
+        "title": "Webhook"
+      }
+    },
+    "c2c": {
+      "C2CDashboard": {
+        "status": {
+          "active": "attivo",
+          "completed": "completato",
+          "failed": "fallito",
+          "error": "errore",
+          "revoked": "revocato",
+          "running": "in esecuzione",
+          "syncing": "sincronizzazione in corso",
+          "pending": "in sospeso"
+        },
+        "consentSuccess": "Connessione Microsoft 365 creata correttamente",
+        "errors": {
+          "fetchConnections": "Impossibile recuperare le connessioni",
+          "loadConnections": "Impossibile caricare le connessioni",
+          "fetchConfigs": "Impossibile recuperare le configurazioni",
+          "loadConfigs": "Impossibile caricare le configurazioni",
+          "fetchJobs": "Impossibile recuperare i lavori",
+          "loadJobs": "Impossibile caricare i lavori",
+          "fetchItems": "Impossibile recuperare gli elementi",
+          "loadItems": "Impossibile caricare gli elementi"
+        },
+        "tabs": {
+          "connections": "Connessioni",
+          "configs": "Configurazioni",
+          "jobs": "Processi",
+          "items": "Elementi"
+        },
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace"
+        },
+        "loading": "Caricamento dei dati di backup nel cloud...",
+        "alphaDisclaimer": "Il backup da cloud a cloud è in accesso anticipato. La configurazione della connessione è disponibile per la valutazione, ma i processi di sincronizzazione e ripristino non sono ancora implementati.",
+        "consentFailed": "Consenso M365 non riuscito: {{error}}",
+        "title": "Backup da cloud a cloud",
+        "description": "Configura subito le connessioni cloud; l'esecuzione della sincronizzazione e del ripristino è ancora in corso.",
+        "addConnection": "Aggiungi connessione",
+        "table": {
+          "provider": "Fornitore",
+          "displayName": "Nome visualizzato",
+          "lastSync": "Ultima sincronizzazione",
+          "scope": "Ambito",
+          "targetUsers": "Utenti target",
+          "jobId": "ID processo",
+          "started": "Iniziato",
+          "completed": "Completato",
+          "transferred": "Trasferito",
+          "nameOrSubject": "Nome/Oggetto",
+          "path": "Percorso",
+          "size": "Dimensioni",
+          "date": "Data"
+        },
+        "empty": {
+          "connections": "Nessuna connessione ancora configurata. Fai clic su \"Aggiungi connessione\" per iniziare.",
+          "configs": "Nessuna configurazione di backup ancora. Aggiungi prima una connessione, quindi configura i backup.",
+          "jobs": "Nessun processo di sincronizzazione è stato ancora eseguito.",
+          "items": "Nessun elemento trovato. Esegui una sincronizzazione per popolare gli elementi di backup."
+        },
+        "syncNotImplemented": "I lavori di sincronizzazione non sono ancora implementati",
+        "targetUsersCount": "{{count}} utente/i",
+        "searchItemsPlaceholder": "Cerca elementi...",
+        "filters": {
+          "allTypes": "Tutti i tipi"
+        },
+        "itemTypes": {
+          "email": "email",
+          "file": "File",
+          "calendar": "Calendario",
+          "contact": "Contatto",
+          "chat": "Chat"
+        },
+        "filterByUserEmail": "Filtra per email dell'utente",
+        "restoreSelected": "Ripristina selezionato"
+      },
+      "C2CConnectionWizard": {
+        "errors": {
+          "generateConsentUrl": "Impossibile generare l'URL di consenso",
+          "noConsentUrl": "Nessun URL di consenso restituito",
+          "initiateConsentFlow": "Impossibile avviare il flusso di consenso",
+          "saveConnection": "Impossibile salvare la connessione"
+        },
+        "steps": {
+          "provider": "Fornitore",
+          "grantAccess": "Concedi l'accesso",
+          "confirm": "Conferma",
+          "credentials": "Credenziali",
+          "scope": "Ambito"
+        },
+        "title": "Aggiungi connessione cloud",
+        "selectProvider": "Seleziona il provider cloud di cui eseguire il backup.",
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace",
+          "azureAd": "Azure AD",
+          "googleCloud": "Google Cloud"
+        },
+        "oneClickTitle": "Integrazione Microsoft 365 con un clic",
+        "oneClickDescription": "La tua istanza Breeze ha un'app Microsoft 365 preconfigurata. Fai clic su \"Concedi accesso\" per autorizzare l'accesso di backup al tuo tenant M365. Un amministratore globale deve approvare la richiesta di consenso.",
+        "displayName": "Nome visualizzato",
+        "displayNamePlaceholder": "Microsoft 365",
+        "manualDisplayNamePlaceholder": "La mia connessione M365.",
+        "selectBackupScope": "Seleziona cosa includere nel backup",
+        "scopes": {
+          "mailbox": "Casella di posta Exchange",
+          "onedrive": "OneDrive",
+          "sharepoint": "SharePoint",
+          "teams": "Teams",
+          "gmail": "Gmail",
+          "drive": "Google Drive",
+          "calendar": "Calendario"
+        },
+        "useOwnAppRegistration": "Oppure utilizza la registrazione della tua app",
+        "switchToManual": "Passa all'inserimento manuale delle credenziali",
+        "switchToGrantAccess": "Passa a Concedi accesso con un clic (consigliato)",
+        "enterCredentials": "Inserisci le credenziali dell'app {{provider}}.",
+        "tenantId": "ID tenant",
+        "clientId": "ID client",
+        "clientIdPlaceholder": "ID applicazione (client)",
+        "clientSecret": "Segreto del cliente",
+        "clientSecretPlaceholder": "Valore segreto del client",
+        "selectBackupScopeSentence": "Seleziona cosa includere nel backup.",
+        "reviewGrantAccess": "Rivedi e concedi l'accesso. Verrai reindirizzato a Microsoft per autorizzare la connessione.",
+        "summary": {
+          "provider": "Fornitore:",
+          "displayName": "Nome visualizzato:",
+          "scopes": "Ambiti:",
+          "auth": "Autenticazione:",
+          "tenantId": "ID tenant:"
+        },
+        "platformAppConsent": "App della piattaforma (consenso con un clic)",
+        "redirectingToMicrosoft": "Reindirizzamento a Microsoft...",
+        "grantAccessWithMicrosoft": "Concedi l'accesso con Microsoft",
+        "validationUnavailable": "La convalida della connessione non è ancora disponibile. Salva la connessione per completare la configurazione.",
+        "saveConnection": "Salva connessione"
+      },
+      "C2CRestoreDialog": {
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace"
+        },
+        "errors": {
+          "loadBackupItems": "Impossibile caricare gli elementi di backup",
+          "loadRestoreTargets": "Impossibile caricare le destinazioni di ripristino",
+          "startRestore": "Impossibile avviare il ripristino"
+        },
+        "title": "Ripristina elementi cloud",
+        "description": "Cerca subito gli elementi di cui è stato eseguito il backup; l'esecuzione del ripristino non è ancora stata implementata.",
+        "searchItems": "Cerca elementi",
+        "searchPlaceholder": "Cerca oggetto o nome file",
+        "allTypes": "Tutti i tipi",
+        "itemTypes": {
+          "email": "email",
+          "file": "File",
+          "calendar_event": "Calendario",
+          "contact": "Contatto",
+          "chat_message": "Chat"
+        },
+        "filterByUserEmail": "Filtra per email dell'utente",
+        "reset": "Azzera",
+        "selectItems": "Seleziona elementi",
+        "resultCount": "{{count}} risultati, {{selected}} selezionati",
+        "resultCount_one": "{{count}} risultato, {{selected}} selezionati",
+        "resultCount_other": "{{count}} risultati, {{selected}} selezionati",
+        "restoreSetReady": "Set di ripristino pronto",
+        "table": {
+          "item": "Elemento",
+          "path": "Percorso",
+          "size": "Dimensioni",
+          "date": "Data"
+        },
+        "loadingItems": "Caricamento elementi...",
+        "emptySearch": "Nessun elemento di backup corrisponde alla ricerca corrente.",
+        "untitledItem": "Elemento senza titolo",
+        "restoreTarget": "Ripristina destinazione",
+        "restoreOriginalTenant": "Ripristina nel tenant originale",
+        "restoreOriginalDescription": "Utilizzare la connessione di origine che originariamente proteggeva gli elementi.",
+        "restoreAnotherConnection": "Ripristina su un'altra connessione",
+        "restoreAnotherDescription": "Reindirizza gli elementi selezionati a una diversa destinazione cloud attiva.",
+        "targetConnection": "Connessione di destinazione",
+        "selectConnection": "Seleziona una connessione",
+        "selectedItems": "Elementi selezionati",
+        "originalConnection": "Collegamento originale",
+        "selectTarget": "Seleziona un obiettivo",
+        "noUser": "Nessun utente",
+        "restoreDisabled": "L'invio del ripristino è disabilitato finché non viene implementata l'esecuzione del ripristino da cloud a cloud.",
+        "restoreComingSoon": "Ripristino in arrivo"
+      }
+    },
+    "time": {
+      "TimerWidget": {
+        "errors": {
+          "stopFailed": "Impossibile arrestare il timer."
+        },
+        "ticketFallback": "ticket",
+        "stopTimer": "Arresta il timer",
+        "descriptionPlaceholder": "Su cosa hai lavorato?",
+        "billable": "Fatturabile",
+        "stopAndSave": "Arresta e salva"
+      },
+      "TimesheetPage": {
+        "friendly": {
+          "adminRequired": "L'approvazione delle schede attività richiede un ruolo di amministratore.",
+          "approvedImmutable": "Le voci approvate possono essere modificate solo da un amministratore.",
+          "notOwnEntry": "Puoi modificare solo i tuoi orari."
+        },
+        "errors": {
+          "bulkApprovalFailed": "L'approvazione collettiva non è riuscita. Riprova.",
+          "saveEntryFailed": "Impossibile salvare la voce. Riprova.",
+          "loadTimesheetFailed": "Impossibile caricare la scheda attività. Riprova."
+        },
+        "toasts": {
+          "bulkSkipped": "{{updated}} aggiornato, {{skipped}} saltato ({{reasons}})",
+          "bulkApproved": "{{count}} approvato",
+          "bulkUnapproved": "{{count}} non approvato",
+          "entryUpdated": "Voce aggiornata"
+        },
+        "title": "Scheda attività",
+        "selectTechnician": "Seleziona tecnico",
+        "myTimesheet": "La mia scheda attività",
+        "previousWeek": "La settimana precedente",
+        "weekOf": "Settimana del {{week}}",
+        "nextWeek": "La prossima settimana",
+        "thisWeek": "Questa settimana",
+        "adminNotice": "Per visualizzare le schede attività di altri tecnici è necessario un ruolo di amministratore: viene mostrata la tua.",
+        "selectedCount": "{{count}} selezionato",
+        "approveSelected": "Approva selezionati",
+        "unapprove": "Annulla approvazione",
+        "billableDuration": " · {{duration}} fatturabile",
+        "noEntries": "Nessuna voce",
+        "billable": "Fatturabile",
+        "rate": "Tariffa",
+        "selectEntry": "Seleziona la voce {{id}}",
+        "noDescription": "Nessuna descrizione",
+        "approved": "Approvato",
+        "nonBillable": "non fatturabile",
+        "running": "in esecuzione",
+        "editEntry": "Modifica voce {{id}}",
+        "total": "Totale: {{duration}}",
+        "billableTotal": "Fatturabile: {{duration}}"
+      }
+    },
+    "snmp": {
+      "SNMPTemplateEditor": {
+        "errors": {
+          "copyOid": "Impossibile copiare OID negli appunti",
+          "templateNameRequired": "Il nome del modello è obbligatorio",
+          "oidRequired": "È richiesto almeno un OID.",
+          "validateOids": "Impossibile convalidare gli OID",
+          "oidValidationFailedFor": "Convalida OID non riuscita per {{oid}}",
+          "saveTemplate": "Impossibile salvare il modello",
+          "fetchTemplates": "Impossibile recuperare i modelli SNMP.",
+          "loadTemplates": "Impossibile caricare i modelli",
+          "loadOidBrowser": "Impossibile caricare i risultati del browser OID."
+        },
+        "loading": "Caricamento dei modelli SNMP...",
+        "title": "Editor modelli SNMP",
+        "description": "Definisci quali OID vengono raccolti per un tipo di dispositivo.",
+        "selectTemplate": "Seleziona modello...",
+        "newTemplate": "Nuovo modello",
+        "templateDetails": "Dettagli del modello",
+        "vendor": "Venditore",
+        "deviceType": "Tipo di dispositivo",
+        "placeholders": {
+          "name": "Cisco Core",
+          "vendor": "Cisco",
+          "deviceType": "Switch core",
+          "description": "Switch ad alto rendimento con uplink multipli",
+          "oidName": "Tempo di attività del sistema",
+          "oidDescription": "Cosa misura questo OID."
+        },
+        "oidList": "Elenco OID",
+        "oidListDescription": "Configura gli OID che alimentano metriche e soglie.",
+        "importFromFile": "Importa da file",
+        "addOid": "Aggiungi OID",
+        "emptyOids": "Nessun OID configurato. Fai clic su \"Aggiungi OID\" per iniziare.",
+        "oid": "OID",
+        "oidTypes": {
+          "gauge": "Gauge",
+          "counter64": "Contatore64",
+          "timeTicks": "TimeTicks",
+          "integer": "Intero",
+          "octetString": "Stringa di ottetti"
+        },
+        "validated": "Convalidato",
+        "oidValidationFailed": "Convalida OID non riuscita",
+        "notValidatedYet": "Non ancora convalidato",
+        "oidBrowser": "Browser OID",
+        "oidBrowserDescription": "Cerca gli OID disponibili e aggiungili a questo modello.",
+        "searchByOidOrName": "Cerca per OID o per nome",
+        "loadingOidBrowser": "Caricamento del browser OID...",
+        "noMatchingOids": "Nessun OID corrispondente trovato.",
+        "noDescriptionProvided": "Nessuna descrizione fornita.",
+        "validatingOids": "Convalida OID in corso...",
+        "saving": "Salvataggio...",
+        "saveTemplate": "Salva modello"
+      },
+      "SNMPTemplateList": {
+        "errors": {
+          "fetchTemplates": "Impossibile recuperare i modelli SNMP.",
+          "loadTemplates": "Impossibile caricare i modelli SNMP.",
+          "deleteTemplate": "Impossibile eliminare il modello"
+        },
+        "toasts": {
+          "templateDeleted": "Modello \"{{name}}\" eliminato"
+        },
+        "builtIn": "Integrato",
+        "loading": "Caricamento dei modelli SNMP in corso...",
+        "title": "Modelli SNMP",
+        "templatesAvailable": "{{count}} modelli disponibili",
+        "addTemplate": "Aggiungi modello",
+        "vendor": "Venditore",
+        "deviceType": "Tipo di dispositivo",
+        "oidCount": "Conteggio OID",
+        "usage": "Utilizzo",
+        "empty": "Nessun modello SNMP trovato.",
+        "deleteDialog": {
+          "title": "Elimina il modello SNMP",
+          "message": "Sei sicuro di voler eliminare \"{{name}}\"? Tutti i dispositivi che utilizzano questo modello dovranno essere riassegnati.",
+          "confirmLabel": "Elimina modello"
+        }
+      }
+    },
+    "monitoring": {
+      "MonitoringAssetsDashboard": {
+        "status": {
+          "online": "Online",
+          "warning": "Avviso",
+          "offline": "Offline",
+          "maintenance": "Manutenzione",
+          "unknown": "Sconosciuto"
+        },
+        "relative": {
+          "never": "Mai",
+          "justNow": "Proprio adesso",
+          "minutesAgo": "{{count}}m fa",
+          "hoursAgo": "{{count}}h fa",
+          "daysAgo": "{{count}}d fa"
+        },
+        "errors": {
+          "fetchAssets": "Impossibile recuperare le risorse di monitoraggio",
+          "generic": "Si è verificato un errore",
+          "loadDetails": "Impossibile caricare i dettagli del monitoraggio",
+          "update": "Impossibile aggiornare",
+          "disableMonitoring": "Impossibile disattivare il monitoraggio",
+          "communityRequired": "La stringa community è obbligatoria per SNMP v1/v2c",
+          "usernameRequired": "Il nome utente è richiesto per SNMP v3",
+          "saveSettings": "Impossibile salvare le impostazioni di monitoraggio"
+        },
+        "configuredPaused": "Configurato (in pausa)",
+        "notConfigured": "Non configurato",
+        "paused": "In pausa",
+        "everyInterval": "ogni {{interval}}",
+        "lastPolled": "Ultimo polling {{time}}",
+        "configureMonitoring": "Configura il monitoraggio",
+        "pauseSnmpPolling": "Metti in pausa il polling SNMP",
+        "resumeSnmpPolling": "Riprendi il polling SNMP",
+        "disableAllActiveMonitoring": "Disattiva tutto il monitoraggio attivo per questa risorsa",
+        "needsOrgSelection": "Le risorse di monitoraggio della rete hanno come ambito una singola organizzazione.",
+        "loadingAssets": "Caricamento delle risorse di monitoraggio...",
+        "showingAllDiscoveredAssets": "Visualizzazione di tutte le risorse scoperte",
+        "showingMonitoredAssets": "Visualizzazione delle risorse monitorate",
+        "manageNetworkChecks": "Gestisci controlli di rete",
+        "summary": {
+          "configured": "Configurato",
+          "snmpWarnings": "Avvisi SNMP",
+          "shown": "Visualizzati"
+        },
+        "assets": "Risorse",
+        "assetsDescription": "Visualizzazione unificata del polling SNMP e dei controlli di rete per risorsa rilevata.",
+        "table": {
+          "asset": "Risorsa",
+          "overall": "Stato complessivo"
+        },
+        "ip": "IP",
+        "snmp": "SNMP",
+        "networkChecks": "Controlli di rete",
+        "emptyAssets": "Nessuna risorsa trovata.",
+        "lastSeen": "Visto l'ultima volta {{time}}",
+        "activeRatio": "{{active}}/{{total}} attivo",
+        "loadingDetails": "Caricamento dei dettagli del monitoraggio...",
+        "statusLine": "Stato: {{status}}",
+        "createManageChecks": "Crea e gestisci controlli per risorsa.",
+        "addNetworkCheck": "Aggiungi controllo di rete",
+        "openChecks": "Controlli aperti",
+        "snmpPolling": "SNMP Polling",
+        "snmpPollingDescription": "Configurare il polling SNMP per risorsa. I segreti non vengono mostrati; lasciare vuoto per mantenere i valori esistenti.",
+        "snmpVersion": "Versione SNMP",
+        "snmpVersions": {
+          "v1": "v1",
+          "v2c": "v2c",
+          "v3": "v3"
+        },
+        "pollingIntervalSeconds": "Intervallo di polling (secondi)",
+        "communityString": "Community string",
+        "leaveBlankToKeepCurrent": "(lascia vuoto per mantenere il valore corrente)",
+        "communityPlaceholder": "pubblico",
+        "username": "Nome utente",
+        "authProtocol": "Protocollo di autenticazione",
+        "authProtocols": {
+          "md5": "MD5",
+          "sha": "SHA",
+          "sha256": "SHA-256"
+        },
+        "authPassword": "Password di autenticazione",
+        "leaveBlankToKeep": "Lascia vuoto per mantenere",
+        "privacyProtocol": "Protocollo di privacy",
+        "privacyProtocols": {
+          "des": "DES",
+          "aes": "AES",
+          "aes256": "AES-256"
+        },
+        "privacyPassword": "Password privacy",
+        "template": "Modello",
+        "noTemplate": "Nessun modello",
+        "recentSnmpMetrics": "Metriche recenti SNMP",
+        "oid": "OID",
+        "value": "Valore",
+        "time": "Tempo",
+        "disableActiveMonitoring": "Disabilita il monitoraggio attivo",
+        "areYouSure": "Sei sicuro?",
+        "disabling": "Disabilitazione...",
+        "yesDisable": "Sì, disabilita",
+        "monitoringNotActive": "Il monitoraggio non è attivo per questa risorsa.",
+        "saving": "Salvataggio..."
+      },
+      "MonitoringPage": {
+        "tabs": {
+          "assets": "Risorse",
+          "checks": "Controlli di rete",
+          "templates": "Modelli SNMP"
+        },
+        "title": "Monitoraggio",
+        "description": "Polling SNMP e controlli di rete. Il rilevamento può alimentare il monitoraggio, che viene gestito qui."
+      }
+    },
+    "fleet": {
+      "FleetOrchestrationPage": {
+        "errors": {
+          "loadFailed": "Impossibile caricare le statistiche della flotta"
+        },
+        "title": "Orchestrazione della flotta",
+        "description": "Gestisci policy, distribuzioni, patch e automazioni nel tuo parco dispositivi",
+        "partialWarning": "Alcuni dati potrebbero essere incompleti. Impossibile caricare: {{endpoints}}",
+        "cards": {
+          "policies": "Policy",
+          "activeCount": "{{count}} attivo",
+          "deployments": "Distribuzioni",
+          "deploymentsSubtitle": "{{total}} totale, {{pending}} in sospeso",
+          "failedCount": "{{count}} non riuscito",
+          "patches": "Patch",
+          "pendingInstallation": "in attesa di installazione",
+          "alerts": "Avvisi",
+          "alertsSubtitle": "{{critical}} critico, {{high}} alto",
+          "groups": "Gruppi",
+          "deviceGroupsSubtitle": "gruppi di dispositivi",
+          "automations": "Automazioni",
+          "configured": "configurato",
+          "maintenance": "Manutenzione",
+          "activeWindows": "finestre attive",
+          "reports": "Report",
+          "reportDefinitions": "definizioni di report"
+        },
+        "aiFleetActions": "Azioni della flotta AI",
+        "aiFleetActionsHint": "Fai clic per chiedere all'assistente AI",
+        "quickActions": {
+          "checkCompliance": "Verifica conformità",
+          "activeDeployments": "Distribuzioni attive",
+          "criticalPatches": "Patch critiche",
+          "alertOverview": "Panoramica degli avvisi",
+          "maintenanceWindows": "Finestre di manutenzione",
+          "runAutomations": "Esegui automazioni",
+          "deviceGroups": "Gruppi di dispositivi",
+          "generateReport": "Genera report"
+        },
+        "deploymentStatus": "Stato di distribuzione",
+        "alertBreakdown": "Ripartizione degli avvisi",
+        "patchPosture": "Stato delle patch",
+        "policyCompliance": "Conformità alle policy",
+        "installed": "Installato",
+        "nonCompliant": "Non conforme",
+        "status": {
+          "completed": "Completato",
+          "failed": "Fallito"
+        },
+        "severity": {
+          "critical": "Critico",
+          "high": "Alto",
+          "medium": "Medio",
+          "low": "Basso"
+        }
+      }
+    },
+    "help": {
+      "HelpPanel": {
+        "documentation": "Documentazione",
+        "openInNewTab": "Apri in una nuova scheda",
+        "closeShortcut": "Chiudi (Cmd+Shift+H)",
+        "loadError": "Impossibile caricare la documentazione nel pannello laterale.",
+        "embedBlocked": "I documenti incorporati sono bloccati su questa origine dell'app. Apri invece la pagina in una nuova scheda."
+      }
+    },
+    "incidents": {
+      "IncidentsPage": {
+        "errors": {
+          "fetchFailed": "Impossibile recuperare gli incidenti"
+        },
+        "loading": "Caricamento incidenti...",
+        "tryAgain": "Riprova",
+        "title": "Incidenti",
+        "description": "Tieni traccia degli incidenti e dei risultati EDR nelle tue organizzazioni.",
+        "filters": {
+          "tracked": "Monitorati",
+          "findings": "Risultati"
+        },
+        "emptyTitle": "Nessun incidente trovato",
+        "emptyFiltered": "Nessun incidente corrisponde ai filtri attuali.",
+        "emptyDescription": "Non è stato ancora registrato alcun incidente monitorato o risultato EDR.",
+        "table": {
+          "title": "Titolo",
+          "source": "Fonte",
+          "severity": "Gravità",
+          "detected": "Rilevato"
+        },
+        "status": {
+          "detected": "rilevato",
+          "analyzing": "in analisi",
+          "contained": "contenuto",
+          "recovering": "in ripristino",
+          "closed": "chiuso"
+        },
+        "viewInSource": "Visualizza in {{source}}",
+        "promoteFromEdr": "Promuovi dalla vista EDR.",
+        "pagination": "Pagina {{page}} di {{totalPages}} ({{total}} totale)",
+        "previous": "Precedente"
+      },
+      "IncidentDetailPage": {
+        "errors": {
+          "notFound": "Incidente non trovato",
+          "fetchFailed": "Impossibile recuperare l'incidente"
+        },
+        "loading": "Caricamento incidente...",
+        "backToIncidents": "← Torna agli incidenti",
+        "tryAgain": "Riprova",
+        "dates": {
+          "detected": "Rilevato",
+          "contained": "Contenuto",
+          "resolved": "Risolto",
+          "closed": "Chiuso"
+        },
+        "tabs": {
+          "timeline": "Cronologia",
+          "evidence": "Prove"
+        },
+        "status": {
+          "detected": "rilevato",
+          "analyzing": "in analisi",
+          "contained": "contenuto",
+          "recovering": "in ripristino",
+          "closed": "chiuso"
+        },
+        "summary": "Riepilogo",
+        "timeline": {
+          "empty": "Nessuna voce nella cronologia ancora."
+        },
+        "actions": {
+          "empty": "Nessuna azione registrata.",
+          "action": "Azione",
+          "by": "Di",
+          "when": "Quando"
+        },
+        "evidence": {
+          "empty": "Nessuna prova raccolta.",
+          "collectedBy": "Raccolto da",
+          "hash": "Hash"
+        }
+      }
+    },
+    "logs": {
+      "LogSearch": {
+        "errors": {
+          "invalidTimeRange": "L'ora di inizio deve essere precedente all'ora di fine.",
+          "searchFailed": "Impossibile cercare nei log",
+          "saveFailed": "Impossibile salvare la query",
+          "noRowsExport": "Nessuna riga da esportare."
+        },
+        "savePrompt": "Dai un nome a questa query salvata:",
+        "title": "Registri eventi",
+        "description": "Cerca e analizza i registri della tua flotta.",
+        "searchPlaceholder": "codice di errore, origine, traccia dello stack...",
+        "source": "Fonte",
+        "sourcePlaceholder": "ad es. kernel",
+        "start": "Inizia",
+        "end": "Fine",
+        "rows": "Righe",
+        "levels": {
+          "info": "Informazioni",
+          "warning": "Avviso",
+          "error": "Errore",
+          "critical": "Critico"
+        },
+        "searchFleetLogs": "Cerca i registri della flotta",
+        "saveQuery": "Salva query",
+        "exportCsv": "Esporta CSV",
+        "resultsTitle": "Risultati della ricerca",
+        "loading": "Caricamento...",
+        "resultsCount": "{{shown}} visualizzati su {{total}} totali",
+        "table": {
+          "timestamp": "Timestamp",
+          "level": "Livello",
+          "category": "Categoria",
+          "message": "Messaggio"
+        },
+        "unknownSite": "Sito sconosciuto",
+        "empty": "Nessun log corrispondeva ai filtri correnti.",
+        "pageCount": "Pagina {{page}} di {{totalPages}}",
+        "previous": "Precedente"
+      }
+    },
+    "oauth": {
+      "ConsentForm": {
+        "errors": {
+          "requestFailed": "Richiesta non riuscita ({{status}})",
+          "submissionFailed": "Invio non riuscito ({{status}})",
+          "network": "Errore di rete"
+        },
+        "loading": "Caricamento richiesta di autorizzazione…",
+        "signInTitle": "Accedi per continuare",
+        "signInDescription": "Devi accedere al tuo account Breeze prima di autorizzare questa connessione.",
+        "signInAction": "Accedi",
+        "redirectLoopTitle": "Non possiamo farti accedere",
+        "redirectLoopDescription": "Il tuo browser ti ha rimandato qui senza un cookie di accesso. I cookie di terze parti o la memorizzazione del sito potrebbero essere bloccati. Consenti i cookie per questo sito e riprova oppure torna al tuo client MCP e ricomincia.",
+        "expiredTitle": "Richiesta di autorizzazione scaduta",
+        "expiredDescription": "Questo collegamento di autorizzazione non è più valido. Torna al tuo client MCP e avvia nuovamente la connessione.",
+        "noTenantsTitle": "Nessun tenant disponibile",
+        "noTenantsDescription": "Il tuo account non è membro di alcun tenant partner, quindi non può autorizzare una connessione MCP. Chiedi a un amministratore di aggiungerti a un partner prima di continuare.",
+        "consentTitle": "{{displayName}} desidera accedere al tuo tenant Breeze",
+        "clientId": "ID client: {{clientId}}",
+        "unverifiedLabel": "Integrazione non verificata",
+        "unverifiedDescription": "Breeze non ha verificato questa integrazione. Il nome è autodichiarato e potrebbe imitare un'app attendibile. Approva solo se hai avviato tu questa connessione e riconosci la destinazione di callback qui sotto.",
+        "callbackLabel": "Il codice di autorizzazione verrà inviato a:",
+        "missingRedirectTitle": "Impossibile verificare la destinazione di callback",
+        "missingRedirectDescription": "Questa richiesta di autorizzazione non includeva una destinazione di callback, quindi non può essere approvata in modo sicuro. Torna al tuo client MCP e avvia nuovamente la connessione.",
+        "approving": "Approvazione...",
+        "approve": "Approva",
+        "deny": "Nega",
+        "revokeHint": "Puoi revocare questo accesso in qualsiasi momento da Impostazioni → App connesse.",
+        "scopeIntro": "Ciò consentirà all'app di:",
+        "scopes": {
+          "mcpRead": "Leggere i dati della tua flotta (dispositivi, avvisi, script, automazioni)",
+          "mcpWrite": "Apportare modifiche non distruttive alla tua flotta (tag, avvisi, configurazione)",
+          "mcpExecute": "Eseguire azioni ad alto rischio sui dispositivi (comandi, script, operazioni remote)",
+          "openid": "Conferma la tua identità",
+          "offlineAccess": "Restare connessa senza effettuare nuovamente l'accesso (refresh token)"
+        },
+        "tenantPickerLabel": "A quale tenant vuoi connetterti?"
+      }
+    },
+    "onboarding": {
+      "OnboardingTour": {
+        "steps": {
+          "navigate": {
+            "title": "Esplora i tuoi strumenti",
+            "description": "Gli strumenti più utilizzati sono sempre visibili. Espandi sezioni come Sicurezza o Operazioni per trovarne di più."
+          },
+          "search": {
+            "title": "Cerca qualsiasi cosa",
+            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi, utenti o impostazioni."
+          },
+          "switchOrgs": {
+            "title": "Cambia organizzazione",
+            "description": "Gestisci più clienti? Passa da un'organizzazione all'altra qui."
+          },
+          "aiHelp": {
+            "title": "Assistenza basata sull'AI",
+            "description": "Poni domande sulla tua flotta, risolvi i problemi o genera report. Premi Cmd+Shift+A in qualsiasi momento."
+          }
+        },
+        "skipTour": "Salta il tour",
+        "progress": "{{current}} di {{total}}",
+        "gotIt": "Capito"
+      }
+    },
+    "partner": {
+      "PartnerDashboard": {
+        "errors": {
+          "fetchFailed": "Impossibile recuperare la dashboard del partner"
+        },
+        "fallbackCustomer": "Cliente {{index}}",
+        "fallbackDevice": "Dispositivo {{index}}",
+        "loading": "Caricamento dati partner...",
+        "tryAgain": "Riprova",
+        "title": "Portale dei partner",
+        "description": "Monitora lo stato dei clienti, la copertura dei dispositivi e la fatturazione in un'unica visualizzazione.",
+        "addCustomer": "Aggiungi cliente",
+        "viewAllAlerts": "Visualizza tutti gli avvisi",
+        "runReport": "Esegui report",
+        "customerHealth": "Stato del cliente",
+        "customerCount": "{{filtered}} di {{total}} clienti",
+        "searchCustomers": "Cerca clienti",
+        "allHealth": "Tutti gli stati",
+        "health": {
+          "healthy": "Operativo",
+          "warning": "Richiede attenzione",
+          "critical": "A rischio"
+        },
+        "sort": {
+          "health": "Ordina per punteggio di stato",
+          "devices": "Ordina per numero di dispositivi",
+          "name": "Ordina per nome"
+        },
+        "healthScore": "Punteggio di stato: {{score}}",
+        "healthScoreUnavailable": "Punteggio di stato non disponibile",
+        "devices": "Dispositivi",
+        "alerts": "Avvisi",
+        "compliance": "Conformità",
+        "noCustomerMatches": "Nessun cliente corrisponde ancora a questo filtro.",
+        "billingSummary": "Riepilogo fatturazione",
+        "monthlyRecurringRevenue": "Entrate ricorrenti mensili",
+        "customer": "Cliente",
+        "mrr": "MRR",
+        "totalMrr": "Totale MRR",
+        "portfolioSnapshot": "Istantanea del portafoglio",
+        "healthAndDeviceCoverage": "Stato e copertura dispositivi",
+        "customers": "Clienti",
+        "totalDevices": "Dispositivi totali",
+        "openAlerts": "Avvisi aperti",
+        "devicesAcrossCustomers": "Dispositivi su tutti i clienti",
+        "devicesTracked": "{{formattedCount}} dispositivi monitorati su tutti i clienti",
+        "status": {
+          "online": "Online",
+          "offline": "Offline",
+          "warning": "Avviso",
+          "unknown": "Sconosciuto"
+        },
+        "lastSeen": "Visto l'ultima volta",
+        "noDeviceInventory": "Nessun inventario di dispositivi ancora disponibile da parte dei clienti."
+      }
+    },
+    "remediation": {
+      "RemediationSuggestionsPanel": {
+        "targets": {
+          "script": "Script",
+          "template": "Modello",
+          "playbook": "Playbook",
+          "diagnostic": "Diagnostica"
+        },
+        "targetIdentifiers": {
+          "script": "script {{id}}",
+          "scriptMissing": "script senza script ID",
+          "template": "modello {{id}}",
+          "templateMissing": "modello senza ID modello",
+          "playbook": "playbook {{id}}",
+          "playbookMissing": "playbook senza playbook ID",
+          "diagnostic": "azione diagnostica"
+        },
+        "targetDevices": {
+          "none": "Nessun dispositivo di destinazione in questo suggerimento",
+          "one": "dispositivo {{id}}",
+          "many": "{{count}} dispositivi: {{ids}}"
+        },
+        "errors": {
+          "loadFailed": "Impossibile caricare le correzioni suggerite",
+          "generateFailed": "Impossibile generare le correzioni suggerite",
+          "updateFailed": "Impossibile aggiornare la correzione suggerita",
+          "executeFailed": "Impossibile eseguire la correzione suggerita",
+          "approvalFailed": "Impossibile richiedere l'approvazione"
+        },
+        "messages": {
+          "disabled": "Le correzioni suggerite sono disabilitate",
+          "generated": "Correzioni suggerite generate",
+          "accepted": "Correzione suggerita accettata",
+          "markedEdited": "Correzione suggerita contrassegnata come modificata",
+          "rejected": "Correzione suggerita rifiutata",
+          "updated": "Correzione suggerita aggiornata",
+          "scriptQueued": "Script in coda e correzione suggerita aggiornata",
+          "approvalRequested": "Approvazione richiesta"
+        },
+        "title": "Correzioni suggerite",
+        "refresh": "Aggiorna le correzioni suggerite",
+        "disabledTitle": "Le correzioni suggerite sono disabilitate per questa organizzazione",
+        "suggestionsDisabled": "Suggerimenti disabilitati",
+        "generate": "Genera",
+        "empty": "Nessuna soluzione suggerita ancora.",
+        "fields": {
+          "title": "Titolo",
+          "risk": "Rischio",
+          "rationale": "Motivazione",
+          "expectedAction": "Azione prevista"
+        },
+        "risk": {
+          "low": "basso",
+          "medium": "medio",
+          "high": "alto",
+          "critical": "critico"
+        },
+        "saveEdits": "Salva modifiche",
+        "status": {
+          "suggested": "suggerito",
+          "accepted": "accettato",
+          "edited": "modificato",
+          "rejected": "rifiutato",
+          "executed": "eseguito",
+          "failed": "fallito"
+        },
+        "statusLine": "Stato: {{status}}",
+        "executionPreview": "Anteprima dell'esecuzione",
+        "preview": {
+          "willRun": "Verrà eseguito",
+          "where": "Dove",
+          "source": "Fonte",
+          "risk": "Rischio",
+          "why": "Perché",
+          "expectedAction": "Azione prevista",
+          "parameters": "Parametri"
+        },
+        "accept": "Accetta",
+        "reject": "Rifiuta",
+        "execute": "Esegui",
+        "requestApprovalTitle": "Richiedi l'approvazione PAM prima dell'esecuzione",
+        "requesting": "Richiesta in corso...",
+        "requestApproval": "Richiedi l'approvazione",
+        "waitingApprovalTitle": "In attesa dell'approvazione PAM",
+        "approvalPending": "In attesa di approvazione"
+      }
+    },
+    "support": {
+      "SupportModal": {
+        "toasts": {
+          "sent": "Richiesta di assistenza inviata"
+        },
+        "errors": {
+          "notConfigured": "L'assistenza non è disponibile per questa distribuzione.",
+          "upstreamUnavailable": "Il servizio di assistenza è temporaneamente non disponibile. Riprova tra poco.",
+          "upstreamInvalidResponse": "Il servizio di assistenza ha restituito una risposta imprevista. Riprova.",
+          "rateLimited": "Troppe richieste. Attendi qualche minuto e riprova.",
+          "invalidBody": "Inserisci oggetto e messaggio.",
+          "sendFailed": "Impossibile inviare la richiesta di assistenza. Riprova.",
+          "requestFailed": "Richiesta di assistenza non riuscita"
+        },
+        "title": "Contatta l'assistenza",
+        "sendingAs": "Invio come",
+        "subject": "Oggetto",
+        "subjectPlaceholder": "Breve descrizione",
+        "message": "Messaggio",
+        "messagePlaceholder": "In cosa possiamo aiutare?",
+        "sending": "Invio…",
+        "send": "Invia"
+      }
+    }
+  }
+}

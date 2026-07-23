@@ -58,6 +58,7 @@ const localeOptions = [
   { value: 'fr-FR' as const, labelKey: 'language.frFRLabel', defaultLabel: 'Français (France)', descriptionKey: 'language.frFRDescription', defaultDescription: 'French (France)' },
   { value: 'fr-CA' as const, labelKey: 'language.frCALabel', defaultLabel: 'Français (Canada)', descriptionKey: 'language.frCADescription', defaultDescription: 'French (Canada)' },
   { value: 'de-DE' as const, labelKey: 'language.deDELabel', defaultLabel: 'Deutsch (Deutschland)', descriptionKey: 'language.deDEDescription', defaultDescription: 'German (Germany)' },
+  { value: 'it-IT' as const, labelKey: 'language.itITLabel', defaultLabel: 'Italiano (Italia)', descriptionKey: 'language.itITDescription', defaultDescription: 'Italian (Italy)' },
 ];
 
 function resolveAppearance(preferences?: UserPreferences | null): Required<UserPreferences> {

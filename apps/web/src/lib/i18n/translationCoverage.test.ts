@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
-const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const;
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
 type TranslatedLocale = (typeof translatedLocales)[number];
 
 // Per-namespace count caps for exact-English duplicates that survived review
@@ -42,6 +42,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     'scripts.json': 55,
     'security.json': 140,
+    // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     'settings.json': 109,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
@@ -174,6 +175,29 @@ const namespaceDuplicateBaselines = {
     'settings.json': 164,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
+  },
+  'it-IT': {
+    'admin.json': 31,
+    'ai.json': 12,
+    'alerts.json': 57,
+    'auth.json': 21,
+    'backup.json': 45,
+    'billing.json': 29,
+    'common.json': 96,
+    'devices.json': 144,
+    'discovery.json': 22,
+    'integrations.json': 81,
+    'patches.json': 18,
+    'peripherals.json': 4,
+    'policies.json': 363,
+    'portal.json': 9,
+    'remote.json': 14,
+    'reports.json': 51,
+    'scripts.json': 57,
+    'security.json': 163,
+    'settings.json': 154,
+    'tickets.json': 6,
+    'vulnerabilities.json': 17,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
 
