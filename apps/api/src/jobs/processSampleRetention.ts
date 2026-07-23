@@ -57,7 +57,8 @@ export function createProcessSampleRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const retentionDays = Math.min(14, Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS));
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
         const startedAt = Date.now();
 
         let deleted = 0;

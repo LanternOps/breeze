@@ -215,7 +215,11 @@ export const deviceNetwork = pgTable('device_network', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   interfaceName: text('interface_name').notNull(),
-  macAddress: varchar('mac_address', { length: 17 }),
+  // 64 (not 17) to fit Windows pseudo-interface (Teredo/ISATAP) and
+  // InfiniBand EUI-64 / tunnel MACs — matches the agent payload schema's
+  // z.string().max(64) (see routes/agents/schemas.ts). See migration
+  // 2026-08-04-widen-device-mac-address-columns.sql (Sentry BREEZE-3).
+  macAddress: varchar('mac_address', { length: 64 }),
   ipAddress: varchar('ip_address', { length: 45 }),
   ipType: varchar('ip_type', { length: 4 }).notNull().default('ipv4'),
   isPrimary: boolean('is_primary').notNull().default(false),
@@ -231,7 +235,10 @@ export const deviceIpHistory = pgTable('device_ip_history', {
   ipAddress: varchar('ip_address', { length: 45 }).notNull(),
   ipType: varchar('ip_type', { length: 4 }).notNull().default('ipv4'),
   assignmentType: ipAssignmentTypeEnum('assignment_type').notNull().default('unknown'),
-  macAddress: varchar('mac_address', { length: 17 }),
+  // 64 to match device_network.mac_address — same agent-reported hardware
+  // addresses (Teredo/ISATAP/InfiniBand can exceed 17 chars). See migration
+  // 2026-08-04-widen-device-mac-address-columns.sql.
+  macAddress: varchar('mac_address', { length: 64 }),
   subnetMask: varchar('subnet_mask', { length: 45 }),
   gateway: varchar('gateway', { length: 45 }),
   dnsServers: text('dns_servers').array(),
