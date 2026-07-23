@@ -53,30 +53,36 @@ vi.mock('../shared/Toast', () => ({
 
 // Passthrough mock, per the brief: keep runAction's real request→success/error
 // shape but skip its dependency on the real Toast module's DOM listener setup.
-vi.mock('../../lib/runAction', () => ({
-  runAction: vi.fn(async (opts: { request: () => Promise<Response>; errorFallback: string; successMessage?: string }) => {
-    const response = await opts.request();
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      const message = (data && typeof data === 'object' && 'error' in data ? (data as any).error : undefined) ?? opts.errorFallback;
-      showToastMock({ type: 'error', message });
-      const err = new Error(message) as Error & { status: number };
-      err.name = 'ActionError';
-      err.status = response.status;
-      throw err;
-    }
-    if (opts.successMessage) showToastMock({ type: 'success', message: opts.successMessage });
-    return data;
-  }),
-  ActionError: class ActionError extends Error {
+// The thrown rejection must be an actual instance of the exported ActionError
+// class (not just a plain Error with `.name` set to the string 'ActionError')
+// — the component's catch blocks branch on `err instanceof ActionError` (see
+// handleRegisterApprover's `if (err.status === 403) setApproverReauthValue('')`),
+// and real runAction.ts throws `new ActionError(...)`. A plain Error would
+// silently fail that instanceof check and mask real 403 clearing behavior.
+vi.mock('../../lib/runAction', () => {
+  class ActionError extends Error {
     status: number;
     constructor(message: string, status: number) {
       super(message);
       this.name = 'ActionError';
       this.status = status;
     }
-  },
-}));
+  }
+  return {
+    runAction: vi.fn(async (opts: { request: () => Promise<Response>; errorFallback: string; successMessage?: string }) => {
+      const response = await opts.request();
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = (data && typeof data === 'object' && 'error' in data ? (data as any).error : undefined) ?? opts.errorFallback;
+        showToastMock({ type: 'error', message });
+        throw new ActionError(message, response.status);
+      }
+      if (opts.successMessage) showToastMock({ type: 'success', message: opts.successMessage });
+      return data;
+    }),
+    ActionError,
+  };
+});
 
 import SecurityDevicesCard from './SecurityDevicesCard';
 
@@ -621,6 +627,140 @@ describe('SecurityDevicesCard', () => {
           message: 'Use your passkey or authenticator code instead — reload the page to update your options.',
         }),
       );
+    });
+
+    it('registers with the passkey tier when the user already has a passkey (StepUpPrompt shows the passkey note, no input)', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: '2026-06-10T09:00:00.000Z', credentialId: 'cred-1' }] }),
+      );
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      expect(screen.getByTestId('approver-stepup-passkey-note')).toBeTruthy();
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My workstation' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(registerApproverDeviceMock).toHaveBeenCalledWith('My workstation', { method: 'passkey' }),
+      );
+    });
+
+    it('maps a 401 with the credential-failure message on the TOTP tier to the incorrect-code message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-stepup-code'), {
+        target: { value: '123456' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Incorrect code.' }));
+    });
+
+    it('maps a 401 whose message is NOT the credential-failure string to the session-expired message (not "Incorrect password")', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('Invalid or expired token'), { status: 401 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'hunter2' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Session expired — reload the page and try again.',
+        }),
+      );
+      expect(showToastMock).not.toHaveBeenCalledWith({ type: 'error', message: 'Incorrect password.' });
+    });
+
+    it('maps a 429 to the too-many-attempts message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('rate_limited'), { status: 429 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'hunter2' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Too many attempts — try again in a few minutes.',
+        }),
+      );
+    });
+
+    it('maps a WebAuthn NotAllowedError cancellation (no status) to the registration-cancelled message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: '2026-06-10T09:00:00.000Z', credentialId: 'cred-1' }] }),
+      );
+      const domException = Object.assign(new Error('The operation either timed out or was not allowed.'), {
+        name: 'NotAllowedError',
+      });
+      registerApproverDeviceMock.mockRejectedValueOnce(domException);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Registration was cancelled.' }),
+      );
+    });
+
+    it('clears the re-auth value but keeps the label on a generic 403 (grant expired)', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('some_other_error'), { status: 403 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My workstation' },
+      });
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'hunter2' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Verification expired — please verify again.',
+        }),
+      );
+      expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('My workstation');
+      expect((screen.getByTestId('approver-stepup-password') as HTMLInputElement).value).toBe('');
     });
   });
 });
