@@ -285,6 +285,7 @@ export async function initiateCustomerGraphReadConsent(
         connectionId: existing.id,
         orgId: input.orgId,
         consentAttemptId: existing.consentAttemptId,
+        profile: PROFILE,
       });
     }
 
@@ -340,6 +341,7 @@ export async function initiateCustomerGraphReadConsent(
       orgId: connection.orgId,
       consentAttemptId: connection.consentAttemptId,
       userId: input.actorId,
+      profile: PROFILE,
     });
     const consentUrl = new URL('https://login.microsoftonline.com/common/adminconsent');
     consentUrl.searchParams.set('client_id', config.clientId);
@@ -386,6 +388,7 @@ export async function transitionAdminConsentToIdentity(input: {
       connectionId: input.attempt.id,
       orgId: input.attempt.orgId,
       consentAttemptId: input.attempt.consentAttemptId,
+      profile: PROFILE,
     });
     if (!adminSession) throw lifecycleError('stale_attempt');
 
@@ -401,6 +404,7 @@ export async function transitionAdminConsentToIdentity(input: {
       orgId: input.attempt.orgId,
       consentAttemptId: input.attempt.consentAttemptId,
       userId: adminSession.userId,
+      profile: PROFILE,
     }, input.prepared);
     return { connection, identity, actorId: adminSession.userId };
   }));
@@ -644,6 +648,7 @@ export async function disconnectCustomerGraphReadConnection(input: {
       connectionId: current.id,
       orgId: current.orgId,
       consentAttemptId: current.consentAttemptId,
+      profile: PROFILE,
     });
     const nextAttemptId = randomUUID();
     return requireCasRow(await db.update(m365Connections).set({

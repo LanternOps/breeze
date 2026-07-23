@@ -342,6 +342,7 @@ export function createM365ConsentCallbackRoutes(
       connectionId: binding.connectionId,
       orgId: attempt.orgId,
       consentAttemptId: binding.consentAttemptId,
+      profile: 'customer-graph-read',
     });
     if (!session) return terminalFailure('consent_state_mismatch', attempt);
 

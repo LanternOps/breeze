@@ -202,6 +202,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       connectionId: stale!.connection.id,
       orgId: owner.orgId,
       consentAttemptId: stale!.connection.consentAttemptId,
+      profile: 'customer-graph-read',
     })).resolves.toBeNull();
     await expect(consumeConsentSession({
       rawState: usable!.rawState,
@@ -209,6 +210,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       connectionId: usable!.connection.id,
       orgId: owner.orgId,
       consentAttemptId: usable!.connection.consentAttemptId,
+      profile: 'customer-graph-read',
     })).resolves.toMatchObject({
       connectionId: usable!.connection.id,
       consentAttemptId: usable!.connection.consentAttemptId,
@@ -255,6 +257,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       connectionId: original.connection.id,
       orgId: owner.orgId,
       consentAttemptId: original.connection.consentAttemptId,
+      profile: 'customer-graph-read',
     })).resolves.toMatchObject({
       connectionId: original.connection.id,
       consentAttemptId: original.connection.consentAttemptId,
