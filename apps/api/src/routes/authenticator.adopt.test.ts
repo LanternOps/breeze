@@ -23,6 +23,9 @@ const { dbState, redisMock, passkeysMocks, helperMocks, epochsMock, authState } 
       insertReturning: [] as unknown[],
       insertError: null as ({ code?: string } & Error) | null,
       insertMock: vi.fn(),
+      updateValues: [] as Record<string, unknown>[],
+      updateReturning: [] as unknown[],
+      updateMock: vi.fn(),
       makeSelectChain,
     },
     redisMock: {
@@ -133,6 +136,19 @@ vi.mock('../db', () => ({
         }),
       };
     }),
+    update: vi.fn((...args: unknown[]) => {
+      dbState.updateMock(...args);
+      return {
+        set: vi.fn((values: Record<string, unknown>) => {
+          dbState.updateValues.push(values);
+          return {
+            where: vi.fn(() => ({
+              returning: vi.fn(() => Promise.resolve(dbState.updateReturning)),
+            })),
+          };
+        }),
+      };
+    }),
   },
 }));
 
@@ -211,6 +227,33 @@ function passkeyRowFixture(overrides: Partial<typeof defaultPasskeyRow> | null) 
   dbState.selectQueue.push([{ ...defaultPasskeyRow, ...overrides }]);
 }
 
+const defaultExistingDeviceRow = {
+  id: 'device-existing-1',
+  userId: 'user-123',
+  credentialId: 'cred-1',
+  label: 'Old Laptop',
+  kind: 'webauthn_platform',
+  publicKey: 'stale-public-key',
+  signCount: 3,
+  aaguid: null,
+  transports: ['internal'],
+  isPlatformBound: true,
+  disabledAt: new Date('2026-06-01T00:00:00.000Z'),
+  disabledReason: 'user_revoked',
+};
+
+// Pushes the SECOND select() the adopt route performs — the existing
+// authenticator_devices lookup by credentialId, run after the userPasskeys
+// lookup. Must be pushed AFTER passkeyRowFixture in a given test so the FIFO
+// selectQueue lines up with the route's actual select order.
+function existingApproverDeviceFixture(overrides: Partial<typeof defaultExistingDeviceRow> | null) {
+  if (overrides === null) {
+    dbState.selectQueue.push([]);
+    return;
+  }
+  dbState.selectQueue.push([{ ...defaultExistingDeviceRow, ...overrides }]);
+}
+
 const insertedDeviceRow = {
   id: 'device-1',
   credentialId: 'cred-1',
@@ -231,6 +274,8 @@ describe('POST /authenticator/devices/webauthn/adopt', () => {
     dbState.insertValues = [];
     dbState.insertReturning = [insertedDeviceRow];
     dbState.insertError = null;
+    dbState.updateValues = [];
+    dbState.updateReturning = [];
     authState.requireAuthorizationHeader = true;
     helperMocks.enforceApproverRegisterStepUp.mockResolvedValue(null);
     helperMocks.writeAuthAudit.mockReturnValue(undefined);
@@ -320,6 +365,75 @@ describe('POST /authenticator/devices/webauthn/adopt', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe('already_registered');
     expect(helperMocks.writeAuthAudit).not.toHaveBeenCalled();
+  });
+
+  it('revoke-then-adopt reactivates the existing DISABLED row instead of inserting a new one', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(null);
+    passkeysMocks.verifyStepUpPasskeyAssertion.mockResolvedValueOnce(true);
+    passkeyRowFixture({ credentialId: 'cred-1', deviceType: 'singleDevice', backedUp: false, publicKey: 'fresh-key', counter: 9 });
+    existingApproverDeviceFixture({ userId: 'user-123', disabledAt: new Date('2026-06-01T00:00:00.000Z') });
+    dbState.updateReturning = [{
+      ...defaultExistingDeviceRow,
+      disabledAt: null,
+      disabledReason: null,
+      publicKey: 'fresh-key',
+      signCount: 9,
+      lastUsedAt: new Date('2026-07-22T00:00:00.000Z'),
+    }];
+
+    const res = await postAdopt({ registerGrantId: 'g-ok', credential: { id: 'cred-1' } });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, device: { id: 'device-existing-1' } });
+    expect(dbState.insertMock).not.toHaveBeenCalled();
+    expect(dbState.updateMock).toHaveBeenCalledTimes(1);
+    expect(dbState.updateValues[0]).toMatchObject({
+      disabledAt: null,
+      disabledReason: null,
+      publicKey: 'fresh-key',
+      signCount: 9,
+      isPlatformBound: true,
+    });
+    expect((dbState.updateValues[0] as Record<string, unknown>).lastUsedAt).toBeInstanceOf(Date);
+    // No new label supplied — the existing label must be left untouched.
+    expect(dbState.updateValues[0]).not.toHaveProperty('label');
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'auth.authenticator.device.register',
+        result: 'success',
+        details: expect.objectContaining({ via: 'passkey_adopt_reactivate', deviceId: 'device-existing-1' }),
+      }),
+    );
+  });
+
+  it('409s an active (not disabled) existing row for the same user, without inserting or updating', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(null);
+    passkeysMocks.verifyStepUpPasskeyAssertion.mockResolvedValueOnce(true);
+    passkeyRowFixture({ credentialId: 'cred-1' });
+    existingApproverDeviceFixture({ userId: 'user-123', disabledAt: null });
+
+    const res = await postAdopt({ registerGrantId: 'g-ok', credential: { id: 'cred-1' } });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('already_registered');
+    expect(dbState.insertMock).not.toHaveBeenCalled();
+    expect(dbState.updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reactivate another user\'s disabled row — falls through to insert, which 23505s to a 409', async () => {
+    helperMocks.enforceApproverRegisterStepUp.mockResolvedValueOnce(null);
+    passkeysMocks.verifyStepUpPasskeyAssertion.mockResolvedValueOnce(true);
+    passkeyRowFixture({ credentialId: 'cred-1' });
+    existingApproverDeviceFixture({ userId: 'some-other-user', disabledAt: new Date('2026-06-01T00:00:00.000Z') });
+    dbState.insertError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+
+    const res = await postAdopt({ registerGrantId: 'g-ok', credential: { id: 'cred-1' } });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe('already_registered');
+    expect(dbState.updateMock).not.toHaveBeenCalled();
+    expect(dbState.insertMock).toHaveBeenCalledTimes(1);
   });
 
   it('404s when the asserted credential does not belong to the caller / is disabled', async () => {

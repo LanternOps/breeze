@@ -324,6 +324,64 @@ authenticatorRoutes.post(
       return c.json({ error: 'Passkey not found' }, 404);
     }
 
+    // credential_id is UNIQUE on authenticator_devices, and revoke soft-disables
+    // (sets disabled_at) rather than deleting — so re-adopting the SAME passkey
+    // after a revoke would otherwise 23505 forever with no way out. Reactivate
+    // instead of inserting when the existing row is this user's own DISABLED
+    // device: both proofs this route just re-verified (the no-bypass register
+    // grant AND a fresh live WebAuthn assertion) are strictly stronger evidence
+    // of possession than the original registration required, so reactivating is
+    // safe. A still-ACTIVE row for this user is a genuine conflict (409, as
+    // before). A row owned by ANOTHER user is deliberately left untouched here —
+    // it falls through to the insert below, which hits the same unique
+    // constraint and 409s exactly as it did pre-fix.
+    const [existingDevice] = await db
+      .select()
+      .from(authenticatorDevices)
+      .where(eq(authenticatorDevices.credentialId, credential.id as string))
+      .limit(1);
+
+    if (existingDevice && existingDevice.userId === auth.user.id) {
+      if (!existingDevice.disabledAt) {
+        return c.json({ error: 'already_registered' }, 409);
+      }
+
+      const [reactivated] = await db
+        .update(authenticatorDevices)
+        .set({
+          disabledAt: null,
+          disabledReason: null,
+          publicKey: pk.publicKey,
+          signCount: pk.counter,
+          aaguid: pk.aaguid,
+          transports: (pk.transports ?? undefined) as ApproverDeviceRow['transports'],
+          isPlatformBound: pk.deviceType === 'singleDevice' && !pk.backedUp,
+          lastUsedAt: new Date(),
+          // Keep the existing label unless the caller supplied a new one.
+          ...(label ? { label } : {}),
+        })
+        .where(eq(authenticatorDevices.id, existingDevice.id))
+        .returning();
+
+      if (!reactivated) throw new Error('Approver device reactivate returned no row');
+
+      writeAuthAudit(c, {
+        orgId: auth.orgId ?? undefined,
+        action: 'auth.authenticator.device.register',
+        result: 'success',
+        userId: auth.user.id,
+        email: auth.user.email,
+        details: {
+          deviceId: reactivated.id,
+          kind: 'webauthn_platform',
+          isPlatformBound: reactivated.isPlatformBound,
+          via: 'passkey_adopt_reactivate',
+        },
+      });
+
+      return c.json({ success: true, device: toPublicDevice(reactivated) });
+    }
+
     let inserted;
     try {
       [inserted] = await db
