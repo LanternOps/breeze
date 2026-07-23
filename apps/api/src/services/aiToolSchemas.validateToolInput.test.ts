@@ -39,9 +39,9 @@ describe('validateToolInput error formatting', () => {
     }
   });
 
-  it('joins multiple issues without a leading colon on the refinement message', () => {
-    // Bad enum (field-level, has path) alongside a satisfied action keeps the
-    // banner clean; the key invariant is no ` : ` artifact anywhere.
+  it('renders another object-level refinement message without a leading colon', () => {
+    // A second refinement (scan requires deviceIds) confirms the empty-path
+    // handling is not specific to the install message.
     const result = validateToolInput('manage_patches', { action: 'scan' });
     expect(result.success).toBe(false);
     if (!result.success) {
