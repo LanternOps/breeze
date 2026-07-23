@@ -291,6 +291,60 @@ describe('device filesystem routes', () => {
     expect(res.status).toBe(404);
   });
 
+  it('rejects a path not in the pinned run and never deletes it', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]),
+        }),
+      }),
+    } as never);
+    // Pinned run only previewed /tmp/a.tmp; the caller asks to delete a path
+    // that was never previewed — it must not widen the deletion set.
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/EVIL.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('returns a distinct 400 when the pinned run has no previewable candidates', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ plan: { requestedPaths: [] } }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/a.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Pinned cleanup run has no previewable candidates');
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
   it('denies filesystem read when site scope excludes the device', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SITE_ACCESS_DENIED as never);
 

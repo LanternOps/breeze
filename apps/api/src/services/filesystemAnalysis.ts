@@ -272,6 +272,11 @@ export function mergeFilesystemAnalysisPayload(existing: AnyObject, incoming: An
     path: asString(incoming.path) ?? asString(existing.path),
     partial: asBoolean(existing.partial, false) || asBoolean(incoming.partial, false),
     reason: asString(incoming.reason) ?? asString(existing.reason),
+    // The checkpoint is the resume frontier of the CURRENT run, not something to
+    // accumulate. A completed run omits it (Go `omitempty` on an empty map); the
+    // `...existing` spread would otherwise inherit the previous run's stale
+    // pending dirs, so a resumed baseline could never register as complete.
+    checkpoint: asRecord(incoming.checkpoint) ?? {},
     summary: {
       filesScanned: asNumber(existingSummary.filesScanned, 0) + asNumber(incomingSummary.filesScanned, 0),
       dirsScanned: asNumber(existingSummary.dirsScanned, 0) + asNumber(incomingSummary.dirsScanned, 0),

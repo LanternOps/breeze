@@ -364,6 +364,14 @@ filesystemRoutes.post(
         return c.json({ error: 'Cleanup run not found' }, 404);
       }
       candidates = readPlanPreviewCandidates(run.plan);
+      if (candidates.length === 0) {
+        // Distinct from the path-mismatch 400 below: the pinned run itself has
+        // no previewable candidates (e.g. it is an already-executed run, or its
+        // stored preview is missing/corrupt), so no selection could ever match.
+        return c.json({
+          error: 'Pinned cleanup run has no previewable candidates (it may already be executed or its preview is unavailable). Re-run the cleanup preview.',
+        }, 400);
+      }
     } else {
       const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
       if (!snapshot) {

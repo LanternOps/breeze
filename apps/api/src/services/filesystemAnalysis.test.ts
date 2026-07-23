@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildCleanupPreview, readPlanPreviewCandidates } from './filesystemAnalysis';
+import {
+  buildCleanupPreview,
+  mergeFilesystemAnalysisPayload,
+  readPlanPreviewCandidates,
+} from './filesystemAnalysis';
 
 describe('filesystemAnalysis service', () => {
   it('builds safe cleanup preview from snapshot candidates', () => {
@@ -60,6 +64,27 @@ describe('filesystemAnalysis service', () => {
       expect(readPlanPreviewCandidates({})).toEqual([]);
       expect(readPlanPreviewCandidates({ preview: {} })).toEqual([]);
       expect(readPlanPreviewCandidates({ preview: { candidates: 'nope' } })).toEqual([]);
+    });
+  });
+
+  describe('mergeFilesystemAnalysisPayload — checkpoint is the current run, not accumulated', () => {
+    it('clears a stale checkpoint when the completing run omits it', () => {
+      // Prior run left a checkpoint in the aggregate; the completing resume run
+      // omits checkpoint (Go omitempty). The merged payload must NOT inherit the
+      // stale pending dirs, or the baseline could never register as complete.
+      const existing = { checkpoint: { pendingDirs: [{ path: '/a', depth: 1 }] } };
+      const incoming = { summary: { filesScanned: 5 } }; // no checkpoint key
+
+      const merged = mergeFilesystemAnalysisPayload(existing, incoming);
+      expect(merged.checkpoint).toEqual({});
+    });
+
+    it('carries the incoming run checkpoint through', () => {
+      const existing = {};
+      const incoming = { checkpoint: { pendingDirs: [{ path: '/b', depth: 2 }] } };
+
+      const merged = mergeFilesystemAnalysisPayload(existing, incoming);
+      expect(merged.checkpoint).toEqual({ pendingDirs: [{ path: '/b', depth: 2 }] });
     });
   });
 });
