@@ -21,11 +21,13 @@ const { fetchWithAuthMock, createPasskeyCredentialMock, mintStepUpGrantsMock, Mo
 
 const {
   listApproverDevicesMock,
+  registerApproverDeviceMock,
   revokeApproverDeviceMock,
   renameApproverDeviceMock,
   showToastMock,
 } = vi.hoisted(() => ({
   listApproverDevicesMock: vi.fn(),
+  registerApproverDeviceMock: vi.fn(),
   revokeApproverDeviceMock: vi.fn(),
   renameApproverDeviceMock: vi.fn(),
   showToastMock: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock('../../stores/auth', () => ({
 
 vi.mock('../../stores/authenticator', () => ({
   listApproverDevices: listApproverDevicesMock,
+  registerApproverDevice: registerApproverDeviceMock,
   revokeApproverDevice: revokeApproverDeviceMock,
   renameApproverDevice: renameApproverDeviceMock,
 }));
@@ -104,6 +107,7 @@ describe('SecurityDevicesCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listApproverDevicesMock.mockResolvedValue([]);
+    registerApproverDeviceMock.mockResolvedValue(undefined);
     revokeApproverDeviceMock.mockResolvedValue(okApproverResponse());
     renameApproverDeviceMock.mockResolvedValue(okApproverResponse());
   });
@@ -530,5 +534,93 @@ describe('SecurityDevicesCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
 
     await screen.findByText(/synced credential/);
+  });
+
+  describe('approvals-only register (spec §4.5)', () => {
+    it('hides the approver-only form by default and reveals it on toggle click', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      expect(screen.queryByTestId('secdev-approver-only-form')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      expect(screen.getByTestId('secdev-approver-only-form')).toBeTruthy();
+    });
+
+    it('registers via TOTP re-auth when the account has TOTP MFA and no passkeys, then reloads the approver list', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+
+      render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My label' },
+      });
+      fireEvent.change(screen.getByTestId('approver-stepup-code'), {
+        target: { value: '123456' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(registerApproverDeviceMock).toHaveBeenCalledWith('My label', { method: 'totp', code: '123456' }),
+      );
+      await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+    });
+
+    it('registers via password re-auth when the account has no passkeys/TOTP', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My label' },
+      });
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'hunter2' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(registerApproverDeviceMock).toHaveBeenCalledWith('My label', {
+          method: 'password',
+          password: 'hunter2',
+        }),
+      );
+      await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+    });
+
+    it('maps a 403 stronger_factor_required rejection to the "use your passkey or authenticator code" message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('stronger_factor_required'), { status: 403 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My label' },
+      });
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'hunter2' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Use your passkey or authenticator code instead — reload the page to update your options.',
+        }),
+      );
+    });
   });
 });

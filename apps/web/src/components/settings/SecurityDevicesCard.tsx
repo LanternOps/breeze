@@ -12,13 +12,26 @@ import {
 } from '../../stores/auth';
 import {
   listApproverDevices,
+  registerApproverDevice,
   revokeApproverDevice,
   renameApproverDevice,
+  type RegisterReauth,
 } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
-import StepUpPrompt from './StepUpPrompt';
+import StepUpPrompt, { pickReauthTier } from './StepUpPrompt';
 import { mergeSecurityDevices, type PasskeySummary, type SecurityDeviceRow } from './securityDevices';
+
+// registerApproverDevice runs the full WebAuthn registration ceremony (options
+// → Touch ID/Hello → verify) and resolves void on success. A rejected re-auth
+// (wrong code/password, rate-limited, expired grant) throws with a `status`.
+// Converting that into a non-2xx Response here — rather than letting it
+// escape request() as a throw — lets runAction's status-aware isApiFailure
+// branch carry the real status through to the toast and to the 403 handling
+// below (a throw straight out of `request()` always collapses to a generic
+// status-0 "network error" toast, per runAction's documented contract in
+// runAction.test.ts). Ported verbatim from the deleted ApproverDevicesSection.
+const OK_RESPONSE = { ok: true, status: 200, json: async () => ({ success: true }) } as Response;
 
 /**
  * Unified "Security devices" card (unified-security-devices Phase 2).
@@ -91,6 +104,14 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   const [mutatingRowKey, setMutatingRowKey] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<SecurityDeviceRow | null>(null);
 
+  // --- Approvals-only register state (spec §4.5) — ported from the deleted
+  // ApproverDevicesSection.tsx's register flow. Collapsed by default: this is
+  // the secondary path for users who don't want a login passkey at all. ---
+  const [showApproverOnlyForm, setShowApproverOnlyForm] = useState(false);
+  const [approverLabel, setApproverLabel] = useState('');
+  const [approverReauthValue, setApproverReauthValue] = useState('');
+  const [isRegisteringApprover, setIsRegisteringApprover] = useState(false);
+
   const loadPasskeys = useCallback(async () => {
     try {
       setIsLoadingPasskeys(true);
@@ -139,6 +160,79 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
     if (mfaMethod === 'sms') return 'sms';
     return 'none';
   }, [passkeys.length, mfaEnabled, mfaMethod]);
+
+  // Strongest-available-factor tiering for the approvals-only register form —
+  // same helper the add-passkey step-up uses, applied to the same passkeys/
+  // mfaMethod state (an existing passkey is a stronger factor regardless of
+  // which flow adds the next credential).
+  const approverTier = useMemo(() => pickReauthTier(passkeys.length, mfaMethod), [passkeys.length, mfaMethod]);
+
+  const buildApproverReauth = (): RegisterReauth | null => {
+    if (approverTier === 'passkey') return { method: 'passkey' };
+    if (approverTier === 'totp') return approverReauthValue.length === 6 ? { method: 'totp', code: approverReauthValue } : null;
+    return approverReauthValue.length > 0 ? { method: 'password', password: approverReauthValue } : null;
+  };
+
+  // Ported VERBATIM from the deleted ApproverDevicesSection.tsx (branch order
+  // and copy are load-bearing — see the inline comments there for why each
+  // status/message combination is distinguished).
+  const mapRegisterError = (err: unknown): string => {
+    if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+      return t('approverDevicesSection.registrationCancelled');
+    }
+    const status = (err as { status?: number })?.status;
+    if (status === 401) {
+      const isCredentialFailure = err instanceof Error && err.message === 'Invalid credentials';
+      if (!isCredentialFailure) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
+      if (approverTier === 'totp') return t('approverDevicesSection.incorrectCode');
+      if (approverTier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
+      return t('approverDevicesSection.incorrectPassword');
+    }
+    if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
+    if (status === 403) {
+      if (err instanceof Error && err.message === 'stronger_factor_required') {
+        return t('approverDevicesSection.useYourPasskeyOrAuthenticatorCodeInstead');
+      }
+      return t('approverDevicesSection.verificationExpiredPleaseVerifyAgain');
+    }
+    return err instanceof Error ? err.message : t('approverDevicesSection.failedToRegisterThisDevice');
+  };
+
+  const handleRegisterApprover = async () => {
+    if (isRegisteringApprover) return;
+    const reauth = buildApproverReauth();
+    if (!reauth) return; // submit disabled anyway
+    const trimmed = approverLabel.trim() || 'This device';
+    setIsRegisteringApprover(true);
+    try {
+      await runAction({
+        request: async () => {
+          try {
+            await registerApproverDevice(trimmed, reauth);
+            return OK_RESPONSE;
+          } catch (err) {
+            const status = (err as { status?: number })?.status ?? 500;
+            return { ok: false, status, json: async () => ({ error: mapRegisterError(err) }) } as Response;
+          }
+        },
+        errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
+        successMessage: t('approverDevicesSection.thisDeviceCanNowApproveRequests'),
+        treatUnauthorizedAsError: true,
+      });
+      setApproverLabel('');
+      setApproverReauthValue('');
+      setShowApproverOnlyForm(false);
+      await loadApprovers();
+    } catch (err) {
+      if (err instanceof ActionError) {
+        if (err.status === 403) setApproverReauthValue('');
+        return; // already toasted by runAction
+      }
+      showToast({ type: 'error', message: mapRegisterError(err) });
+    } finally {
+      setIsRegisteringApprover(false);
+    }
+  };
 
   const handleAddPasskey = async () => {
     if (!passkeyPassword || isAddingPasskey) return;
@@ -645,6 +739,58 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
           {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
         </button>
       </div>
+
+      {/* Standalone "register this browser for approvals only" path (spec
+          §4.5) — for users who don't want a login passkey. Collapsed behind a
+          toggle so it doesn't compete with the primary add-passkey flow. */}
+      {!showApproverOnlyForm ? (
+        <button
+          type="button"
+          onClick={() => setShowApproverOnlyForm(true)}
+          data-testid="secdev-approver-only-toggle"
+          className="text-sm font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          {t('approverDevicesSection.registerThisBrowser')}
+        </button>
+      ) : (
+        <div className="space-y-4 rounded-md border p-4" data-testid="secdev-approver-only-form">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">{t('approverDevicesSection.registerThisBrowser')}</h3>
+            <p className="text-xs text-muted-foreground">
+              {t('approverDevicesSection.optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo')}</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="approver-device-label">
+              {t('approverDevicesSection.deviceName')}</label>
+            <input
+              id="approver-device-label"
+              type="text"
+              value={approverLabel}
+              onChange={e => setApproverLabel(e.target.value)}
+              placeholder={t('approverDevicesSection.frontDeskLaptop')}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isRegisteringApprover}
+              data-testid="approver-device-label-input"
+            />
+          </div>
+          <StepUpPrompt
+            tier={approverTier}
+            reauthValue={approverReauthValue}
+            onChange={setApproverReauthValue}
+            disabled={isRegisteringApprover}
+            idPrefix="approver-stepup"
+          />
+          <button
+            type="button"
+            onClick={() => void handleRegisterApprover()}
+            disabled={isRegisteringApprover || buildApproverReauth() === null}
+            data-testid="approver-device-register"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isRegisteringApprover ? t('approverDevicesSection.registering') : t('approverDevicesSection.registerThisDevice')}
+          </button>
+        </div>
+      )}
 
       {passkeySuccess && (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
