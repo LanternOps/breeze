@@ -8,6 +8,10 @@ import { writeDensity, writeFontPreference, writeThemePreference, writeTimeForma
 vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: vi.fn(),
   fetchWithAuth: vi.fn(),
+  mintAddFactorStepUpGrant: vi.fn(),
+  StepUpError: class StepUpError extends Error {
+    status?: number;
+  },
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
     { getState: () => ({ updateUser: vi.fn() }) }

@@ -13,7 +13,7 @@ vi.mock('@simplewebauthn/browser', () => ({
   startRegistration: webauthnMocks.startRegistration,
 }));
 
-import { apiLogin, apiVerifyPasskeyMFA, useAuthStore } from './auth';
+import { StepUpError, apiLogin, apiVerifyPasskeyMFA, mintAddFactorStepUpGrant, useAuthStore } from './auth';
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -128,5 +128,81 @@ describe('auth store passkey MFA helpers', () => {
         body: JSON.stringify({ tempToken: 'temp-passkey', credential }),
       }),
     ]);
+  });
+});
+
+describe('mintAddFactorStepUpGrant (SR2-20 add_factor step-up)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    // An authenticated session so fetchWithAuth attaches the Bearer token
+    // instead of attempting a cookie-based refresh.
+    useAuthStore.setState({
+      user: baseUser,
+      tokens: baseTokens,
+      isAuthenticated: true,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null,
+    });
+  });
+
+  it('proves a TOTP code and returns the minted grant id', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(makeResponse({ stepUpGrantId: 'grant-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const grantId = await mintAddFactorStepUpGrant({ method: 'totp', code: '123456' });
+
+    expect(grantId).toBe('grant-1');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/auth/mfa/step-up');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      method: 'totp',
+      code: '123456',
+      operation: 'add_factor',
+    });
+  });
+
+  it('runs the assertion ceremony against the authenticated challenge for the passkey method', async () => {
+    const credential = { id: 'credential-1', type: 'public-key' };
+    const options = { challenge: 'challenge-b64url', allowCredentials: [{ id: 'credential-1', type: 'public-key' }] };
+    webauthnMocks.startAuthentication.mockResolvedValueOnce(credential);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ options }))
+      .mockResolvedValueOnce(makeResponse({ stepUpGrantId: 'grant-2' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const grantId = await mintAddFactorStepUpGrant({ method: 'passkey' });
+
+    expect(grantId).toBe('grant-2');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/auth/mfa/step-up/options');
+    expect(webauthnMocks.startAuthentication).toHaveBeenCalledWith({ optionsJSON: options });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/auth/mfa/step-up');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      method: 'passkey',
+      credential,
+      operation: 'add_factor',
+    });
+  });
+
+  it('throws a StepUpError carrying the status when the factor proof is rejected', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid credentials' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(mintAddFactorStepUpGrant({ method: 'totp', code: '000000' })).rejects.toMatchObject({
+      name: 'StepUpError',
+      message: 'Invalid credentials',
+      status: 401,
+    });
+    await expect(
+      mintAddFactorStepUpGrant({ method: 'totp', code: '000000' }).catch((e) => e instanceof StepUpError),
+    ).resolves.toBe(true);
+  });
+
+  it('throws when the server responds 2xx without a grant id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(mintAddFactorStepUpGrant({ method: 'totp', code: '123456' })).rejects.toThrow('Verification failed.');
   });
 });

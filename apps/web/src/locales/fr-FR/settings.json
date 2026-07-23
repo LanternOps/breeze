@@ -1775,7 +1775,16 @@
     "failedToEnableMfaHttp": "Impossible d’activer MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Impossible de désactiver MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Impossible de démarrer la configuration de la clé d’accès (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Impossible d’enregistrer la clé d’accès (HTTP {{status}})",
+    "signInSecurity": "Sécurité de connexion",
+    "signInSecurityDescription": "Comment vous prouvez votre identité lors de la connexion à Breeze — votre mot de passe, l’authentification à deux facteurs et les clés d’accès.",
+    "approvals": "Approbations",
+    "approvalsDescription": "Distinct de la connexion : des appareils de confiance qui confirment les actions à haut risque, comme les demandes d’accès privilégié, avec une biométrie.",
+    "smsAccountsCannotAddPasskeysFromTheWebYet": "Votre compte utilise la vérification par SMS, qui ne peut pas encore autoriser l’ajout d’une clé d’accès depuis le web. Contactez votre administrateur si vous avez besoin d’une clé d’accès.",
+    "incorrectAuthenticatorCode": "Code d’authentification incorrect.",
+    "passkeyVerificationFailed": "La vérification de la clé d’accès a échoué. Réessayez.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives. Réessayez dans quelques minutes.",
+    "verificationExpiredPleaseVerifyAgain": "La vérification a expiré. Veuillez vérifier à nouveau."
   },
   "roleManager": {
     "roles": "Rôles",

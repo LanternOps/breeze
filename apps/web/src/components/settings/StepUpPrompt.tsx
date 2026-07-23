@@ -16,20 +16,25 @@ type Props = {
   reauthValue: string;
   onChange: (value: string) => void;
   disabled: boolean;
+  /**
+   * DOM id / data-testid prefix. Both the Approvals card and the Passkeys card
+   * render this component on the same page, so each consumer needs a distinct
+   * prefix to keep ids unique. Defaults to the original approver ids.
+   */
+  idPrefix?: string;
 };
 
 /**
- * Re-auth input for approver-device registration. Reusable: ProfilePage's
- * add-passkey flow (currently dead-ends for MFA-protected users on
- * existing_factor_step_up_required) is the intended second consumer —
- * tracked as a PR #2710 follow-up, not yet wired up.
+ * Re-auth input proving an existing factor before a sensitive registration.
+ * Consumers: ApproverDevicesSection (register_approver_device grant) and
+ * ProfilePage's add-passkey flow (add_factor grant).
  */
-export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: Props) {
+export default function StepUpPrompt({ tier, reauthValue, onChange, disabled, idPrefix = 'approver-stepup' }: Props) {
   const { t } = useTranslation('settings');
 
   if (tier === 'passkey') {
     return (
-      <p className="text-xs text-muted-foreground" data-testid="approver-stepup-passkey-note">
+      <p className="text-xs text-muted-foreground" data-testid={`${idPrefix}-passkey-note`}>
         {t('stepUpPrompt.youWillConfirmWithYourPasskey')}
       </p>
     );
@@ -38,11 +43,11 @@ export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: 
   if (tier === 'totp') {
     return (
       <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor="approver-stepup-code">
+        <label className="text-sm font-medium" htmlFor={`${idPrefix}-code`}>
           {t('stepUpPrompt.authenticatorCode')}
         </label>
         <input
-          id="approver-stepup-code"
+          id={`${idPrefix}-code`}
           type="text"
           inputMode="numeric"
           autoComplete="one-time-code"
@@ -51,7 +56,7 @@ export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: 
           onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           disabled={disabled}
-          data-testid="approver-stepup-code"
+          data-testid={`${idPrefix}-code`}
         />
       </div>
     );
@@ -59,18 +64,18 @@ export default function StepUpPrompt({ tier, reauthValue, onChange, disabled }: 
 
   return (
     <div className="space-y-2">
-      <label className="text-sm font-medium" htmlFor="approver-stepup-password">
+      <label className="text-sm font-medium" htmlFor={`${idPrefix}-password`}>
         {t('stepUpPrompt.confirmYourPassword')}
       </label>
       <input
-        id="approver-stepup-password"
+        id={`${idPrefix}-password`}
         type="password"
         autoComplete="current-password"
         value={reauthValue}
         onChange={(e) => onChange(e.target.value)}
         className="h-10 w-full rounded-md border bg-background px-3 text-sm"
         disabled={disabled}
-        data-testid="approver-stepup-password"
+        data-testid={`${idPrefix}-password`}
       />
     </div>
   );

@@ -9,8 +9,15 @@ import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
+import StepUpPrompt from './StepUpPrompt';
 import ThemingSettings from './ThemingSettings';
-import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
+import {
+  StepUpError,
+  createPasskeyCredential,
+  fetchWithAuth,
+  mintAddFactorStepUpGrant,
+  useAuthStore
+} from '../../stores/auth';
 import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
@@ -75,6 +82,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyPassword, setPasskeyPassword] = useState('');
+  const [passkeyStepUpCode, setPasskeyStepUpCode] = useState('');
   const [passkeyError, setPasskeyError] = useState<string | undefined>();
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
@@ -410,7 +418,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const data = await response.json();
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      // Keep mfaMethod in sync too — passkeyStepUpTier derives from it, and a
+      // stale method would let a same-session "enable TOTP → add passkey" flow
+      // skip the now-required add_factor step-up and 403.
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: 'totp' } : null));
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
@@ -438,7 +449,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         );
       }
 
-      setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
+      setUser(prev => (prev ? { ...prev, mfaEnabled: false, mfaMethod: null } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
     } catch (error) {
@@ -473,16 +484,47 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
+  // SR2-20: adding a factor to an already-protected account requires proving
+  // an EXISTING factor first (the register routes 403
+  // `existing_factor_step_up_required` otherwise — password alone is
+  // deliberately insufficient). Strongest-available tiering mirrors the server
+  // gate: existing passkey → TOTP. SMS has no authenticated step-up code
+  // sender (the only send route is login-time, tempToken-keyed), so SMS-only
+  // accounts can't satisfy the gate from the web — surfaced as a note instead
+  // of a dead-end 403. `none` = unprotected account (initial enrollment,
+  // password-only per the server's chicken-and-egg bypass) or a factor-less
+  // protected state the UI can't prove anyway.
+  const passkeyStepUpTier: 'none' | 'passkey' | 'totp' | 'sms' = useMemo(() => {
+    if (passkeys.length > 0) return 'passkey';
+    if (!user?.mfaEnabled) return 'none';
+    if (user.mfaMethod === 'totp') return 'totp';
+    if (user.mfaMethod === 'sms') return 'sms';
+    return 'none';
+  }, [passkeys.length, user?.mfaEnabled, user?.mfaMethod]);
+
   const handleAddPasskey = async () => {
     if (!passkeyPassword || isAddingPasskey) return;
+    if (passkeyStepUpTier === 'sms') return;
+    if (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6) return;
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
+      let stepUpGrantId: string | undefined;
+      if (passkeyStepUpTier === 'passkey') {
+        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'passkey' });
+      } else if (passkeyStepUpTier === 'totp') {
+        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'totp', code: passkeyStepUpCode });
+      }
+
       const label = passkeyName.trim() || 'Passkey';
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword: passkeyPassword, name: label })
+        body: JSON.stringify({
+          currentPassword: passkeyPassword,
+          name: label,
+          ...(stepUpGrantId ? { stepUpGrantId } : {})
+        })
       });
 
       const optionsData = await optionsResponse.json().catch(() => ({}));
@@ -496,7 +538,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const credential = await createPasskeyCredential(optionsJSON);
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
-        body: JSON.stringify({ name: label, credential })
+        body: JSON.stringify({
+          name: label,
+          credential,
+          ...(stepUpGrantId ? { stepUpGrantId } : {})
+        })
       });
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
@@ -509,14 +555,32 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
+      setPasskeyStepUpCode('');
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
       setPasskeySuccess(t('profilePage.passkeyAdded'));
       await loadPasskeys();
     } catch (error) {
-      if (error instanceof Error && error.name === 'NotAllowedError') {
+      // NotAllowedError/AbortError: a cancelled/timed-out WebAuthn prompt —
+      // either the registration ceremony itself or the step-up assertion
+      // ceremony inside the mint (both reject with a DOMException).
+      if (error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
         setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
+      } else if (error instanceof StepUpError) {
+        if (error.status === 401) {
+          setPasskeyError(passkeyStepUpTier === 'totp'
+            ? t('profilePage.incorrectAuthenticatorCode')
+            : t('profilePage.passkeyVerificationFailed'));
+        } else if (error.status === 429) {
+          setPasskeyError(t('profilePage.tooManyAttemptsTryAgainInAFewMinutes'));
+        } else {
+          setPasskeyError(error.message);
+        }
+      } else if (error instanceof Error && error.message === 'existing_factor_step_up_required') {
+        // The grant expired mid-ceremony (>5 min in the WebAuthn prompt) or a
+        // factor changed in another tab since it was minted.
+        setPasskeyError(t('profilePage.verificationExpiredPleaseVerifyAgain'));
       } else {
         setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToAddPasskey'));
       }
@@ -743,6 +807,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         </button>
       </form>
 
+      {/* Sign-in security group: password, TOTP MFA, SSO, and passkeys are all
+          sign-in factors — distinct from the approval-security credentials
+          below, which never gate login. */}
+      <div className="space-y-1 border-t pt-6" data-testid="signin-security-heading">
+        <h2 className="text-lg font-semibold">{t('profilePage.signInSecurity')}</h2>
+        <p className="text-sm text-muted-foreground">
+          {t('profilePage.signInSecurityDescription')}</p>
+      </div>
+
       {/* Change Password */}
       <ChangePasswordForm
         onSubmit={handlePasswordChange}
@@ -889,10 +962,28 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={isAddingPasskey}
             />
           </div>
+          {(passkeyStepUpTier === 'passkey' || passkeyStepUpTier === 'totp') && (
+            <StepUpPrompt
+              tier={passkeyStepUpTier}
+              reauthValue={passkeyStepUpCode}
+              onChange={setPasskeyStepUpCode}
+              disabled={isAddingPasskey}
+              idPrefix="passkey-stepup"
+            />
+          )}
+          {passkeyStepUpTier === 'sms' && (
+            <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-sms-note">
+              {t('profilePage.smsAccountsCannotAddPasskeysFromTheWebYet')}</p>
+          )}
           <button
             type="button"
             onClick={handleAddPasskey}
-            disabled={isAddingPasskey || !passkeyPassword}
+            disabled={
+              isAddingPasskey ||
+              !passkeyPassword ||
+              passkeyStepUpTier === 'sms' ||
+              (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)
+            }
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
@@ -911,7 +1002,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         )}
       </div>
 
-      {/* Approval security (Breeze Authenticator) */}
+      {/* Approval security group (Breeze Authenticator) */}
+      <div className="space-y-1 border-t pt-6" data-testid="approval-security-heading">
+        <h2 className="text-lg font-semibold">{t('profilePage.approvals')}</h2>
+        <p className="text-sm text-muted-foreground">
+          {t('profilePage.approvalsDescription')}</p>
+      </div>
       <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
       <ThemingSettings
         preferences={user?.preferences}

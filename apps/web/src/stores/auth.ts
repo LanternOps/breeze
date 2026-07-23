@@ -689,6 +689,66 @@ export async function getPasskeyCredential(
   return startAuthentication({ optionsJSON });
 }
 
+export type AddFactorStepUp =
+  | { method: 'passkey' }
+  | { method: 'totp'; code: string };
+
+export class StepUpError extends Error {
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'StepUpError';
+    this.status = status;
+  }
+}
+
+/**
+ * SR2-20: mint a single-use `add_factor` step-up grant by proving an EXISTING
+ * factor (TOTP code or a WebAuthn assertion from an existing passkey). The
+ * factor-addition endpoints (`/auth/passkeys/register/*`, `/auth/mfa/enable`)
+ * 403 `existing_factor_step_up_required` on already-protected accounts unless
+ * the returned grant id is presented as `stepUpGrantId`. Mirrors the
+ * `register_approver_device` mint in stores/authenticator.ts.
+ */
+export async function mintAddFactorStepUpGrant(stepUp: AddFactorStepUp): Promise<string> {
+  let stepUpBody: Record<string, unknown>;
+  if (stepUp.method === 'totp') {
+    stepUpBody = { method: 'totp', code: stepUp.code, operation: 'add_factor' };
+  } else {
+    // Passkey: fetch an authenticated step-up challenge, run the assertion
+    // ceremony, then prove it to /auth/mfa/step-up.
+    const challengeResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
+    const challengeData = await challengeResponse.json().catch(() => null);
+    if (!challengeResponse.ok) {
+      throw new StepUpError(
+        challengeData?.error ?? 'Could not start passkey verification.',
+        challengeResponse.status
+      );
+    }
+    const optionsJSON: PasskeyAuthenticationOptions =
+      challengeData?.options ?? challengeData?.optionsJSON ?? challengeData;
+    const credential = await startAuthentication({ optionsJSON });
+    stepUpBody = { method: 'passkey', credential, operation: 'add_factor' };
+  }
+
+  const response = await fetchWithAuth('/auth/mfa/step-up', {
+    method: 'POST',
+    body: JSON.stringify(stepUpBody),
+    // A 401 here means the TOTP code / passkey assertion was rejected (wrong
+    // code, or the assertion is already burned), not that the access token is
+    // stale — replaying the same single-use proof can only fail again.
+    skipUnauthorizedRetry: true,
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new StepUpError(data?.error ?? 'Verification failed.', response.status);
+  }
+  if (!data?.stepUpGrantId) {
+    throw new StepUpError('Verification failed.');
+  }
+  return data.stepUpGrantId;
+}
+
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
   mfaRequired?: boolean;

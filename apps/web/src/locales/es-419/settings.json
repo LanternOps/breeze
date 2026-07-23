@@ -1775,7 +1775,16 @@
     "failedToEnableMfaHttp": "No se pudo habilitar MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "No se pudo desactivar MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "No se pudo iniciar la configuración de la clave de acceso (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "No se pudo guardar la clave de acceso (HTTP {{status}})",
+    "signInSecurity": "Seguridad de inicio de sesión",
+    "signInSecurityDescription": "Cómo demuestras tu identidad al iniciar sesión en Breeze: tu contraseña, la autenticación de dos factores y las llaves de acceso.",
+    "approvals": "Aprobaciones",
+    "approvalsDescription": "Independiente del inicio de sesión: dispositivos de confianza que confirman acciones de alto riesgo, como solicitudes de acceso privilegiado, con biometría.",
+    "smsAccountsCannotAddPasskeysFromTheWebYet": "Tu cuenta usa verificación por SMS, que aún no puede autorizar agregar una llave de acceso desde la web. Contacta a tu administrador si necesitas una llave de acceso.",
+    "incorrectAuthenticatorCode": "Código del autenticador incorrecto.",
+    "passkeyVerificationFailed": "Falló la verificación de la llave de acceso. Inténtalo de nuevo.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Demasiados intentos. Inténtalo de nuevo en unos minutos.",
+    "verificationExpiredPleaseVerifyAgain": "La verificación expiró. Verifica de nuevo."
   },
   "roleManager": {
     "roles": "Roles",

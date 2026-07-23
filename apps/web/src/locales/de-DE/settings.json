@@ -1775,7 +1775,16 @@
     "failedToEnableMfaHttp": "Fehler beim Aktivieren von MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "MFA konnte nicht deaktiviert werden (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Das Einrichten des Passkeys konnte nicht gestartet werden (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Passkey konnte nicht gespeichert werden (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Passkey konnte nicht gespeichert werden (HTTP {{status}})",
+    "signInSecurity": "Anmeldesicherheit",
+    "signInSecurityDescription": "Wie Sie sich bei der Anmeldung bei Breeze ausweisen — Ihr Passwort, Zwei-Faktor-Authentifizierung und Passkeys.",
+    "approvals": "Genehmigungen",
+    "approvalsDescription": "Getrennt von der Anmeldung: vertrauenswürdige Geräte, die risikoreiche Aktionen wie privilegierte Zugriffsanfragen biometrisch bestätigen.",
+    "smsAccountsCannotAddPasskeysFromTheWebYet": "Ihr Konto verwendet SMS-Verifizierung, die das Hinzufügen eines Passkeys über das Web noch nicht autorisieren kann. Wenden Sie sich an Ihren Administrator, wenn Sie einen Passkey benötigen.",
+    "incorrectAuthenticatorCode": "Falscher Authenticator-Code.",
+    "passkeyVerificationFailed": "Passkey-Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Zu viele Versuche. Versuchen Sie es in ein paar Minuten erneut.",
+    "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen. Bitte verifizieren Sie sich erneut."
   },
   "roleManager": {
     "roles": "Rollen",
