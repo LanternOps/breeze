@@ -185,18 +185,26 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
 
   const buildApproverReauth = (): RegisterReauth | null => buildReauthFromTier(approverTier, approverReauthValue);
 
-  // Task 9's "Enable approvals" row action re-auths to prove control of a
-  // factor, then separately runs a webauthn assertion against the SPECIFIC
-  // passkey being adopted (inside adoptPasskeyAsApprover). Excluding that
-  // passkey from the strongest-factor count avoids using the very credential
-  // being adopted as its own re-auth proof when it's the account's only
-  // passkey — falling through to TOTP/password in that case, and to 'passkey'
-  // (a second, independent credential) when the account has others.
-  const enableApprovalsTierFor = (row: SecurityDeviceRow): ReauthTier =>
-    pickReauthTier(passkeys.filter(p => p.id !== row.passkey?.id).length, mfaMethod);
+  // Task 9's "Enable approvals" row action only ever renders on a row that
+  // HAS a passkey (see the row-action gate: `row.passkey && !row.approver`),
+  // and that passkey is already counted in `passkeys` — so
+  // `pickReauthTier(passkeys.length, mfaMethod)` is statically 'passkey' for
+  // every row this action can appear on. Hardcoded rather than computed: an
+  // earlier version excluded the row's own passkey from the count to avoid
+  // using the credential being adopted as its own re-auth proof, but that
+  // exclusion made single-passkey/no-TOTP accounts (this feature's primary
+  // persona) fall through to the password tier — and the server's password
+  // mint (`POST /authenticator/register-grant`) unconditionally 403s
+  // `stronger_factor_required` whenever the account holds ANY active passkey
+  // (`userHasStrongerReauthFactor` counts all of them, not "all but this
+  // one"), producing a dead end with no route to the password tier at all.
+  // The fix is to stop pretending the row's own passkey doesn't count and
+  // accept the two-webauthn-prompt UX instead (this proof, then the
+  // possession assertion inside adoptPasskeyAsApprover) — see task-9-report.md.
+  const ENABLE_APPROVALS_TIER: ReauthTier = 'passkey';
 
-  const buildEnableApprovalsReauth = (row: SecurityDeviceRow): RegisterReauth | null =>
-    buildReauthFromTier(enableApprovalsTierFor(row), enableApprovalsReauthValue);
+  const buildEnableApprovalsReauth = (): RegisterReauth | null =>
+    buildReauthFromTier(ENABLE_APPROVALS_TIER, enableApprovalsReauthValue);
 
   // Mint a register_approver_device grant via a fresh password proof (Task 6's
   // inline password-fallback branch in handleAddPasskey, extracted so Task 9's
@@ -292,9 +300,9 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   // helper above), then run adoptPasskeyAsApprover's single adopt ceremony.
   const handleEnableApprovals = async (row: SecurityDeviceRow) => {
     if (isEnablingApprovals) return;
-    const tier = enableApprovalsTierFor(row);
-    const reauth = buildReauthFromTier(tier, enableApprovalsReauthValue);
-    if (!reauth) return; // confirm disabled anyway
+    const tier = ENABLE_APPROVALS_TIER;
+    const reauth = buildEnableApprovalsReauth();
+    if (!reauth) return; // confirm disabled anyway (never actually null — tier is statically 'passkey')
     setIsEnablingApprovals(true);
     try {
       await runAction({
@@ -786,7 +794,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                         data-testid={`secdev-enable-approvals-panel-${row.key}`}
                       >
                         <StepUpPrompt
-                          tier={enableApprovalsTierFor(row)}
+                          tier={ENABLE_APPROVALS_TIER}
                           reauthValue={enableApprovalsReauthValue}
                           onChange={setEnableApprovalsReauthValue}
                           disabled={isEnablingApprovals}
@@ -796,7 +804,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                           <button
                             type="button"
                             onClick={() => void handleEnableApprovals(row)}
-                            disabled={isEnablingApprovals || buildEnableApprovalsReauth(row) === null}
+                            disabled={isEnablingApprovals || buildEnableApprovalsReauth() === null}
                             data-testid={`secdev-enable-approvals-confirm-${row.key}`}
                             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                           >

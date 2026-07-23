@@ -868,7 +868,13 @@ describe('SecurityDevicesCard', () => {
       expect(within(mergedRow).queryByTestId('secdev-enable-approvals-pk-pk2')).toBeNull();
     });
 
-    it('TOTP tier: mints a register_approver_device grant via mintStepUpGrants then adopts, refreshing both lists', async () => {
+    it('single-passkey user (no TOTP): tier is statically passkey — renders the passkey note, mints via mintStepUpGrants with { method: \'passkey\' }, then adopts', async () => {
+      // The primary persona this fix unblocks: exactly one passkey, no TOTP.
+      // Before the fix, `enableApprovalsTierFor` excluded this row's own
+      // passkey from the count, landing on the password tier — which the
+      // server then unconditionally 403s (`stronger_factor_required`) because
+      // it counts ALL active passkeys. The tier must be 'passkey', not
+      // 'password', for this account shape.
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: 'cred-1' }] }),
       );
@@ -881,16 +887,21 @@ describe('SecurityDevicesCard', () => {
       // acceptance criterion: the badge appears after enabling approvals.
       listApproverDevicesMock.mockResolvedValueOnce([approverFixture({ credentialId: 'cred-1' })]);
 
-      render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod="passkey" onFactorAdded={vi.fn()} />);
 
       const row = await screen.findByTestId('secdev-row-pk-pk1');
       fireEvent.click(within(row).getByTestId('secdev-enable-approvals-pk-pk1'));
-      fireEvent.change(screen.getByTestId('secdev-adopt-code'), { target: { value: '123456' } });
+
+      // StepUpPrompt renders the passkey note (no code/password input) — the
+      // confirm button is enabled with no further input required.
+      expect(screen.getByTestId('secdev-adopt-passkey-note')).toBeTruthy();
+      expect(screen.getByTestId('secdev-enable-approvals-confirm-pk-pk1')).not.toBeDisabled();
+
       fireEvent.click(screen.getByTestId('secdev-enable-approvals-confirm-pk-pk1'));
 
       await waitFor(() =>
         expect(mintStepUpGrantsMock).toHaveBeenCalledWith(
-          { method: 'totp', code: '123456' },
+          { method: 'passkey' },
           ['register_approver_device'],
         ),
       );
@@ -921,7 +932,6 @@ describe('SecurityDevicesCard', () => {
 
       const row = await screen.findByTestId('secdev-row-pk-pk1');
       fireEvent.click(within(row).getByTestId('secdev-enable-approvals-pk-pk1'));
-      fireEvent.change(screen.getByTestId('secdev-adopt-code'), { target: { value: '123456' } });
       fireEvent.click(screen.getByTestId('secdev-enable-approvals-confirm-pk-pk1'));
 
       await waitFor(() =>
