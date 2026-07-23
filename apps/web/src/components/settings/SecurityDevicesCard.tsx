@@ -339,162 +339,173 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             {t('profilePage.loadingPasskeys')}
           </div>
-        ) : approverLoadError ? (
-          <div
-            role="alert"
-            className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            <span>{approverLoadError}</span>
-            <button
-              type="button"
-              onClick={() => void loadApprovers()}
-              className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/5"
-            >
-              {t('approverDevicesSection.tryAgain')}
-            </button>
-          </div>
-        ) : rows.length === 0 ? (
-          <div data-testid="secdev-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-            {/* i18n compromise: reuses the passkey-only empty-state copy; a
-                combined-empty key lands with the mounting task. */}
-            {t('profilePage.noPasskeysAreRegisteredForThisAccount')}
-          </div>
         ) : (
-          rows.map(row => {
-            const isEditing = editingRowKey === row.key;
-            const isMutating = mutatingRowKey === row.key;
-            return (
-              <div key={row.key} data-testid={`secdev-row-${row.key}`} className="rounded-md border bg-muted/30 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={editingName}
-                          onChange={e => setEditingName(e.target.value)}
-                          data-testid={`secdev-rename-input-${row.key}`}
-                          className="h-9 rounded-md border bg-background px-3 text-sm"
-                          disabled={isMutating}
-                          autoFocus
-                        />
-                      ) : (
-                        <span data-testid={`secdev-name-${row.key}`} className="truncate text-sm font-medium">
-                          {row.name}
-                        </span>
-                      )}
-                      {row.passkey && (
-                        <span
-                          data-testid="secdev-badge-signin"
-                          className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                        >
-                          {/* i18n compromise: closest existing key to the intended
-                              "Sign-in" badge copy — see task report. */}
-                          {t('profilePage.signInSecurity')}
-                        </span>
-                      )}
-                      {row.approver && (
-                        <span
-                          data-testid="secdev-badge-approvals"
-                          className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                        >
-                          {t('profilePage.approvals')}
-                        </span>
-                      )}
-                      {row.approver?.isPlatformBound && (
-                        <span
-                          data-testid="secdev-badge-platform"
-                          className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                        >
-                          {t('approverDevicesSection.platformBound')}
-                        </span>
-                      )}
-                      {row.approver && row.approver.lastUsedAt === null && (
-                        <span
-                          data-testid="secdev-badge-pending"
-                          className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600"
-                        >
-                          {t('approverDevicesSection.pendingActivatesOnFirstApproval')}
-                        </span>
-                      )}
-                      {row.passkey && row.approver && row.approver.isPlatformBound === false && (
-                        <span
-                          data-testid="secdev-badge-synced"
-                          className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                        >
-                          {/* i18n compromise: no "Synced" key exists yet — see
-                              task report; this reuses an unrelated key as a
-                              placeholder. */}
-                          {t('approverDevicesSection.registered')}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {t('profilePage.lastUsed')}{formatPasskeyDate(row.lastUsedAt)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isEditing ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleRenameSave(row)}
-                          disabled={!editingName.trim() || isMutating}
-                          data-testid={`secdev-rename-save-${row.key}`}
-                          className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {isMutating ? t('profilePage.saving') : t('profilePage.save')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelEdit}
-                          disabled={isMutating}
-                          data-testid={`secdev-rename-cancel-${row.key}`}
-                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {t('profilePage.cancel')}
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => startEdit(row)}
-                          disabled={!!mutatingRowKey}
-                          data-testid={`secdev-rename-${row.key}`}
-                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {t('profilePage.rename')}
-                        </button>
-                        {row.passkey && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeletePasskey(row)}
-                            disabled={!!mutatingRowKey}
-                            data-testid={`secdev-delete-${row.key}`}
-                            className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {isMutating ? t('profilePage.deleting') : t('profilePage.delete')}
-                          </button>
-                        )}
-                        {row.approver && (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmRevoke(row)}
-                            disabled={!!mutatingRowKey}
-                            data-testid={`secdev-revoke-${row.key}`}
-                            className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {t('approverDevicesSection.revoke')}
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+          <>
+            {/* Approver-device load failures render alongside the list, never
+                instead of it — a hiccup fetching approver devices must not
+                hide passkeys that loaded successfully (these were two
+                independent cards before the Task 5 merge). */}
+            {approverLoadError && (
+              <div
+                role="alert"
+                className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                <span>{approverLoadError}</span>
+                <button
+                  type="button"
+                  onClick={() => void loadApprovers()}
+                  className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/5"
+                >
+                  {t('approverDevicesSection.tryAgain')}
+                </button>
               </div>
-            );
-          })
+            )}
+            {rows.length === 0 ? (
+              approverLoadError ? null : (
+                <div data-testid="secdev-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+                  {/* i18n compromise: reuses the passkey-only empty-state copy; a
+                      combined-empty key lands with the mounting task. */}
+                  {t('profilePage.noPasskeysAreRegisteredForThisAccount')}
+                </div>
+              )
+            ) : (
+              rows.map(row => {
+                const isEditing = editingRowKey === row.key;
+                const isMutating = mutatingRowKey === row.key;
+                return (
+                  <div key={row.key} data-testid={`secdev-row-${row.key}`} className="rounded-md border bg-muted/30 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editingName}
+                              onChange={e => setEditingName(e.target.value)}
+                              data-testid={`secdev-rename-input-${row.key}`}
+                              className="h-9 rounded-md border bg-background px-3 text-sm"
+                              disabled={isMutating}
+                              autoFocus
+                            />
+                          ) : (
+                            <span data-testid={`secdev-name-${row.key}`} className="truncate text-sm font-medium">
+                              {row.name}
+                            </span>
+                          )}
+                          {row.passkey && (
+                            <span
+                              data-testid="secdev-badge-signin"
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {/* i18n compromise: closest existing key to the intended
+                                  "Sign-in" badge copy — see task report. */}
+                              {t('profilePage.signInSecurity')}
+                            </span>
+                          )}
+                          {row.approver && (
+                            <span
+                              data-testid="secdev-badge-approvals"
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {t('profilePage.approvals')}
+                            </span>
+                          )}
+                          {row.approver?.isPlatformBound && (
+                            <span
+                              data-testid="secdev-badge-platform"
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {t('approverDevicesSection.platformBound')}
+                            </span>
+                          )}
+                          {row.approver && row.approver.lastUsedAt === null && (
+                            <span
+                              data-testid="secdev-badge-pending"
+                              className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600"
+                            >
+                              {t('approverDevicesSection.pendingActivatesOnFirstApproval')}
+                            </span>
+                          )}
+                          {row.passkey && row.approver && row.approver.isPlatformBound === false && (
+                            <span
+                              data-testid="secdev-badge-synced"
+                              className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                            >
+                              {/* i18n compromise: no "Synced" key exists yet — see
+                                  task report; this reuses an unrelated key as a
+                                  placeholder. */}
+                              {t('approverDevicesSection.registered')}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {t('profilePage.lastUsed')}{formatPasskeyDate(row.lastUsedAt)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleRenameSave(row)}
+                              disabled={!editingName.trim() || isMutating}
+                              data-testid={`secdev-rename-save-${row.key}`}
+                              className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {isMutating ? t('profilePage.saving') : t('profilePage.save')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEdit}
+                              disabled={isMutating}
+                              data-testid={`secdev-rename-cancel-${row.key}`}
+                              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {t('profilePage.cancel')}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(row)}
+                              disabled={!!mutatingRowKey}
+                              data-testid={`secdev-rename-${row.key}`}
+                              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {t('profilePage.rename')}
+                            </button>
+                            {row.passkey && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePasskey(row)}
+                                disabled={!!mutatingRowKey}
+                                data-testid={`secdev-delete-${row.key}`}
+                                className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {isMutating ? t('profilePage.deleting') : t('profilePage.delete')}
+                              </button>
+                            )}
+                            {row.approver && (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmRevoke(row)}
+                                disabled={!!mutatingRowKey}
+                                data-testid={`secdev-revoke-${row.key}`}
+                                className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {t('approverDevicesSection.revoke')}
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </>
         )}
       </div>
 

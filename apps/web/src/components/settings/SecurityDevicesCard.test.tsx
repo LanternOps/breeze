@@ -123,6 +123,19 @@ describe('SecurityDevicesCard', () => {
     expect(within(row).queryByTestId('secdev-badge-pending')).toBeNull();
   });
 
+  it('still renders successfully-loaded passkeys when the approver-device fetch fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: '2026-06-10T09:00:00.000Z', credentialId: 'cred-1' }] }),
+    );
+    listApproverDevicesMock.mockRejectedValueOnce(new Error('network down'));
+
+    render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+    const row = await screen.findByTestId('secdev-row-pk-pk1');
+    expect(within(row).getByTestId('secdev-badge-signin')).toBeTruthy();
+    expect(await screen.findByText('network down')).toBeTruthy();
+  });
+
   it('shows the synced badge on a merged row whose approver capability is not platform-bound', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'iCloud Keychain', lastUsedAt: null, credentialId: 'cred-1' }] }),
