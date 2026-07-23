@@ -253,6 +253,25 @@ describe('POST /auth/passkeys/register/verify — dual enrollment (unified-secur
     expect(txInserts.map((i) => i.table)).toEqual(['user_passkeys']);
   });
 
+  it('reports approver.reason "unavailable" (not "grant_invalid") and logs when the gate 503s', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    enforceApproverRegisterStepUp.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Service temporarily unavailable' }), { status: 503 })
+    );
+
+    const res = await postVerify({ credential, name: 'Laptop', approverRegisterGrantId: 'g-503' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.passkey.credentialId).toBe(fields.credentialId);
+    expect(body.approver).toEqual({ registered: false, reason: 'unavailable' });
+    expect(txInserts.map((i) => i.table)).toEqual(['user_passkeys']);
+    // The 503 branch of enforceApproverRegisterStepUp writes no denial audit
+    // of its own — this is the only surviving record of the drop.
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('503'));
+
+    errorSpy.mockRestore();
+  });
+
   it('derives isPlatformBound=false for synced credentials', async () => {
     enforceApproverRegisterStepUp.mockResolvedValueOnce(null);
     fields.deviceType = 'multiDevice';

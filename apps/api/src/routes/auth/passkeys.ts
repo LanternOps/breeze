@@ -191,13 +191,29 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   const { approverRegisterGrantId, approverLabel } = c.req.valid('json');
   let approverOutcome:
     | { registered: true; isPlatformBound: boolean; deviceId?: string }
-    | { registered: false; reason: 'grant_invalid' }
+    | { registered: false; reason: 'grant_invalid' | 'unavailable' }
     | undefined;
   if (approverRegisterGrantId !== undefined) {
     const approverGrantError = await enforceApproverRegisterStepUp(c, auth, approverRegisterGrantId, { consume: true });
-    approverOutcome = approverGrantError
-      ? { registered: false, reason: 'grant_invalid' }
-      : { registered: true, isPlatformBound: fields.deviceType === 'singleDevice' && !fields.backedUp };
+    if (approverGrantError) {
+      if (approverGrantError.status === 503) {
+        // The gate's 503 branch (epochs/Redis unavailable) is an infra
+        // hiccup, not evidence of a bad/expired grant — and it writes NO
+        // denial audit of its own (unlike the 403 branch below). Distinguish
+        // it as 'unavailable' rather than collapsing it into 'grant_invalid'
+        // (which would misleadingly imply the caller's grant was the
+        // problem), and log server-side since this is otherwise a silent
+        // drop with no record anywhere.
+        approverOutcome = { registered: false, reason: 'unavailable' };
+        console.error(
+          `[auth] dual-enroll approver grant check unavailable (503) for user ${auth.user.id} — passkey created without approver registration`
+        );
+      } else {
+        approverOutcome = { registered: false, reason: 'grant_invalid' };
+      }
+    } else {
+      approverOutcome = { registered: true, isPlatformBound: fields.deviceType === 'singleDevice' && !fields.backedUp };
+    }
   }
 
   // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
