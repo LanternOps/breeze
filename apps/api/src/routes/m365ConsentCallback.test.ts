@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import {
+  m365ActionsConsentCallbackRoutes,
   m365ConsentCallbackRoutes,
   createM365ConsentCallbackRoutes,
   parseM365ConsentCallbackQuery,
@@ -26,6 +27,16 @@ function attempt(status: 'pending-consent' | 'verifying') {
     id: CONNECTION_ID,
     orgId: ORG_ID,
     profile: 'customer-graph-read' as const,
+    consentAttemptId: ATTEMPT_ID,
+    status,
+  };
+}
+
+function actionsAttempt(status: 'pending-consent' | 'verifying') {
+  return {
+    id: CONNECTION_ID,
+    orgId: ORG_ID,
+    profile: 'customer-graph-actions' as const,
     consentAttemptId: ATTEMPT_ID,
     status,
   };
@@ -615,5 +626,196 @@ describe('M365 consent callback route', () => {
       actorId: USER_ID,
     }));
     expect(JSON.stringify(audit.mock.calls)).not.toContain('secret-code');
+  });
+
+  describe('actions-profile callback instance', () => {
+    it('mounts the exact public actions callback path, distinct from the read path', async () => {
+      const app = new Hono();
+      app.route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
+
+      const response = await app.request('/api/v1/m365/actions-consent/callback');
+      expect(response.status).not.toBe(404);
+
+      const readPathViaActionsInstance = await app.request('/api/v1/m365/consent/callback');
+      expect(readPathViaActionsInstance.status).toBe(404);
+    });
+
+    it('drives an actions admin-consent-return + identity-verification callback to active and redirects to the actions fragment', async () => {
+      const adminBinding = {
+        phase: 'admin_consent' as const,
+        rawState: 'admin-state',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        tenantHint: null,
+      };
+      const identityCreated = {
+        rawState: 'identity-state',
+        codeChallenge: 'pkce-challenge',
+        nonce: 'identity-nonce',
+        codeVerifier: 'v'.repeat(43),
+        tenantHintHash: tenantHintHash(TENANT_ID),
+        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
+      };
+      const adminAudit = vi.fn();
+      const adminApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
+        profile: 'customer-graph-actions',
+        verifyBindingCookie: vi.fn(() => adminBinding),
+        buildBindingCookie: vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/actions-consent/callback'),
+        loadAttempt: vi.fn().mockResolvedValue(actionsAttempt('pending-consent')),
+        prepareIdentitySession: vi.fn(() => identityCreated),
+        transitionAdminPhase: vi.fn().mockResolvedValue({
+          connection: { status: 'verifying' },
+          actorId: USER_ID,
+        }),
+        loadConfig: vi.fn(() => ({
+          clientId: '22222222-2222-2222-2222-222222222222',
+          callbackUrl: 'https://breeze.example/api/v1/m365/actions-consent/callback',
+        })),
+        audit: adminAudit,
+      }));
+
+      const adminResponse = await adminApp.request(
+        `/api/v1/m365/actions-consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
+        { headers: { cookie: bindingCookie(adminBinding) } },
+      );
+
+      expect(adminResponse.status).toBe(302);
+      expect(adminAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        event: 'm365.customer_graph_actions.admin_consent_returned',
+        profile: 'customer-graph-actions',
+        outcome: 'identity_verification_started',
+        actorId: USER_ID,
+      }));
+
+      const identityBinding = {
+        phase: 'identity_verification' as const,
+        rawState: 'identity-state',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        tenantHint: TENANT_ID,
+      };
+      const identityAudit = vi.fn();
+      const identityApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
+        profile: 'customer-graph-actions',
+        verifyBindingCookie: vi.fn(() => identityBinding),
+        clearBindingCookie: vi.fn(() => 'binding=; Path=/api/v1/m365/actions-consent/callback; Max-Age=0'),
+        loadAttempt: vi.fn().mockResolvedValue(actionsAttempt('verifying')),
+        consumeSession: vi.fn().mockResolvedValue({
+          userId: USER_ID,
+          tenantHintHash: tenantHintHash(TENANT_ID),
+          nonce: 'identity-nonce',
+          codeVerifier: 'v'.repeat(43),
+        }),
+        completeIdentity: vi.fn().mockResolvedValue({
+          success: true,
+          tenantId: TENANT_ID,
+          administratorObjectId: USER_ID,
+          applicationId: '22222222-2222-2222-2222-222222222222',
+          organizationDisplayName: 'Contoso',
+          manifestVersion: 2,
+          verifiedAt: '2026-07-14T12:00:00.000Z',
+          grantReconciliation: 'complete',
+          observedGrants: [],
+          missingGrants: [],
+          unexpectedGrants: [],
+          grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
+        }),
+        applyIdentityResult: vi.fn().mockResolvedValue({
+          status: 'active',
+          lastErrorCode: null,
+        }),
+        loadConfig: vi.fn(() => ({
+          clientId: '22222222-2222-2222-2222-222222222222',
+          callbackUrl: 'https://breeze.example/api/v1/m365/actions-consent/callback',
+        })),
+        correlationId: vi.fn(() => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+        audit: identityAudit,
+      }));
+
+      const identityResponse = await identityApp.request(
+        '/api/v1/m365/actions-consent/callback?state=identity-state&code=secret-authorization-code',
+        { headers: { cookie: bindingCookie(identityBinding) } },
+      );
+
+      expect(identityResponse.status).toBe(302);
+      expect(identityResponse.headers.get('location')).toBe('/integrations#m365/customer-graph-actions/active');
+      expect(identityAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        event: 'm365.customer_graph_actions.tenant_binding_verified',
+        profile: 'customer-graph-actions',
+        outcome: 'active',
+      }));
+    });
+
+    it('rejects a read-profile binding replayed against the actions instance, and vice versa', async () => {
+      // A tiny fake connections store, mirroring the real DB's `WHERE profile = <instance profile>`
+      // guard: a row only resolves for the instance whose profile matches the row's own profile,
+      // even though the browser-binding cookie itself carries no profile field.
+      const store = new Map<string, { profile: 'customer-graph-read' | 'customer-graph-actions'; status: 'pending-consent' | 'verifying' }>([
+        [CONNECTION_ID, { profile: 'customer-graph-read', status: 'verifying' }],
+      ]);
+      function loadAttemptScopedTo(profile: 'customer-graph-read' | 'customer-graph-actions') {
+        return vi.fn(async (binding: { connectionId: string }) => {
+          const row = store.get(binding.connectionId);
+          if (!row || row.profile !== profile) return null;
+          return {
+            id: binding.connectionId,
+            orgId: ORG_ID,
+            profile,
+            consentAttemptId: ATTEMPT_ID,
+            status: row.status,
+          };
+        });
+      }
+
+      const identityBinding = {
+        phase: 'identity_verification' as const,
+        rawState: 'identity-state',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        tenantHint: TENANT_ID,
+      };
+      const consumeSession = vi.fn();
+      const actionsLoadAttempt = loadAttemptScopedTo('customer-graph-actions');
+      const actionsApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
+        profile: 'customer-graph-actions',
+        verifyBindingCookie: vi.fn(() => identityBinding),
+        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+        loadAttempt: actionsLoadAttempt,
+        consumeSession,
+      }));
+
+      const crossedResponse = await actionsApp.request(
+        '/api/v1/m365/actions-consent/callback?state=identity-state&code=code',
+        { headers: { cookie: bindingCookie(identityBinding) } },
+      );
+
+      expect(crossedResponse.headers.get('location')).toBe(
+        '/integrations#m365/customer-graph-actions/consent_state_mismatch',
+      );
+      expect(actionsLoadAttempt).toHaveBeenCalledOnce();
+      expect(consumeSession).not.toHaveBeenCalled();
+
+      // Vice versa: an actions-profile row replayed against the read instance.
+      store.set(CONNECTION_ID, { profile: 'customer-graph-actions', status: 'verifying' });
+      const readLoadAttempt = loadAttemptScopedTo('customer-graph-read');
+      const readConsumeSession = vi.fn();
+      const readApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
+        verifyBindingCookie: vi.fn(() => identityBinding),
+        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+        loadAttempt: readLoadAttempt,
+        consumeSession: readConsumeSession,
+      }));
+
+      const readCrossedResponse = await readApp.request(
+        '/api/v1/m365/consent/callback?state=identity-state&code=code',
+        { headers: { cookie: bindingCookie(identityBinding) } },
+      );
+
+      expect(readCrossedResponse.headers.get('location')).toBe(
+        '/integrations#m365/customer-graph-read/consent_state_mismatch',
+      );
+      expect(readLoadAttempt).toHaveBeenCalledOnce();
+      expect(readConsumeSession).not.toHaveBeenCalled();
+    });
   });
 });

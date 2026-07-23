@@ -1,10 +1,13 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Default expected redirect_uri path -- the customer-graph-read callback, preserved for compatibility. */
 const CALLBACK_PATH = '/api/v1/m365/consent/callback';
 
 interface AdminConsentUrlInput {
   clientId: string;
   redirectUri: string;
   state: string;
+  /** Overrides the expected redirect_uri path (defaults to the read callback path). */
+  expectedCallbackPath?: string;
 }
 
 interface IdentityAuthorizationUrlInput extends AdminConsentUrlInput {
@@ -25,7 +28,7 @@ function requireOpaque(value: string): string {
   return value;
 }
 
-function requireRedirectUri(value: string): string {
+function requireRedirectUri(value: string, expectedPath: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -36,7 +39,7 @@ function requireRedirectUri(value: string): string {
     !['http:', 'https:'].includes(parsed.protocol)
     || parsed.username
     || parsed.password
-    || parsed.pathname !== CALLBACK_PATH
+    || parsed.pathname !== expectedPath
     || parsed.search
     || parsed.hash
   ) throw new Error('m365_authorization_invalid');
@@ -46,7 +49,7 @@ function requireRedirectUri(value: string): string {
 export function buildMicrosoftAdminConsentUrl(input: AdminConsentUrlInput): string {
   const url = new URL('https://login.microsoftonline.com/common/adminconsent');
   url.searchParams.set('client_id', requireUuid(input.clientId));
-  url.searchParams.set('redirect_uri', requireRedirectUri(input.redirectUri));
+  url.searchParams.set('redirect_uri', requireRedirectUri(input.redirectUri, input.expectedCallbackPath ?? CALLBACK_PATH));
   url.searchParams.set('state', requireOpaque(input.state));
   return url.toString();
 }
@@ -58,7 +61,7 @@ export function buildMicrosoftIdentityAuthorizationUrl(
   const url = new URL(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`);
   url.searchParams.set('client_id', requireUuid(input.clientId));
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('redirect_uri', requireRedirectUri(input.redirectUri));
+  url.searchParams.set('redirect_uri', requireRedirectUri(input.redirectUri, input.expectedCallbackPath ?? CALLBACK_PATH));
   url.searchParams.set('response_mode', 'query');
   url.searchParams.set('scope', 'openid profile');
   url.searchParams.set('state', requireOpaque(input.state));
