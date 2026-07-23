@@ -126,15 +126,18 @@ function SeverityChips({
   selected,
   onToggle,
   testIdPrefix,
+  labelledById,
   t,
 }: {
   selected: Severity[];
   onToggle: (s: Severity) => void;
   testIdPrefix?: string;
+  /** Id of the visible label so the button group has an accessible name. */
+  labelledById?: string;
   t: TFunction<'patches'>;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div role="group" aria-labelledby={labelledById} className="flex flex-wrap gap-1.5">
       {severityOptions.map((sev) => {
         const active = selected.includes(sev.value);
         return (
@@ -160,11 +163,16 @@ function SeverityChips({
 }
 
 function HoldField({ field, testId, t }: { field: UseFormRegisterReturn; testId?: string; t: TFunction<'patches'> }) {
+  // Derive the input id from the (unique) field path so the label associates
+  // correctly even though HoldField is rendered for the default rule and once
+  // per category override.
+  const id = `hold-${field.name}`;
   return (
     <div className="shrink-0">
-      <label className={labelClass}>{t('updateRingForm.holdAfterRelease')}</label>
+      <label htmlFor={id} className={labelClass}>{t('updateRingForm.holdAfterRelease')}</label>
       <div className="mt-1.5 flex items-center gap-2">
         <input
+          id={id}
           type="number"
           min={0}
           max={365}
@@ -285,20 +293,21 @@ export default function UpdateRingForm({
       {/* Zone A — Identity */}
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
-          <label className={labelClass}>{t('updateRingForm.fields.name')}</label>
-          <input {...register('name')} className={cn(inputClass, 'mt-1.5')} placeholder={t('updateRingForm.placeholders.name')} />
+          <label htmlFor="ring-name" className={labelClass}>{t('updateRingForm.fields.name')}</label>
+          <input id="ring-name" {...register('name')} className={cn(inputClass, 'mt-1.5')} placeholder={t('updateRingForm.placeholders.name')} />
           {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name.message}</p>}
         </div>
         <div>
-          <label className={labelClass}>{t('updateRingForm.fields.rolloutOrder')}</label>
-          <input type="number" min={0} max={100} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
+          <label htmlFor="ring-order" className={labelClass}>{t('updateRingForm.fields.rolloutOrder')}</label>
+          <input id="ring-order" type="number" min={0} max={100} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
           <p className="mt-1 text-xs text-muted-foreground">{t('updateRingForm.help.rolloutOrder')}</p>
         </div>
       </div>
 
       <div>
-        <label className={labelClass}>{t('updateRingForm.fields.description')}</label>
+        <label htmlFor="ring-description" className={labelClass}>{t('updateRingForm.fields.description')}</label>
         <input
+          id="ring-description"
           {...register('description')}
           className={cn(inputClass, 'mt-1.5')}
           placeholder={t('updateRingForm.placeholders.description')}
@@ -313,8 +322,9 @@ export default function UpdateRingForm({
         </p>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className={labelClass}>{t('updateRingForm.fields.deadlineDays')}</label>
+            <label htmlFor="ring-deadline-days" className={labelClass}>{t('updateRingForm.fields.deadlineDays')}</label>
             <input
+              id="ring-deadline-days"
               type="number"
               min={0}
               max={365}
@@ -326,8 +336,8 @@ export default function UpdateRingForm({
             />
           </div>
           <div>
-            <label className={labelClass}>{t('updateRingForm.fields.rebootGraceHours')}</label>
-            <input type="number" min={0} max={168} {...register('gracePeriodHours')} className={cn(inputClass, 'mt-1.5')} />
+            <label htmlFor="ring-grace-period-hours" className={labelClass}>{t('updateRingForm.fields.rebootGraceHours')}</label>
+            <input id="ring-grace-period-hours" type="number" min={0} max={168} {...register('gracePeriodHours')} className={cn(inputClass, 'mt-1.5')} />
           </div>
         </div>
       </div>
@@ -371,12 +381,13 @@ export default function UpdateRingForm({
             {autoApprove?.enabled ? (
               <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
                 <div>
-                  <label className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
+                  <label id="ring-auto-approve-severities-label" className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
                   <div className="mt-1.5">
                     <SeverityChips
                       selected={(autoApprove.severities ?? []) as Severity[]}
                       onToggle={toggleDefaultSeverity}
                       testIdPrefix="ring-auto-approve-severity"
+                      labelledById="ring-auto-approve-severities-label"
                       t={t}
                     />
                   </div>
@@ -438,11 +449,12 @@ export default function UpdateRingForm({
                 {rule?.autoApprove ? (
                   <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
                     <div>
-                      <label className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
+                      <label id={`override-${index}-severities-label`} className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
                       <div className="mt-1.5">
                         <SeverityChips
                           selected={(rule.autoApproveSeverities ?? []) as Severity[]}
                           onToggle={(s) => toggleOverrideSeverity(index, s)}
+                          labelledById={`override-${index}-severities-label`}
                           t={t}
                         />
                       </div>

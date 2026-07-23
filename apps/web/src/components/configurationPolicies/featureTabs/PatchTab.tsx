@@ -431,6 +431,9 @@ export default function PatchTab({
           <div className="mt-2 flex items-center gap-2">
             <select
               data-testid="approval-ring-select"
+              aria-label={i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.approvalRing",
+              )}
               value={selectedRingId}
               onChange={(e) => setSelectedRingId(e.target.value)}
               className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -451,6 +454,7 @@ export default function PatchTab({
               <button
                 type="button"
                 onClick={openEditRing}
+                data-testid="patch-edit-ring"
                 className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
               >
                 <Pencil className="h-3.5 w-3.5" />
@@ -460,6 +464,7 @@ export default function PatchTab({
             <button
               type="button"
               onClick={openCreateRing}
+              data-testid="patch-new-ring"
               className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -573,12 +578,17 @@ export default function PatchTab({
         </p>
         <div className="mt-2 grid gap-4 sm:grid-cols-3">
           <div>
-            <label className="text-xs text-muted-foreground">
+            <label
+              htmlFor="patch-schedule-frequency"
+              className="text-xs text-muted-foreground"
+            >
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.patchTab.frequency",
               )}
             </label>
             <select
+              id="patch-schedule-frequency"
+              data-testid="patch-schedule-frequency"
               value={settings.scheduleFrequency}
               onChange={(e) =>
                 update("scheduleFrequency", e.target.value as ScheduleFrequency)
@@ -593,12 +603,17 @@ export default function PatchTab({
             </select>
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">
+            <label
+              htmlFor="patch-schedule-time"
+              className="text-xs text-muted-foreground"
+            >
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.patchTab.time",
               )}
             </label>
             <input
+              id="patch-schedule-time"
+              data-testid="patch-schedule-time"
               type="time"
               value={settings.scheduleTime}
               onChange={(e) => update("scheduleTime", e.target.value)}
@@ -607,12 +622,17 @@ export default function PatchTab({
           </div>
           {settings.scheduleFrequency === "weekly" && (
             <div>
-              <label className="text-xs text-muted-foreground">
+              <label
+                htmlFor="patch-schedule-day-of-week"
+                className="text-xs text-muted-foreground"
+              >
                 {i18n.t(
                   "policies:configurationPolicies.featureTabs.patchTab.dayOfWeek",
                 )}
               </label>
               <select
+                id="patch-schedule-day-of-week"
+                data-testid="patch-schedule-day-of-week"
                 value={settings.scheduleDayOfWeek}
                 onChange={(e) => update("scheduleDayOfWeek", e.target.value)}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -627,12 +647,17 @@ export default function PatchTab({
           )}
           {settings.scheduleFrequency === "monthly" && (
             <div>
-              <label className="text-xs text-muted-foreground">
+              <label
+                htmlFor="patch-schedule-day-of-month"
+                className="text-xs text-muted-foreground"
+              >
                 {i18n.t(
                   "policies:configurationPolicies.featureTabs.patchTab.dayOfMonth",
                 )}
               </label>
               <input
+                id="patch-schedule-day-of-month"
+                data-testid="patch-schedule-day-of-month"
                 type="number"
                 min={1}
                 max={28}

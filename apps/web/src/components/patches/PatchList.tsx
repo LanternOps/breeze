@@ -318,6 +318,7 @@ export default function PatchList({
         <button
           type="button"
           onClick={() => onDeploy?.(patch)}
+          data-testid={`patch-row-${patch.id}-deploy`}
           className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
         >
           <Download className="h-3.5 w-3.5" />
@@ -327,6 +328,7 @@ export default function PatchList({
         <button
           type="button"
           onClick={() => onReview?.(patch)}
+          data-testid={`patch-row-${patch.id}-review`}
           className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium hover:bg-muted"
         >
           <Eye className="h-3.5 w-3.5" />
@@ -336,6 +338,7 @@ export default function PatchList({
       <button
         type="button"
         onClick={() => onView?.(patch)}
+        data-testid={`patch-row-${patch.id}-details`}
         className="inline-flex h-8 items-center gap-1 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
       >
         {t('patchList.actions.details')}
@@ -460,6 +463,7 @@ export default function PatchList({
               type="button"
               onClick={handleBulkApprove}
               disabled={bulkLoading}
+              data-testid="patch-bulk-approve"
               className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
@@ -471,6 +475,7 @@ export default function PatchList({
               type="button"
               onClick={handleBulkDecline}
               disabled={bulkLoading}
+              data-testid="patch-bulk-decline"
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:opacity-50"
             >
               {bulkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
