@@ -358,6 +358,20 @@ export async function runMetricRollupMaintenance(options: {
       durationMs: Date.now() - startedAt,
     };
   } finally {
-    await releaseMaintenanceLock();
+    // A poisoned transaction (25P02 — an earlier DDL/DELETE in this same
+    // withSystemDbAccessContext transaction already failed) or a dropped
+    // session makes the advisory unlock throw. A throw from `finally` REPLACES
+    // fn's real error, so the true root cause was invisible in Sentry — only
+    // the secondary pg_advisory_unlock failure surfaced (BREEZE-M). Swallow it
+    // so the original error propagates; the session-scoped advisory lock is
+    // released on connection recycle regardless.
+    try {
+      await releaseMaintenanceLock();
+    } catch (err) {
+      console.error(
+        '[MetricRollupMaintenance] releaseMaintenanceLock failed; advisory lock will release on connection recycle:',
+        err,
+      );
+    }
   }
 }
