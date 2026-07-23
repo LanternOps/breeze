@@ -104,6 +104,26 @@ export async function getLatestFilesystemSnapshot(deviceId: string) {
   return snapshot ?? null;
 }
 
+/**
+ * Slim variant for the cleanup preview/execute paths, which only need the
+ * snapshot id and its cleanup candidates. Avoids transferring and deserializing
+ * the full set of large jsonb columns (largest files/dirs, duplicates, the
+ * duplicate rawPayload blob, etc.) that those callers never read.
+ */
+export async function getLatestFilesystemCleanupSnapshot(deviceId: string) {
+  const [snapshot] = await db
+    .select({
+      id: deviceFilesystemSnapshots.id,
+      cleanupCandidates: deviceFilesystemSnapshots.cleanupCandidates,
+    })
+    .from(deviceFilesystemSnapshots)
+    .where(eq(deviceFilesystemSnapshots.deviceId, deviceId))
+    .orderBy(desc(deviceFilesystemSnapshots.capturedAt))
+    .limit(1);
+
+  return snapshot ?? null;
+}
+
 export async function getFilesystemScanState(deviceId: string) {
   const [state] = await db
     .select()
@@ -349,3 +369,18 @@ export function buildCleanupPreview(
 }
 
 export const safeCleanupCategories = Array.from(SAFE_CLEANUP_CATEGORIES);
+
+/**
+ * Extracts the previewed cleanup candidates from a stored cleanup-run `plan`
+ * (jsonb). Used by cleanup-execute to pin deletions to exactly what the user
+ * previewed. Only safe candidates in known-safe categories are returned, so a
+ * stale or hand-edited plan can never widen the deletion set.
+ */
+export function readPlanPreviewCandidates(plan: unknown): FilesystemCleanupCandidate[] {
+  const planRecord = asRecord(plan);
+  const preview = asRecord(planRecord?.preview);
+  return asArray(preview?.candidates)
+    .map(toCleanupCandidate)
+    .filter((candidate): candidate is FilesystemCleanupCandidate => candidate !== null)
+    .filter((candidate) => candidate.safe && SAFE_CLEANUP_CATEGORIES.has(candidate.category));
+}

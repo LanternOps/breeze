@@ -352,6 +352,10 @@ export default function DeviceFilesystemTab({
   const pollScanCommand = useCallback(
     async (commandId: string, timeoutMs: number) => {
       const startedAt = Date.now();
+      // Back off between status polls (2s → 10s) rather than hammering a fixed
+      // 2s for the whole scan window; a baseline scan can run for minutes.
+      let delayMs = 2000;
+      const maxDelayMs = 10000;
 
       while (Date.now() - startedAt < timeoutMs) {
         const response = await fetchWithAuth(
@@ -388,7 +392,8 @@ export default function DeviceFilesystemTab({
           throw new Error(error);
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.5));
       }
 
       throw new Error(

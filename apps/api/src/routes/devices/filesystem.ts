@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceDisks, deviceFilesystemCleanupRuns } from '../../db/schema';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
@@ -11,9 +11,12 @@ import {
   buildCleanupPreview,
   getFilesystemScanState,
   getLatestFilesystemSnapshot,
+  getLatestFilesystemCleanupSnapshot,
   readCheckpointPendingDirectories,
   readHotDirectories,
+  readPlanPreviewCandidates,
   safeCleanupCategories,
+  type FilesystemCleanupCandidate,
 } from '../../services/filesystemAnalysis';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -44,6 +47,10 @@ const cleanupPreviewBodySchema = z.object({
 
 const cleanupExecuteBodySchema = z.object({
   paths: z.array(z.string().min(1).max(4096)).min(1).max(200),
+  // When set, the selection is validated against the exact candidate set the
+  // user previewed in this cleanup run, rather than re-derived from whatever
+  // snapshot is now latest (which may have changed between preview and execute).
+  cleanupRunId: z.string().guid().optional(),
 });
 
 function readSnapshotReason(snapshot: { rawPayload?: unknown } | null | undefined): string | null {
@@ -274,7 +281,7 @@ filesystemRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const snapshot = await getLatestFilesystemSnapshot(deviceId);
+    const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
     if (!snapshot) {
       return c.json({ error: 'No filesystem snapshot available. Run a scan first.' }, 404);
     }
@@ -329,7 +336,7 @@ filesystemRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
-    const { paths } = c.req.valid('json');
+    const { paths, cleanupRunId } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -339,13 +346,34 @@ filesystemRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const snapshot = await getLatestFilesystemSnapshot(deviceId);
-    if (!snapshot) {
-      return c.json({ error: 'No filesystem snapshot available. Run a scan first.' }, 404);
+    // Resolve the authoritative candidate set. When the caller pins a cleanup
+    // run, use exactly the candidates it previewed; otherwise fall back to the
+    // latest snapshot's safe candidates.
+    let candidates: FilesystemCleanupCandidate[];
+    let sourceSnapshotId: string | null = null;
+    if (cleanupRunId) {
+      const [run] = await db
+        .select({ plan: deviceFilesystemCleanupRuns.plan })
+        .from(deviceFilesystemCleanupRuns)
+        .where(and(
+          eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+          eq(deviceFilesystemCleanupRuns.deviceId, deviceId),
+        ))
+        .limit(1);
+      if (!run) {
+        return c.json({ error: 'Cleanup run not found' }, 404);
+      }
+      candidates = readPlanPreviewCandidates(run.plan);
+    } else {
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
+      if (!snapshot) {
+        return c.json({ error: 'No filesystem snapshot available. Run a scan first.' }, 404);
+      }
+      sourceSnapshotId = snapshot.id;
+      candidates = buildCleanupPreview(snapshot).candidates;
     }
 
-    const preview = buildCleanupPreview(snapshot);
-    const byPath = new Map(preview.candidates.map((candidate) => [candidate.path, candidate]));
+    const byPath = new Map(candidates.map((candidate) => [candidate.path, candidate]));
     const requested = Array.from(new Set(paths));
     const selected = requested
       .map((path) => byPath.get(path))
@@ -390,7 +418,8 @@ filesystemRoutes.post(
         requestedBy: auth.user.id,
         approvedAt: new Date(),
         plan: {
-          snapshotId: snapshot.id,
+          snapshotId: sourceSnapshotId,
+          sourceCleanupRunId: cleanupRunId ?? null,
           requestedPaths: requested,
           selectedPaths: selected.map((candidate) => candidate.path),
         },

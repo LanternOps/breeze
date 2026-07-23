@@ -1536,7 +1536,8 @@ export async function maybeQueueThresholdFilesystemAnalysis(
 
 export async function handleFilesystemAnalysisCommandResult(
   command: typeof deviceCommands.$inferSelect,
-  resultData: z.infer<typeof commandResultSchema>
+  resultData: z.infer<typeof commandResultSchema>,
+  orgId: string
 ): Promise<void> {
   if (resultData.status !== 'completed') {
     return;
@@ -1557,19 +1558,22 @@ export async function handleFilesystemAnalysisCommandResult(
     return;
   }
 
-  const [device] = await db
-    .select({ orgId: devices.orgId })
-    .from(devices)
-    .where(eq(devices.id, command.deviceId))
-    .limit(1);
-  if (!device) {
-    console.warn(
-      `[agents/helpers] filesystem_analysis command ${command.id}: device ${command.deviceId} not found; no snapshot written`
-    );
-    return;
-  }
+  // orgId comes from the caller's agent-auth context, which already resolved
+  // the device's org — no need to re-query devices here.
 
-  const currentState = await getFilesystemScanState(command.deviceId);
+  // The scan-state read and the disk-usage read are independent; run them
+  // together. The disk figure is only consumed by the scan-state upsert below.
+  const [currentState, diskRows] = await Promise.all([
+    getFilesystemScanState(command.deviceId),
+    db
+      .select({ usedPercent: deviceDisks.usedPercent })
+      .from(deviceDisks)
+      .where(eq(deviceDisks.deviceId, command.deviceId))
+      .limit(1),
+  ]);
+  const currentDiskUsedPercent =
+    typeof diskRows[0]?.usedPercent === 'number' ? diskRows[0].usedPercent : null;
+
   const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
   const mergedPayload = scanMode === 'baseline'
     ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
@@ -1589,14 +1593,7 @@ export async function handleFilesystemAnalysisCommandResult(
       scanMode,
     };
 
-  await saveFilesystemSnapshot(command.deviceId, device.orgId, snapshotTrigger, snapshotPayload);
-
-  const [disk] = await db
-    .select({ usedPercent: deviceDisks.usedPercent })
-    .from(deviceDisks)
-    .where(eq(deviceDisks.deviceId, command.deviceId))
-    .limit(1);
-  const currentDiskUsedPercent = typeof disk?.usedPercent === 'number' ? disk.usedPercent : null;
+  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, snapshotPayload);
 
   const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
   const mergedHotDirectories = Array.from(
@@ -1606,9 +1603,15 @@ export async function handleFilesystemAnalysisCommandResult(
     ])
   ).slice(0, 24);
 
-  const snapshotIsPartial = 'partial' in snapshotPayload ? Boolean(snapshotPayload.partial) : false;
-  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0 && !snapshotIsPartial;
-  await upsertFilesystemScanState(command.deviceId, device.orgId, {
+  // Baseline completion is defined solely by having no pending checkpoint
+  // directories left to resume. The snapshot's `partial` flag must NOT gate
+  // this: `partial` is also set (and stays sticky across merges) for routine
+  // max-depth truncation, which is not a resumable condition — folding it in
+  // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
+  // forced every subsequent scan back to a full baseline and defeated the
+  // incremental hot-directory path.
+  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
+  await upsertFilesystemScanState(command.deviceId, orgId, {
     lastRunMode: scanMode,
     lastBaselineCompletedAt: baselineCompleted
       ? new Date()
