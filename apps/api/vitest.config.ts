@@ -48,6 +48,11 @@ export default defineConfig({
       // beforeAll), so the unit runner's no-DB environment fails the suite on
       // connect. Belongs to vitest.integration.config.ts.
       'src/routes/agents/changes.integration.test.ts',
+      // Patch ingest status-transition real-DB test (#2725): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate), so
+      // the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts.
+      'src/routes/agents/patches.integration.test.ts',
       // Software-report re-link real-DB test (BREEZE-3): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so the
       // no-DB unit runner would fail it on connect. Belongs to

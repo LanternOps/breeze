@@ -202,9 +202,10 @@ func extractListColumns(line string, cols *columnPositions) (name, id, version s
 	}
 	name = safeSubstring(line, cols.name, cols.id)
 	id = safeSubstring(line, cols.id, cols.version)
-	// `winget list` grows an Available column when any package has an upgrade;
-	// slicing to end-of-line concatenated Version+Available into one string
-	// ("2.51.0.2   2.55.0.3"). Stop at the Available column when present.
+	// `winget list` grows an Available column once any package has an upgrade.
+	// Without stopping there, the Version cell would run to end-of-line and
+	// concatenate Version+Available ("2.51.0.2   2.55.0.3"). Stop at the
+	// Available column when present, matching extractUpgradeColumns.
 	if cols.available > 0 {
 		version = safeSubstring(line, cols.version, cols.available)
 		return

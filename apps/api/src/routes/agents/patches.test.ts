@@ -746,7 +746,7 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // winget reports a pending upgrade and the installed package under the same
     // (source, externalId): `winget list` includes every package that
     // `winget upgrade` just reported. The installed upsert must not downgrade
-    // the pending row the pending submit wrote ~200ms earlier.
+    // a pending row written earlier in the same scan cycle.
     const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts();
     vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
 
@@ -779,6 +779,12 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     expect(statusSql).toContain('pending');
     expect(statusSql).toContain('installed');
     expect((set.status as { values: unknown[] }).values).toContain(tables.devicePatches.status);
+    // Pin the CASE branch direction (preserve when pending, ELSE installed).
+    // These assertions inspect the mocked sql tag's {strings, values}
+    // bookkeeping, not drizzle's real SQL object — real execution against the
+    // device_patch_status enum is covered by patches.integration.test.ts.
+    const statusText = (set.status as { strings: string[] }).strings.join('<col>');
+    expect(statusText).toBe("CASE WHEN <col> = 'pending' THEN <col> ELSE 'installed' END");
     // installedAt is likewise preserved for pending rows.
     expect((set.installedAt as { values: unknown[] }).values).toContain(tables.devicePatches.installedAt);
     // installedVersion still updates — it reports the currently-installed
