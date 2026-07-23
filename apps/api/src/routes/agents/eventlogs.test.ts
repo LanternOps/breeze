@@ -187,10 +187,21 @@ describe('agent event log routes', () => {
         events: [
           expect.objectContaining({
             timestamp: '2026-05-02T12:00:00.000Z',
+            // Regression guard (#2643): forward the persisted `details`, not the
+            // non-existent `rawData` the schema strips. The clamp provenance
+            // that was merged into the stored row is forwarded too.
+            details: {
+              eventRecordId: 123,
+              originalTimestamp: '2026-05-02T13:00:00.000Z',
+              timestampClamped: true,
+            },
           }),
         ],
       })
     );
+    // The removed `rawData` field must not resurface in the forward payload.
+    const forwarded = mocks.enqueueLogForwarding.mock.calls[0]?.[0];
+    expect(forwarded.events[0]).not.toHaveProperty('rawData');
   });
 
   it('does not re-forward duplicate events absorbed by the dedup index (#2390 retry passes)', async () => {

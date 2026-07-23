@@ -29,7 +29,7 @@ interface EventLogDocument {
   source: string;
   message: string;
   timestamp: string;
-  rawData?: unknown;
+  details?: unknown;
 }
 
 interface BulkResult {
@@ -74,7 +74,7 @@ function buildAuthHeader(config: LogForwardingConfig): string | undefined {
 // indexing idempotent: re-sending a batch (full-batch or item-level retry)
 // overwrites rather than duplicating, so retries are safe. Only byte-identical
 // events collapse — hashing every field (not a subset) avoids silently dropping
-// events that differ only in level/rawData, and serializing avoids the
+// events that differ only in level/details, and serializing avoids the
 // separator-collision risk of joining fields with a delimiter.
 function docId(doc: EventLogDocument): string {
   return createHash('sha256').update(JSON.stringify(doc)).digest('hex');
