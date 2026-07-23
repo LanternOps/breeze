@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { M365_PERMISSION_PROFILES, type CompleteConsentResult, type RetestResult } from '@breeze/shared/m365';
+import { M365_PERMISSION_PROFILES, type CompleteConsentResult, type RetestRequest, type RetestResult } from '@breeze/shared/m365';
 
 const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
   dbMocks: {
@@ -676,7 +676,7 @@ describe('createConnectionService factory (non-read profile)', () => {
     contextMocks.callerDepth = 0;
   });
 
-  function actionsService(retest = vi.fn(async () => ({
+  function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
     organizationDisplayName: 'Contoso', manifestVersion: 1,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
