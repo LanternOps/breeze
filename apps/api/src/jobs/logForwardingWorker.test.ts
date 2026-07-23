@@ -85,7 +85,7 @@ describe('enqueueLogForwarding', () => {
         source: 's'.repeat(400),
         message: 'm'.repeat(5000),
         timestamp: '2026-03-31T12:00:00.000Z',
-        rawData: { big: 'x'.repeat(20 * 1024) },
+        details: { big: 'x'.repeat(20 * 1024) },
       })),
     });
 
@@ -97,6 +97,29 @@ describe('enqueueLogForwarding', () => {
     expect(queued.events[0]?.level).toHaveLength(256);
     expect(queued.events[0]?.source).toHaveLength(256);
     expect(queued.events[0]?.message).toHaveLength(4096);
-    expect(queued.events[0]?.rawData).toBeUndefined();
+    // Oversized details (>16KB serialized) is dropped rather than forwarded.
+    expect(queued.events[0]?.details).toBeUndefined();
+  });
+
+  it('forwards in-bound details unchanged', async () => {
+    await enqueueLogForwarding({
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      hostname: 'host-1',
+      events: [
+        {
+          category: 'security',
+          level: 'warning',
+          source: 'auth',
+          message: 'failed logon',
+          timestamp: '2026-03-31T12:00:00.000Z',
+          details: { user: 'alice', attempts: 3 },
+        },
+      ],
+    });
+
+    expect(addMock).toHaveBeenCalledTimes(1);
+    const queued = addMock.mock.calls[0]?.[1];
+    expect(queued.events[0]?.details).toEqual({ user: 'alice', attempts: 3 });
   });
 });

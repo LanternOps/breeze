@@ -186,7 +186,15 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
             source: event.source,
             message: event.message,
             timestamp: row.timestamp.toISOString(),
-            rawData: event.rawData,
+            // The agent's structured per-event context lives in `details`
+            // (see submitEventLogsSchema). The forward payload historically
+            // read `event.rawData`, a field the schema strips — so it was
+            // always `undefined` and nothing reached the SIEM. Forward the
+            // persisted `row.details` so the SIEM matches what was stored
+            // (including any timestamp-clamp provenance); the worker re-caps
+            // it to 16KB before shipping. `null` (no details) is normalized
+            // to `undefined` so the field is omitted rather than sent empty.
+            details: row.details ?? undefined,
           }];
         });
         if (forwardEvents.length > 0) {
