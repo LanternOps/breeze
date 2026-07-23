@@ -1537,6 +1537,16 @@ export function validateConfig(): AppConfig {
   // when the write-action tools rollout is enabled.
   validateM365CustomerGraphActionsRuntimeConfigAtBoot(env);
 
+  // APP_ENCRYPTION_KEY_ID is required once Graph write-action tools are enabled:
+  // the reset-password reveal seals its temp credential with AAD-bound v3 ciphertext
+  // and fails closed at runtime if the key id is absent. Turn that into a boot error.
+  const truthy = (raw?: string) => ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+  if (truthy(env.M365_GRAPH_ACTIONS_TOOLS_ENABLED) && !env.APP_ENCRYPTION_KEY_ID?.trim()) {
+    throw new Error(
+      'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
+    );
+  }
+
   _config = result.data;
 
   // #1412: surface an off-default AI route at boot so there is an audit trail
