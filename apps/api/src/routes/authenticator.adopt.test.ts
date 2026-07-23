@@ -238,7 +238,7 @@ const defaultExistingDeviceRow = {
   aaguid: null,
   transports: ['internal'],
   isPlatformBound: true,
-  disabledAt: new Date('2026-06-01T00:00:00.000Z'),
+  disabledAt: new Date('2026-06-01T00:00:00.000Z') as Date | null,
   disabledReason: 'user_revoked',
 };
 
