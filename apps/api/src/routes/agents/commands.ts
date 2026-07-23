@@ -338,7 +338,7 @@ commandsRoutes.post(
 
     if (command.type === filesystemAnalysisCommandType) {
       try {
-        await handleFilesystemAnalysisCommandResult(command, normalizedData);
+        await handleFilesystemAnalysisCommandResult(command, normalizedData, agent.orgId);
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
         captureException(err);

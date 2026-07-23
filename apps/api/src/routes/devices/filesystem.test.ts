@@ -18,6 +18,8 @@ vi.mock('../../db/schema', () => ({
   },
   deviceFilesystemCleanupRuns: {
     id: 'id',
+    deviceId: 'deviceId',
+    plan: 'plan',
   },
 }));
 
@@ -60,6 +62,8 @@ vi.mock('../../services/filesystemAnalysis', () => ({
   parseFilesystemAnalysisStdout: vi.fn(),
   saveFilesystemSnapshot: vi.fn(),
   buildCleanupPreview: vi.fn(),
+  getLatestFilesystemCleanupSnapshot: vi.fn(),
+  readPlanPreviewCandidates: vi.fn(() => []),
   safeCleanupCategories: ['temp_files', 'browser_cache', 'package_cache', 'trash']
 }));
 
@@ -73,10 +77,12 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { executeCommand, queueCommandForExecution } from '../../services/commandQueue';
 import {
   getLatestFilesystemSnapshot,
+  getLatestFilesystemCleanupSnapshot,
   getFilesystemScanState,
   readHotDirectories,
   readCheckpointPendingDirectories,
   buildCleanupPreview,
+  readPlanPreviewCandidates,
 } from '../../services/filesystemAnalysis';
 
 describe('device filesystem routes', () => {
@@ -158,7 +164,7 @@ describe('device filesystem routes', () => {
 
   it('returns cleanup preview and stores run', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
-    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({ id: 'snap-3', cleanupCandidates: [] } as never);
+    vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue({ id: 'snap-3', cleanupCandidates: [] } as never);
     vi.mocked(buildCleanupPreview).mockReturnValue({
       snapshotId: 'snap-3',
       estimatedBytes: 4096,
@@ -187,7 +193,7 @@ describe('device filesystem routes', () => {
 
   it('executes cleanup only for selected valid candidates', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
-    vi.mocked(getLatestFilesystemSnapshot).mockResolvedValue({ id: 'snap-4', cleanupCandidates: [] } as never);
+    vi.mocked(getLatestFilesystemCleanupSnapshot).mockResolvedValue({ id: 'snap-4', cleanupCandidates: [] } as never);
     vi.mocked(buildCleanupPreview).mockReturnValue({
       snapshotId: 'snap-4',
       estimatedBytes: 8192,
@@ -224,6 +230,119 @@ describe('device filesystem routes', () => {
       { path: '/tmp/a.tmp', recursive: true },
       expect.objectContaining({ userId: 'user-123' })
     );
+  });
+
+  it('pins cleanup-execute to the previewed run when cleanupRunId is provided', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    // db.select resolves the pinned cleanup run's stored plan.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+    vi.mocked(executeCommand).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'run-9' }]),
+      }),
+    } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/a.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.bytesReclaimed).toBe(4096);
+    // The pinned path uses the stored run, not the latest snapshot.
+    expect(readPlanPreviewCandidates).toHaveBeenCalled();
+    expect(getLatestFilesystemCleanupSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when cleanupRunId does not resolve to a run', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    } as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/a.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a path not in the pinned run and never deletes it', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ plan: { preview: { candidates: [] } } }]),
+        }),
+      }),
+    } as never);
+    // Pinned run only previewed /tmp/a.tmp; the caller asks to delete a path
+    // that was never previewed — it must not widen the deletion set.
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([
+      { path: '/tmp/a.tmp', category: 'temp_files', sizeBytes: 4096, safe: true },
+    ] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/EVIL.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('returns a distinct 400 when the pinned run has no previewable candidates', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: deviceId, orgId: 'org-123', hostname: 'host-1' } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ plan: { requestedPaths: [] } }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(readPlanPreviewCandidates).mockReturnValue([] as never);
+
+    const res = await app.request(`/devices/${deviceId}/filesystem/cleanup-execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paths: ['/tmp/a.tmp'],
+        cleanupRunId: '22222222-2222-2222-2222-222222222222',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Pinned cleanup run has no previewable candidates');
+    expect(executeCommand).not.toHaveBeenCalled();
   });
 
   it('denies filesystem read when site scope excludes the device', async () => {
