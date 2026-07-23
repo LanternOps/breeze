@@ -765,6 +765,7 @@ function toStoredCredential(passkey: Pick<PasskeyRow, 'credentialId' | 'publicKe
 function toPublicPasskey(passkey: Pick<PasskeyRow, 'id'> & Partial<PasskeyRow>) {
   return {
     id: passkey.id,
+    credentialId: passkey.credentialId,
     name: passkey.name ?? 'Passkey',
     deviceType: passkey.deviceType,
     backedUp: passkey.backedUp,

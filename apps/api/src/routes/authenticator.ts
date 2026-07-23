@@ -77,6 +77,7 @@ type ApproverDeviceRow = typeof authenticatorDevices.$inferSelect;
 function toPublicDevice(device: ApproverDeviceRow) {
   return {
     id: device.id,
+    credentialId: device.credentialId,
     label: device.label,
     kind: device.kind,
     isPlatformBound: device.isPlatformBound,

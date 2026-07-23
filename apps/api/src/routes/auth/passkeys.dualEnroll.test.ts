@@ -228,6 +228,7 @@ describe('POST /auth/passkeys/register/verify — dual enrollment (unified-secur
     const body = await res.json();
 
     expect(body.approver).toEqual({ registered: true, isPlatformBound: true, deviceId: expect.any(String) });
+    expect(body.passkey.credentialId).toBe(fields.credentialId);
     expect(txInserts.map((i) => i.table)).toEqual(['user_passkeys', 'authenticator_devices']);
 
     const approverValues = txInserts[1]!.values;

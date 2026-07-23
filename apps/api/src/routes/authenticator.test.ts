@@ -320,7 +320,12 @@ describe('approver device routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.devices).toHaveLength(1);
-    expect(body.devices[0]).toMatchObject({ id: 'device-1', label: 'My Laptop', isPlatformBound: true });
+    expect(body.devices[0]).toMatchObject({
+      id: 'device-1',
+      label: 'My Laptop',
+      isPlatformBound: true,
+      credentialId: 'credential-1',
+    });
   });
 
   it('revokes a device by setting disabledAt', async () => {
