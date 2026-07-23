@@ -17,13 +17,16 @@ const (
 
 const ipcFailThreshold = 3
 
-// staleVetoLimit bounds how many consecutive stale-heartbeat verdicts the
-// IPC-liveness corroboration may veto before the stale verdict stands anyway.
-// The veto exists to absorb transient state-file write starvation (Windows
-// sharing violations), not to permanently mask an agent whose heartbeat
-// goroutine is wedged while its IPC listener still answers pings — that
-// failure is exactly what the staleness check was built to catch. At the
-// default 3-minute check cadence this forces escalation after ~9 minutes.
+// staleVetoLimit: the IPC-liveness corroboration vetoes at most
+// staleVetoLimit-1 consecutive stale-heartbeat verdicts; the verdict stands
+// on the staleVetoLimit-th. The veto exists to absorb transient state-file
+// write starvation (Windows sharing violations), not to permanently mask an
+// agent whose heartbeat goroutine is wedged while its IPC listener still
+// answers pings — that failure is exactly what the staleness check was built
+// to catch. The check ticker runs at HeartbeatStaleThreshold (the cadence
+// and the staleness threshold are the same knob), so escalation lands
+// staleVetoLimit check intervals — with the 3-minute default, ~9-12 minutes —
+// after the heartbeat stops.
 const staleVetoLimit = 3
 
 // ProcessChecker abstracts OS-level process liveness queries.
@@ -89,7 +92,10 @@ func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 		return CheckHeartbeatStale
 	}
 	if s.LastHeartbeat.IsZero() {
-		// Grace period: heartbeat not yet recorded.
+		// Grace period: heartbeat not yet recorded. A restarted agent gets a
+		// fresh veto budget too — residual vetoes from before the restart
+		// must not fast-track the new process to escalation.
+		h.staleVetoCount = 0
 		return CheckOK
 	}
 	if time.Since(s.LastHeartbeat) > h.staleThreshold {
@@ -110,10 +116,11 @@ func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 // veto the restart — a truly dead agent is still caught by the process check
 // (seconds) and by IPC probe failures (a few probe intervals).
 //
-// The veto is bounded: after staleVetoLimit consecutive vetoes the stale
-// verdict stands regardless of IPC state, so an agent whose heartbeat
-// goroutine is wedged while its IPC listener keeps answering cannot dodge
-// restarts forever. Call only on a CheckHeartbeatStale verdict.
+// The veto is bounded: the stale verdict stands on the staleVetoLimit-th
+// consecutive stale verdict (after staleVetoLimit-1 vetoes) regardless of
+// IPC state, so an agent whose heartbeat goroutine is wedged while its IPC
+// listener keeps answering cannot dodge restarts forever. Call only on a
+// CheckHeartbeatStale verdict.
 func (h *HealthChecker) ShouldRestartOnStaleHeartbeat(ipcConnected bool) bool {
 	if !ipcConnected || h.ipcFailCount > 0 {
 		h.staleVetoCount = 0
@@ -131,6 +138,37 @@ func (h *HealthChecker) ShouldRestartOnStaleHeartbeat(ipcConnected bool) bool {
 // journal diagnostics).
 func (h *HealthChecker) StaleVetoCount() int {
 	return h.staleVetoCount
+}
+
+// StaleHeartbeatDecision is the outcome of a heartbeat-ticker evaluation.
+type StaleHeartbeatDecision int
+
+const (
+	// HeartbeatOK — heartbeat fresh, in startup grace, or veto absorbed it.
+	HeartbeatOK StaleHeartbeatDecision = iota
+	// StaleRestart — stale and corroborated (or escalated): fire unhealthy.
+	StaleRestart
+	// StaleVetoed — stale but IPC says alive: journal only, no restart.
+	StaleVetoed
+)
+
+// EvaluateStaleHeartbeat is the complete heartbeat-ticker decision:
+// staleness check plus the bounded IPC-corroboration veto. The returned
+// count is decision context for the journal — for StaleRestart it is the
+// number of vetoes consumed BEFORE this verdict (>0 with a live IPC
+// connection means a forced escalation past the veto budget, i.e. a
+// ping-answering agent whose heartbeat loop is wedged — operators must be
+// able to tell that apart from a routine dead-agent restart); for
+// StaleVetoed it is the consecutive vetoes so far including this one.
+func (h *HealthChecker) EvaluateStaleHeartbeat(s *state.AgentState, ipcConnected bool) (StaleHeartbeatDecision, int) {
+	if h.CheckHeartbeatStaleness(s) != CheckHeartbeatStale {
+		return HeartbeatOK, 0
+	}
+	vetoesBefore := h.staleVetoCount
+	if h.ShouldRestartOnStaleHeartbeat(ipcConnected) {
+		return StaleRestart, vetoesBefore
+	}
+	return StaleVetoed, h.staleVetoCount
 }
 
 // IPCFailCount returns the current consecutive IPC failure count.

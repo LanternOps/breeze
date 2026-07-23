@@ -39,15 +39,22 @@ func TestReadDoesNotBlockConcurrentRename(t *testing.T) {
 		}
 	}()
 
-	// Bypass the retry seam's forgiveness: every single rename must succeed
-	// without needing backoff for the share-delete fix to be proven. Write's
-	// retry would mask a partially effective fix, so call it many times and
-	// require zero total failures.
+	// Use the raw WriteFile+Rename pair, NOT state.Write: Write's bounded
+	// retry would silently heal a partially effective fix (e.g. a dropped
+	// FILE_SHARE_DELETE flag that only sometimes collides), and this test
+	// must prove every single rename succeeds with a reader mid-flight.
+	tmpPath := path + ".tmp"
+	payload := []byte(`{"status":"running","pid":1,"version":"1.0.0"}`)
 	for i := 0; i < 500; i++ {
-		if err := Write(path, &AgentState{Status: StatusRunning, PID: i, Version: "1.0.0", Timestamp: time.Now()}); err != nil {
+		if err := os.WriteFile(tmpPath, payload, 0644); err != nil {
 			close(stop)
 			<-readerDone
-			t.Fatalf("Write %d failed under concurrent reads: %v", i, err)
+			t.Fatalf("WriteFile %d: %v", i, err)
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			close(stop)
+			<-readerDone
+			t.Fatalf("Rename %d failed under concurrent reads: %v", i, err)
 		}
 	}
 	close(stop)

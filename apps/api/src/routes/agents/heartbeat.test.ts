@@ -781,6 +781,40 @@ describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)',
     expect(capturedInsertValues).toBeUndefined();
   });
 
+  it('a failed insert does not consume the dedupe slot — next heartbeat retries', async () => {
+    // First request: the agentLogs insert rejects (transient DB error).
+    insertMock.mockImplementationOnce(() => ({
+      values: vi.fn(() => Promise.reject(new Error('db down'))),
+    }));
+    const body = JSON.stringify({
+      role: 'watchdog',
+      agentVersion: '0.65.20',
+      watchdogState: 'FAILOVER',
+      mainAgentRestartCount24h: 5,
+      mainAgentLastRestartAt: '2026-05-22T10:00:00Z',
+      flapDetected: true,
+    });
+    const app = buildWatchdogApp();
+    const first = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200); // insert failure is swallowed
+    expect(capturedInsertValues).toBeUndefined();
+
+    // Identical signature 30s later must be retried and land.
+    selectMock.mockReturnValueOnce(selectChainResolving([watchdogDeviceRow]));
+    const second = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(200);
+    expect(capturedInsertValues).toBeDefined();
+    expect((capturedInsertValues as Record<string, unknown>).level).toBe('error');
+  });
+
   it('writes again when the restart signature changes', async () => {
     const app = buildWatchdogApp();
     const first = await app.request('/agents/device-1/heartbeat', {
@@ -827,24 +861,69 @@ describe('shouldLogWatchdogRestartActivity (flap-log dedupe unit)', () => {
   });
 
   it('logs first occurrence, suppresses identical signature within the hour, re-logs after', async () => {
-    const { shouldLogWatchdogRestartActivity } = await import('./heartbeat');
+    const {
+      shouldLogWatchdogRestartActivity: shouldLog,
+      markWatchdogRestartActivityLogged: mark,
+    } = await import('./heartbeat');
     const t0 = 1_000_000;
-    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0)).toBe(true);
-    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 30_000)).toBe(false);
-    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 59 * 60_000)).toBe(false);
+    expect(shouldLog('dev-a', '5|true|x', t0)).toBe(true);
+    mark('dev-a', '5|true|x', t0);
+    expect(shouldLog('dev-a', '5|true|x', t0 + 30_000)).toBe(false);
+    expect(shouldLog('dev-a', '5|true|x', t0 + 59 * 60_000)).toBe(false);
     // Hourly keep-alive: same signature past the interval logs again.
-    expect(shouldLogWatchdogRestartActivity('dev-a', '5|true|x', t0 + 61 * 60_000)).toBe(true);
+    expect(shouldLog('dev-a', '5|true|x', t0 + 61 * 60_000)).toBe(true);
+  });
+
+  it('an unmarked check does not suppress — a failed insert stays retryable', async () => {
+    const { shouldLogWatchdogRestartActivity: shouldLog } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    expect(shouldLog('dev-a', '5|true|x', t0)).toBe(true);
+    // No mark (insert failed) → the next heartbeat retries.
+    expect(shouldLog('dev-a', '5|true|x', t0 + 30_000)).toBe(true);
   });
 
   it('a changed signature logs immediately and devices are independent', async () => {
-    const { shouldLogWatchdogRestartActivity } = await import('./heartbeat');
+    const {
+      shouldLogWatchdogRestartActivity: shouldLog,
+      markWatchdogRestartActivityLogged: mark,
+    } = await import('./heartbeat');
     const t0 = 1_000_000;
-    expect(shouldLogWatchdogRestartActivity('dev-a', '3|false|x', t0)).toBe(true);
-    expect(shouldLogWatchdogRestartActivity('dev-a', '4|false|y', t0 + 1_000)).toBe(true);
+    expect(shouldLog('dev-a', '3|false|x', t0)).toBe(true);
+    mark('dev-a', '3|false|x', t0);
+    expect(shouldLog('dev-a', '4|false|y', t0 + 1_000)).toBe(true);
+    mark('dev-a', '4|false|y', t0 + 1_000);
     // Different device with the same signature is not deduped against dev-a.
-    expect(shouldLogWatchdogRestartActivity('dev-b', '4|false|y', t0 + 2_000)).toBe(true);
+    expect(shouldLog('dev-b', '4|false|y', t0 + 2_000)).toBe(true);
     // Suppression re-arms after each write.
-    expect(shouldLogWatchdogRestartActivity('dev-a', '4|false|y', t0 + 3_000)).toBe(false);
+    expect(shouldLog('dev-a', '4|false|y', t0 + 3_000)).toBe(false);
+  });
+
+  it('bounds the cache: a capacity insert prunes >24h-stale entries', async () => {
+    const {
+      markWatchdogRestartActivityLogged: mark,
+      watchdogRestartLogCacheSizeForTests: cacheSize,
+    } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    for (let i = 0; i < 10_000; i++) mark(`dev-${i}`, 'sig', t0);
+    expect(cacheSize()).toBe(10_000);
+    mark('dev-new', 'sig', t0 + 25 * 60 * 60_000);
+    // Every stale entry pruned; only the new one remains.
+    expect(cacheSize()).toBe(1);
+  });
+
+  it('bounds the cache when all entries are fresh: evicts oldest-inserted', async () => {
+    const {
+      shouldLogWatchdogRestartActivity: shouldLog,
+      markWatchdogRestartActivityLogged: mark,
+      watchdogRestartLogCacheSizeForTests: cacheSize,
+    } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    for (let i = 0; i < 10_000; i++) mark(`dev-${i}`, 'sig', t0);
+    mark('dev-new', 'sig', t0 + 60_000);
+    expect(cacheSize()).toBe(10_000);
+    // dev-0 (oldest-inserted) was evicted → no longer suppressed.
+    expect(shouldLog('dev-0', 'sig', t0 + 61_000)).toBe(true);
+    expect(shouldLog('dev-new', 'sig', t0 + 61_000)).toBe(false);
   });
 });
 

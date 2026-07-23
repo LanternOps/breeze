@@ -40,11 +40,12 @@ type AgentState struct {
 
 // Rename retry bounds. On Windows, MoveFileEx(REPLACE_EXISTING) fails with
 // ERROR_SHARING_VIOLATION while any other process holds the destination open
-// without FILE_SHARE_DELETE (third-party AV/search indexers scanning the
-// fresh file, or pre-fix watchdog builds reading it). The collision window is
-// milliseconds, so a short bounded backoff absorbs it instead of dropping the
-// whole update — a dropped heartbeat update is what the watchdog reads as a
-// wedged agent (2026-07-22 US prod restart-storm incident).
+// without FILE_SHARE_DELETE — third-party AV/search indexers scanning the
+// fresh file, or (during fleet rollout of the share-delete fix) older
+// watchdog builds reading it. The collision window is milliseconds, so a
+// short bounded backoff absorbs it instead of dropping the whole update — a
+// dropped heartbeat update is what the watchdog reads as a wedged agent
+// (2026-07-22 US prod restart-storm incident).
 const (
 	renameAttempts    = 4
 	renameBackoffBase = 25 * time.Millisecond
@@ -73,7 +74,10 @@ func Write(path string, s *AgentState) error {
 		}
 	}
 	os.Remove(tmpPath)
-	return fmt.Errorf("rename state file: %w", renameErr)
+	// Name the attempt count: a caller's warn log must distinguish "failed
+	// instantly once" from "destination held across ~175ms of retries" —
+	// the AV-scan-vs-wedged-reader distinction incident forensics hinge on.
+	return fmt.Errorf("rename state file after %d attempts: %w", renameAttempts, renameErr)
 }
 
 // Read reads the state file. Returns nil, nil if the file doesn't exist.

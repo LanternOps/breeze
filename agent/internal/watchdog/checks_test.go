@@ -212,3 +212,83 @@ func TestShouldRestartOnStaleHeartbeat(t *testing.T) {
 		}
 	})
 }
+
+// TestEvaluateStaleHeartbeat exercises the complete heartbeat-ticker decision
+// (staleness + bounded veto) — the seam main.go's ticker branch calls, so the
+// incident path (stale file + live IPC must not restart) is proven end to end
+// at the decision layer.
+func TestEvaluateStaleHeartbeat(t *testing.T) {
+	t.Parallel()
+	stale := &state.AgentState{LastHeartbeat: time.Now().Add(-10 * time.Minute)}
+	fresh := &state.AgentState{LastHeartbeat: time.Now()}
+
+	t.Run("stale with live IPC vetoes then escalates with context", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		for i := 1; i < staleVetoLimit; i++ {
+			decision, vetoes := hc.EvaluateStaleHeartbeat(stale, true)
+			if decision != StaleVetoed {
+				t.Fatalf("verdict %d: decision = %v, want StaleVetoed", i, decision)
+			}
+			if vetoes != i {
+				t.Fatalf("verdict %d: vetoes = %d, want %d", i, vetoes, i)
+			}
+		}
+		decision, vetoes := hc.EvaluateStaleHeartbeat(stale, true)
+		if decision != StaleRestart {
+			t.Fatalf("limit-th verdict: decision = %v, want StaleRestart", decision)
+		}
+		// vetoesBefore > 0 with live IPC is the forced-escalation marker
+		// operators use to distinguish a wedged-heartbeat-goroutine restart
+		// from a routine dead-agent restart.
+		if vetoes != staleVetoLimit-1 {
+			t.Errorf("escalation vetoesBefore = %d, want %d", vetoes, staleVetoLimit-1)
+		}
+	})
+
+	t.Run("stale with disconnected IPC restarts immediately with zero vetoes", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{}, 3*time.Minute)
+		decision, vetoes := hc.EvaluateStaleHeartbeat(stale, false)
+		if decision != StaleRestart || vetoes != 0 {
+			t.Errorf("= (%v, %d), want (StaleRestart, 0)", decision, vetoes)
+		}
+	})
+
+	t.Run("fresh heartbeat returns OK and resets the budget", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		if d, _ := hc.EvaluateStaleHeartbeat(stale, true); d != StaleVetoed {
+			t.Fatalf("stale verdict = %v, want StaleVetoed", d)
+		}
+		if d, _ := hc.EvaluateStaleHeartbeat(fresh, true); d != HeartbeatOK {
+			t.Fatalf("fresh verdict = %v, want HeartbeatOK", d)
+		}
+		if d, vetoes := hc.EvaluateStaleHeartbeat(stale, true); d != StaleVetoed || vetoes != 1 {
+			t.Errorf("post-fresh stale = (%v, %d), want (StaleVetoed, 1)", d, vetoes)
+		}
+	})
+
+	t.Run("startup grace resets the budget for a restarted agent", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{healthy: true}, 3*time.Minute)
+		if d, _ := hc.EvaluateStaleHeartbeat(stale, true); d != StaleVetoed {
+			t.Fatalf("stale verdict = %v, want StaleVetoed", d)
+		}
+		// Startup grace: state exists but LastHeartbeat is still zero.
+		if d, _ := hc.EvaluateStaleHeartbeat(&state.AgentState{}, true); d != HeartbeatOK {
+			t.Fatalf("grace verdict = %v, want HeartbeatOK", d)
+		}
+		if hc.StaleVetoCount() != 0 {
+			t.Errorf("StaleVetoCount = %d after grace period, want 0", hc.StaleVetoCount())
+		}
+	})
+
+	t.Run("nil state is stale", func(t *testing.T) {
+		t.Parallel()
+		hc := NewHealthChecker(&mockProcessChecker{}, &mockIPCProber{}, 3*time.Minute)
+		if d, _ := hc.EvaluateStaleHeartbeat(nil, false); d != StaleRestart {
+			t.Errorf("nil state = %v, want StaleRestart", d)
+		}
+	})
+}
