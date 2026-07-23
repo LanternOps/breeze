@@ -30,6 +30,10 @@ export interface ApproverDevice {
   // The list endpoint already filters to active devices server-side, so the DTO
   // omits this; kept optional for callers that defensively filter.
   disabledAt?: string | null;
+  // Populated by `toPublicDevice` (unified-security-devices Task 3) so the web
+  // can join this row to a passkey sharing the same WebAuthn credential.
+  // `null` for non-WebAuthn kinds (e.g. `mobile_hw_key`).
+  credentialId?: string | null;
 }
 
 export type RegisterReauth =
