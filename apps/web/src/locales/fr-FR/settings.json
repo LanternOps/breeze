@@ -1423,7 +1423,10 @@
     "addedButApprovalsFailed": "Clé d’accès ajoutée. Les approbations n’ont pas pu être activées — vérifiez à nouveau pour les ajouter.",
     "addedSyncedNote": "Enregistré pour les approbations. Il s’agit d’un identifiant synchronisé, il ne peut donc pas confirmer les approbations de niveau critique.",
     "removeSignIn": "Retirer la connexion",
-    "revokeApprovals": "Révoquer les approbations"
+    "revokeApprovals": "Révoquer les approbations",
+    "enableApprovals": "Activer les approbations",
+    "approvalsEnabled": "Cet appareil peut désormais approuver les demandes.",
+    "alreadyRegistered": "Cet appareil est déjà enregistré pour les approbations."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",

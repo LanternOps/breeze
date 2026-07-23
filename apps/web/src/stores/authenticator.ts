@@ -70,8 +70,13 @@ async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
  * Mint a single-use register_approver_device grant with whichever re-auth
  * factor the caller proved (#2707 — spec: strongest available factor; the
  * password endpoint 403s `stronger_factor_required` if TOTP/passkey exist).
+ *
+ * Exported (unified-security-devices Task 9) so the "Enable approvals" row
+ * action in SecurityDevicesCard.tsx can mint just the grant — it doesn't run
+ * the full register/verify ceremony below, only `adoptPasskeyAsApprover`'s
+ * single adopt call.
  */
-async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
+export async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
   if (reauth.method === 'password') {
     const data = await jsonOrThrow(
       await fetchWithAuth('/authenticator/register-grant', {
@@ -148,6 +153,36 @@ export async function registerApproverDevice(label: string, reauth: RegisterReau
       body: JSON.stringify({ registerGrantId, label, response }),
     }),
     'Device registration failed.'
+  );
+}
+
+/**
+ * Adopt an EXISTING sign-in passkey as an approver device (unified-security-
+ * devices Task 9 "Enable approvals" row action). Unlike `registerApproverDevice`
+ * there is no separate options/verify pair — the credential already exists, so
+ * this reuses the authenticated step-up challenge (`/auth/mfa/step-up/options`)
+ * to run a fresh assertion ceremony proving control of that same passkey, then
+ * posts it straight to the adopt route in one call.
+ */
+export async function adoptPasskeyAsApprover(registerGrantId: string, label?: string): Promise<void> {
+  const challengeData = await jsonOrThrow(
+    await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' }),
+    'Could not start passkey verification.'
+  );
+  const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
+    challengeData.options ?? challengeData.optionsJSON ?? challengeData;
+  const credential = await startAuthentication({ optionsJSON });
+
+  await jsonOrThrow(
+    await fetchWithAuth('/authenticator/devices/webauthn/adopt', {
+      method: 'POST',
+      body: JSON.stringify({ registerGrantId, credential, label }),
+      // The assertion is single-use — a 401 here means it was rejected
+      // (wrong/replayed credential), never a stale bearer token. Same
+      // rationale as every other step-up POST in this file.
+      skipUnauthorizedRetry: true,
+    }),
+    'Failed to enable approvals for this device.'
   );
 }
 

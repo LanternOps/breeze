@@ -24,12 +24,14 @@ const {
   registerApproverDeviceMock,
   revokeApproverDeviceMock,
   renameApproverDeviceMock,
+  adoptPasskeyAsApproverMock,
   showToastMock,
 } = vi.hoisted(() => ({
   listApproverDevicesMock: vi.fn(),
   registerApproverDeviceMock: vi.fn(),
   revokeApproverDeviceMock: vi.fn(),
   renameApproverDeviceMock: vi.fn(),
+  adoptPasskeyAsApproverMock: vi.fn(),
   showToastMock: vi.fn(),
 }));
 
@@ -45,6 +47,7 @@ vi.mock('../../stores/authenticator', () => ({
   registerApproverDevice: registerApproverDeviceMock,
   revokeApproverDevice: revokeApproverDeviceMock,
   renameApproverDevice: renameApproverDeviceMock,
+  adoptPasskeyAsApprover: adoptPasskeyAsApproverMock,
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -116,6 +119,7 @@ describe('SecurityDevicesCard', () => {
     registerApproverDeviceMock.mockResolvedValue(undefined);
     revokeApproverDeviceMock.mockResolvedValue(okApproverResponse());
     renameApproverDeviceMock.mockResolvedValue(okApproverResponse());
+    adoptPasskeyAsApproverMock.mockResolvedValue(undefined);
   });
 
   it('renders Sign-in + Approvals + Platform-bound badges for a merged row', async () => {
@@ -838,6 +842,81 @@ describe('SecurityDevicesCard', () => {
         expect(showToastMock).toHaveBeenCalledWith({
           type: 'error',
           message: 'Registration was cancelled.',
+        }),
+      );
+    });
+  });
+
+  describe('"Enable approvals" row action (Task 9 — adopt an existing passkey)', () => {
+    it('shows the action only on a sign-in-only row, never on a merged row', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({
+          passkeys: [
+            { id: 'pk1', name: 'Sign-in only', lastUsedAt: null, credentialId: 'cred-1' },
+            { id: 'pk2', name: 'Merged', lastUsedAt: null, credentialId: 'cred-2' },
+          ],
+        }),
+      );
+      listApproverDevicesMock.mockResolvedValueOnce([approverFixture({ id: 'ad-2', credentialId: 'cred-2' })]);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      const signInOnlyRow = await screen.findByTestId('secdev-row-pk-pk1');
+      expect(within(signInOnlyRow).getByTestId('secdev-enable-approvals-pk-pk1')).toBeTruthy();
+
+      const mergedRow = await screen.findByTestId('secdev-row-pk-pk2');
+      expect(within(mergedRow).queryByTestId('secdev-enable-approvals-pk-pk2')).toBeNull();
+    });
+
+    it('TOTP tier: mints a register_approver_device grant via mintStepUpGrants then adopts, refreshing both lists', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: null }] }),
+      );
+      mintStepUpGrantsMock.mockResolvedValueOnce({ register_approver_device: 'g-adopt-1' });
+
+      render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+      const row = await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(within(row).getByTestId('secdev-enable-approvals-pk-pk1'));
+      fireEvent.change(screen.getByTestId('secdev-adopt-code'), { target: { value: '123456' } });
+      fireEvent.click(screen.getByTestId('secdev-enable-approvals-confirm-pk-pk1'));
+
+      await waitFor(() =>
+        expect(mintStepUpGrantsMock).toHaveBeenCalledWith(
+          { method: 'totp', code: '123456' },
+          ['register_approver_device'],
+        ),
+      );
+      await waitFor(() => expect(adoptPasskeyAsApproverMock).toHaveBeenCalledWith('g-adopt-1', 'Laptop'));
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'success',
+          message: 'This device can now approve requests.',
+        }),
+      );
+      // Approver list refetched (initial load + post-adopt refresh).
+      await waitFor(() => expect(listApproverDevicesMock).toHaveBeenCalledTimes(2));
+    });
+
+    it('maps a 409 from adopt to the already-registered message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: null, credentialId: null }] }),
+      );
+      mintStepUpGrantsMock.mockResolvedValueOnce({ register_approver_device: 'g-adopt-2' });
+      const err = Object.assign(new Error('already_registered'), { status: 409 });
+      adoptPasskeyAsApproverMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
+
+      const row = await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(within(row).getByTestId('secdev-enable-approvals-pk-pk1'));
+      fireEvent.change(screen.getByTestId('secdev-adopt-code'), { target: { value: '123456' } });
+      fireEvent.click(screen.getByTestId('secdev-enable-approvals-confirm-pk-pk1'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'This device is already registered for approvals.',
         }),
       );
     });

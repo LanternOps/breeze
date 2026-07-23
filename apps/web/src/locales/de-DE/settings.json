@@ -1423,7 +1423,10 @@
     "addedButApprovalsFailed": "Passkey hinzugefügt. Genehmigungen konnten nicht aktiviert werden – verifizieren Sie sich erneut, um sie hinzuzufügen.",
     "addedSyncedNote": "Für Genehmigungen registriert. Dies ist eine synchronisierte Anmeldeinformation und kann daher keine Genehmigungen der kritischen Stufe bestätigen.",
     "removeSignIn": "Anmeldung entfernen",
-    "revokeApprovals": "Genehmigungen widerrufen"
+    "revokeApprovals": "Genehmigungen widerrufen",
+    "enableApprovals": "Genehmigungen aktivieren",
+    "approvalsEnabled": "Dieses Gerät kann jetzt Anfragen genehmigen.",
+    "alreadyRegistered": "Dieses Gerät ist bereits für Genehmigungen registriert."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",

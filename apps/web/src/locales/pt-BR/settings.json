@@ -1423,7 +1423,10 @@
     "addedButApprovalsFailed": "Chave de acesso adicionada. Não foi possível habilitar as aprovações — verifique novamente para adicioná-las.",
     "addedSyncedNote": "Registrado para aprovações. Esta é uma credencial sincronizada, então ela não pode confirmar aprovações de nível crítico.",
     "removeSignIn": "Remover login",
-    "revokeApprovals": "Revogar aprovações"
+    "revokeApprovals": "Revogar aprovações",
+    "enableApprovals": "Habilitar aprovações",
+    "approvalsEnabled": "Este dispositivo agora pode aprovar solicitações.",
+    "alreadyRegistered": "Este dispositivo já está registrado para aprovações."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",

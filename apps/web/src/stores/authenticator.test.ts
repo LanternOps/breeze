@@ -13,6 +13,7 @@ vi.mock('@simplewebauthn/browser', () => ({
 }));
 
 import {
+  adoptPasskeyAsApprover,
   getApprovalAssertion,
   listApproverDevices,
   registerApproverDevice,
@@ -344,6 +345,41 @@ describe('registerApproverDevice re-auth mint paths (#2707)', () => {
       registerApproverDevice('x', { method: 'password', password: 'nope' })
     ).rejects.toMatchObject({ status: 401 });
     expect(webauthnMocks.startRegistration).not.toHaveBeenCalled();
+  });
+
+  it('adoptPasskeyAsApprover: fetches step-up options, runs startAuthentication, then POSTs the adopt route', async () => {
+    const credential = { id: 'cred-1', response: { signature: 's' } };
+    webauthnMocks.startAuthentication.mockResolvedValueOnce(credential);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'auth-challenge' } })) // step-up options
+      .mockResolvedValueOnce(makeResponse({ success: true, device: { id: 'ad-1' } }));   // adopt
+    vi.stubGlobal('fetch', fetchMock);
+
+    await adoptPasskeyAsApprover('g-1', 'Laptop');
+
+    expect(fetchMock.mock.calls[0][0]).toContain('/auth/mfa/step-up/options');
+    expect(webauthnMocks.startAuthentication).toHaveBeenCalledWith({
+      optionsJSON: { challenge: 'auth-challenge' },
+    });
+    expect(fetchMock.mock.calls[1][0]).toContain('/authenticator/devices/webauthn/adopt');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'POST', skipUnauthorizedRetry: true });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      registerGrantId: 'g-1',
+      credential,
+      label: 'Laptop',
+    });
+  });
+
+  it('adoptPasskeyAsApprover rejects with the status attached on a 409 (already registered)', async () => {
+    webauthnMocks.startAuthentication.mockResolvedValueOnce({ id: 'cred-1', response: {} });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'c' } }))
+      .mockResolvedValueOnce(makeResponse({ error: 'already_registered' }, false, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adoptPasskeyAsApprover('g-1')).rejects.toMatchObject({ status: 409 });
   });
 
   it('a 2xx with an unparseable body throws a clean RegisterStepError instead of returning null (no downstream null-deref)', async () => {

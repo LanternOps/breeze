@@ -11,6 +11,7 @@ import {
   type StepUpOperation,
 } from '../../stores/auth';
 import {
+  adoptPasskeyAsApprover,
   listApproverDevices,
   registerApproverDevice,
   revokeApproverDevice,
@@ -19,7 +20,7 @@ import {
 } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
-import StepUpPrompt, { pickReauthTier } from './StepUpPrompt';
+import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { mergeSecurityDevices, type PasskeySummary, type SecurityDeviceRow } from './securityDevices';
 
 // registerApproverDevice runs the full WebAuthn registration ceremony (options
@@ -112,6 +113,13 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   const [approverReauthValue, setApproverReauthValue] = useState('');
   const [isRegisteringApprover, setIsRegisteringApprover] = useState(false);
 
+  // --- "Enable approvals" row action (unified-security-devices Task 9) —
+  // adopts an EXISTING sign-in-only passkey as an approver device. Only one
+  // row's inline confirm panel can be open at a time. ---
+  const [enablingApprovalsRowKey, setEnablingApprovalsRowKey] = useState<string | null>(null);
+  const [enableApprovalsReauthValue, setEnableApprovalsReauthValue] = useState('');
+  const [isEnablingApprovals, setIsEnablingApprovals] = useState(false);
+
   const loadPasskeys = useCallback(async () => {
     try {
       setIsLoadingPasskeys(true);
@@ -167,25 +175,69 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   // which flow adds the next credential).
   const approverTier = useMemo(() => pickReauthTier(passkeys.length, mfaMethod), [passkeys.length, mfaMethod]);
 
-  const buildApproverReauth = (): RegisterReauth | null => {
-    if (approverTier === 'passkey') return { method: 'passkey' };
-    if (approverTier === 'totp') return approverReauthValue.length === 6 ? { method: 'totp', code: approverReauthValue } : null;
-    return approverReauthValue.length > 0 ? { method: 'password', password: approverReauthValue } : null;
+  // Shared by both the approvals-only register form and the Task 9
+  // "Enable approvals" row action — same tier, different reauth-value state.
+  const buildReauthFromTier = (tier: ReauthTier, value: string): RegisterReauth | null => {
+    if (tier === 'passkey') return { method: 'passkey' };
+    if (tier === 'totp') return value.length === 6 ? { method: 'totp', code: value } : null;
+    return value.length > 0 ? { method: 'password', password: value } : null;
+  };
+
+  const buildApproverReauth = (): RegisterReauth | null => buildReauthFromTier(approverTier, approverReauthValue);
+
+  // Task 9's "Enable approvals" row action re-auths to prove control of a
+  // factor, then separately runs a webauthn assertion against the SPECIFIC
+  // passkey being adopted (inside adoptPasskeyAsApprover). Excluding that
+  // passkey from the strongest-factor count avoids using the very credential
+  // being adopted as its own re-auth proof when it's the account's only
+  // passkey — falling through to TOTP/password in that case, and to 'passkey'
+  // (a second, independent credential) when the account has others.
+  const enableApprovalsTierFor = (row: SecurityDeviceRow): ReauthTier =>
+    pickReauthTier(passkeys.filter(p => p.id !== row.passkey?.id).length, mfaMethod);
+
+  const buildEnableApprovalsReauth = (row: SecurityDeviceRow): RegisterReauth | null =>
+    buildReauthFromTier(enableApprovalsTierFor(row), enableApprovalsReauthValue);
+
+  // Mint a register_approver_device grant via a fresh password proof (Task 6's
+  // inline password-fallback branch in handleAddPasskey, extracted so Task 9's
+  // "Enable approvals" row action can reuse it instead of duplicating the
+  // fetch). Throws (with `status` attached) on failure; callers that want to
+  // treat `stronger_factor_required` as a degrade-not-fail case (handleAddPasskey)
+  // catch that specific error themselves.
+  const mintApproverGrantViaPassword = async (password: string): Promise<string> => {
+    const grantResponse = await fetchWithAuth('/authenticator/register-grant', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword: password }),
+      // A 401/403 here means the password/state check failed for THIS proof —
+      // replaying it after a token refresh can only fail again.
+      skipUnauthorizedRetry: true,
+    });
+    const grantData = await grantResponse.json().catch(() => ({}));
+    if (!grantResponse.ok) {
+      const message = grantData.error ?? grantData.message ?? t('approverDevicesSection.failedToRegisterThisDevice');
+      throw Object.assign(new Error(message), { status: grantResponse.status });
+    }
+    return grantData.registerGrantId;
   };
 
   // Ported VERBATIM from the deleted ApproverDevicesSection.tsx (branch order
   // and copy are load-bearing — see the inline comments there for why each
-  // status/message combination is distinguished).
-  const mapRegisterError = (err: unknown): string => {
+  // status/message combination is distinguished). `tier` defaults to the
+  // approvals-only register form's tier; Task 9's row action passes its own
+  // per-row tier (see `enableApprovalsTierFor`) since it can differ from it.
+  const mapRegisterError = (err: unknown, tier: ReauthTier = approverTier): string => {
     if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
       return t('approverDevicesSection.registrationCancelled');
     }
     const status = (err as { status?: number })?.status;
+    // Task 9: the adopt route 409s when the passkey's credential is already
+    // registered as an approver device (race with another tab/session).
+    if (status === 409) return t('securityDevicesCard.alreadyRegistered');
     if (status === 401) {
       const isCredentialFailure = err instanceof Error && err.message === 'Invalid credentials';
       if (!isCredentialFailure) return t('approverDevicesSection.sessionExpiredReloadAndTryAgain');
-      if (approverTier === 'totp') return t('approverDevicesSection.incorrectCode');
-      if (approverTier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
+      if (tier === 'totp') return t('approverDevicesSection.incorrectCode');
+      if (tier === 'passkey') return t('approverDevicesSection.passkeyVerificationFailed');
       return t('approverDevicesSection.incorrectPassword');
     }
     if (status === 429) return t('approverDevicesSection.tooManyAttemptsTryAgainInAFewMinutes');
@@ -234,6 +286,54 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
     }
   };
 
+  // Task 9: adopt an existing sign-in-only passkey as an approver device.
+  // Mint the register_approver_device grant with whichever factor the row's
+  // tier calls for (passkey/totp → mintStepUpGrants; password → the shared
+  // helper above), then run adoptPasskeyAsApprover's single adopt ceremony.
+  const handleEnableApprovals = async (row: SecurityDeviceRow) => {
+    if (isEnablingApprovals) return;
+    const tier = enableApprovalsTierFor(row);
+    const reauth = buildReauthFromTier(tier, enableApprovalsReauthValue);
+    if (!reauth) return; // confirm disabled anyway
+    setIsEnablingApprovals(true);
+    try {
+      await runAction({
+        request: async () => {
+          try {
+            let grantId: string;
+            if (reauth.method === 'password') {
+              grantId = await mintApproverGrantViaPassword(reauth.password);
+            } else {
+              const proof: AddFactorStepUp =
+                reauth.method === 'passkey' ? { method: 'passkey' } : { method: 'totp', code: reauth.code };
+              const grants = await mintStepUpGrants(proof, ['register_approver_device']);
+              grantId = grants.register_approver_device!;
+            }
+            await adoptPasskeyAsApprover(grantId, row.name);
+            return OK_RESPONSE;
+          } catch (err) {
+            const status = (err as { status?: number })?.status ?? 500;
+            return { ok: false, status, json: async () => ({ error: mapRegisterError(err, tier) }) } as Response;
+          }
+        },
+        errorFallback: t('approverDevicesSection.failedToRegisterThisDevice'),
+        successMessage: t('securityDevicesCard.approvalsEnabled'),
+        treatUnauthorizedAsError: true,
+      });
+      setEnablingApprovalsRowKey(null);
+      setEnableApprovalsReauthValue('');
+      await loadApprovers();
+    } catch (err) {
+      if (err instanceof ActionError) {
+        if (err.status === 403) setEnableApprovalsReauthValue('');
+        return; // already toasted by runAction
+      }
+      showToast({ type: 'error', message: mapRegisterError(err, tier) });
+    } finally {
+      setIsEnablingApprovals(false);
+    }
+  };
+
   const handleAddPasskey = async () => {
     if (!passkeyPassword || isAddingPasskey) return;
     if (passkeyStepUpTier === 'sms') return;
@@ -269,22 +369,15 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
       } else if (passkeyStepUpTier === 'none' && wantsApprover) {
         // Unprotected account: add_factor bypasses step-up entirely on the
         // server, but the approver grant still needs a fresh password proof.
-        const grantResponse = await fetchWithAuth('/authenticator/register-grant', {
-          method: 'POST',
-          body: JSON.stringify({ currentPassword: passkeyPassword }),
-          // A 401/403 here means the password/state check failed for THIS
-          // proof — replaying it after a token refresh can only fail again.
-          skipUnauthorizedRetry: true,
-        });
-        const grantData = await grantResponse.json().catch(() => ({}));
-        if (grantResponse.ok) {
-          approverRegisterGrantId = grantData.registerGrantId;
-        } else if (grantResponse.status === 403 && grantData?.error === 'stronger_factor_required') {
-          approverGrantDegraded = true;
-        } else {
-          throw new Error(
-            grantData.error ?? grantData.message ?? t('approverDevicesSection.failedToRegisterThisDevice')
-          );
+        try {
+          approverRegisterGrantId = await mintApproverGrantViaPassword(passkeyPassword);
+        } catch (err) {
+          const status = (err as { status?: number })?.status;
+          if (status === 403 && err instanceof Error && err.message === 'stronger_factor_required') {
+            approverGrantDegraded = true;
+          } else {
+            throw err;
+          }
         }
       }
 
@@ -654,10 +747,60 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                                 {t('securityDevicesCard.revokeApprovals')}
                               </button>
                             )}
+                            {row.passkey && !row.approver && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEnablingApprovalsRowKey(prev => (prev === row.key ? null : row.key));
+                                  setEnableApprovalsReauthValue('');
+                                }}
+                                disabled={!!mutatingRowKey || isEnablingApprovals}
+                                data-testid={`secdev-enable-approvals-${row.key}`}
+                                className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {t('securityDevicesCard.enableApprovals')}
+                              </button>
+                            )}
                           </>
                         )}
                       </div>
                     </div>
+                    {enablingApprovalsRowKey === row.key && (
+                      <div
+                        className="mt-3 space-y-3 rounded-md border bg-background p-3"
+                        data-testid={`secdev-enable-approvals-panel-${row.key}`}
+                      >
+                        <StepUpPrompt
+                          tier={enableApprovalsTierFor(row)}
+                          reauthValue={enableApprovalsReauthValue}
+                          onChange={setEnableApprovalsReauthValue}
+                          disabled={isEnablingApprovals}
+                          idPrefix="secdev-adopt"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleEnableApprovals(row)}
+                            disabled={isEnablingApprovals || buildEnableApprovalsReauth(row) === null}
+                            data-testid={`secdev-enable-approvals-confirm-${row.key}`}
+                            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isEnablingApprovals
+                              ? t('approverDevicesSection.registering')
+                              : t('securityDevicesCard.enableApprovals')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEnablingApprovalsRowKey(null)}
+                            disabled={isEnablingApprovals}
+                            data-testid={`secdev-enable-approvals-cancel-${row.key}`}
+                            className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {t('profilePage.cancel')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })

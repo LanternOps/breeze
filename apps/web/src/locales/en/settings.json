@@ -1423,7 +1423,10 @@
     "addedButApprovalsFailed": "Passkey added. Approvals could not be enabled — verify again to add them.",
     "addedSyncedNote": "Registered for approvals. This is a synced credential, so it can't confirm critical-tier approvals.",
     "removeSignIn": "Remove sign-in",
-    "revokeApprovals": "Revoke approvals"
+    "revokeApprovals": "Revoke approvals",
+    "enableApprovals": "Enable approvals",
+    "approvalsEnabled": "This device can now approve requests.",
+    "alreadyRegistered": "This device is already registered for approvals."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
