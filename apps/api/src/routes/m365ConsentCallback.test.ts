@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
+import {
+  buildM365ActionsConsentBindingCookie,
+  buildM365ConsentBindingCookie,
+} from '../services/m365ControlPlane/browserBinding';
 import {
   m365ActionsConsentCallbackRoutes,
   m365ConsentCallbackRoutes,
@@ -816,6 +820,72 @@ describe('M365 consent callback route', () => {
       );
       expect(readLoadAttempt).toHaveBeenCalledOnce();
       expect(readConsumeSession).not.toHaveBeenCalled();
+    });
+
+    describe('cookie-layer rejection with the real (unmocked) binding functions', () => {
+      // Exercises the DEFAULT verifyBindingCookie/clearBindingCookie wiring
+      // (no DI overrides for those), proving the browser-binding cookie
+      // itself — distinct cookie name + HMAC context per profile, per
+      // browserBinding.ts — rejects a cross-profile cookie before any DB
+      // call. This is the layer a real browser's cookie Path scoping backs
+      // up; here we bypass Path (as an attacker forging a header could) and
+      // confirm the signature/name mismatch still holds.
+      const ORIGINAL_KEY = process.env.APP_ENCRYPTION_KEY;
+
+      beforeEach(() => {
+        process.env.APP_ENCRYPTION_KEY = 'test-cross-profile-binding-key';
+      });
+
+      afterEach(() => {
+        if (ORIGINAL_KEY === undefined) delete process.env.APP_ENCRYPTION_KEY;
+        else process.env.APP_ENCRYPTION_KEY = ORIGINAL_KEY;
+      });
+
+      function cookieHeaderOnly(setCookie: string): string {
+        return setCookie.slice(0, setCookie.indexOf(';'));
+      }
+
+      it('rejects a real read-issued binding cookie presented to the actions callback', async () => {
+        const identityBinding = {
+          phase: 'identity_verification' as const,
+          rawState: 'identity-state',
+          connectionId: CONNECTION_ID,
+          consentAttemptId: ATTEMPT_ID,
+          tenantHint: TENANT_ID,
+        };
+        const readCookie = buildM365ConsentBindingCookie(identityBinding);
+
+        const app = new Hono().route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
+        const response = await app.request(
+          '/api/v1/m365/actions-consent/callback?state=identity-state&code=code',
+          { headers: { cookie: cookieHeaderOnly(readCookie) } },
+        );
+
+        expect(response.headers.get('location')).toBe(
+          '/integrations#m365/customer-graph-actions/consent_state_mismatch',
+        );
+      });
+
+      it('rejects a real actions-issued binding cookie presented to the read callback', async () => {
+        const identityBinding = {
+          phase: 'identity_verification' as const,
+          rawState: 'identity-state',
+          connectionId: CONNECTION_ID,
+          consentAttemptId: ATTEMPT_ID,
+          tenantHint: TENANT_ID,
+        };
+        const actionsCookie = buildM365ActionsConsentBindingCookie(identityBinding);
+
+        const app = new Hono().route('/api/v1/m365', m365ConsentCallbackRoutes);
+        const response = await app.request(
+          '/api/v1/m365/consent/callback?state=identity-state&code=code',
+          { headers: { cookie: cookieHeaderOnly(actionsCookie) } },
+        );
+
+        expect(response.headers.get('location')).toBe(
+          '/integrations#m365/customer-graph-read/consent_state_mismatch',
+        );
+      });
     });
   });
 });

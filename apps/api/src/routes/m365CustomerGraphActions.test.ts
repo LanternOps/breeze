@@ -28,6 +28,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
     buildBindingCookie: vi.fn(() => 'binding-cookie=opaque; HttpOnly; SameSite=Lax'),
+    buildActionsBindingCookie: vi.fn(() => 'breeze_m365_graph_actions_consent=opaque; Path=/api/v1/m365/actions-consent/callback; HttpOnly; SameSite=Lax'),
     audit: vi.fn(),
     canAccessOrg: vi.fn(),
     // read-surface mocks, used only by the cross-mount regression suite below —
@@ -104,6 +105,7 @@ vi.mock('../services/m365ControlPlane/runtimeConfig', () => ({
 
 vi.mock('../services/m365ControlPlane/browserBinding', () => ({
   buildM365ConsentBindingCookie: mocks.buildBindingCookie,
+  buildM365ActionsConsentBindingCookie: mocks.buildActionsBindingCookie,
 }));
 
 vi.mock('../services/m365ControlPlane/metrics', () => ({
@@ -212,6 +214,9 @@ beforeEach(() => {
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
+  mocks.buildActionsBindingCookie.mockReturnValue(
+    'breeze_m365_graph_actions_consent=opaque; Path=/api/v1/m365/actions-consent/callback; HttpOnly; SameSite=Lax',
+  );
   mocks.canAccessOrg.mockImplementation(
     (orgId: string) => authRef.current?.accessibleOrgIds === null
       || authRef.current?.accessibleOrgIds.includes(orgId) === true,
@@ -346,11 +351,16 @@ describe('POST /m365/customer-graph-actions/connections/consent', () => {
     const response = await app().request(`/m365/customer-graph-actions/connections/consent?orgId=${ORG_ID}`, { method: 'POST' });
     expect(response.status).toBe(200);
     expect(mocks.initiate).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
-    expect(mocks.buildBindingCookie).toHaveBeenCalledWith({
+    // Must set the cookie via the ACTIONS-profile binding, never the read one —
+    // the two carry distinct cookie names/paths/HMAC contexts (browserBinding.ts).
+    expect(mocks.buildActionsBindingCookie).toHaveBeenCalledWith({
       phase: 'admin_consent', rawState: 'one-time-state', connectionId: CONNECTION_ID,
       consentAttemptId: ATTEMPT_ID, tenantHint: null,
     });
+    expect(mocks.buildBindingCookie).not.toHaveBeenCalled();
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
+    expect(response.headers.get('set-cookie')).toContain('breeze_m365_graph_actions_consent=');
+    expect(response.headers.get('set-cookie')).toContain('Path=/api/v1/m365/actions-consent/callback');
     await expect(response.json()).resolves.toEqual({
       adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?server-built=true',
     });

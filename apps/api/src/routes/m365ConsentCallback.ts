@@ -9,8 +9,11 @@ import { Hono, type Context } from 'hono';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema';
 import {
+  buildClearM365ActionsConsentBindingCookie,
   buildClearM365ConsentBindingCookie,
+  buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
+  inspectM365ActionsConsentBindingCookie,
   inspectM365ConsentBindingCookie,
   type M365ConsentBrowserBinding,
   type M365ConsentBindingPhase,
@@ -307,23 +310,50 @@ function defaultConnectionService(profile: CallbackProfile): CallbackConnectionS
     : { markConsentAttemptFailed, transitionAdminConsentToIdentity, applyIdentityVerificationResult };
 }
 
+/**
+ * Profile-scoped binding functions. Each profile has its own cookie name,
+ * cookie Path, and HMAC context (see browserBinding.ts) — the actions
+ * instance never builds, clears, or verifies the read instance's cookie
+ * and vice versa, so a browser only ever round-trips the correct cookie to
+ * the correct callback path, and a cross-profile replay fails signature
+ * verification even if forged past Path scoping.
+ */
+function defaultBindingFunctions(profile: CallbackProfile): {
+  inspect: typeof inspectM365ConsentBindingCookie;
+  build: typeof buildM365ConsentBindingCookie;
+  buildClear: typeof buildClearM365ConsentBindingCookie;
+} {
+  return profile === 'customer-graph-actions'
+    ? {
+      inspect: inspectM365ActionsConsentBindingCookie,
+      build: buildM365ActionsConsentBindingCookie,
+      buildClear: buildClearM365ActionsConsentBindingCookie,
+    }
+    : {
+      inspect: inspectM365ConsentBindingCookie,
+      build: buildM365ConsentBindingCookie,
+      buildClear: buildClearM365ConsentBindingCookie,
+    };
+}
+
 function buildDefaultDependencies(
   profile: CallbackProfile,
   loadRuntimeConfig: () => CallbackExecutorRuntimeConfig,
   createExecutorClient: (config: CallbackExecutorRuntimeConfig) => CallbackExecutorClient,
   connectionService: CallbackConnectionServiceLike,
 ): CallbackDependencies {
+  const binding = defaultBindingFunctions(profile);
   return {
     profile,
     redirectBase: `/integrations#m365/${profile}`,
     events: CALLBACK_EVENT_NAMES[profile],
     verifyBindingCookie: (header) => {
-      const inspected = inspectM365ConsentBindingCookie(header);
+      const inspected = binding.inspect(header);
       if (inspected.status === 'expired') return 'expired';
       return inspected.status === 'valid' ? inspected.binding : null;
     },
-    buildBindingCookie: (binding) => buildM365ConsentBindingCookie(binding),
-    clearBindingCookie: () => buildClearM365ConsentBindingCookie(),
+    buildBindingCookie: (bound) => binding.build(bound),
+    clearBindingCookie: () => binding.buildClear(),
     loadAttempt: buildLoadAttemptFromBinding(profile),
     consumeSession: consumeConsentSession,
     markAttemptFailed: connectionService.markConsentAttemptFailed,

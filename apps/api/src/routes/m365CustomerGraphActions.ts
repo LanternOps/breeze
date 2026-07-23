@@ -24,7 +24,7 @@ import {
   listCustomerGraphActionsConnections,
   retestCustomerGraphActionsConnection,
 } from '../services/m365ControlPlane/writeActionConnectionService';
-import { buildM365ConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
+import { buildM365ActionsConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
 import { isM365CustomerGraphActionsOnboardingEnabledForOrg } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
   canManagePartnerWidePolicies,
@@ -226,7 +226,7 @@ m365CustomerGraphActionsRoutes.post(
         orgId: resolved.orgId,
         actorId: c.get('auth').user.id,
       });
-      c.header('Set-Cookie', buildM365ConsentBindingCookie({
+      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie({
         phase: 'admin_consent',
         rawState: initiated.rawState,
         connectionId: initiated.connection.id,
