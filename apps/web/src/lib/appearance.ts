@@ -12,7 +12,7 @@ export type FontPreference = (typeof FONT_OPTIONS)[number];
 export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
 export type TimeFormatPreference = TimeFormat;
 
-export const LOCALE_OPTIONS = ['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const;
+export const LOCALE_OPTIONS = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const;
 export type LocalePreference = SupportedLocale;
 
 /**
@@ -200,14 +200,15 @@ export function detectBrowserLocale(): LocalePreference {
     (v): v is string => typeof v === 'string' && v.length > 0
   );
   for (const candidate of candidates) {
-    const match = LOCALE_OPTIONS.find(
-      (option) =>
-        option.toLowerCase() === candidate.toLowerCase() ||
-        option.split('-')[0].toLowerCase() === candidate.split('-')[0].toLowerCase()
+    const exactMatch = LOCALE_OPTIONS.find(
+      (option) => option.toLowerCase() === candidate.toLowerCase()
     );
-    if (match) {
-      return match;
-    }
+    if (exactMatch) return exactMatch;
+
+    const languageMatch = LOCALE_OPTIONS.find(
+      (option) => option.split('-')[0].toLowerCase() === candidate.split('-')[0].toLowerCase()
+    );
+    if (languageMatch) return languageMatch;
   }
   return 'en';
 }

@@ -50,6 +50,8 @@
     "es419Description": "Español (Latinoamérica)",
     "frFRLabel": "Français (France)",
     "frFRDescription": "Francés (Francia)",
+    "frCALabel": "Français (Canada)",
+    "frCADescription": "Francés (Canadá)",
     "deDELabel": "Deutsch (Deutschland)",
     "deDEDescription": "Alemán (Alemania)"
   },

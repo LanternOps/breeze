@@ -1,0 +1,432 @@
+{
+  "aiApprovalDialog": {
+    "idleFor": "inactif {{duration}}",
+    "justNow": "À l’instant",
+    "offlineFor": "hors ligne {{duration}}",
+    "sessionStates": {
+      "active": "Actif",
+      "idle": "Ralenti",
+      "locked": "verrouillé",
+      "away": "Partir",
+      "disconnected": "déconnecté",
+      "unknown": "Inconnu"
+    },
+    "ariaLabel": "Approbation de l’outil requise : {{toolName}}",
+    "title": "Approbation requise",
+    "pendingApproverTitle": "En attente d’un approbateur",
+    "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Breeze.",
+    "timeRemaining": "{{minutes}} minutes {{seconds}} secondes restantes",
+    "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
+    "progressLabel": "Temps restant avant l’auto-rejet",
+    "showParameters": "Paramètres de présentation",
+    "approve": "Approuver",
+    "reject": "Rejeter"
+  },
+  "aiChatInput": {
+    "waiting": "En attente de réponse...",
+    "placeholder": "Demandez à propos de vos appareils...",
+    "stopResponse": "Arrêter la réponse",
+    "thinking": "L’IA réfléchit... Cliquez sur arrêter pour annuler",
+    "sendShortcut": "Cmd+Entrée pour envoyer"
+  },
+  "aiChatMessages": {
+    "title": "Breeze AI Assistant",
+    "description": "Demandez des informations sur vos appareils, alertes, indicateurs ou dépannez les problèmes.",
+    "unknownTool": "Outil inconnu",
+    "toolResult": "Résultat de l’outil",
+    "pauseAi": "Pause IA",
+    "quickActions": {
+      "serverHealth": {
+        "label": "Vérifier l’état du serveur",
+        "prompt": "Vérifiez l’état de santé de tous les serveurs Windows — affichez CPU, RAM, l’utilisation du disque et toutes alertes"
+      },
+      "criticalAlerts": {
+        "label": "Afficher des alertes critiques",
+        "prompt": "Listez toutes les alertes critiques et de gravité élevée des dernières 24 heures avec les détails de l’appareil"
+      },
+      "offlineDevices": {
+        "label": "Trouver des appareils hors ligne",
+        "prompt": "Montrez-moi tous les appareils actuellement hors ligne et quand ils ont été vus pour la dernière fois"
+      },
+      "securityOverview": {
+        "label": "Aperçu de la sécurité",
+        "prompt": "Donnez-moi un aperçu de la sécurité — toutes menaces actives, scans récents, ou appareils nécessitant une attention"
+      },
+      "diskSpace": {
+        "label": "Rapport d’espace disque",
+        "prompt": "Quels appareils manquent d’espace disque ? Afficher les appareils avec plus de 80 % d’utilisation disque"
+      },
+      "recentActivity": {
+        "label": "Activité récente",
+        "prompt": "Montrez-moi les dernières entrées du journal d’audit — quelles actions ont été entreprises ces dernières heures ?"
+      }
+    }
+  },
+  "aiChatSidebar": {
+    "history": "Histoire",
+    "title": "Breeze AI",
+    "conversationHistory": "Historique des conversations",
+    "newConversation": "Nouvelle conversation",
+    "unflagConversation": "Retirer le signalement de la conversation",
+    "flagConversation": "Signaler la conversation pour examen",
+    "closeShortcut": "Fermeture (Cmd+Shift+A)",
+    "searchPlaceholder": "Rechercher des conversations...",
+    "noResults": "Aucun résultat trouvé",
+    "untitledConversation": "Conversation sans titre",
+    "noConversations": "Pas encore de conversations",
+    "m365Customer": "Client M365",
+    "noM365Customer": "Aucun client M365",
+    "dismiss": "Fermer"
+  },
+  "aiContextBadge": {
+    "context": "Contexte",
+    "dashboard": "Tableau de bord"
+  },
+  "aiCostIndicator": {
+    "messageCount": "{{count}} MSGS",
+    "messageCount_one": "{{count}} msg",
+    "messageCount_other": "{{count}} MSGS"
+  },
+  "aiPlanProgressBar": {
+    "completed": "Plan terminé ({{completed}}/{{total}})",
+    "aborted": "Plan abandonné à l’étape {{step}}",
+    "executing": "Exécution : Étape {{step}} de {{total}}",
+    "stop": "Arrêter",
+    "stepTitle": "Étape {{step}} : {{name}}"
+  },
+  "aiPlanReviewCard": {
+    "title": "Plan d’action",
+    "stepCount": "{{count}} marches",
+    "stepCount_one": "{{count}} pas",
+    "stepCount_other": "{{count}} marches",
+    "approveAll": "Approuver tout",
+    "reject": "Rejeter"
+  },
+  "aiToolCallCard": {
+    "running": "En cours…",
+    "input": "Entrée :",
+    "error": "Erreur :",
+    "output": "Sortie :"
+  },
+  "aiForOfficePage": {
+    "title": "IA pour Office",
+    "description": "Assistant IA gouverné dans Excel de vos clients — provisionnement, politiques, audit, utilisation et modèles",
+    "tabs": {
+      "orgs": "Organisations",
+      "sessions": "Sessions",
+      "usage": "Utilisation",
+      "templates": "Modèles"
+    }
+  },
+  "orgsTab": {
+    "status": {
+      "active": "Active",
+      "consentPending": "Consentement en attente",
+      "notProvisioned": "Non provisionné"
+    },
+    "errors": {
+      "removeMapping": "Impossible de supprimer l’association du locataire",
+      "loadStatus": "Impossible de charger le statut d’organisation.",
+      "saveMapping": "Impossible d’enregistrer l’association du locataire",
+      "copyConsent": "Impossible de copier — sélectionnez manuellement l’URL",
+      "enableAi": "Impossible d’activer l’IA pour Office",
+      "loadConsent": "Impossible de charger l’URL de consentement. Fermer et réessayer."
+    },
+    "messages": {
+      "mappingRemoved": "Cartographie des locataires supprimée pour {{orgName}}",
+      "mappingSaved": "Cartographie des locataires enregistrée",
+      "consentCopied": "Consentement URL copié",
+      "aiEnabled": "AI for Office activé pour {{orgName}}"
+    },
+    "notEnabled": {
+      "title": "Breeze AI for Office n’est pas activé sur cette instance.",
+      "description": "Définissez <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (l’inscription de l’application complémentaire Entra) dans l’API, puis rechargez."
+    },
+    "title": "Organisations clientes",
+    "description": "Provisionnez l’assistant IA Excel par organisation cliente : associez le locataire Entra, accordez le consentement administrateur, activez la politique et déployez le complément.",
+    "columns": {
+      "aiEnabled": "IA activée",
+      "entraTenant": "Entrée locataire",
+      "costMtd": "Coût (MTD)",
+      "messagesMtd": "Messages (mois en cours)"
+    },
+    "manage": "Gérer",
+    "setUp": "Mise en place",
+    "policy": "Politique",
+    "unmap": "Dissocier",
+    "noOrganizations": "Aucune organisation",
+    "removeMapping": {
+      "title": "Supprimer l’association du locataire",
+      "message": "Les utilisateurs du locataire Entra de {{orgName}} ne pourront plus ouvrir une session dans l’assistant Excel. La politique de l’organisation et l’historique d’utilisation sont conservés.",
+      "confirm": "Supprimer l’association"
+    },
+    "wizard": {
+      "steps": {
+        "tenant": "Locataire",
+        "consent": "Consentement",
+        "enable": "Activer",
+        "deploy": "Déployer"
+      },
+      "title": "Configurez l’IA pour Office — {{orgName}}",
+      "mapDescription": "Associez cette organisation à son locataire Microsoft Entra (ID d’annuaire). Cette association est essentielle à l’isolation des locataires : chaque ouverture de session Excel provenant de ce locataire est rattachée à cette organisation.",
+      "prefilled": " Prérempli depuis la connexion existante Microsoft 365 de l’org.",
+      "entraTenantId": "ID du locataire Entra",
+      "guidError": "Ce champ doit contenir un GUID (Centre d’administration Microsoft Entra → Vue d’ensemble → ID du locataire).",
+      "saveContinue": "Enregistrer et continuer",
+      "consentDescription": "Un administrateur Microsoft 365 du locataire client doit accorder son consentement administrateur à l’application Breeze AI for Office. Envoyez-leur ce lien (ou ouvrez-le vous-même si vous détenez l’option Administrateur Global dans le locataire client) :",
+      "loadingConsent": "Chargement du consentement URL...",
+      "copyUrl": "Copier l’URL",
+      "openNewTab": "Ouvrir dans un nouvel onglet",
+      "afterConsent": "Après avoir accordé, Microsoft redirige vers une page de confirmation Breeze. Le consentement apparaît comme accordé ici une fois que le premier utilisateur se connecte depuis Excel — il n’y a pas de sondage en direct contre Microsoft (décision Plan-4 1).",
+      "consentGranted": "J’ai donné mon consentement",
+      "enableDescription": "Activez l’assistant pour cette organisation. Cela inscrit <code>enabled: true</code> dans la politique de l’organisation avec des valeurs par défaut sûres (tous les utilisateurs, accès en lecture/écriture avec approbation de l’utilisateur final et masquage DLP des données financières et d’identification). Ajustez ensuite tous les paramètres dans l’éditeur de politiques.",
+      "enabling": "Facilitant...",
+      "alreadyEnabled": "Déjà activé — continuer",
+      "enableAi": "Activer l’IA pour Office",
+      "deployTitle": "Déploie l’extension Excel via un déploiement centralisé Microsoft 365",
+      "deploySteps": {
+        "signIn": "Ouvrez une session dans le <strong>Centre d’administration Microsoft 365</strong> du locataire client → Paramètres → Applications intégrées.",
+        "upload": "Choisissez <strong>Téléverser des applications personnalisées</strong> → Complément Office, puis indiquez l’URL du manifeste Breeze AI for Office de votre instance Breeze.",
+        "assign": "Attribuez le module complémentaire à tous ou aux groupes d’utilisateurs couverts par la politique d’accès de cette organisation.",
+        "wait": "Le déploiement peut prendre jusqu’à 24 heures pour apparaître dans le ruban Excel des utilisateurs (modules complémentaires → maison).",
+        "signInAutomatically": "Les utilisateurs se connectent automatiquement avec leur compte professionnel Microsoft — sans identifiants supplémentaires."
+      },
+      "openPolicyEditor": "Rédacteur en chef politique d’Open"
+    }
+  },
+  "policyEditor": {
+    "errors": {
+      "ruleNameRequired": "Chaque règle DLP personnalisée a besoin d’un nom",
+      "invalidPattern": "La règle DLP « {{ruleName}} » a un motif invalide — corrigez-le avant d’enregistrer",
+      "save": "Impossible d’enregistrer la stratégie",
+      "load": "Impossible de charger la politique de l’organisation."
+    },
+    "messages": {
+      "saved": "Stratégie enregistrée"
+    },
+    "organizations": "Organisations",
+    "title": "Politique de l’organisation",
+    "description": "Tout ce que l’assistant Excel de cette organisation cliente est autorisé à faire.",
+    "sections": {
+      "general": "Généralités",
+      "userAccess": "Accès utilisateur",
+      "budgets": "Budgets et limites tarifaires",
+      "branding": "Image de marque",
+      "dlp": "Prévention de la perte de données"
+    },
+    "assistant": "Assistant",
+    "workbookAccess": "Accès à un cahier d’exercices",
+    "workbookAccessOptions": {
+      "readWrite": "Lire et écrire (écriture sous contrôle d’approbation par l’utilisateur final)",
+      "readOnly": "Lecture seule (outils d’écriture retirés du modèle)"
+    },
+    "workbookWrites": "Écrit dans le cahier d’exercices",
+    "writeOptions": {
+      "ask": "Demandez à chaque fois (l’utilisateur final approuve chaque écriture)",
+      "allowAuto": "Autoriser l’application automatique (l’utilisateur final peut choisir en automatique)"
+    },
+    "autoApplyHint": "L’application automatique est désactivée par défaut et n’est possible que lorsqu’elle est autorisée ici.",
+    "allowedModels": "Modèles autorisés",
+    "allModelsHint": "Pas de sélection = tous les modèles disponibles.",
+    "whoCanUse": "Qui peut utiliser l’assistant",
+    "userAccessOptions": {
+      "all": "Tous les utilisateurs du locataire associé",
+      "selected": "Seuls certains utilisateurs sélectionnés"
+    },
+    "noUsersHint": "Aucun utilisateur n’a encore ouvert une session à partir d’Excel — les utilisateurs apparaissent ici après leur première ouverture de session. D’ici là, laissez l’accès à « Tous les utilisateurs ».",
+    "dailyBudget": "Budget quotidien ($)",
+    "monthlyBudget": "Budget mensuel ($)",
+    "noLimit": "Aucune limite",
+    "messagesPerMinute": "Messages/min par utilisateur",
+    "messagesPerHour": "Messages/heure par organisation",
+    "retentionDays": "Conservation des relevés de notes (jours)",
+    "keepForever": "Garde pour toujours",
+    "brandingDescription": "Illustré dans le pied de page : « Gouverné par votre fournisseur informatique » — le crochet en marque blanche (spec §11).",
+    "displayName": "Nom d’affichage",
+    "mspNamePlaceholder": "Votre nom MSP",
+    "logoUrl": "URL du logo",
+    "dlpDescription": "Chaque charge utile quittant Breeze pour le modèle est balayée (spécification §6). Les valeurs expurgées sont stockées en version expurgée — la trace d’audit ne conserve jamais le formulaire sensible.",
+    "builtins": {
+      "creditCard": "Numéros de carte de crédit (validés par Luhn)",
+      "ssn": "Numéro de sécurité sociale / cartes d’identité nationales",
+      "iban": "Numéros de compte IBAN",
+      "apiKey": "API clés & jetons",
+      "email": "Adresses courriel",
+      "phone": "Numéros de téléphone"
+    },
+    "actions": {
+      "redact": "Expurger",
+      "block": "Bloquer la requête",
+      "log": "Journaliser uniquement",
+      "off": "Désactivé"
+    },
+    "customRules": "Règles personnalisées",
+    "addRule": "Ajouter une règle",
+    "testSample": "Échantillon de test (coller des données représentatives de cellules — évaluées localement, jamais envoyées nulle part)",
+    "ruleName": "Nom de la règle",
+    "regexPlaceholder": "Expression régulière, par exemple PRJ-\\d{4}",
+    "removeRule": "Supprimer la règle",
+    "matchCount": "{{count}} correspondance dans l’échantillon",
+    "matchCount_one": "{{count}} correspondance dans l’échantillon",
+    "matchCount_other": "{{count}} correspondance dans l’échantillon",
+    "patternCompiles": "Le motif est valide — ajoutez un échantillon de test ci-dessus pour afficher les correspondances",
+    "patternError": "Erreur de motif : {{error}}",
+    "savePolicy": "Enregistrer la stratégie"
+  },
+  "sessionsTab": {
+    "toolStatus": {
+      "pending": "En attente",
+      "approved": "Approuvé",
+      "rejected": "Rejeté",
+      "completed": "Achevé",
+      "failed": "Échec"
+    },
+    "errors": {
+      "flag": "Impossible de signaler la session",
+      "unflag": "Impossible de retirer le signalement de la session",
+      "load": "Impossible de charger les sessions.",
+      "loadTranscript": "Impossible de charger la transcription de la session."
+    },
+    "messages": {
+      "flagged": "Session signalée",
+      "unflagged": "Signalement de la session retiré"
+    },
+    "allOrganizations": "Toutes les organisations",
+    "allUsers": "Tous les utilisateurs",
+    "from": "De",
+    "to": "À",
+    "flaggedOnly": "Uniquement les sessions signalées",
+    "columns": {
+      "started": "Démarré",
+      "title": "Titre",
+      "turns": "Virages",
+      "cost": "Coût",
+      "flagged": "Signalée"
+    },
+    "untitled": "Sans titre",
+    "flagged": "Signalée",
+    "empty": "Aucune session d’IA client ne correspond aux filtres",
+    "pagination": "{{from}}–{{to}} de {{total}}",
+    "prev": "Précédent",
+    "transcriptTitle": "Transcription de la session",
+    "untitledSession": "Session sans titre",
+    "flagReason": "Motif du signalement : {{reason}}",
+    "unflag": "Retirer le signalement",
+    "flag": "Signaler",
+    "redacted": "Censuré : {{type}} ×{{count}}",
+    "noMessages": "Aucun message enregistré pour cette session.",
+    "approvalTrail": "Parcours d’approbation des outils",
+    "tokenCounts": "{{input}} dedans / {{output}} dehors",
+    "requestedAt": "demandé {{time}}",
+    "approvedAt": "approuvé {{time}}",
+    "rejectedAt": "rejeté {{time}}",
+    "appliedAt": "appliqué {{time}}",
+    "flagDialog": {
+      "title": "Signaler la session",
+      "description": "Le signalement marque la session pour le suivi et est enregistré dans le journal d’audit.",
+      "reason": "Raison (optionnelle)",
+      "flagging": "Signalement…"
+    },
+    "unflagDialog": {
+      "title": "Retirer le signalement de la session",
+      "message": "Retirer le signalement de cette session ? L’historique des signalements et de leurs retraits reste dans le journal d’audit."
+    }
+  },
+  "templatesTab": {
+    "allApps": "Toutes les applications",
+    "allOrgs": "À l’échelle du partenaire",
+    "org": "Organisation",
+    "errors": {
+      "delete": "Impossible de supprimer le modèle",
+      "load": "Impossible de charger les modèles.",
+      "update": "Impossible de mettre à jour le modèle",
+      "create": "Impossible de créer un modèle"
+    },
+    "messages": {
+      "deleted": "Modèle « {{name}} » supprimé",
+      "updated": "Modèle mis à jour",
+      "created": "Modèle créé"
+    },
+    "title": "Modèles de prompts",
+    "description": "Affiché dans le sélecteur de chat vide de l’add-in. Les modèles « Toutes les organisations » atteignent toutes les organisations clientes ; Les modèles d’organisation ne sont qu’à eux.",
+    "newTemplate": "Nouveau modèle",
+    "columns": {
+      "scope": "Portée",
+      "apps": "Applications",
+      "category": "Catégorie",
+      "updated": "Mise à jour"
+    },
+    "empty": "Pas encore de modèles — créez le premier",
+    "deleteDialog": {
+      "title": "Supprimer le modèle",
+      "message": "Supprimer « {{name}} » ? Il disparaît immédiatement du sélecteur de modèles de l’add-in."
+    },
+    "editTemplate": "Modifier le modèle",
+    "categoryPlaceholder": "Par exemple, la finance",
+    "promptBody": "Corps du prompt",
+    "partnerWide": "Toutes les organisations (à l’échelle des partenaires)",
+    "scopeImmutable": "Le scope ne peut pas changer après création — supprimez et recréez pour le déplacer.",
+    "appsHint": "Laissez tout non coché pour afficher ce modèle dans chaque application.",
+    "saveChanges": "Enregistrer les modifications",
+    "createTemplate": "Créer un modèle"
+  },
+  "usageTab": {
+    "errors": {
+      "export": "Échec de l’exportation",
+      "load": "Impossible de charger le rapport d’utilisation."
+    },
+    "fromMonth": "Depuis le mois",
+    "toMonth": "Au mois",
+    "allOrganizations": "Toutes les organisations",
+    "exporting": "Exporter...",
+    "exportCsv": "Exporter au format CSV",
+    "rangeError": "Du mois doit être ≤ par mois",
+    "columns": {
+      "orgUser": "Organisation / utilisateur",
+      "month": "Mois",
+      "messages": "Messages",
+      "sessions": "Sessions",
+      "tokens": "Jetons (entrée/sortie)",
+      "cost": "Coût"
+    },
+    "rowCount": "{{count}} rangées",
+    "rowCount_one": "{{count}} rangée",
+    "rowCount_other": "{{count}} rangées",
+    "empty": "Aucune utilisation enregistrée dans cette plage",
+    "total": "Total"
+  },
+  "workspaceChatPanel": {
+    "errors": {
+      "autoDraft": "Je ne pouvais pas faire de draft automatique à partir de cette conversation — vous pouvez remplir le ticket manuellement.",
+      "createTicket": "Impossible de créer le ticket."
+    },
+    "createTicket": "Créer un ticket",
+    "dismiss": "Fermer"
+  },
+  "workspaceEmptyState": {
+    "title": "Espace de travail IA",
+    "description": "Faites plusieurs conversations IA simultanément. Enquêtez sur un problème de périphérique dans un onglet tout en configurant une politique dans un autre.",
+    "newConversation": "Nouvelle conversation",
+    "limit": "Jusqu’à 5 conversations simultanées"
+  },
+  "workspaceTab": {
+    "approvalPending": "Approbation en attente"
+  },
+  "workspaceTabBar": {
+    "newTabShortcut": "Nouvel onglet (Cmd+Shift+N)",
+    "new": "Nouveau"
+  },
+  "createTicketFromChatModal": {
+    "title": "Créer un ticket à partir de la conversation",
+    "subject": "Sujet",
+    "problem": "Problème",
+    "open": "Ouvrir",
+    "resolved": "Résolu",
+    "resolution": "Résolution",
+    "resolutionRequired": "Une note de résolution est nécessaire pour résoudre le processus.",
+    "timeMinutes": "Temps (min)",
+    "timeMinutesAria": "Temps (minutes)",
+    "billable": "Facturable",
+    "createTicket": "Créer un ticket"
+  }
+}
