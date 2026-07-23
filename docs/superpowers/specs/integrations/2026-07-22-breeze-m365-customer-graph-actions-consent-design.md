@@ -281,9 +281,21 @@ execution, and confirm the one-time reveal.
 
 ## 16. Deploy plumbing and rollout
 
-- **Executor compose service block** (deferred by #2628): add the `m365-graph-actions-executor`
-  service to the deploy compose alongside the read executor — private-bind, port 3004, AKV
-  secret `m365-customer-graph-actions`, signing JWK, audience `m365-graph-actions-executor`.
+- **Executor deployment = standalone, NOT the generic compose stack** (decision, revised from
+  the original "add a compose service block" plan). Implementation surfaced that the shipped
+  **read** executor is *not* in the repo's generic `docker-compose.yml` either — it is deployed
+  standalone per its own runbook, and the compose files carry a comment that the credential-bearing
+  executors are intentionally excluded from the generic stack. Adding the actions executor to the
+  generic compose would (a) diverge from the read executor's model and (b) place a credential-bearing
+  service into the generic stack while it still lacks CI build / Trivy / digest-pinning coverage —
+  strictly worse. So the actions executor deploys standalone (private-bind, port 3004, AKV secret
+  `m365-customer-graph-actions`, signing JWK, audience `m365-graph-actions-executor`), documented in
+  its deploy runbook — mirroring the read executor. What the generic compose DOES need, and now has,
+  is the **API-side** env threaded through the `api` service `environment:` block on both compose
+  files (`APP_ENCRYPTION_KEY_ID`, `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED`/`_ORG_IDS`) —
+  previously present in `.env.example` but unmapped, which would have made the feature un-enable-able.
+  Follow-up (out of scope here): give the actions executor the same CI/release/hardening coverage the
+  read executor has.
 - **Runbook** `docs/deploy/m365-customer-graph-actions-executor.md` (companion to the read
   deploy runbook) documenting the required droplet env vars, explicitly including
   `APP_ENCRYPTION_KEY_ID` / `APP_ENCRYPTION_KEY` mapped through both `/opt/breeze/.env` and the
