@@ -136,6 +136,28 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
     });
   });
 
+  // #2609: every form control must have an associated <label> so screen readers
+  // announce a name and getByLabel(...) queries (testing-library / Playwright)
+  // resolve it.
+  it('associates labels with their inputs (a11y, #2609)', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} />);
+
+    // Text/number inputs in the identity + enforcement zones.
+    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Rollout order')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+    expect(screen.getByLabelText('Deadline (days)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Reboot grace (hours)')).toBeInTheDocument();
+
+    // The default-rule "Hold after release" input only exists once auto-approve
+    // is enabled; enabling it also reveals the severities group label.
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    expect(screen.getByLabelText('Hold after release')).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', { name: 'Auto-approve severities' })
+    ).toBeInTheDocument();
+  });
+
   it('submits deadlineDays as null when left blank', async () => {
     const onSubmit = vi.fn();
     render(<UpdateRingForm onSubmit={onSubmit} />);

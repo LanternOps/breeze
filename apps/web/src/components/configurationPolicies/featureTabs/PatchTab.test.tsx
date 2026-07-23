@@ -105,6 +105,19 @@ describe('PatchTab', () => {
     expect(screen.getByText('Application Rules')).toBeInTheDocument();
   });
 
+  // #2609: schedule fields rendered <label> with no htmlFor/id association, so
+  // screen readers announced an unnamed control and getByLabel(...) failed.
+  it('associates the schedule labels with their inputs (a11y, #2609)', async () => {
+    render(<PatchTab {...baseProps} />);
+    await screen.findByText('Installation Schedule');
+
+    expect(screen.getByLabelText('Frequency')).toBeInTheDocument();
+    expect(screen.getByLabelText('Time')).toBeInTheDocument();
+
+    // Weekly is the default frequency, so the Day of week select is present.
+    expect(screen.getByLabelText('Day of week')).toBeInTheDocument();
+  });
+
   it('links the policy to the selected ring on save', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

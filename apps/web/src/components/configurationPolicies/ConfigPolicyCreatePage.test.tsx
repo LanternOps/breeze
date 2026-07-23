@@ -179,6 +179,15 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
     ).toBeInTheDocument();
   });
 
+  // #2609: the Policy Details fields rendered <label> with no htmlFor/id link,
+  // so screen readers announced unnamed inputs and getByLabel(...) failed.
+  it('associates the policy-detail labels with their inputs (a11y, #2609)', () => {
+    startNewPolicy();
+    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+    expect(screen.getByLabelText('Status')).toBeInTheDocument();
+  });
+
   it('hides the owner picker for an org-scope creator and POSTs orgId only', async () => {
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-9' });
     orgState.current = { currentOrgId: 'org-9', allOrgs: false, organizations: [] };
