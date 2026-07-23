@@ -111,7 +111,9 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
     await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
 
     expect(upsertFilesystemScanState).toHaveBeenCalledTimes(1);
-    const [dev, org, updates] = vi.mocked(upsertFilesystemScanState).mock.calls[0];
+    const call = vi.mocked(upsertFilesystemScanState).mock.calls[0];
+    expect(call).toBeDefined();
+    const [dev, org, updates] = call!;
     expect(dev).toBe(DEVICE_ID);
     expect(org).toBe(ORG_ID); // threaded, not re-queried
     expect(updates.lastBaselineCompletedAt).toBeInstanceOf(Date);
@@ -126,7 +128,9 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
 
     await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
 
-    const [, , updates] = vi.mocked(upsertFilesystemScanState).mock.calls[0];
+    const call = vi.mocked(upsertFilesystemScanState).mock.calls[0];
+    expect(call).toBeDefined();
+    const updates = call![2];
     expect(updates.lastBaselineCompletedAt).toBeNull();
     expect(updates.aggregate).not.toEqual({}); // aggregate retained for resume
   });
