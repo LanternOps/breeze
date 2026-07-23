@@ -21,6 +21,11 @@ export default defineConfig({
       // Co-located real-DB integration test for the contract renewal sweep
       // service. Follows the same pattern as the inboundEmail test above.
       'src/services/contractRenewal.integration.test.ts',
+      // Co-located real-DB integration test for the platform-admin bootstrap
+      // (#2655): the mocked unit suite executes no SQL, so it never caught the
+      // prod-bundle `= ANY(::text[])` array-literal failure. This drives the
+      // real promotion UPDATE against Postgres under system-scoped RLS.
+      'src/services/platformAdminBootstrap.integration.test.ts',
       // Worker-level integration test: renewal pre-pass runs before billing sweep
       // so an at-boundary auto-renew contract bills instead of expiring.
       'src/jobs/contractWorker.renewal.integration.test.ts',
