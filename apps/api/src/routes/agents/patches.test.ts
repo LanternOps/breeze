@@ -713,6 +713,80 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
   });
 });
 
+describe('PUT /agents/:id/patches/installed - pending rows survive installed inventory', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeviceLookup('windows');
+  });
+
+  function mockTxCapturingDevicePatchUpserts() {
+    const devicePatchUpserts: Array<{ values: Record<string, unknown>; set: Record<string, unknown> }> = [];
+    const tx = {
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+      insert: vi.fn((table) => ({
+        values: vi.fn((values) => ({
+          onConflictDoUpdate: vi.fn(({ set }) => {
+            if (table === patches) {
+              return { returning: vi.fn().mockResolvedValue([{ id: PATCH_ID, ...values }]) };
+            }
+            devicePatchUpserts.push({ values, set });
+            return { returning: vi.fn().mockResolvedValue([]) };
+          }),
+        })),
+      })),
+    };
+    return { tx, devicePatchUpserts };
+  }
+
+  it('conflict update keeps a pending row pending instead of flipping it to installed', async () => {
+    // winget reports a pending upgrade and the installed package under the same
+    // (source, externalId): `winget list` includes every package that
+    // `winget upgrade` just reported. The installed upsert must not downgrade
+    // the pending row the pending submit wrote ~200ms earlier.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        installed: [
+          {
+            name: 'Git',
+            source: 'third_party',
+            externalId: 'Git.Git',
+            packageId: 'Git.Git',
+            version: '2.51.0.2',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(devicePatchUpserts).toHaveLength(1);
+
+    const { values, set } = devicePatchUpserts[0]!;
+    // New rows (no conflict) are plainly installed.
+    expect(values.status).toBe('installed');
+    // The conflict update must be status-preserving for pending rows: a CASE
+    // expression referencing the existing row's status, not the bare literal.
+    expect(set.status).not.toBe('installed');
+    const statusSql = JSON.stringify(set.status);
+    expect(statusSql).toContain('pending');
+    expect(statusSql).toContain('installed');
+    expect((set.status as { values: unknown[] }).values).toContain(tables.devicePatches.status);
+    // installedAt is likewise preserved for pending rows.
+    expect((set.installedAt as { values: unknown[] }).values).toContain(tables.devicePatches.installedAt);
+    // installedVersion still updates — it reports the currently-installed
+    // version whether or not an upgrade is pending.
+    expect(set.installedVersion).toBe('2.51.0.2');
+  });
+});
+
 const patchIngestEndpoints = [
   {
     label: 'legacy combined patch ingest',

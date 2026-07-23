@@ -1,6 +1,8 @@
 package patching
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +44,51 @@ Firefox  Mozilla.Firefox   128.0     129.0       winget
 	}
 	if patches[0].ID != "Mozilla.Firefox" {
 		t.Errorf("ID = %q, want %q", patches[0].ID, "Mozilla.Firefox")
+	}
+}
+
+func TestWingetListParseWithAvailableColumn(t *testing.T) {
+	// When any package has an upgrade, `winget list` grows an Available column;
+	// the Version cell must stop there instead of swallowing it (a row used to
+	// parse as Version "2.51.0.2   2.55.0.3").
+	row := func(name, id, version, available, source string) string {
+		return fmt.Sprintf("%-11s%-14s%-11s%-12s%s", name, id, version, available, source)
+	}
+	output := row("Name", "Id", "Version", "Available", "Source") + "\n" +
+		strings.Repeat("-", 55) + "\n" +
+		row("Git", "Git.Git", "2.51.0.2", "2.55.0.3", "winget") + "\n" +
+		row("7-Zip", "7zip.7zip", "26.00", "26.02", "winget") + "\n" +
+		row("Paint", "Corel.Paint", "1.2.3", "", "winget") + "\n"
+
+	installed := parseWingetListOutput(output)
+	if len(installed) != 3 {
+		t.Fatalf("expected 3 installed, got %d: %+v", len(installed), installed)
+	}
+	want := map[string]string{
+		"Git.Git":     "2.51.0.2",
+		"7zip.7zip":   "26.00",
+		"Corel.Paint": "1.2.3",
+	}
+	for _, p := range installed {
+		if p.Version != want[p.ID] {
+			t.Errorf("%s: Version = %q, want %q", p.ID, p.Version, want[p.ID])
+		}
+	}
+}
+
+func TestWingetListParseWithoutAvailableColumn(t *testing.T) {
+	row := func(name, id, version, source string) string {
+		return fmt.Sprintf("%-11s%-14s%-11s%s", name, id, version, source)
+	}
+	output := row("Name", "Id", "Version", "Source") + "\n" +
+		strings.Repeat("-", 45) + "\n" +
+		row("Git", "Git.Git", "2.51.0.2", "winget") + "\n"
+
+	installed := parseWingetListOutput(output)
+	if len(installed) != 1 {
+		t.Fatalf("expected 1 installed, got %d: %+v", len(installed), installed)
+	}
+	if installed[0].Version != "2.51.0.2" {
+		t.Errorf("Version = %q, want %q", installed[0].Version, "2.51.0.2")
 	}
 }

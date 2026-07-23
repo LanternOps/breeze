@@ -236,6 +236,14 @@ async function upsertInstalledPatches(
     }
 
     const installedAt = parseDate(patchData.installedAt);
+    // Installed inventory must not downgrade an actionable 'pending' row.
+    // Package managers report a pending upgrade and the installed package under
+    // the SAME (source, externalId) — e.g. `winget list` includes every package
+    // that `winget upgrade` just reported — so an unconditional flip erased all
+    // pending third-party rows moments after the pending submit wrote them.
+    // installedVersion still updates: it's the currently-installed version
+    // either way. A row whose upgrade completed self-heals on the next scan
+    // (pending sweep → 'missing' → this upsert → 'installed').
     await executor
       .insert(devicePatches)
       .values({
@@ -250,8 +258,8 @@ async function upsertInstalledPatches(
       .onConflictDoUpdate({
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
-          status: 'installed',
-          installedAt: installedAt,
+          status: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
+          installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAt} END`,
           installedVersion: patchData.version || null,
           lastCheckedAt: new Date(),
           updatedAt: new Date()
