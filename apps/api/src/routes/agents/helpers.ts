@@ -1549,6 +1549,11 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
+    // A completed scan whose stdout is empty or non-JSON produces no snapshot,
+    // which surfaces to the user as an empty Disk Cleanup tab with no error.
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}) completed with unparseable/empty stdout (len=${resultData.stdout?.length ?? 0}); no snapshot written`
+    );
     return;
   }
 
@@ -1558,6 +1563,9 @@ export async function handleFilesystemAnalysisCommandResult(
     .where(eq(devices.id, command.deviceId))
     .limit(1);
   if (!device) {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id}: device ${command.deviceId} not found; no snapshot written`
+    );
     return;
   }
 

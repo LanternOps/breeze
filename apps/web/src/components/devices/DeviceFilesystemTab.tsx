@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HardDrive,
   RefreshCw,
@@ -277,6 +277,10 @@ export default function DeviceFilesystemTab({
   const [snapshot, setSnapshot] = useState<FilesystemSnapshot | null>(null);
   const [cleanupPreview, setCleanupPreview] =
     useState<FilesystemCleanupPreview | null>(null);
+  // The cleanup-preview result renders at the bottom of a long page. Without
+  // this, clicking "Cleanup Preview" succeeds silently below the fold and reads
+  // as "nothing happened". Scroll the freshly-rendered panel into view.
+  const cleanupPreviewRef = useRef<HTMLDivElement | null>(null);
   const [thresholdEvents, setThresholdEvents] = useState<ThresholdEvent[]>([]);
   const [scanCommand, setScanCommand] = useState<{
     id: string;
@@ -485,6 +489,17 @@ export default function DeviceFilesystemTab({
       setActionLoading(null);
     }
   }, [deviceId]);
+
+  // Bring the preview panel into view once it renders. Optional-chain the
+  // method so jsdom (no scrollIntoView impl) doesn't throw in tests.
+  useEffect(() => {
+    if (cleanupPreview) {
+      cleanupPreviewRef.current?.scrollIntoView?.({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [cleanupPreview]);
 
   const summary = snapshot?.summary ?? {};
   const cleanupCandidateCount = snapshot?.cleanupCandidates?.length ?? 0;
@@ -844,7 +859,10 @@ export default function DeviceFilesystemTab({
       </div>
 
       {cleanupPreview && (
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
+        <div
+          ref={cleanupPreviewRef}
+          className="rounded-lg border bg-card p-6 shadow-xs scroll-mt-4"
+        >
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-muted-foreground" />
             <h4 className="font-semibold">
