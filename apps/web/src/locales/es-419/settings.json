@@ -1409,6 +1409,22 @@
     "sessionExpiredReloadAndTryAgain": "La sesión expiró: recargue la página y vuelva a intentarlo.",
     "registrationCancelled": "Se canceló el registro."
   },
+  "securityDevicesCard": {
+    "securityDevices": "Dispositivos de seguridad",
+    "oneListDescription": "Cada credencial de tu cuenta: para qué sirve iniciar sesión y qué puede aprobar.",
+    "loading": "Cargando dispositivos de seguridad…",
+    "empty": "Todavía no hay dispositivos de seguridad registrados para esta cuenta.",
+    "signInBadge": "Inicio de sesión",
+    "approvalsBadge": "Aprobaciones",
+    "platformBoundBadge": "Vinculado a la plataforma",
+    "pendingBadge": "Pendiente: se activa con la primera aprobación",
+    "syncedBadge": "Sincronizado",
+    "alsoUseForApprovals": "Usar también este dispositivo para aprobar acciones de alto riesgo",
+    "addedButApprovalsFailed": "Se agregó la clave de acceso. No se pudieron habilitar las aprobaciones: vuelva a verificar para agregarlas.",
+    "addedSyncedNote": "Registrado para aprobaciones. Esta es una credencial sincronizada, por lo que no puede confirmar aprobaciones de nivel crítico.",
+    "removeSignIn": "Quitar inicio de sesión",
+    "revokeApprovals": "Revocar aprobaciones"
+  },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Confirmará con su clave de acceso (Touch ID/Windows Hello) al registrarse.",
     "authenticatorCode": "Código del autenticador",
@@ -1784,7 +1800,9 @@
     "incorrectAuthenticatorCode": "Código del autenticador incorrecto.",
     "passkeyVerificationFailed": "Falló la verificación de la llave de acceso. Inténtalo de nuevo.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Demasiados intentos. Inténtalo de nuevo en unos minutos.",
-    "verificationExpiredPleaseVerifyAgain": "La verificación expiró. Verifica de nuevo."
+    "verificationExpiredPleaseVerifyAgain": "La verificación expiró. Verifica de nuevo.",
+    "securityDevices": "Dispositivos de seguridad",
+    "securityDevicesDescription": "Cómo inicias sesión en Breeze y qué puede aprobar acciones de alto riesgo en tu nombre: tu contraseña, la autenticación de dos factores, las claves de acceso y los dispositivos de aprobación."
   },
   "roleManager": {
     "roles": "Roles",

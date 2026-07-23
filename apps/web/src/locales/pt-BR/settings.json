@@ -1409,6 +1409,22 @@
     "sessionExpiredReloadAndTryAgain": "Sessão expirada — recarregue a página e tente novamente.",
     "registrationCancelled": "O registro foi cancelado."
   },
+  "securityDevicesCard": {
+    "securityDevices": "Dispositivos de segurança",
+    "oneListDescription": "Cada credencial da sua conta — o que ela permite: entrar e/ou aprovar.",
+    "loading": "Carregando dispositivos de segurança…",
+    "empty": "Nenhum dispositivo de segurança está registrado para esta conta ainda.",
+    "signInBadge": "Login",
+    "approvalsBadge": "Aprovações",
+    "platformBoundBadge": "Vinculado à plataforma",
+    "pendingBadge": "Pendente — ativa na primeira aprovação",
+    "syncedBadge": "Sincronizado",
+    "alsoUseForApprovals": "Usar também este dispositivo para aprovar ações de alto risco",
+    "addedButApprovalsFailed": "Chave de acesso adicionada. Não foi possível habilitar as aprovações — verifique novamente para adicioná-las.",
+    "addedSyncedNote": "Registrado para aprovações. Esta é uma credencial sincronizada, então ela não pode confirmar aprovações de nível crítico.",
+    "removeSignIn": "Remover login",
+    "revokeApprovals": "Revogar aprovações"
+  },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",
     "authenticatorCode": "Código do autenticador",
@@ -1784,7 +1800,9 @@
     "incorrectAuthenticatorCode": "Código do autenticador incorreto.",
     "passkeyVerificationFailed": "Falha na verificação da passkey. Tente novamente.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Muitas tentativas. Tente novamente em alguns minutos.",
-    "verificationExpiredPleaseVerifyAgain": "A verificação expirou. Verifique novamente."
+    "verificationExpiredPleaseVerifyAgain": "A verificação expirou. Verifique novamente.",
+    "securityDevices": "Dispositivos de segurança",
+    "securityDevicesDescription": "Como você entra no Breeze e o que pode aprovar ações de alto risco em seu nome — sua senha, autenticação de dois fatores, chaves de acesso e dispositivos de aprovação."
   },
   "roleManager": {
     "roles": "Funções",

@@ -6,12 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
 vi.mock('../../stores/auth', () => ({
-  createPasskeyCredential: vi.fn(),
   fetchWithAuth: vi.fn(),
-  mintAddFactorStepUpGrant: vi.fn(),
-  StepUpError: class StepUpError extends Error {
-    status?: number;
-  },
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
     { getState: () => ({ updateUser: vi.fn() }) }
@@ -26,10 +21,11 @@ vi.mock('@/lib/avatarBlobCache', () => ({
   useAvatarBlobUrl: (url: string | null | undefined) => url ?? null,
 }));
 
-// Approval-security section loads approver devices on mount; stub it so it
-// doesn't touch this file's fetch mock. Covered by ApproverDevicesSection.test.tsx.
-vi.mock('./ApproverDevicesSection', () => ({
-  default: () => null,
+// SecurityDevicesCard loads both passkeys and approver devices on mount via
+// its own fetchWithAuth/authenticator-store calls; stub it so it doesn't
+// touch this file's ordered fetch mock. Covered by SecurityDevicesCard.test.tsx.
+vi.mock('./SecurityDevicesCard', () => ({
+  default: () => <div data-testid="security-devices-card-stub" />,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -81,9 +77,6 @@ describe('ProfilePage avatar settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       return undefined as unknown as Response;
     });
   });
@@ -107,9 +100,6 @@ describe('ProfilePage avatar settings', () => {
 
   it('uploads a PNG file, updates the avatar, and shows success', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       if (String(url) === '/users/me/avatar') {
         return makeJsonResponse({
           avatarUrl: '/api/v1/users/user-1/avatar',
@@ -178,9 +168,6 @@ describe('ProfilePage avatar settings', () => {
 
   it('deletes the current avatar via the Remove button', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       if (String(url) === '/users/me/avatar') {
         return makeJsonResponse({ avatarUrl: null });
       }
@@ -221,9 +208,6 @@ describe('ProfilePage theming settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       if (String(url) === '/users/me') {
         return makeJsonResponse({
           preferences: {
@@ -238,7 +222,7 @@ describe('ProfilePage theming settings', () => {
     });
   });
 
-  it('renders theming below the passkeys section', async () => {
+  it('renders theming below the security devices card', async () => {
     render(
       <ProfilePage
         initialUser={{
@@ -250,12 +234,11 @@ describe('ProfilePage theming settings', () => {
       />
     );
 
-    await screen.findByText('No passkeys are registered for this account.');
-    const addPasskeyButton = screen.getByRole('button', { name: 'Add passkey' });
+    const securityDevicesCard = await screen.findByTestId('security-devices-card-stub');
     const themingHeading = screen.getByRole('heading', { name: 'Theming' });
 
     expect(
-      addPasskeyButton.compareDocumentPosition(themingHeading) & Node.DOCUMENT_POSITION_FOLLOWING
+      securityDevicesCard.compareDocumentPosition(themingHeading) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
   });
 
@@ -277,7 +260,7 @@ describe('ProfilePage theming settings', () => {
       />
     );
 
-    await screen.findByText('No passkeys are registered for this account.');
+    await screen.findByTestId('security-devices-card-stub');
 
     act(() => {
       writeThemePreference('dark');
@@ -339,9 +322,6 @@ describe('ProfilePage theming settings', () => {
 
   it('saves the selected time format with existing appearance preferences', async () => {
     fetchWithAuthMock.mockImplementation(async (url, init) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       if (String(url) === '/users/me') {
         const body = init?.body ? JSON.parse(String(init.body)) : {};
         return makeJsonResponse({ preferences: body.preferences });
@@ -396,9 +376,6 @@ describe('ProfilePage MFA setup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       return undefined as unknown as Response;
     });
   });
@@ -410,9 +387,6 @@ describe('ProfilePage MFA setup', () => {
   // requests just 400'd in production.
   it('sends currentPassword in the body when starting MFA setup', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
-      if (String(url) === '/auth/passkeys') {
-        return makeJsonResponse({ passkeys: [] });
-      }
       if (String(url) === '/auth/mfa/setup') {
         return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
       }

@@ -21,22 +21,34 @@ import StepUpPrompt from './StepUpPrompt';
 import { mergeSecurityDevices, type PasskeySummary, type SecurityDeviceRow } from './securityDevices';
 
 /**
- * Unified "Security devices" card (unified-security-devices Phase 2, Task 5).
+ * Unified "Security devices" card (unified-security-devices Phase 2).
  *
  * Renders the merge of `GET /auth/passkeys` (sign-in factors) and
  * `GET /me/approver-devices` (approval factors) as one list, with a badge per
  * capability a row carries. Task 5 moved the two capabilities' state/handlers
- * over unchanged; Task 6 adds the "also register this browser as an approver"
+ * over; Task 6 added the "also register this browser as an approver"
  * dual-enroll checkbox (`secdev-also-approver`, default checked) to the add
- * flow. No standalone "register this browser as approver" form here — that
- * stays behind in ApproverDevicesSection until a later task decides its fate.
+ * flow; Task 7 mounted the card on the profile page and gave it its own
+ * `securityDevicesCard.*` i18n keys (replacing the placeholder
+ * `profilePage.*` / `approverDevicesSection.*` reuses those tasks used as
+ * stand-ins — see task-5-report.md / task-6-report.md for the compromise
+ * tables). The old standalone "register this browser as approver" form
+ * (`ApproverDevicesSection.tsx`) was deleted in Task 7 — its list rendering
+ * moved into this card in Task 5, and once ProfilePage stopped mounting it,
+ * nothing else referenced the file.
  *
- * i18n note: every string below reuses an EXISTING `profilePage.*` /
- * `approverDevicesSection.*` / `stepUpPrompt.*` key rather than inventing a
- * new one (CI enforces 5-locale key parity, and new keys are out of this
- * task's scope). Several are close-but-not-exact matches for the intended
- * copy — flagged in the task report — and will be replaced by dedicated
- * `securityDevicesCard.*` keys when the card is mounted (Task 7 in the plan).
+ * Deliberate remaining shared keys (generic vocabulary genuinely common to
+ * both the passkey and approver-device flows, not placeholder stand-ins):
+ * `profilePage.rename/save/cancel/delete/deleting/adding/lastUsed/addPasskey/
+ * passkeyName/macBookTouchID/currentPassword/...` (button labels and the
+ * add-passkey form fields, byte-identical across both flows) and
+ * `approverDevicesSection.failedToLoadApproverDevices/tryAgain/
+ * failedToRenameDevice/deviceRenamed/failedToRevokeDevice/deviceRevoked/
+ * cancel/close/revoking/revokeDevice/
+ * thisDeviceCanNoLongerApproveRequestsWithABiometricYouCan/
+ * failedToRegisterThisDevice` (approver-axis mutation outcomes and the revoke
+ * confirm dialog body — accurate, capability-specific copy, not a
+ * placeholder).
  */
 
 function formatPasskeyDate(value?: string | null): string {
@@ -233,16 +245,9 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
         | { registered: boolean; isPlatformBound?: boolean; deviceId?: string; reason?: string }
         | undefined;
       if (approverGrantDegraded || approver?.registered === false) {
-        // i18n compromise: no dedicated partial-success copy exists yet —
-        // composed from the two closest existing keys. Task 7 introduces a
-        // single `securityDevicesCard.*` string for this (see task report).
-        setPasskeySuccess(
-          `${t('profilePage.passkeyAdded')} — ${t('approverDevicesSection.failedToRegisterThisDevice')}`
-        );
+        setPasskeySuccess(t('securityDevicesCard.addedButApprovalsFailed'));
       } else if (approver?.registered && approver.isPlatformBound === false) {
-        // i18n compromise: reuses the same placeholder key as the "Synced"
-        // row badge above (approverDevicesSection.registered) — see task report.
-        setPasskeySuccess(`${t('profilePage.passkeyAdded')} — ${t('approverDevicesSection.registered')}`);
+        setPasskeySuccess(t('securityDevicesCard.addedSyncedNote'));
       } else {
         setPasskeySuccess(t('profilePage.passkeyAdded'));
       }
@@ -393,18 +398,16 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs" data-testid="security-devices-card">
       <div className="space-y-1">
-        {/* i18n compromise: no combined "Security devices" key exists yet
-            (added in the later mounting task) — closest existing key reused. */}
-        <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
+        <h2 className="text-lg font-semibold">{t('securityDevicesCard.securityDevices')}</h2>
         <p className="text-sm text-muted-foreground">
-          {t('profilePage.managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo')}</p>
+          {t('securityDevicesCard.oneListDescription')}</p>
       </div>
 
       <div className="space-y-3">
         {isLoading ? (
           <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            {t('profilePage.loadingPasskeys')}
+            {t('securityDevicesCard.loading')}
           </div>
         ) : (
           <>
@@ -430,9 +433,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
             {rows.length === 0 ? (
               approverLoadError ? null : (
                 <div data-testid="secdev-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-                  {/* i18n compromise: reuses the passkey-only empty-state copy; a
-                      combined-empty key lands with the mounting task. */}
-                  {t('profilePage.noPasskeysAreRegisteredForThisAccount')}
+                  {t('securityDevicesCard.empty')}
                 </div>
               )
             ) : (
@@ -464,9 +465,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                               data-testid="secdev-badge-signin"
                               className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                             >
-                              {/* i18n compromise: closest existing key to the intended
-                                  "Sign-in" badge copy — see task report. */}
-                              {t('profilePage.signInSecurity')}
+                              {t('securityDevicesCard.signInBadge')}
                             </span>
                           )}
                           {row.approver && (
@@ -474,7 +473,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                               data-testid="secdev-badge-approvals"
                               className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                             >
-                              {t('profilePage.approvals')}
+                              {t('securityDevicesCard.approvalsBadge')}
                             </span>
                           )}
                           {row.approver?.isPlatformBound && (
@@ -482,7 +481,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                               data-testid="secdev-badge-platform"
                               className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                             >
-                              {t('approverDevicesSection.platformBound')}
+                              {t('securityDevicesCard.platformBoundBadge')}
                             </span>
                           )}
                           {row.approver && row.approver.lastUsedAt === null && (
@@ -490,7 +489,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                               data-testid="secdev-badge-pending"
                               className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600"
                             >
-                              {t('approverDevicesSection.pendingActivatesOnFirstApproval')}
+                              {t('securityDevicesCard.pendingBadge')}
                             </span>
                           )}
                           {row.passkey && row.approver && row.approver.isPlatformBound === false && (
@@ -498,10 +497,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                               data-testid="secdev-badge-synced"
                               className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
                             >
-                              {/* i18n compromise: no "Synced" key exists yet — see
-                                  task report; this reuses an unrelated key as a
-                                  placeholder. */}
-                              {t('approverDevicesSection.registered')}
+                              {t('securityDevicesCard.syncedBadge')}
                             </span>
                           )}
                         </div>
@@ -550,7 +546,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                                 data-testid={`secdev-delete-${row.key}`}
                                 className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                               >
-                                {isMutating ? t('profilePage.deleting') : t('profilePage.delete')}
+                                {isMutating ? t('profilePage.deleting') : t('securityDevicesCard.removeSignIn')}
                               </button>
                             )}
                             {row.approver && (
@@ -561,7 +557,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
                                 data-testid={`secdev-revoke-${row.key}`}
                                 className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                               >
-                                {t('approverDevicesSection.revoke')}
+                                {t('securityDevicesCard.revokeApprovals')}
                               </button>
                             )}
                           </>
@@ -632,10 +628,7 @@ export default function SecurityDevicesCard({ mfaEnabled, mfaMethod, onFactorAdd
               data-testid="secdev-also-approver"
               className="mt-0.5 h-4 w-4 rounded border"
             />
-            {/* i18n compromise: no dedicated dual-enroll checkbox copy exists
-                yet — reuses the closest existing key (Task 7 adds a proper
-                "also register this device to approve requests" string). */}
-            <span>{t('approverDevicesSection.registerThisBrowser')}</span>
+            <span>{t('securityDevicesCard.alsoUseForApprovals')}</span>
           </label>
         )}
         <button
@@ -696,7 +689,7 @@ function RevokeConfirmDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
               <AlertTriangle className="h-5 w-5 text-destructive" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">{t('approverDevicesSection.revoke')}{name}?</h2>
+            <h2 className="text-lg font-semibold">{t('securityDevicesCard.revokeApprovals')}: {name}?</h2>
           </div>
           <button
             type="button"

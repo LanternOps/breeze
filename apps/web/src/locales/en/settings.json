@@ -1409,6 +1409,22 @@
     "sessionExpiredReloadAndTryAgain": "Session expired — reload the page and try again.",
     "registrationCancelled": "Registration was cancelled."
   },
+  "securityDevicesCard": {
+    "securityDevices": "Security devices",
+    "oneListDescription": "Every credential on your account — what it can sign you into and what it can approve.",
+    "loading": "Loading security devices…",
+    "empty": "No security devices are registered for this account yet.",
+    "signInBadge": "Sign-in",
+    "approvalsBadge": "Approvals",
+    "platformBoundBadge": "Platform-bound",
+    "pendingBadge": "Pending — activates on first approval",
+    "syncedBadge": "Synced",
+    "alsoUseForApprovals": "Also use this device to approve high-risk actions",
+    "addedButApprovalsFailed": "Passkey added. Approvals could not be enabled — verify again to add them.",
+    "addedSyncedNote": "Registered for approvals. This is a synced credential, so it can't confirm critical-tier approvals.",
+    "removeSignIn": "Remove sign-in",
+    "revokeApprovals": "Revoke approvals"
+  },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
@@ -1784,7 +1800,9 @@
     "incorrectAuthenticatorCode": "Incorrect authenticator code.",
     "passkeyVerificationFailed": "Passkey verification failed. Try again.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Too many attempts. Try again in a few minutes.",
-    "verificationExpiredPleaseVerifyAgain": "Verification expired. Please verify again."
+    "verificationExpiredPleaseVerifyAgain": "Verification expired. Please verify again.",
+    "securityDevices": "Security devices",
+    "securityDevicesDescription": "How you sign in to Breeze and what can approve high-risk actions on your behalf — your password, two-factor authentication, passkeys, and approval devices."
   },
   "roleManager": {
     "roles": "Roles",

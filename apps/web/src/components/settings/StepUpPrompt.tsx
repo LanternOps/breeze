@@ -26,8 +26,8 @@ type Props = {
 
 /**
  * Re-auth input proving an existing factor before a sensitive registration.
- * Consumers: ApproverDevicesSection (register_approver_device grant) and
- * ProfilePage's add-passkey flow (add_factor grant).
+ * Consumer: SecurityDevicesCard's add-passkey flow (add_factor grant, and the
+ * register_approver_device grant for its dual-enroll checkbox).
  */
 export default function StepUpPrompt({ tier, reauthValue, onChange, disabled, idPrefix = 'approver-stepup' }: Props) {
   const { t } = useTranslation('settings');

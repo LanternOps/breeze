@@ -8,17 +8,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
-import ApproverDevicesSection from './ApproverDevicesSection';
-import StepUpPrompt from './StepUpPrompt';
+import SecurityDevicesCard from './SecurityDevicesCard';
 import ThemingSettings from './ThemingSettings';
-import {
-  StepUpError,
-  createPasskeyCredential,
-  fetchWithAuth,
-  mintAddFactorStepUpGrant,
-  useAuthStore
-} from '../../stores/auth';
-import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import type { UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
@@ -39,13 +32,6 @@ type User = {
   preferences?: UserPreferences;
 };
 
-type PasskeySummary = {
-  id: string;
-  name: string;
-  createdAt?: string;
-  lastUsedAt?: string | null;
-};
-
 const ALLOWED_AVATAR_MIMES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 
@@ -53,13 +39,6 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${formatNumber(n / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
   return `${formatNumber(n / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
-}
-
-function formatPasskeyDate(value?: string | null): string {
-  if (!value) return 'Never';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Unknown';
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 type ProfilePageProps = {
@@ -79,17 +58,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [mfaSuccess, setMfaSuccess] = useState<string | undefined>();
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | undefined>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | undefined>();
-  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
-  const [passkeyName, setPasskeyName] = useState('');
-  const [passkeyPassword, setPasskeyPassword] = useState('');
-  const [passkeyStepUpCode, setPasskeyStepUpCode] = useState('');
-  const [passkeyError, setPasskeyError] = useState<string | undefined>();
-  const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
-  const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
-  const [isAddingPasskey, setIsAddingPasskey] = useState(false);
-  const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
-  const [editingPasskeyName, setEditingPasskeyName] = useState('');
-  const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
@@ -159,27 +127,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
     fetchUser();
   }, [initialUser, reset]);
-
-  const loadPasskeys = useCallback(async () => {
-    try {
-      setIsLoadingPasskeys(true);
-      const response = await fetchWithAuth('/auth/passkeys');
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? t('profilePage.failedToLoadPasskeys'));
-      }
-      const data = await response.json();
-      setPasskeys(Array.isArray(data) ? data : data.passkeys ?? []);
-    } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToLoadPasskeys'));
-    } finally {
-      setIsLoadingPasskeys(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadPasskeys();
-  }, [loadPasskeys]);
 
   const clearMessages = useCallback(() => {
     setProfileError(undefined);
@@ -484,166 +431,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  // SR2-20: adding a factor to an already-protected account requires proving
-  // an EXISTING factor first (the register routes 403
-  // `existing_factor_step_up_required` otherwise — password alone is
-  // deliberately insufficient). Strongest-available tiering mirrors the server
-  // gate: existing passkey → TOTP. SMS has no authenticated step-up code
-  // sender (the only send route is login-time, tempToken-keyed), so SMS-only
-  // accounts can't satisfy the gate from the web — surfaced as a note instead
-  // of a dead-end 403. `none` = unprotected account (initial enrollment,
-  // password-only per the server's chicken-and-egg bypass) or a factor-less
-  // protected state the UI can't prove anyway.
-  const passkeyStepUpTier: 'none' | 'passkey' | 'totp' | 'sms' = useMemo(() => {
-    if (passkeys.length > 0) return 'passkey';
-    if (!user?.mfaEnabled) return 'none';
-    if (user.mfaMethod === 'totp') return 'totp';
-    if (user.mfaMethod === 'sms') return 'sms';
-    return 'none';
-  }, [passkeys.length, user?.mfaEnabled, user?.mfaMethod]);
-
-  const handleAddPasskey = async () => {
-    if (!passkeyPassword || isAddingPasskey) return;
-    if (passkeyStepUpTier === 'sms') return;
-    if (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6) return;
-    setPasskeyError(undefined);
-    setPasskeySuccess(undefined);
-    try {
-      setIsAddingPasskey(true);
-      let stepUpGrantId: string | undefined;
-      if (passkeyStepUpTier === 'passkey') {
-        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'passkey' });
-      } else if (passkeyStepUpTier === 'totp') {
-        stepUpGrantId = await mintAddFactorStepUpGrant({ method: 'totp', code: passkeyStepUpCode });
-      }
-
-      const label = passkeyName.trim() || 'Passkey';
-      const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
-        method: 'POST',
-        body: JSON.stringify({
-          currentPassword: passkeyPassword,
-          name: label,
-          ...(stepUpGrantId ? { stepUpGrantId } : {})
-        })
-      });
-
-      const optionsData = await optionsResponse.json().catch(() => ({}));
-      if (!optionsResponse.ok) {
-        throw new Error(
-          optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
-        );
-      }
-
-      const optionsJSON = (optionsData.options ?? optionsData.optionsJSON) as PasskeyRegistrationOptions;
-      const credential = await createPasskeyCredential(optionsJSON);
-      const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: label,
-          credential,
-          ...(stepUpGrantId ? { stepUpGrantId } : {})
-        })
-      });
-
-      const verifyData = await verifyResponse.json().catch(() => ({}));
-      if (!verifyResponse.ok) {
-        throw new Error(
-          verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
-        );
-      }
-
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
-      setPasskeyName('');
-      setPasskeyPassword('');
-      setPasskeyStepUpCode('');
-      if (Array.isArray(verifyData.recoveryCodes)) {
-        setRecoveryCodes(verifyData.recoveryCodes);
-      }
-      setPasskeySuccess(t('profilePage.passkeyAdded'));
-      await loadPasskeys();
-    } catch (error) {
-      // NotAllowedError/AbortError: a cancelled/timed-out WebAuthn prompt —
-      // either the registration ceremony itself or the step-up assertion
-      // ceremony inside the mint (both reject with a DOMException).
-      if (error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
-        setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
-      } else if (error instanceof StepUpError) {
-        if (error.status === 401) {
-          setPasskeyError(passkeyStepUpTier === 'totp'
-            ? t('profilePage.incorrectAuthenticatorCode')
-            : t('profilePage.passkeyVerificationFailed'));
-        } else if (error.status === 429) {
-          setPasskeyError(t('profilePage.tooManyAttemptsTryAgainInAFewMinutes'));
-        } else {
-          setPasskeyError(error.message);
-        }
-      } else if (error instanceof Error && error.message === 'existing_factor_step_up_required') {
-        // The grant expired mid-ceremony (>5 min in the WebAuthn prompt) or a
-        // factor changed in another tab since it was minted.
-        setPasskeyError(t('profilePage.verificationExpiredPleaseVerifyAgain'));
-      } else {
-        setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToAddPasskey'));
-      }
-    } finally {
-      setIsAddingPasskey(false);
+  // Delegated from SecurityDevicesCard's add-passkey flow (the card owns its
+  // own passkey/approver state; it doesn't own the `user` record). Mirrors
+  // the side effects the old inline flow applied directly: mark the account
+  // as MFA-enabled and surface any freshly-issued recovery codes.
+  const handleFactorAdded = useCallback(({ recoveryCodes: newRecoveryCodes }: { recoveryCodes?: string[] }) => {
+    setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+    if (Array.isArray(newRecoveryCodes)) {
+      setRecoveryCodes(newRecoveryCodes);
     }
-  };
-
-  const handleRenamePasskey = async (passkeyId: string) => {
-    const name = editingPasskeyName.trim();
-    if (!name || mutatingPasskeyId) return;
-    setPasskeyError(undefined);
-    setPasskeySuccess(undefined);
-    try {
-      setMutatingPasskeyId(passkeyId);
-      const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name })
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error ?? data.message ?? t('profilePage.failedToRenamePasskeyHttp', { status: response.status }));
-      }
-      setPasskeys(prev => prev.map(passkey => (
-        passkey.id === passkeyId ? { ...passkey, name: data.passkey?.name ?? name } : passkey
-      )));
-      setEditingPasskeyId(null);
-      setEditingPasskeyName('');
-      setPasskeySuccess(t('profilePage.passkeyRenamed'));
-    } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToRenamePasskey'));
-    } finally {
-      setMutatingPasskeyId(null);
-    }
-  };
-
-  const handleDeletePasskey = async (passkeyId: string) => {
-    if (mutatingPasskeyId) return;
-    setPasskeyError(undefined);
-    setPasskeySuccess(undefined);
-    if (!passkeyPassword) {
-      setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
-      return;
-    }
-    try {
-      setMutatingPasskeyId(passkeyId);
-      const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ currentPassword: passkeyPassword })
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error ?? data.message ?? t('profilePage.failedToDeletePasskeyHttp', { status: response.status }));
-      }
-      setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
-      setPasskeyPassword('');
-      setPasskeySuccess(t('profilePage.passkeyDeleted'));
-    } catch (error) {
-      setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
-    } finally {
-      setMutatingPasskeyId(null);
-    }
-  };
+  }, []);
 
   if (isLoadingUser) {
     return (
@@ -807,13 +604,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         </button>
       </form>
 
-      {/* Sign-in security group: password, TOTP MFA, SSO, and passkeys are all
-          sign-in factors — distinct from the approval-security credentials
-          below, which never gate login. */}
-      <div className="space-y-1 border-t pt-6" data-testid="signin-security-heading">
-        <h2 className="text-lg font-semibold">{t('profilePage.signInSecurity')}</h2>
+      {/* Security devices group: password, TOTP MFA, SSO, and the unified
+          security-devices card (unified-security-devices Phase 2, Task 7) —
+          previously two separate groups ("Sign-in security" / "Approvals")
+          collapsed into one since the card below merges both capabilities
+          into a single per-device list. */}
+      <div className="space-y-1 border-t pt-6" data-testid="security-devices-heading">
+        <h2 className="text-lg font-semibold">{t('profilePage.securityDevices')}</h2>
         <p className="text-sm text-muted-foreground">
-          {t('profilePage.signInSecurityDescription')}</p>
+          {t('profilePage.securityDevicesDescription')}</p>
       </div>
 
       {/* Change Password */}
@@ -841,174 +640,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* Connect SSO (self-service identity linking, #2183) */}
       <ConnectSsoCard />
 
-      {/* Passkeys */}
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('profilePage.managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo')}</p>
-        </div>
-
-        <div className="space-y-3">
-          {isLoadingPasskeys ? (
-            <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-              {t('profilePage.loadingPasskeys')}</div>
-          ) : passkeys.length ? (
-            passkeys.map(passkey => (
-              <div key={passkey.id} className="rounded-md border bg-muted/30 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0 space-y-1">
-                    {editingPasskeyId === passkey.id ? (
-                      <input
-                        type="text"
-                        value={editingPasskeyName}
-                        onChange={event => setEditingPasskeyName(event.target.value)}
-                        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                        disabled={mutatingPasskeyId === passkey.id}
-                        autoFocus
-                      />
-                    ) : (
-                      <p className="truncate text-sm font-medium">{passkey.name || t('profilePage.passkey')}</p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {t('profilePage.lastUsed')}{formatPasskeyDate(passkey.lastUsedAt)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {editingPasskeyId === passkey.id ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleRenamePasskey(passkey.id)}
-                          disabled={!editingPasskeyName.trim() || mutatingPasskeyId === passkey.id}
-                          className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {mutatingPasskeyId === passkey.id ? t('profilePage.saving') : t('profilePage.save')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingPasskeyId(null);
-                            setEditingPasskeyName('');
-                          }}
-                          disabled={mutatingPasskeyId === passkey.id}
-                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {t('profilePage.cancel')}</button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingPasskeyId(passkey.id);
-                            setEditingPasskeyName(passkey.name || 'Passkey');
-                            setPasskeyError(undefined);
-                            setPasskeySuccess(undefined);
-                          }}
-                          disabled={!!mutatingPasskeyId}
-                          className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {t('profilePage.rename')}</button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeletePasskey(passkey.id)}
-                          disabled={!!mutatingPasskeyId}
-                          className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {mutatingPasskeyId === passkey.id ? t('profilePage.deleting') : t('profilePage.delete')}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-              {t('profilePage.noPasskeysAreRegisteredForThisAccount')}</div>
-          )}
-        </div>
-
-        <div className="space-y-4 rounded-md border p-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
-            <p className="text-xs text-muted-foreground">
-              {t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-name">
-              {t('profilePage.passkeyName')}</label>
-            <input
-              id="passkey-name"
-              type="text"
-              value={passkeyName}
-              onChange={event => setPasskeyName(event.target.value)}
-              placeholder={t('profilePage.macBookTouchID')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              disabled={isAddingPasskey}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-password">
-              {t('profilePage.currentPassword')}</label>
-            <input
-              id="passkey-password"
-              type="password"
-              autoComplete="current-password"
-              value={passkeyPassword}
-              onChange={event => setPasskeyPassword(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              disabled={isAddingPasskey}
-            />
-          </div>
-          {(passkeyStepUpTier === 'passkey' || passkeyStepUpTier === 'totp') && (
-            <StepUpPrompt
-              tier={passkeyStepUpTier}
-              reauthValue={passkeyStepUpCode}
-              onChange={setPasskeyStepUpCode}
-              disabled={isAddingPasskey}
-              idPrefix="passkey-stepup"
-            />
-          )}
-          {passkeyStepUpTier === 'sms' && (
-            <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-sms-note">
-              {t('profilePage.smsAccountsCannotAddPasskeysFromTheWebYet')}</p>
-          )}
-          <button
-            type="button"
-            onClick={handleAddPasskey}
-            disabled={
-              isAddingPasskey ||
-              !passkeyPassword ||
-              passkeyStepUpTier === 'sms' ||
-              (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)
-            }
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
-          </button>
-        </div>
-
-        {passkeySuccess && (
-          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
-            {passkeySuccess}
-          </div>
-        )}
-        {passkeyError && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {passkeyError}
-          </div>
-        )}
-      </div>
-
-      {/* Approval security group (Breeze Authenticator) */}
-      <div className="space-y-1 border-t pt-6" data-testid="approval-security-heading">
-        <h2 className="text-lg font-semibold">{t('profilePage.approvals')}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t('profilePage.approvalsDescription')}</p>
-      </div>
-      <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
+      {/* Security devices (unified-security-devices Phase 2): merges the old
+          Passkeys card (sign-in factors) and Approval-security section
+          (Breeze Authenticator approval devices) into one per-device list. */}
+      <SecurityDevicesCard
+        mfaEnabled={user?.mfaEnabled ?? false}
+        mfaMethod={user?.mfaMethod ?? null}
+        onFactorAdded={handleFactorAdded}
+      />
       <ThemingSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}

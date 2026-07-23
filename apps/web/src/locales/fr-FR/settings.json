@@ -1409,6 +1409,22 @@
     "sessionExpiredReloadAndTryAgain": "Session expirée — actualisez la page et réessayez.",
     "registrationCancelled": "L’enregistrement a été annulé."
   },
+  "securityDevicesCard": {
+    "securityDevices": "Appareils de sécurité",
+    "oneListDescription": "Chaque identifiant de votre compte — ce qu’il permet de faire : se connecter et/ou approuver.",
+    "loading": "Chargement des appareils de sécurité…",
+    "empty": "Aucun appareil de sécurité n’est enregistré pour ce compte pour le moment.",
+    "signInBadge": "Connexion",
+    "approvalsBadge": "Approbations",
+    "platformBoundBadge": "Lié à la plateforme",
+    "pendingBadge": "En attente — s’active à la première approbation",
+    "syncedBadge": "Synchronisé",
+    "alsoUseForApprovals": "Utiliser aussi cet appareil pour approuver les actions à haut risque",
+    "addedButApprovalsFailed": "Clé d’accès ajoutée. Les approbations n’ont pas pu être activées — vérifiez à nouveau pour les ajouter.",
+    "addedSyncedNote": "Enregistré pour les approbations. Il s’agit d’un identifiant synchronisé, il ne peut donc pas confirmer les approbations de niveau critique.",
+    "removeSignIn": "Retirer la connexion",
+    "revokeApprovals": "Révoquer les approbations"
+  },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",
     "authenticatorCode": "Code d’authentification",
@@ -1784,7 +1800,9 @@
     "incorrectAuthenticatorCode": "Code d’authentification incorrect.",
     "passkeyVerificationFailed": "La vérification de la clé d’accès a échoué. Réessayez.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives. Réessayez dans quelques minutes.",
-    "verificationExpiredPleaseVerifyAgain": "La vérification a expiré. Veuillez vérifier à nouveau."
+    "verificationExpiredPleaseVerifyAgain": "La vérification a expiré. Veuillez vérifier à nouveau.",
+    "securityDevices": "Appareils de sécurité",
+    "securityDevicesDescription": "Comment vous vous connectez à Breeze et ce qui peut approuver des actions à haut risque en votre nom — votre mot de passe, l’authentification à deux facteurs, les clés d’accès et les appareils d’approbation."
   },
   "roleManager": {
     "roles": "Rôles",

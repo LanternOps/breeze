@@ -1409,6 +1409,22 @@
     "sessionExpiredReloadAndTryAgain": "Sitzung abgelaufen – laden Sie die Seite neu und versuchen Sie es erneut.",
     "registrationCancelled": "Die Registrierung wurde abgebrochen."
   },
+  "securityDevicesCard": {
+    "securityDevices": "Sicherheitsgeräte",
+    "oneListDescription": "Jede Anmeldeinformation Ihres Kontos — wofür sie sich anmelden und was sie genehmigen kann.",
+    "loading": "Sicherheitsgeräte werden geladen…",
+    "empty": "Für dieses Konto sind noch keine Sicherheitsgeräte registriert.",
+    "signInBadge": "Anmeldung",
+    "approvalsBadge": "Genehmigungen",
+    "platformBoundBadge": "Plattformgebunden",
+    "pendingBadge": "Ausstehend – wird bei der ersten Genehmigung aktiviert",
+    "syncedBadge": "Synchronisiert",
+    "alsoUseForApprovals": "Dieses Gerät auch zur Genehmigung risikoreicher Aktionen verwenden",
+    "addedButApprovalsFailed": "Passkey hinzugefügt. Genehmigungen konnten nicht aktiviert werden – verifizieren Sie sich erneut, um sie hinzuzufügen.",
+    "addedSyncedNote": "Für Genehmigungen registriert. Dies ist eine synchronisierte Anmeldeinformation und kann daher keine Genehmigungen der kritischen Stufe bestätigen.",
+    "removeSignIn": "Anmeldung entfernen",
+    "revokeApprovals": "Genehmigungen widerrufen"
+  },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Sie bestätigen bei der Registrierung mit Ihrem Passkey (Touch ID / Windows Hello).",
     "authenticatorCode": "Authentifizierungscode",
@@ -1784,7 +1800,9 @@
     "incorrectAuthenticatorCode": "Falscher Authenticator-Code.",
     "passkeyVerificationFailed": "Passkey-Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Zu viele Versuche. Versuchen Sie es in ein paar Minuten erneut.",
-    "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen. Bitte verifizieren Sie sich erneut."
+    "verificationExpiredPleaseVerifyAgain": "Verifizierung abgelaufen. Bitte verifizieren Sie sich erneut.",
+    "securityDevices": "Sicherheitsgeräte",
+    "securityDevicesDescription": "Wie Sie sich bei Breeze anmelden und was in Ihrem Namen risikoreiche Aktionen genehmigen kann — Ihr Passwort, Zwei-Faktor-Authentifizierung, Passkeys und Genehmigungsgeräte."
   },
   "roleManager": {
     "roles": "Rollen",

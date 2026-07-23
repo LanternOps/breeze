@@ -238,7 +238,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={onFactorAdded} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'MacBook Touch ID' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -282,7 +282,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -347,7 +347,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -391,7 +391,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -424,7 +424,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'MacBook Touch ID' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -460,7 +460,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'MacBook Touch ID' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -492,7 +492,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'Work laptop' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -501,7 +501,7 @@ describe('SecurityDevicesCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
 
     // Partial-success message: passkey added, approvals not enabled.
-    await screen.findByText(/Passkey added.*Failed to register this device/);
+    await screen.findByText(/Approvals could not be enabled/);
   });
 
   it('appends a synced note when the newly-registered approver device is not platform-bound', async () => {
@@ -521,7 +521,7 @@ describe('SecurityDevicesCard', () => {
 
     render(<SecurityDevicesCard mfaEnabled mfaMethod="totp" onFactorAdded={vi.fn()} />);
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByText(/No security devices are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iCloud Keychain' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
@@ -529,6 +529,6 @@ describe('SecurityDevicesCard', () => {
     fireEvent.change(screen.getByTestId('passkey-stepup-code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
 
-    await screen.findByText(/Passkey added.*Registered/);
+    await screen.findByText(/synced credential/);
   });
 });

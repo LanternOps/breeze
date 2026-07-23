@@ -1,7 +1,9 @@
 import type { ApproverDevice } from '../../stores/authenticator';
 
-// Moved here from ProfilePage.tsx (which now imports it back), gaining the
-// Task 3 field.
+// Moved here from ProfilePage.tsx's local copy (Task 5), gaining the Task 3
+// `credentialId` field. Task 7 deleted ProfilePage's inline passkey card
+// entirely, so ProfilePage no longer has any use for this type — the only
+// consumer is now SecurityDevicesCard.tsx, which owns the passkey state.
 export type PasskeySummary = {
   id: string;
   name: string;
