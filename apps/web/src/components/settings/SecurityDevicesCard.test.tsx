@@ -762,5 +762,84 @@ describe('SecurityDevicesCard', () => {
       expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('My workstation');
       expect((screen.getByTestId('approver-stepup-password') as HTMLInputElement).value).toBe('');
     });
+
+    it('maps a 401 with the credential-failure message on the passkey tier to the passkey-verification-failed message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: '2026-06-10T09:00:00.000Z', credentialId: 'cred-1' }] }),
+      );
+      const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My workstation' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Passkey verification failed — try again.',
+        }),
+      );
+    });
+
+    it('maps a 401 with the credential-failure message on the password tier to the incorrect-password message and retains the device name', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }));
+      const err = Object.assign(new Error('Invalid credentials'), { status: 401 });
+      registerApproverDeviceMock.mockRejectedValueOnce(err);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByText(/No security devices are registered/i);
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'Home PC' },
+      });
+      fireEvent.change(screen.getByTestId('approver-stepup-password'), {
+        target: { value: 'wrongpass' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Incorrect password.',
+        }),
+      );
+      expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('Home PC');
+    });
+
+    it('maps an AbortError (WebAuthn cancellation on passkey tier) to the registration-cancelled message', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ passkeys: [{ id: 'pk1', name: 'Laptop', lastUsedAt: '2026-06-10T09:00:00.000Z', credentialId: 'cred-1' }] }),
+      );
+      const abortErr = Object.assign(new Error('Operation aborted'), {
+        name: 'AbortError',
+      });
+      registerApproverDeviceMock.mockRejectedValueOnce(abortErr);
+
+      render(<SecurityDevicesCard mfaEnabled={false} mfaMethod={null} onFactorAdded={vi.fn()} />);
+
+      await screen.findByTestId('secdev-row-pk-pk1');
+      fireEvent.click(screen.getByTestId('secdev-approver-only-toggle'));
+
+      fireEvent.change(screen.getByTestId('approver-device-label-input'), {
+        target: { value: 'My device' },
+      });
+      fireEvent.click(screen.getByTestId('approver-device-register'));
+
+      await waitFor(() =>
+        expect(showToastMock).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Registration was cancelled.',
+        }),
+      );
+    });
   });
 });
