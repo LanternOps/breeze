@@ -217,7 +217,19 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 			return
 		}
 
-		entries, readErr := os.ReadDir(frame.path)
+		// Read entries in directory order rather than os.ReadDir's filename-sorted
+		// order — this scanner aggregates over every entry and never relies on
+		// order, so the per-directory sort is pure overhead across a large tree.
+		dirFile, openErr := os.Open(frame.path)
+		if openErr != nil {
+			statsMu.Lock()
+			markDirAndAncestorsIncomplete(dirStats, frame.path)
+			appendScanError(&scanErrors, frame.path, openErr, &permissionDeniedCount)
+			statsMu.Unlock()
+			return
+		}
+		entries, readErr := dirFile.ReadDir(-1)
+		dirFile.Close()
 		if readErr != nil {
 			statsMu.Lock()
 			markDirAndAncestorsIncomplete(dirStats, frame.path)
@@ -313,23 +325,52 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 				fileSize = 0
 			}
 
-			modifiedAt := info.ModTime().UTC().Format(time.RFC3339)
+			// Global counters are contention-free — keep them off the shared lock.
+			atomic.AddInt64(&filesScanned, 1)
+			atomic.AddInt64(&bytesScanned, fileSize)
+
+			// Classification is pure (touches no shared state), so run it before
+			// taking the lock instead of holding every other worker off while we do.
+			category := classifyCleanupCategory(entryPath)
+			oldDownload := isOldDownload(entryPath, fileSize, info.ModTime(), oldDownloadsThreshold)
+			unrotated := isUnrotatedLog(entryPath, fileSize)
+
+			// modifiedAt is needed by several retention buckets; format it at most
+			// once, and only when a bucket actually keeps this file.
+			modifiedAt := ""
+			modTimeResolved := false
+			resolveModTime := func() string {
+				if !modTimeResolved {
+					modifiedAt = info.ModTime().UTC().Format(time.RFC3339)
+					modTimeResolved = true
+				}
+				return modifiedAt
+			}
+
+			// Owner for old downloads is known now; resolve it outside the lock.
+			// The top-N owner is resolved lazily under the lock (cached, so a map
+			// hit) only when the file actually qualifies — see fileQualifiesForTop.
+			var oldDownloadOwner string
+			if oldDownload {
+				oldDownloadOwner = getFileOwner(info)
+			}
+
 			statsMu.Lock()
-			filesScanned++
-			bytesScanned += fileSize
 			if parentAgg, ok := dirStats[frame.path]; ok {
 				parentAgg.SizeBytes += fileSize
 				parentAgg.FileCount++
 			}
 
-			addTopLargestFile(&topLargestFiles, FilesystemLargestFile{
-				Path:       entryPath,
-				SizeBytes:  fileSize,
-				ModifiedAt: modifiedAt,
-				Owner:      getFileOwner(info),
-			}, topFilesLimit)
+			if fileQualifiesForTop(topLargestFiles, fileSize, topFilesLimit) {
+				addTopLargestFile(&topLargestFiles, FilesystemLargestFile{
+					Path:       entryPath,
+					SizeBytes:  fileSize,
+					ModifiedAt: resolveModTime(),
+					Owner:      getFileOwner(info),
+				}, topFilesLimit)
+			}
 
-			if category := classifyCleanupCategory(entryPath); category != "" {
+			if category != "" {
 				tempBytes[category] += fileSize
 				addCleanupCandidate(cleanupByPath, FilesystemCleanupCandidate{
 					Path:       entryPath,
@@ -337,24 +378,24 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 					SizeBytes:  fileSize,
 					Safe:       true,
 					Reason:     "temporary/cache file",
-					ModifiedAt: modifiedAt,
+					ModifiedAt: resolveModTime(),
 				}, maxFSCleanupCandidates)
 			}
 
-			if isOldDownload(entryPath, fileSize, info.ModTime(), oldDownloadsThreshold) {
+			if oldDownload {
 				oldDownloads = append(oldDownloads, FilesystemOldDownload{
 					Path:       entryPath,
 					SizeBytes:  fileSize,
-					ModifiedAt: modifiedAt,
-					Owner:      getFileOwner(info),
+					ModifiedAt: resolveModTime(),
+					Owner:      oldDownloadOwner,
 				})
 			}
 
-			if isUnrotatedLog(entryPath, fileSize) {
+			if unrotated {
 				unrotatedLogs = append(unrotatedLogs, FilesystemUnrotatedLog{
 					Path:       entryPath,
 					SizeBytes:  fileSize,
-					ModifiedAt: modifiedAt,
+					ModifiedAt: resolveModTime(),
 				})
 			}
 
@@ -430,7 +471,10 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		statsMu.Unlock()
 	}
 
-	// Aggregate child directory sizes into parents.
+	// Aggregate child directory sizes into parents. Iterating deepest-first
+	// guarantees a directory's own size is final by the time it is visited (all
+	// strictly-deeper descendants have already folded in), so we can collect the
+	// top-N candidate in the same pass instead of a second full map traversal.
 	orderedDirs := make([]*fsDirAggregate, 0, len(dirStats))
 	for _, agg := range dirStats {
 		orderedDirs = append(orderedDirs, agg)
@@ -438,7 +482,17 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	sort.Slice(orderedDirs, func(i, j int) bool {
 		return orderedDirs[i].Depth > orderedDirs[j].Depth
 	})
+
+	topDirCandidateLimit := clampInt(topDirsLimit*8, topDirsLimit, 2000)
+	topLargestDirCandidates := make([]FilesystemLargestDirectory, 0, topDirCandidateLimit)
 	for _, agg := range orderedDirs {
+		addTopLargestDir(&topLargestDirCandidates, FilesystemLargestDirectory{
+			Path:      agg.Path,
+			SizeBytes: agg.SizeBytes,
+			FileCount: agg.FileCount,
+			Estimated: agg.Incomplete,
+		}, topDirCandidateLimit)
+
 		if agg.Parent == "" {
 			continue
 		}
@@ -451,17 +505,6 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		if agg.Incomplete {
 			parent.Incomplete = true
 		}
-	}
-
-	topDirCandidateLimit := clampInt(topDirsLimit*8, topDirsLimit, 2000)
-	topLargestDirCandidates := make([]FilesystemLargestDirectory, 0, topDirCandidateLimit)
-	for _, agg := range dirStats {
-		addTopLargestDir(&topLargestDirCandidates, FilesystemLargestDirectory{
-			Path:      agg.Path,
-			SizeBytes: agg.SizeBytes,
-			FileCount: agg.FileCount,
-			Estimated: agg.Incomplete,
-		}, topDirCandidateLimit)
 	}
 	topLargestDirs = collapseAncestorDirectories(topLargestDirCandidates, topDirsLimit, 0.70)
 	sort.Slice(oldDownloads, func(i, j int) bool { return oldDownloads[i].SizeBytes > oldDownloads[j].SizeBytes })
@@ -655,38 +698,67 @@ func clampInt(value, min, max int) int {
 	return value
 }
 
+// fileQualifiesForTop reports whether a file of the given size would be kept in
+// the top-N slice, so callers can skip the cost of resolving its owner/modtime
+// when it wouldn't. Must be called under the same lock that guards `top`.
+func fileQualifiesForTop(top []FilesystemLargestFile, size int64, limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	if len(top) < limit {
+		return true
+	}
+	return size > top[len(top)-1].SizeBytes
+}
+
+// addTopLargestFile keeps `top` sorted by SizeBytes descending, bounded to
+// `limit`. It inserts at the correct position (binary search + single shift)
+// rather than re-sorting the whole slice on every insert, so the per-file cost
+// is O(limit) worst case instead of O(limit·log limit).
 func addTopLargestFile(top *[]FilesystemLargestFile, file FilesystemLargestFile, limit int) {
 	if limit <= 0 {
 		return
 	}
-	if len(*top) < limit {
-		*top = append(*top, file)
-		sort.Slice(*top, func(i, j int) bool { return (*top)[i].SizeBytes > (*top)[j].SizeBytes })
+	s := *top
+	n := len(s)
+	if n >= limit {
+		if file.SizeBytes <= s[n-1].SizeBytes {
+			return
+		}
+		// Insert into descending order, dropping the current minimum (last).
+		idx := sort.Search(n, func(i int) bool { return s[i].SizeBytes < file.SizeBytes })
+		copy(s[idx+1:], s[idx:n-1])
+		s[idx] = file
 		return
 	}
-	minIdx := len(*top) - 1
-	if file.SizeBytes <= (*top)[minIdx].SizeBytes {
-		return
-	}
-	(*top)[minIdx] = file
-	sort.Slice(*top, func(i, j int) bool { return (*top)[i].SizeBytes > (*top)[j].SizeBytes })
+	idx := sort.Search(n, func(i int) bool { return s[i].SizeBytes < file.SizeBytes })
+	s = append(s, file)
+	copy(s[idx+1:], s[idx:n])
+	s[idx] = file
+	*top = s
 }
 
+// addTopLargestDir mirrors addTopLargestFile for directory aggregates.
 func addTopLargestDir(top *[]FilesystemLargestDirectory, dir FilesystemLargestDirectory, limit int) {
 	if limit <= 0 {
 		return
 	}
-	if len(*top) < limit {
-		*top = append(*top, dir)
-		sort.Slice(*top, func(i, j int) bool { return (*top)[i].SizeBytes > (*top)[j].SizeBytes })
+	s := *top
+	n := len(s)
+	if n >= limit {
+		if dir.SizeBytes <= s[n-1].SizeBytes {
+			return
+		}
+		idx := sort.Search(n, func(i int) bool { return s[i].SizeBytes < dir.SizeBytes })
+		copy(s[idx+1:], s[idx:n-1])
+		s[idx] = dir
 		return
 	}
-	minIdx := len(*top) - 1
-	if dir.SizeBytes <= (*top)[minIdx].SizeBytes {
-		return
-	}
-	(*top)[minIdx] = dir
-	sort.Slice(*top, func(i, j int) bool { return (*top)[i].SizeBytes > (*top)[j].SizeBytes })
+	idx := sort.Search(n, func(i int) bool { return s[i].SizeBytes < dir.SizeBytes })
+	s = append(s, dir)
+	copy(s[idx+1:], s[idx:n])
+	s[idx] = dir
+	*top = s
 }
 
 func collapseAncestorDirectories(
@@ -701,12 +773,20 @@ func collapseAncestorDirectories(
 		descendantRatio = 0.70
 	}
 
-	items := append([]FilesystemLargestDirectory(nil), candidates...)
+	// Precompute the normalized path + depth once per candidate. The O(n²)
+	// pairwise descendant check below would otherwise re-normalize both paths on
+	// every comparison (up to ~4M comparisons × 2 normalizations, each allocating
+	// several strings) for a single scan's post-processing.
+	items := make([]collapseCandidate, len(candidates))
+	for i, c := range candidates {
+		norm := normalizePathForHierarchy(c.Path)
+		items[i] = collapseCandidate{dir: c, norm: norm, depth: pathDepthNormalized(norm)}
+	}
 	sort.Slice(items, func(i, j int) bool {
-		if items[i].SizeBytes == items[j].SizeBytes {
-			return pathDepth(items[i].Path) > pathDepth(items[j].Path)
+		if items[i].dir.SizeBytes == items[j].dir.SizeBytes {
+			return items[i].depth > items[j].depth
 		}
-		return items[i].SizeBytes > items[j].SizeBytes
+		return items[i].dir.SizeBytes > items[j].dir.SizeBytes
 	})
 
 	pruned := make([]bool, len(items))
@@ -715,7 +795,7 @@ func collapseAncestorDirectories(
 			continue
 		}
 		ancestor := items[i]
-		if ancestor.SizeBytes <= 0 {
+		if ancestor.dir.SizeBytes <= 0 {
 			continue
 		}
 		for j := range items {
@@ -723,13 +803,13 @@ func collapseAncestorDirectories(
 				continue
 			}
 			child := items[j]
-			if child.SizeBytes <= 0 {
+			if child.dir.SizeBytes <= 0 {
 				continue
 			}
-			if !isDescendantPath(child.Path, ancestor.Path) {
+			if !isDescendantNormalized(child.norm, ancestor.norm) {
 				continue
 			}
-			if shouldPruneAncestorByDescendant(ancestor, child, descendantRatio) {
+			if shouldPruneAncestorByDescendant(ancestor.dir, child.dir, descendantRatio) {
 				pruned[i] = true
 				break
 			}
@@ -741,12 +821,49 @@ func collapseAncestorDirectories(
 		if pruned[i] {
 			continue
 		}
-		result = append(result, items[i])
+		result = append(result, items[i].dir)
 		if len(result) >= limit {
 			break
 		}
 	}
 	return result
+}
+
+// collapseCandidate carries a directory aggregate alongside its precomputed
+// normalized path and depth so the pairwise ancestor scan never re-normalizes.
+type collapseCandidate struct {
+	dir   FilesystemLargestDirectory
+	norm  string
+	depth int
+}
+
+// isDescendantNormalized is isDescendantPath for paths already normalized via
+// normalizePathForHierarchy — no per-call normalization.
+func isDescendantNormalized(normalizedPath, normalizedAncestor string) bool {
+	if normalizedPath == "" || normalizedAncestor == "" || normalizedPath == normalizedAncestor {
+		return false
+	}
+	if normalizedAncestor == "/" {
+		return strings.HasPrefix(normalizedPath, "/") && normalizedPath != "/"
+	}
+	if len(normalizedAncestor) == 3 && normalizedAncestor[1] == ':' && normalizedAncestor[2] == '/' {
+		return strings.HasPrefix(normalizedPath, normalizedAncestor) && normalizedPath != normalizedAncestor
+	}
+	return strings.HasPrefix(normalizedPath, normalizedAncestor+"/")
+}
+
+// pathDepthNormalized is pathDepth for an already-normalized path.
+func pathDepthNormalized(normalized string) int {
+	if normalized == "" || normalized == "/" {
+		return 0
+	}
+	depth := 0
+	for _, part := range strings.Split(strings.Trim(normalized, "/"), "/") {
+		if part != "" {
+			depth++
+		}
+	}
+	return depth
 }
 
 func shouldPruneAncestorByDescendant(
@@ -782,22 +899,6 @@ func maxFloat(a, b float64) float64 {
 	return b
 }
 
-func pathDepth(path string) int {
-	normalized := normalizePathForHierarchy(path)
-	if normalized == "" || normalized == "/" {
-		return 0
-	}
-	parts := strings.Split(strings.Trim(normalized, "/"), "/")
-	depth := 0
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		depth++
-	}
-	return depth
-}
-
 func normalizePathForHierarchy(path string) string {
 	normalized := strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
 	if normalized == "" {
@@ -812,23 +913,6 @@ func normalizePathForHierarchy(path string) string {
 		}
 	}
 	return strings.ToLower(normalized)
-}
-
-func isDescendantPath(path string, ancestor string) bool {
-	normalizedPath := normalizePathForHierarchy(path)
-	normalizedAncestor := normalizePathForHierarchy(ancestor)
-	if normalizedPath == "" || normalizedAncestor == "" || normalizedPath == normalizedAncestor {
-		return false
-	}
-
-	if normalizedAncestor == "/" {
-		return strings.HasPrefix(normalizedPath, "/") && normalizedPath != "/"
-	}
-	if len(normalizedAncestor) == 3 && normalizedAncestor[1] == ':' && normalizedAncestor[2] == '/' {
-		return strings.HasPrefix(normalizedPath, normalizedAncestor) && normalizedPath != normalizedAncestor
-	}
-
-	return strings.HasPrefix(normalizedPath, normalizedAncestor+"/")
 }
 
 func markDirAndAncestorsIncomplete(dirStats map[string]*fsDirAggregate, path string) {

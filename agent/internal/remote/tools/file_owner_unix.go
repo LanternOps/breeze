@@ -6,8 +6,16 @@ import (
 	"os"
 	"os/user"
 	"strconv"
+	"sync"
 	"syscall"
 )
+
+// uidNameCache memoizes uid -> username resolution for the lifetime of the
+// process. A filesystem scan touches millions of files but only a handful of
+// distinct UIDs; without this, getFileOwner issued a fresh user.LookupId
+// (getpwuid_r via cgo/NSS — can reach files, sss, LDAP) per file. The cache
+// collapses that to one lookup per distinct UID.
+var uidNameCache sync.Map // map[uint32]string
 
 func getFileOwner(info os.FileInfo) string {
 	if info == nil || info.Sys() == nil {
@@ -18,10 +26,15 @@ func getFileOwner(info os.FileInfo) string {
 		return ""
 	}
 
-	uid := strconv.FormatUint(uint64(stat.Uid), 10)
-	usr, err := user.LookupId(uid)
-	if err != nil {
-		return uid
+	if cached, ok := uidNameCache.Load(stat.Uid); ok {
+		return cached.(string)
 	}
-	return usr.Username
+
+	uid := strconv.FormatUint(uint64(stat.Uid), 10)
+	name := uid
+	if usr, err := user.LookupId(uid); err == nil {
+		name = usr.Username
+	}
+	uidNameCache.Store(stat.Uid, name)
+	return name
 }
