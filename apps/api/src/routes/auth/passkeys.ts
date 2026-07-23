@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
-import { userPasskeys, users } from '../../db/schema';
+import { userPasskeys, users, authenticatorDevices, type AuthenticatorDevice } from '../../db/schema';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
   bindRefreshJtiToFamily,
@@ -31,6 +31,7 @@ import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
   evaluatePendingMfa,
+  enforceApproverRegisterStepUp,
   enforceExistingFactorStepUp,
   getClientIP,
   mfaDisabledResponse,
@@ -70,7 +71,11 @@ const registerOptionsSchema = z.object({
 const registerVerifySchema = z.object({
   credential: webAuthnCredentialSchema,
   name: passkeyNameSchema.optional(),
-  stepUpGrantId: z.string().optional()
+  stepUpGrantId: z.string().optional(),
+  // Dual enrollment (unified-security-devices §4.2): gated by the no-bypass
+  // enforceApproverRegisterStepUp, never by the add_factor gate above.
+  approverRegisterGrantId: z.string().optional(),
+  approverLabel: passkeyNameSchema.optional()
 });
 const passkeyMfaOptionsSchema = z.object({
   tempToken: z.string().min(1)
@@ -178,6 +183,23 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
   if (stepUpError) return stepUpError;
 
+  // Dual enrollment: consume the register_approver_device grant through the
+  // full no-bypass gate BEFORE the transaction. A denial DEGRADES (the passkey
+  // is still created — the user proved everything the passkey required); the
+  // gate's 403 Response is discarded, but it has already written the
+  // auth.authenticator.register.denied audit.
+  const { approverRegisterGrantId, approverLabel } = c.req.valid('json');
+  let approverOutcome:
+    | { registered: true; isPlatformBound: boolean; deviceId?: string }
+    | { registered: false; reason: 'grant_invalid' }
+    | undefined;
+  if (approverRegisterGrantId !== undefined) {
+    const approverGrantError = await enforceApproverRegisterStepUp(c, auth, approverRegisterGrantId, { consume: true });
+    approverOutcome = approverGrantError
+      ? { registered: false, reason: 'grant_invalid' }
+      : { registered: true, isPlatformBound: fields.deviceType === 'singleDevice' && !fields.backedUp };
+  }
+
   // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
   // ONE transaction with the epoch bump + refresh-family revoke — registering
   // a new passkey is a factor-add and must invalidate assurance minted before
@@ -205,6 +227,29 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       throw new Error('Passkey insert returned no row');
     }
     inserted = row;
+
+    if (approverOutcome?.registered) {
+      const [approverRow] = await tx
+        .insert(authenticatorDevices)
+        .values({
+          userId: auth.user.id,
+          kind: 'webauthn_platform',
+          label: approverLabel ?? name ?? 'This device',
+          publicKey: fields.publicKey,
+          credentialId: fields.credentialId,
+          signCount: fields.counter,
+          aaguid: fields.aaguid,
+          transports: (fields.transports ?? undefined) as AuthenticatorDevice['transports'],
+          isPlatformBound: approverOutcome.isPlatformBound
+          // last_used_at stays at its null default — PENDING until the first
+          // approval signature (deferred PoP, same as the standalone route).
+        })
+        .returning();
+      if (!approverRow) {
+        throw new Error('Approver device insert returned no row');
+      }
+      approverOutcome.deviceId = approverRow.id;
+    }
 
     // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
     // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
@@ -246,9 +291,26 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     }
   });
 
+  if (approverOutcome?.registered) {
+    writeAuthAudit(c, {
+      orgId: auth.orgId ?? undefined,
+      action: 'auth.authenticator.device.register',
+      result: 'success',
+      userId: auth.user.id,
+      email: auth.user.email,
+      details: {
+        deviceId: approverOutcome.deviceId,
+        kind: 'webauthn_platform',
+        isPlatformBound: approverOutcome.isPlatformBound,
+        via: 'passkey_dual_enroll'
+      }
+    });
+  }
+
   return c.json({
     success: true,
-    passkey: toPublicPasskey(inserted)
+    passkey: toPublicPasskey(inserted),
+    ...(approverOutcome ? { approver: approverOutcome } : {})
   });
 });
 
