@@ -103,7 +103,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   // JWT_SECRET, etc.) so keys hashed before ENROLLMENT_KEY_PEPPER was mandatory still match.
   const enrollmentKeyCandidates = hashEnrollmentKeyCandidates(data.enrollmentKey);
 
-  return withSystemDbAccessContext(async () => {
+  // #1105: the callback below returns either an early-exit Response (error
+  // paths) or the success-path data needed to build the response. The
+  // warranty-sync enqueue (Redis round-trip) must NOT fire while the
+  // withSystemDbAccessContext transaction is still open — it now runs after
+  // this block resolves and the pooled connection is released, mirroring
+  // reliabilityWorker.ts's processScanOrgs (#2640).
+  const enrollmentOutcome = await withSystemDbAccessContext(async (): Promise<
+    Response | { deviceId: string; responseBody: Record<string, unknown> }
+  > => {
     // Re-validated in the UPDATE WHERE below to close the TOCTOU window between
     // this initial lookup and the usage_count bump.
     const validEnrollmentKeyConditions = [
@@ -825,10 +833,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       },
     });
 
-    // Queue warranty lookup for the newly enrolled device (fire-and-forget)
-    queueWarrantySyncForDevice(device.id).catch((err) => {
-      console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
-    });
+    // Warranty sync is queued AFTER withSystemDbAccessContext resolves below
+    // (#1105) — it must not fire while this transaction is still open.
 
     // Close the MCP deployment-invite funnel if this enrollment key was
     // issued by `send_deployment_invites` (best-effort; no-op for manual
@@ -850,21 +856,39 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       captureException(err);
     }
 
-    return c.json({
-      agentId: agentId,
+    return {
       deviceId: device.id,
-      authToken: apiKey,
-      watchdogAuthToken: watchdogApiKey,
-      helperAuthToken: helperApiKey,
-      orgId: key.orgId,
-      siteId: key.siteId,
-      backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim() || undefined,
-      config: {
-        heartbeatIntervalSeconds: 60,
-        metricsCollectionIntervalSeconds: 30
+      responseBody: {
+        agentId: agentId,
+        deviceId: device.id,
+        authToken: apiKey,
+        watchdogAuthToken: watchdogApiKey,
+        helperAuthToken: helperApiKey,
+        orgId: key.orgId,
+        siteId: key.siteId,
+        backupServerUrl: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim() || undefined,
+        config: {
+          heartbeatIntervalSeconds: 60,
+          metricsCollectionIntervalSeconds: 30
+        },
+        mtls: mtlsCert,
+        manifestTrustKeys,
       },
-      mtls: mtlsCert,
-      manifestTrustKeys,
-    }, 201);
+    };
   });
+
+  if (enrollmentOutcome instanceof Response) {
+    // Error path — no device was enrolled, so no warranty sync to queue.
+    return enrollmentOutcome;
+  }
+
+  // #1105: fire-and-forget BullMQ enqueue now runs after the transaction has
+  // committed and the pooled connection has been released. Same fire-and-
+  // forget error handling as before — an enqueue failure must never fail
+  // enrollment.
+  queueWarrantySyncForDevice(enrollmentOutcome.deviceId).catch((err) => {
+    console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
+  });
+
+  return c.json(enrollmentOutcome.responseBody, 201);
 });

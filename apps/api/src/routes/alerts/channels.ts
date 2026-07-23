@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { notificationChannels, organizations, partners } from '../../db/schema';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { dbAccessContextFromAuth, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   canManagePartnerWidePolicies,
@@ -42,6 +42,20 @@ import { PERMISSIONS } from '../../services/permissions';
 export const channelsRoutes = new Hono();
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+/**
+ * POST /channels/:id/test is registered in SELF_MANAGED_DB_CONTEXT_ROUTES
+ * (#1105 / BREEZE-A) — it fires a real outbound notification send that can
+ * take up to ~10s, so the auth middleware does NOT wrap this route in the
+ * usual request transaction. Reads/writes instead run in short, explicit
+ * contexts built from the same fields the middleware would have used
+ * (`dbAccessContextFromAuth` mirrors the `buildDbAccessContext` call in
+ * auth.ts's dispatch), so RLS visibility is identical to the auto-wrapped
+ * path. Mirrors `withProviderDbContext` in routes/sso.ts.
+ */
+function withChannelsDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
+}
 
 function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
   // lastTestedAt and lastTestStatus are carried through via the ...channel spread;
@@ -362,7 +376,10 @@ channelsRoutes.post(
     const auth = c.get('auth');
     const channelId = c.req.param('id')!;
 
-    const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
+    // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
+    // (the outbound send below is not tenant-bounded and can take ~10s), so
+    // there is no ambient request transaction to read under (#1105).
+    const channel = await withChannelsDbContext(auth, () => getNotificationChannelWithOrgCheck(channelId, auth));
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
     }
@@ -657,13 +674,17 @@ channelsRoutes.post(
     // Best-effort audit field — a DB hiccup here must not mask a successful
     // (or completed) test send. The HTTP response reflects testResult, not this write.
     // updatedAt is intentionally NOT bumped here; running a test is not a user content change.
+    // Own short context (#1105) — the outbound send above ran with no ambient
+    // request transaction; this write reopens one just for the persist.
     try {
-      await db.update(notificationChannels)
-        .set({
-          lastTestedAt: new Date(),
-          lastTestStatus: testResult.success ? 'success' : 'failed',
-        })
-        .where(eq(notificationChannels.id, channel.id));
+      await withChannelsDbContext(auth, () =>
+        db.update(notificationChannels)
+          .set({
+            lastTestedAt: new Date(),
+            lastTestStatus: testResult.success ? 'success' : 'failed',
+          })
+          .where(eq(notificationChannels.id, channel.id))
+      );
     } catch (persistError) {
       console.error('[Channels] Failed to persist test outcome', { channelId: channel.id, persistError });
     }
