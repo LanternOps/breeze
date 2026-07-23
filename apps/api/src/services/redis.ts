@@ -155,12 +155,25 @@ export function isRedisAvailable(): boolean {
 }
 
 export async function closeRedis(): Promise<void> {
+  // `.quit()` writes a QUIT command over the socket. During shutdown the peer
+  // may have already closed the TCP connection, so the write can throw
+  // EPIPE/ECONNRESET (Sentry BREEZE-R). The goal — releasing the connection —
+  // is already achieved when the peer closed it, so swallow the teardown error
+  // rather than let it count as a failed shutdown task and flip the exit code.
   if (redisClient) {
-    await redisClient.quit();
+    try {
+      await redisClient.quit();
+    } catch (err) {
+      console.warn('[redis] closeRedis: redisClient.quit() failed (connection already closed?):', err);
+    }
     redisClient = null;
   }
   if (bullmqConnection) {
-    await bullmqConnection.quit();
+    try {
+      await bullmqConnection.quit();
+    } catch (err) {
+      console.warn('[redis] closeRedis: bullmqConnection.quit() failed (connection already closed?):', err);
+    }
     bullmqConnection = null;
   }
 }

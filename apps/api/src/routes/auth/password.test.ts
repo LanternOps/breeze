@@ -134,7 +134,8 @@ vi.mock('./ssoPolicy', () => ({
 }));
 
 import { passwordRoutes } from './password';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
+import { invalidateAllUserSessions } from '../../services';
 import { writeAuthAudit } from './helpers';
 import { getPasswordResetEligibility } from '../../services/passwordResetEligibility';
 import { enqueuePasswordResetRequest } from '../../services/authEmailQueue';
@@ -467,6 +468,48 @@ describe('password reset eligibility (#719)', () => {
           userId: 'u-pending',
         }),
       );
+    });
+
+    it('invalidates all user sessions INSIDE a system DB-access context on a successful reset (BREEZE-T / #1375)', async () => {
+      // The `sessions` table is user-scoped RLS (shape 6): the DELETE only
+      // matches when a DB access context is active. Before the fix the
+      // invalidateAllUserSessions() call ran contextless — RLS silently
+      // matched 0 rows, leaving old sessions alive after a password reset.
+      // This asserts the call now runs wrapped in withSystemDbAccessContext.
+      const envelope = JSON.stringify({ userId: 'u-1', passwordResetEpoch: 1, email: 'user@example.test' });
+      getdelMock.mockResolvedValue(envelope);
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ passwordResetEpoch: 1, email: 'user@example.test' }]) as any,
+      );
+      getEligibilityForUserMock.mockResolvedValue({
+        allowed: true,
+        userId: 'u-1',
+        email: 'user@example.test',
+      });
+      stubTransaction();
+
+      let systemContextDepth = 0;
+      let invalidatedInsideContext: boolean | null = null;
+      vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: any) => {
+        systemContextDepth++;
+        try {
+          return await fn();
+        } finally {
+          systemContextDepth--;
+        }
+      });
+      vi.mocked(invalidateAllUserSessions).mockImplementation(async () => {
+        invalidatedInsideContext = systemContextDepth > 0;
+      });
+
+      const res = await postJson('/reset-password', {
+        token: 'reset-token',
+        password: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(invalidateAllUserSessions)).toHaveBeenCalledWith('u-1');
+      expect(invalidatedInsideContext).toBe(true);
     });
 
     it('still returns success when runPostCommitCleanup reports a partial failure (best-effort)', async () => {

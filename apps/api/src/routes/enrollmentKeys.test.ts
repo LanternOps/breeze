@@ -130,6 +130,7 @@ import {
   publicShortLinkRoutes,
 } from "./enrollmentKeys";
 import { db, withSystemDbAccessContext } from "../db";
+import { createAuditLogAsync } from "../services/auditService";
 import { MsiSigningService } from "../services/msiSigning";
 import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
@@ -923,6 +924,17 @@ describe("GET /public-download/:platform", () => {
     );
     // No db.update — download does not consume enrollment slots
     expect(db.update).not.toHaveBeenCalled();
+
+    // BREEZE-5: the anonymous public-download audit row must use the
+    // anonymous-actor UUID sentinel, not the literal string "public" —
+    // audit_logs.actor_id is `uuid NOT NULL`, so "public" made every
+    // anonymous-download audit insert fail with pg 22P02 (invalid uuid).
+    expect(vi.mocked(createAuditLogAsync)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "enrollment_key.public_download",
+        actorId: "00000000-0000-0000-0000-000000000000",
+      }),
+    );
 
     issueSpy.mockRestore();
   });

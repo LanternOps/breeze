@@ -250,7 +250,13 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // Invalidate all sessions — separate legacy mechanism, not absorbed by the
   // lifecycle service (overseer decision 2026-07-11); best-effort, password
   // is already changed and durably committed above.
-  await invalidateAllUserSessions(userId);
+  //
+  // The `sessions` table is user-scoped RLS (shape 6): the DELETE only matches
+  // when breeze_current_user_id() is set or scope is 'system'. This reset flow
+  // has no authMiddleware, so there is no ambient DB-access context here — the
+  // bare call matched 0 rows and silently left old sessions alive (#1375,
+  // Sentry BREEZE-T). Wrap in a system context so the delete actually runs.
+  await withSystemDbAccessContext(async () => invalidateAllUserSessions(userId));
   // Post-commit cleanup (Redis JWT cutoff + permission-cache clear + MCP
   // OAuth grant sweep) — best-effort and independent per step; the durable
   // revocation above is already committed regardless of outcome here.

@@ -17,6 +17,7 @@ import {
 import { userRateLimit } from "../middleware/userRateLimit";
 import { randomBytes } from "crypto";
 import { createAuditLogAsync } from "../services/auditService";
+import { ANONYMOUS_ACTOR_ID } from "../services/auditEvents";
 import { PERMISSIONS } from "../services/permissions";
 import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enrollmentKeySecurity";
 import {
@@ -1879,7 +1880,7 @@ async function serveInstaller(
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: "public",
+      actorId: ANONYMOUS_ACTOR_ID,
       action: "enrollment_key.public_download",
       resourceType: "enrollment_key",
       resourceId: keyRow.id,
@@ -1918,7 +1919,7 @@ async function serveInstaller(
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: "public",
+      actorId: ANONYMOUS_ACTOR_ID,
       action: "enrollment_key.public_download",
       resourceType: "enrollment_key",
       resourceId: keyRow.id,
