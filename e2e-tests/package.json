@@ -9,14 +9,10 @@
     "test:headed": "playwright test --headed",
     "test:debug": "PWDEBUG=1 playwright test",
     "test:report": "playwright show-report",
-    "doc-verify": "tsx doc-verify/cli.ts",
-    "doc-verify:extract": "tsx doc-verify/cli.ts extract",
-    "doc-verify:run": "tsx doc-verify/cli.ts run",
     "monitor": "tsx live-signup/monitor.ts",
     "stage:runtime-extension-fixture": "tsx fixtures/runtime-extension/stage.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112.3",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {

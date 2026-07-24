@@ -67,6 +67,9 @@ jobs:
       - name: Test community README automation
         run: pnpm test:community-readme
 
+      - name: Guard retired AI documentation automation
+        run: pnpm test:docs-automation
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

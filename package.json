@@ -11,6 +11,7 @@
     "test": "turbo run test",
     "test:load-static": "pnpm --dir load-tests test:static",
     "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
+    "test:docs-automation": "node --test .github/scripts/docs-automation-retirement.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
