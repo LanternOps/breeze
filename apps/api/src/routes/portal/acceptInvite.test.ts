@@ -14,7 +14,10 @@ vi.mock('../../db', () => ({
   withDbAccessContext: (_ctx: any, fn: any) => fn(),
   withSystemDbAccessContext: (fn: any) => fn()
 }));
-vi.mock('../../db/schema', () => ({ portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status' } }));
+// discoveredAssetTypeEnum: networkBaseline.ts (transitive import of the portal
+// route graph) reads its .enumValues at module load, so the full-module mock
+// must provide it or the suite fails to load.
+vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => null }));
 
 import { authRoutes } from './auth';
