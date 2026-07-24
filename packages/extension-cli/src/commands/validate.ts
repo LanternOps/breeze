@@ -76,14 +76,20 @@ export async function validateExtension(options: ValidateOptions): Promise<Valid
   let manifestBytes: Buffer;
   try {
     manifestBytes = await readFile(manifestPath);
-  } catch {
-    return {
-      ok: false,
-      findings: [{
-        code: 'manifest_missing',
-        message: 'source tree is missing required "manifest.json"',
-      }],
-    };
+  } catch (error) {
+    // Only a genuinely absent file is "manifest_missing". A permission/IO error
+    // (EACCES, EISDIR, …) is a real failure the author needs to see, not a
+    // conformance finding — surface it rather than mislabeling it as missing.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {
+        ok: false,
+        findings: [{
+          code: 'manifest_missing',
+          message: 'source tree is missing required "manifest.json"',
+        }],
+      };
+    }
+    throw error;
   }
 
   let manifestRaw: unknown;
