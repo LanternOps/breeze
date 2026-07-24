@@ -1113,3 +1113,89 @@ func TestRecoverPopulatesElapsedAndPhase(t *testing.T) {
 		t.Fatalf("phase=%q, want the last reached phase", result.Phase)
 	}
 }
+
+// SCM can keep reporting the PRE-control state for a short window after a
+// control is issued, before the service acknowledges the transition (a
+// stopping agent needs ~100-200ms to reach STOP_PENDING). Treating that first
+// read as a firm wrong answer made every graceful restart fail in 0-1ms with
+// an orphaned stop already in flight — the exact "recovery transition_timeout
+// failed during wait_stopped, elapsed_ms:0" seen on every field kill cycle
+// (#2763). The wait must absorb a brief acknowledge delay.
+func TestGracefulStopToleratesSlowScmAcknowledge(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100}, // initial query
+		serviceSnapshot{State: serviceRunning, PID: 100}, // post-Stop: not yet acknowledged
+		serviceSnapshot{State: serviceRunning, PID: 100}, // still not acknowledged
+		serviceSnapshot{State: serviceStopPending, PID: 100},
+		serviceSnapshot{State: serviceStopped},
+		serviceSnapshot{State: serviceStopped},           // post-Start: not yet acknowledged
+		serviceSnapshot{State: serviceStartPending, PID: 200},
+		serviceSnapshot{State: serviceRunning, PID: 200},
+	)
+	controller := newTestWindowsRecoveryController(backend)
+	result, err := controller.Recover(1, RecoveryRequest{StateFilePID: 99})
+	if err != nil {
+		t.Fatalf("graceful recovery must survive a slow SCM acknowledge, got %v", err)
+	}
+	if backend.stopCalls != 1 || backend.startCalls != 1 {
+		t.Fatalf("stop=%d start=%d, want 1/1", backend.stopCalls, backend.startCalls)
+	}
+	if result.NewPID != 200 || result.FinalState != string(serviceRunning) {
+		t.Fatalf("result=%+v, want NewPID=200 running", result)
+	}
+}
+
+// The acknowledge grace must not mask a genuinely settled wrong answer: if
+// SCM keeps reporting the non-target, non-pending state past the grace
+// window, the wait still fails firmly.
+func TestWaitForStateStillFailsOnFirmWrongAnswer(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100}, // initial query
+		serviceSnapshot{State: serviceRunning, PID: 100}, // repeats forever post-Stop
+	)
+	controller := newTestWindowsRecoveryController(backend)
+	result, err := controller.Recover(1, RecoveryRequest{StateFilePID: 99})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) {
+		t.Fatalf("err=%v, want RecoveryError", err)
+	}
+	if recoveryErr.Class != RecoveryFailureTransitionTimeout {
+		t.Fatalf("class=%v, want transition timeout", recoveryErr.Class)
+	}
+	if backend.startCalls != 0 {
+		t.Fatalf("start must never be issued after an unresolved stop, startCalls=%d", backend.startCalls)
+	}
+	if result.FinalState != string(serviceRunning) {
+		t.Fatalf("final state %q, want running (the firm wrong answer)", result.FinalState)
+	}
+}
+
+// Ensure-start that walks in on an in-flight stop transition must START the
+// service once the transition settles to Stopped. The old observe-only
+// behavior assumed "the next attempt will issue Start" — but on the
+// recovery-exhaustion path (ensure-started-before-failover, #2763) there IS
+// no next attempt, and the observed settle left the agent stopped forever.
+func TestEnsureStartStartsAfterObservedStopSettles(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceStopPending, PID: 100}, // initial query: stop in flight
+		serviceSnapshot{State: serviceStopPending, PID: 100},
+		serviceSnapshot{State: serviceStopped},               // transition settles
+		serviceSnapshot{State: serviceStopped},               // post-Start: not yet acknowledged
+		serviceSnapshot{State: serviceStartPending, PID: 300},
+		serviceSnapshot{State: serviceRunning, PID: 300},
+	)
+	controller := newTestWindowsRecoveryController(backend)
+	result, err := controller.Recover(2, RecoveryRequest{Intent: RecoveryIntentEnsureStart})
+	if err != nil {
+		t.Fatalf("ensure-start after observed settle: %v", err)
+	}
+	if backend.startCalls != 1 {
+		t.Fatalf("startCalls=%d, want 1 — the settle must be followed by a Start", backend.startCalls)
+	}
+	if backend.stopCalls != 0 {
+		t.Fatalf("ensure-start must never stop anything, stopCalls=%d", backend.stopCalls)
+	}
+	if result.NewPID != 300 || result.FinalState != string(serviceRunning) {
+		t.Fatalf("result=%+v, want NewPID=300 running", result)
+	}
+}

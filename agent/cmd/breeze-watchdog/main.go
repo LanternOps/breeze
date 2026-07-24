@@ -589,7 +589,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case env := <-ipcMessages:
-			handleIPCMessage(env, wd, journal, cfg, tokenStore)
+			handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
 
 		case <-failoverTicker.C:
 			// Only poll in FAILOVER state.
@@ -642,6 +642,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelError, "recovery.flap_detected", map[string]any{
 					"count_24h": recovery.Count24h(),
 				})
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 				break
 			}
@@ -650,6 +651,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelError, "recovery.exhausted", map[string]any{
 					"attempts": recovery.Attempts(),
 				})
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 				break
 			}
@@ -690,6 +692,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 
 			if shouldFailoverRecovery(result) {
 				pendingVerify = nil
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 			} else if shouldVerifyRecovery(result, err) {
 				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
@@ -698,6 +701,25 @@ func runWatchdog(stopCh <-chan struct{}) {
 		case watchdog.StateFailover:
 			if pendingVerify != nil {
 				pendingVerify = nil
+			}
+			// Self-recovery: if the agent is demonstrably healthy — live IPC
+			// AND a fresh heartbeat from any source (state file or IPC
+			// state_sync) — leave FAILOVER. Without this the only exits were
+			// a server-delivered command (useless when the server or the
+			// poll channel is down) and an IPC *re*connect edge (never fires
+			// on a continuously-connected pipe), so a healthy box could sit
+			// in FAILOVER forever (#2763). Manual `sc start BreezeAgent` on
+			// a stranded box now heals the watchdog too.
+			if ipcClient.IsConnected() {
+				if hb := healthChecker.LastKnownHeartbeat(agentState); !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold {
+					journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
+						"last_heartbeat": hb.Format(time.RFC3339),
+					})
+					// recovery.Reset() happens in the MONITORING block on the
+					// next tick — no need to duplicate it here.
+					wd.HandleEvent(watchdog.EventAgentRecovered)
+					break
+				}
 			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
 				// Re-read the on-disk config at every failover-window start:
@@ -756,7 +778,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 }
 
 // handleIPCMessage dispatches IPC envelope messages from the agent.
-func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder) {
+func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
 		var intent ipc.ShutdownIntent
@@ -803,6 +825,20 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"connected":     sync.Connected,
 			"lastHeartbeat": sync.LastHeartbeat,
 		})
+		// Feed the staleness check: the agent sends a state_sync only after
+		// a successful server heartbeat, so this is authoritative liveness
+		// even when agent.state on disk is unwritable (AV/EDR sharing
+		// violations). Without this, the file alone drove restart decisions
+		// and a blocked writer read as a dead agent (#2763).
+		if health != nil && sync.LastHeartbeat != "" {
+			if hb, perr := time.Parse(time.RFC3339, sync.LastHeartbeat); perr == nil {
+				health.NoteStateSync(hb)
+			} else {
+				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_heartbeat", map[string]any{
+					"value": sync.LastHeartbeat, "error": perr.Error(),
+				})
+			}
+		}
 
 	case ipc.TypeWatchdogPong:
 		// Pong received — IPC is healthy. Already tracked by health checker.
@@ -813,6 +849,26 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"type": env.Type,
 		})
 	}
+}
+
+// ensureAgentStartedBeforeFailover issues a budget-free, best-effort
+// ensure-start right before the watchdog parks in FAILOVER. A failed graceful
+// attempt may have already stopped the agent service when the flap/budget
+// gate aborts the ladder; FAILOVER ignores health events, so entering it with
+// the agent stopped is permanent until a human intervenes (#2763). The
+// outcome is journaled and failure never blocks the transition.
+func ensureAgentStartedBeforeFailover(ctx context.Context, recovery *watchdog.RecoveryManager, journal *watchdog.Journal) {
+	result, err := recovery.BestEffortEnsureStart(ctx)
+	fields := map[string]any{
+		"action_taken": result.ActionTaken,
+		"final_state":  result.FinalState,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+		journal.Log(watchdog.LevelError, "recovery.ensure_started_before_failover_failed", fields)
+		return
+	}
+	journal.Log(watchdog.LevelInfo, "recovery.ensure_started_before_failover", fields)
 }
 
 // handleFailoverPoll sends a heartbeat and polls for commands during failover.

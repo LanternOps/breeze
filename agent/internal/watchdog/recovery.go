@@ -279,6 +279,29 @@ func (r *RecoveryManager) Attempt(req RecoveryRequest) (RecoveryResult, error) {
 // Attempts returns the current attempt count within the active window.
 func (r *RecoveryManager) Attempts() int { return r.attempts }
 
+// BestEffortEnsureStart dispatches an ensure-start to the OS controller
+// WITHOUT consuming an escalation slot, a 24h history entry, or checking the
+// budget. It exists for exactly one moment: recovery exhaustion. A failed
+// graceful attempt may have already issued the SCM stop when the flap/budget
+// gate aborts the ladder, and parking in FAILOVER must never leave the agent
+// service stopped — FAILOVER ignores health events and its only restart
+// channel requires a reachable server, so a stop at that boundary is
+// permanent until a human intervenes (#2763, field-confirmed 2026-07-24).
+// Best-effort by design: the caller journals the outcome and proceeds to
+// FAILOVER regardless.
+func (r *RecoveryManager) BestEffortEnsureStart(ctx context.Context) (RecoveryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req := RecoveryRequest{Intent: RecoveryIntentEnsureStart, Context: ctx}
+	result, err := r.svc.Recover(r.attempts, req)
+	result.Intent = req.Intent
+	if result.Disposition == "" {
+		result.Disposition = RecoveryDispositionNone
+	}
+	return result, err
+}
+
 // Reset clears the attempt counter, the terminal-failure latch, and resets the
 // window start time.
 func (r *RecoveryManager) Reset() {

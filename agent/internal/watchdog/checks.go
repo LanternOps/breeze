@@ -47,6 +47,13 @@ type HealthChecker struct {
 	staleThreshold time.Duration
 	ipcFailCount   int
 	staleVetoCount int
+	// lastSyncedHeartbeat is the freshest LastHeartbeat received from the
+	// agent over IPC (state_sync). It corroborates the on-disk agent.state:
+	// on endpoints where AV/EDR blocks every agent.state write, the file is
+	// missing or frozen while the agent is demonstrably healthy — killing on
+	// the file alone is what restart-stormed and stranded a fleet install on
+	// 2026-07-24 (#2763). The freshest of (file, sync) wins.
+	lastSyncedHeartbeat time.Time
 }
 
 // NewHealthChecker constructs a HealthChecker.
@@ -84,21 +91,49 @@ func (h *HealthChecker) CheckIPC() string {
 	return CheckOK
 }
 
-// CheckHeartbeatStaleness returns CheckOK if the heartbeat is fresh or has
-// never been set (zero time = grace period). Returns CheckHeartbeatStale if s
-// is nil or the heartbeat is older than staleThreshold.
+// NoteStateSync records the agent-reported LastHeartbeat delivered over IPC
+// (state_sync). The agent only sends a state_sync after a successful HTTP-200
+// heartbeat, so this is authoritative liveness evidence even when the on-disk
+// agent.state cannot be written. Out-of-order or unparsable values never
+// regress the stored timestamp.
+func (h *HealthChecker) NoteStateSync(lastHeartbeat time.Time) {
+	if lastHeartbeat.After(h.lastSyncedHeartbeat) {
+		h.lastSyncedHeartbeat = lastHeartbeat
+	}
+}
+
+// LastKnownHeartbeat returns the freshest heartbeat timestamp known from any
+// source: the on-disk agent.state or the IPC state_sync channel. Zero if
+// neither has ever produced one.
+func (h *HealthChecker) LastKnownHeartbeat(s *state.AgentState) time.Time {
+	hb := h.lastSyncedHeartbeat
+	if s != nil && s.LastHeartbeat.After(hb) {
+		hb = s.LastHeartbeat
+	}
+	return hb
+}
+
+// CheckHeartbeatStaleness returns CheckOK if the freshest known heartbeat
+// (on-disk agent.state OR IPC state_sync — see NoteStateSync) is fresh, or if
+// no heartbeat has been recorded yet while a state file exists (zero time =
+// startup grace). Returns CheckHeartbeatStale when s is nil AND no state_sync
+// was ever received, or when the freshest known heartbeat is older than
+// staleThreshold. The file must never outvote fresher IPC evidence: a
+// missing/frozen agent.state with live state_syncs is a blocked WRITER
+// (AV/EDR on ProgramData), not a dead agent.
 func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
-	if s == nil {
+	hb := h.LastKnownHeartbeat(s)
+	if s == nil && hb.IsZero() {
 		return CheckHeartbeatStale
 	}
-	if s.LastHeartbeat.IsZero() {
+	if hb.IsZero() {
 		// Grace period: heartbeat not yet recorded. A restarted agent gets a
 		// fresh veto budget too — residual vetoes from before the restart
 		// must not fast-track the new process to escalation.
 		h.staleVetoCount = 0
 		return CheckOK
 	}
-	if time.Since(s.LastHeartbeat) > h.staleThreshold {
+	if time.Since(hb) > h.staleThreshold {
 		return CheckHeartbeatStale
 	}
 	// A fresh heartbeat re-arms the stale-veto budget.
