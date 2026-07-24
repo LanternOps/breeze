@@ -310,7 +310,7 @@ func TestReapIdleSessionsReapsStrandedCaptureSessions(t *testing.T) {
 		sessions: map[string]*Session{
 			session.SessionID: session,
 		},
-		byIdentity: map[string][]*Session{session.IdentityKey: []*Session{session}},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	b.reapIdleSessions()
