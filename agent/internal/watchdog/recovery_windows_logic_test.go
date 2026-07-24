@@ -1128,7 +1128,7 @@ func TestGracefulStopToleratesSlowScmAcknowledge(t *testing.T) {
 		serviceSnapshot{State: serviceRunning, PID: 100}, // still not acknowledged
 		serviceSnapshot{State: serviceStopPending, PID: 100},
 		serviceSnapshot{State: serviceStopped},
-		serviceSnapshot{State: serviceStopped},           // post-Start: not yet acknowledged
+		serviceSnapshot{State: serviceStopped}, // post-Start: not yet acknowledged
 		serviceSnapshot{State: serviceStartPending, PID: 200},
 		serviceSnapshot{State: serviceRunning, PID: 200},
 	)
@@ -1179,8 +1179,8 @@ func TestEnsureStartStartsAfterObservedStopSettles(t *testing.T) {
 	backend := newFakeWindowsBackend(
 		serviceSnapshot{State: serviceStopPending, PID: 100}, // initial query: stop in flight
 		serviceSnapshot{State: serviceStopPending, PID: 100},
-		serviceSnapshot{State: serviceStopped},               // transition settles
-		serviceSnapshot{State: serviceStopped},               // post-Start: not yet acknowledged
+		serviceSnapshot{State: serviceStopped}, // transition settles
+		serviceSnapshot{State: serviceStopped}, // post-Start: not yet acknowledged
 		serviceSnapshot{State: serviceStartPending, PID: 300},
 		serviceSnapshot{State: serviceRunning, PID: 300},
 	)
