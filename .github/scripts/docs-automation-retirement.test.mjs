@@ -84,6 +84,11 @@ test('Docs CI keeps its check identity and runs deterministic validation', () =>
 
   assert.match(docsWorkflow, /^name: Docs CI$/mu);
   assert.match(docsWorkflow, /^\s+name: CI Success$/mu);
+  assert.match(
+    docsWorkflow,
+    /- name: Checkout\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+persist-credentials: false/u,
+    'Docs CI checkout must disable persisted GitHub credentials',
+  );
   assert.match(docsWorkflow, /pnpm --filter @breeze\/docs check/u);
   assert.match(docsWorkflow, /pnpm --filter @breeze\/docs build/u);
   assert.equal(docsPackage.scripts?.check, 'astro check');
