@@ -4,7 +4,8 @@
 - **Status:** Approved for implementation planning
 - **Source:** `internal/security-reviews/2026-07-23-full-security-review.md`
 - **Original review baseline:** `d137f5d2826226548e324236995409b08755d785`
-- **Revalidated planning baseline:** `6ddee2cc53db9f0fad55f63295a8144305127fac`
+- **Initial reviewed baseline:** `6ddee2cc53db9f0fad55f63295a8144305127fac`
+- **Latest upstream delta revalidated:** `6bbd949abdbad61a32d10add0de86572564cf4b4` (`v0.100.0`)
 
 ## Objective
 
