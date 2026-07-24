@@ -253,7 +253,7 @@ func TestWriteRetriesTransientRenameFailure(t *testing.T) {
 		}
 		return os.Rename(oldpath, newpath)
 	}
-	defer func() { renameStateFile = os.Rename }()
+	defer func() { renameStateFile = renameReplace }()
 
 	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
 	if err := Write(path, s); err != nil {
@@ -284,7 +284,7 @@ func TestWritePersistentRenameFailure(t *testing.T) {
 		calls++
 		return fmt.Errorf("simulated persistent sharing violation")
 	}
-	defer func() { renameStateFile = os.Rename }()
+	defer func() { renameStateFile = renameReplace }()
 
 	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
 	err := Write(path, s)

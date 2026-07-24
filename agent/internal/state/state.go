@@ -38,21 +38,21 @@ type AgentState struct {
 	Timestamp     time.Time `json:"timestamp"`
 }
 
-// Rename retry bounds. On Windows, MoveFileEx(REPLACE_EXISTING) fails with
-// ERROR_SHARING_VIOLATION while any other process holds the destination open
-// without FILE_SHARE_DELETE — third-party AV/search indexers scanning the
-// fresh file, or (during fleet rollout of the share-delete fix) older
-// watchdog builds reading it. The collision window is milliseconds, so a
-// short bounded backoff absorbs it instead of dropping the whole update — a
-// dropped heartbeat update is what the watchdog reads as a wedged agent
-// (2026-07-22 US prod restart-storm incident).
+// Rename retry bounds. The Windows renameReplace primitive uses POSIX rename
+// semantics so a concurrent reader (the watchdog polling agent.state) never
+// blocks the swap — that was the 2026-07-22 US prod restart-storm root cause,
+// where MoveFileEx(REPLACE_EXISTING) failed ~78% of the time under a live
+// reader. The bounded backoff remains a secondary safety net for a genuinely
+// exclusive holder (third-party AV/search indexers briefly locking the fresh
+// file with no share access at all), which POSIX rename cannot bypass.
 const (
 	renameAttempts    = 4
 	renameBackoffBase = 25 * time.Millisecond
 )
 
-// renameStateFile is a seam for tests to inject rename failures.
-var renameStateFile = os.Rename
+// renameStateFile is a seam for tests to inject rename failures. It defaults to
+// renameReplace: POSIX-semantics rename on Windows, os.Rename elsewhere.
+var renameStateFile = renameReplace
 
 // Write atomically writes the state file as JSON.
 func Write(path string, s *AgentState) error {
@@ -73,7 +73,7 @@ func Write(path string, s *AgentState) error {
 			return nil
 		}
 	}
-	os.Remove(tmpPath)
+	_ = os.Remove(tmpPath)
 	// Name the attempt count: a caller's warn log must distinguish "failed
 	// instantly once" from "destination held across ~175ms of retries" —
 	// the AV-scan-vs-wedged-reader distinction incident forensics hinge on.

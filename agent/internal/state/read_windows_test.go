@@ -10,10 +10,14 @@ import (
 )
 
 // TestReadDoesNotBlockConcurrentRename is the regression test for the
-// 2026-07-22 incident: a reader holding agent.state open without
-// FILE_SHARE_DELETE makes the agent's MoveFileEx(REPLACE_EXISTING) fail with
-// ERROR_SHARING_VIOLATION. Hammer Read while Write renames over the same
-// destination; with the share-delete open every rename must succeed.
+// 2026-07-22 incident: a reader holding agent.state open collides with the
+// agent replacing it. The share-delete reader (read_windows.go) stops
+// ERROR_SHARING_VIOLATION, but os.Rename's MoveFileEx(REPLACE_EXISTING) still
+// fails ~78% of the time with ERROR_ACCESS_DENIED (delete-pending target) —
+// renameStateFile uses POSIX rename semantics to make the swap succeed every
+// time. Hammer Read while renameStateFile replaces the destination; every
+// rename must succeed with NO retry (renameStateFile, not state.Write, so a
+// retry loop cannot mask a regression in the primitive).
 func TestReadDoesNotBlockConcurrentRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
@@ -39,10 +43,9 @@ func TestReadDoesNotBlockConcurrentRename(t *testing.T) {
 		}
 	}()
 
-	// Use the raw WriteFile+Rename pair, NOT state.Write: Write's bounded
-	// retry would silently heal a partially effective fix (e.g. a dropped
-	// FILE_SHARE_DELETE flag that only sometimes collides), and this test
-	// must prove every single rename succeeds with a reader mid-flight.
+	// Use WriteFile + renameStateFile directly, NOT state.Write: Write's
+	// bounded retry would silently heal a partially effective fix, and this
+	// test must prove every single rename succeeds with a reader mid-flight.
 	tmpPath := path + ".tmp"
 	payload := []byte(`{"status":"running","pid":1,"version":"1.0.0"}`)
 	for i := 0; i < 500; i++ {
@@ -51,7 +54,7 @@ func TestReadDoesNotBlockConcurrentRename(t *testing.T) {
 			<-readerDone
 			t.Fatalf("WriteFile %d: %v", i, err)
 		}
-		if err := os.Rename(tmpPath, path); err != nil {
+		if err := renameStateFile(tmpPath, path); err != nil {
 			close(stop)
 			<-readerDone
 			t.Fatalf("Rename %d failed under concurrent reads: %v", i, err)
