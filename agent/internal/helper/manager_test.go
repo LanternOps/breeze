@@ -37,7 +37,7 @@ func TestApplyDisabledStopsRunningHelperAfterRestart(t *testing.T) {
 	removeAutoStartFunc = func() error { return nil }
 	stopHelperLegacyFunc = func() {}
 
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -86,7 +86,7 @@ func TestApplyRestartsHelperOnConfigChangeWhenIdle(t *testing.T) {
 
 	stopped := 0
 	spawned := 0
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -146,7 +146,7 @@ func TestApplyDefersRestartWhileChatActive(t *testing.T) {
 
 	stopped := 0
 	spawned := 0
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
@@ -193,7 +193,7 @@ func TestApplyEnabledSpawnsPerSession(t *testing.T) {
 	removeAutoStartFunc = func() error { return nil }
 	stopHelperLegacyFunc = func() {}
 
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{
@@ -245,7 +245,7 @@ func TestApplyDisabledUninstalledIsStableNoOp(t *testing.T) {
 	uninstallPackageFunc = func() error { uninstallCalls++; return nil }
 	stopHelperLegacyFunc = func() { stopLegacyCalls++ }
 
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper") // absent → not installed
 	mgr.sessionEnumerator = &mockEnumerator{}
@@ -292,7 +292,7 @@ func TestApplyDisabledInstalledCleansUpOnce(t *testing.T) {
 	migrationTargetsFunc = func() ([]string, error) { return nil, nil }
 	prepareSessionDirFunc = func(path, sessionKey string) error { return nil }
 
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = binPath
 	mgr.sessionEnumerator = &mockEnumerator{}

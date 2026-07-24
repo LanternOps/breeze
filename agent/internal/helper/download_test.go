@@ -37,7 +37,7 @@ func TestDefaultHelperDownloaderRejectsOffOriginRedirect(t *testing.T) {
 	}))
 	defer control.Close()
 
-	dl := defaultHelperDownloader(control.URL, secmem.NewSecureString("tok"), "1.2.3", nil)
+	dl := defaultHelperDownloader(func() string { return control.URL }, secmem.NewSecureString("tok"), "1.2.3", nil)
 	path, err := dl("1.2.3")
 	if err == nil {
 		if path != "" {
@@ -69,10 +69,54 @@ func TestDefaultHelperDownloaderUsesHelperComponent(t *testing.T) {
 	}))
 	defer control.Close()
 
-	dl := defaultHelperDownloader(control.URL, secmem.NewSecureString("tok"), "9.9.9", nil)
+	dl := defaultHelperDownloader(func() string { return control.URL }, secmem.NewSecureString("tok"), "9.9.9", nil)
 	_, _ = dl("9.9.9") // error expected (untrusted manifest); we only inspect the request
 	if gotComponent != "helper" {
 		t.Fatalf("verified helper downloader queried component=%q, want %q", gotComponent, "helper")
+	}
+}
+
+// TestDefaultHelperDownloaderResolvesServerURLAtCallTime is the #2478 regression
+// guard: the downloader must read the serverURL provider on every call, so a
+// backup-server-URL promotion (#2323) that happens AFTER the manager is
+// constructed is honored. Before the fix the URL was a plain string baked into
+// the closure at construction, so the helper kept fetching from the dead primary
+// for the rest of the process lifetime after a failover.
+func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
+	// deadPrimary is the URL captured when the downloader is built. A hit here
+	// after promotion is the bug.
+	deadHit := false
+	deadPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadHit = true
+		http.Error(w, "dead primary must not be contacted", http.StatusGone)
+	}))
+	defer deadPrimary.Close()
+
+	promotedHit := false
+	promotedBackup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/download") {
+			promotedHit = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"url":"` + r.URL.Scheme + `","checksum":"x","manifest":"{}","manifestSignature":"AAAA"}`))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer promotedBackup.Close()
+
+	// The provider starts on the dead primary, then is promoted to the backup
+	// AFTER the downloader closure is built — exactly the failover ordering.
+	current := deadPrimary.URL
+	dl := defaultHelperDownloader(func() string { return current }, secmem.NewSecureString("tok"), "1.2.3", nil)
+	current = promotedBackup.URL
+
+	_, _ = dl("1.2.3") // error expected (untrusted manifest); we assert routing
+
+	if deadHit {
+		t.Fatal("helper downloader contacted the dead primary after promotion — URL was captured at construction (#2478)")
+	}
+	if !promotedHit {
+		t.Fatal("helper downloader did not follow the promoted backup URL")
 	}
 }
 

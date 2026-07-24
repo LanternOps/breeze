@@ -842,7 +842,7 @@ func handleFailoverPoll(
 		return
 	}
 	*failoverFailures = 0
-	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, fc.BaseURL, cfg, tokens, recovery)
 
 	// Commands targeted at the watchdog are claimed by the heartbeat (the
 	// server marks them 'sent' and returns them inline), so the poll below
@@ -877,7 +877,7 @@ func handleInitialFailoverHeartbeatResponse(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
-	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, fc.BaseURL, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(ctx, fc, cmd, wd, journal, cfg, tokens, recovery)
 	})
 }
@@ -886,12 +886,13 @@ func processInitialFailoverHeartbeatResponse(
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
+	serverURL func() string,
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 	run func(watchdog.FailoverCommand),
 ) {
-	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, serverURL, cfg, tokens, recovery)
 	executeFailoverCommands(heartbeatCmds, nil, run)
 }
 
@@ -923,6 +924,7 @@ func processHeartbeatResponse(
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
+	serverURL func() string,
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
@@ -934,13 +936,23 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
 			"version": resp.UpgradeTo,
 		})
-		doUpdateAgent(resp.UpgradeTo, cfg, tokens, journal)
+		if err := doUpdateAgent(resp.UpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_agent_failed", map[string]any{
+				"version": resp.UpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	if resp.WatchdogUpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
 			"version": resp.WatchdogUpgradeTo,
 		})
-		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
+		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_watchdog_failed", map[string]any{
+				"version": resp.WatchdogUpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	return resp.Commands
 }
@@ -1041,7 +1053,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateAgent(targetVersion, cfg, tokens, journal)
+			err := doUpdateAgent(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -1057,7 +1069,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateWatchdog(targetVersion, cfg, tokens, journal)
+			err := doUpdateWatchdog(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -1080,15 +1092,20 @@ func handleFailoverCommand(
 	}
 }
 
-// doUpdateAgent creates an updater and downloads the target version for the agent binary.
-func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+// doUpdateAgent creates an updater and downloads the target version for the
+// agent binary. serverURL is a provider (func() string) resolved at download
+// time — during a failover the watchdog's FailoverClient retargets itself to
+// the promoted backup (SetBaseURL), and passing c.BaseURL here means binary
+// downloads follow that promotion instead of pinning the dead primary captured
+// in cfg at startup (#2478).
+func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
-		ServerURL:             cfg.ServerURL,
+		ServerURL:             serverURL,
 		AuthToken:             tok,
 		CurrentVersion:        "", // Not tracking agent version from watchdog.
 		BinaryPath:            binaryPath,
@@ -1109,7 +1126,10 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder
 }
 
 // doUpdateWatchdog updates the watchdog binary and restarts the service.
-func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+// serverURL is a provider resolved at download time so a self-update follows
+// the FailoverClient's backup-server-URL promotion during a failover rather
+// than pinning the startup primary (#2478).
+func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
@@ -1119,7 +1139,7 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		return fmt.Errorf("failed to determine executable path: %w", err)
 	}
 	u := updater.New(&updater.Config{
-		ServerURL:             cfg.ServerURL,
+		ServerURL:             serverURL,
 		AuthToken:             tok,
 		CurrentVersion:        version,
 		Component:             "watchdog",

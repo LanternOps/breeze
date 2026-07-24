@@ -544,7 +544,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	go func() { <-h.stopChan; helperCancel() }()
 
 	if runtime.GOOS == "windows" && cfg.IsService {
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -572,7 +572,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// (the needsBroker block below), so a broker-backed headless spawn arm here
 		// would always be dead code; the user-role IPC spawn path is wired via the
 		// session broker after it exists.
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -4778,7 +4778,7 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		Component:             "watchdog",
@@ -4848,7 +4848,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL(),
+			ServerURL:             h.serverURL,
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -4941,7 +4941,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL(),
+			ServerURL:             h.serverURL,
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -5064,7 +5064,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		BinaryPath:            binaryPath,

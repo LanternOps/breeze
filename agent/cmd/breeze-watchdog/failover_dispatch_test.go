@@ -88,7 +88,7 @@ func TestProcessInitialFailoverHeartbeatResponse_ExecutesCommandsAndProcessesUpg
 	}
 
 	var ran []string
-	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, func() string { return cfg.ServerURL }, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
 		ran = append(ran, cmd.ID)
 	})
 

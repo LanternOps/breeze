@@ -20,7 +20,12 @@ import (
 // which follows redirects, no checksum/signature) lacked — and is the reason a
 // poisoned release asset, CDN edge, or TLS/DNS MITM toward github.com can no
 // longer yield SYSTEM/root RCE via the helper install path.
-func defaultHelperDownloader(serverURL string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string) func(version string) (string, error) {
+// serverURL is a provider (func() string), not a plain string, so the returned
+// downloader re-resolves the control-plane base URL on every call and follows
+// the heartbeat's backup-server-URL promotion (#2323) after a failover — rather
+// than baking the (possibly dead) primary into the closure at construction
+// (#2478).
+func defaultHelperDownloader(serverURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string) func(version string) (string, error) {
 	return func(version string) (string, error) {
 		cfg := &updater.Config{
 			ServerURL:             serverURL,
