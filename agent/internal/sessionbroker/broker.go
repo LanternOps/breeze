@@ -305,6 +305,37 @@ type Broker struct {
 	// to runtime.GOOS in New(); tests override it to drive the Windows
 	// multi-user code path on a darwin host.
 	goos string
+
+	// helperKeyRetention holds bounded post-kill ownership retention windows.
+	// When TerminateHelperKey fails to kill a helper, the logical session/role
+	// key is retained here so the next reconcile cannot proactively respawn it
+	// into a duplicate while the original process may still be alive (#2530).
+	// Unlike helperByKey, entries here are filtered by real PID liveness and a
+	// deadline cap, so retention is guaranteed to end — it never wedges the key
+	// the way re-registering a closed session in helperByKey would.
+	helperKeyRetention    map[HelperKey]retainedHelperKey
+	helperKeyRetentionTTL time.Duration
+
+	// nowFn / helperKeyPIDAliveFn are injectable seams for retention tests.
+	// nowFn defaults to time.Now; helperKeyPIDAliveFn defaults to a PID-based
+	// liveness probe (OpenProcess on Windows, indeterminate elsewhere).
+	nowFn               func() time.Time
+	helperKeyPIDAliveFn func(pid uint32) (alive, known bool)
+}
+
+// helperKillRetentionTTL caps how long a helper key stays owned after a failed
+// kill when the original PID's liveness cannot be determined. Sized well above
+// the reconcile interval (30s) so a genuinely dying process has time to exit
+// and self-clear retention early, while still guaranteeing the key is released
+// if liveness can never be observed.
+const helperKillRetentionTTL = 5 * time.Minute
+
+// retainedHelperKey is a bounded record that a failed kill left a helper PID
+// possibly alive, so a respawn for this key must be blocked until the PID is
+// confirmed dead or (when liveness is indeterminate) the deadline elapses.
+type retainedHelperKey struct {
+	pid      uint32
+	deadline time.Time
 }
 
 // New creates a new session broker.
@@ -328,6 +359,8 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		onMessage:              onMessage,
 		consoleSessionIDFn:     GetConsoleSessionID,
 		goos:                   runtime.GOOS,
+		helperKeyRetention:     make(map[HelperKey]retainedHelperKey),
+		helperKeyRetentionTTL:  helperKillRetentionTTL,
 	}
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
@@ -581,6 +614,102 @@ func (b *Broker) whileHelperKeyOwnedBy(key HelperKey, session *Session, fn func(
 	}
 	fn()
 	return true
+}
+
+func (b *Broker) now() time.Time {
+	if b.nowFn != nil {
+		return b.nowFn()
+	}
+	return time.Now()
+}
+
+func (b *Broker) helperKeyPIDAlive(pid uint32) (alive, known bool) {
+	if b.helperKeyPIDAliveFn != nil {
+		return b.helperKeyPIDAliveFn(pid)
+	}
+	return defaultHelperKeyPIDAlive(pid)
+}
+
+// defaultHelperKeyPIDAlive probes whether pid is still running, returning
+// (alive, known). known is false whenever liveness cannot be determined:
+// non-Windows hosts (no primitive), an OpenProcess failure (the process may be
+// gone OR access-denied — we cannot tell the two apart cheaply), or a
+// GetExitCodeProcess error. Callers must fail closed on unknown, because a
+// duplicate helper is worse than briefly withholding a respawn.
+func defaultHelperKeyPIDAlive(pid uint32) (alive, known bool) {
+	if pid == 0 {
+		return false, false
+	}
+	proc, err := openOwnedPeerProcess(pid)
+	if err != nil || proc == nil {
+		return false, false
+	}
+	defer func() { _ = proc.Close() }()
+	live, err := proc.Alive()
+	if err != nil {
+		return false, false
+	}
+	return live, true
+}
+
+// retainHelperKeyOwnership records a bounded retention window after a failed
+// kill so the next reconcile cannot proactively respawn key while the original
+// PID may still be alive (#2530). No-op when retention is disabled, the PID is
+// unusable, or a live authenticated helper already owns the key.
+func (b *Broker) retainHelperKeyOwnership(key HelperKey, pid int) {
+	if b.helperKeyRetentionTTL <= 0 || pid <= 0 {
+		return
+	}
+	deadline := b.now().Add(b.helperKeyRetentionTTL)
+	b.mu.Lock()
+	// If a fresh helper already claimed the key between our unlock in
+	// TerminateHelperKey and here, that live owner blocks the respawn on its
+	// own; retention would be pointless and could outlive it.
+	if b.helperByKey[key] == nil {
+		b.helperKeyRetention[key] = retainedHelperKey{pid: uint32(pid), deadline: deadline}
+	}
+	b.mu.Unlock()
+	log.Warn("retaining helper key ownership after failed kill",
+		"helperKey", key.String(), "pid", pid, "retainUntil", deadline.Format(time.RFC3339))
+}
+
+// helperKeySpawnBlocked reports whether a proactive respawn of key must be
+// withheld: either an authenticated helper currently owns it, or a bounded
+// post-kill retention window is still active. It self-clears retention when the
+// PID is confirmed dead, when a live authenticated owner exists, or (for
+// indeterminate liveness) once the deadline has elapsed — so retention is
+// always guaranteed to end and can never wedge the key.
+func (b *Broker) helperKeySpawnBlocked(key HelperKey) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.helperByKey[key] != nil {
+		// A live helper owns the key; any stale retention is irrelevant.
+		delete(b.helperKeyRetention, key)
+		return true
+	}
+	entry, ok := b.helperKeyRetention[key]
+	if !ok {
+		return false
+	}
+	alive, known := b.helperKeyPIDAlive(entry.pid)
+	if known {
+		if alive {
+			// The original process is provably still running, so blocking the
+			// respawn is exactly right — and this is not a wedge: the entry
+			// clears the moment the PID dies.
+			return true
+		}
+		// Confirmed dead: safe to respawn now.
+		delete(b.helperKeyRetention, key)
+		return false
+	}
+	// Liveness indeterminate: fail closed, but only until the deadline cap so
+	// retention cannot outlive a process we can never observe.
+	if b.now().Before(entry.deadline) {
+		return true
+	}
+	delete(b.helperKeyRetention, key)
+	return false
 }
 
 func (b *Broker) currentListener() net.Listener {
@@ -2175,18 +2304,23 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 			// previous Debug line meant a failed kill left NO evidence at all.
 			// This is the enforcement path, not best-effort cleanup.
 			//
-			// The maps are already cleared at this point, which is safe for
-			// lifecycle-tracked helpers: helperRegistry.reserve refuses to
-			// respawn while the tracked process is alive OR its liveness is
-			// unknown. A scheduled helper has no registry entry, so a failed
-			// kill there can still be followed by a proactive spawn — tracked
-			// in #2530 (needs bounded ownership retention). Do NOT "fix" that by
-			// re-registering this session in helperByKey: the session is closed
-			// immediately below, HasHelperKeyOwner does not filter closed
+			// The maps were cleared above, which is safe for lifecycle-tracked
+			// helpers: helperRegistry.reserve refuses to respawn while the
+			// tracked process is alive OR its liveness is unknown. A scheduled
+			// helper has no registry entry, so a failed kill there could once be
+			// followed by a proactive spawn and a duplicate (#2530). We now
+			// record a bounded retention window keyed on the surviving PID via
+			// retainHelperKeyOwnership; helperKeySpawnBlocked consults it at the
+			// spawn gate and self-clears it once the PID is confirmed dead (or,
+			// for indeterminate liveness, at a deadline cap). Do NOT instead
+			// re-register this closed session in helperByKey: the session is
+			// closed immediately below, HasHelperKeyOwner does not filter closed
 			// owners, and nothing would ever clear the entry, so the key would
-			// be wedged for the process lifetime.
+			// be wedged for the process lifetime — the exact failure retention
+			// is designed to avoid.
 			log.Warn("failed to terminate helper process",
 				"helperKey", key.String(), "pid", session.PID, "error", err.Error())
+			b.retainHelperKeyOwnership(key, session.PID)
 		}
 	}
 	_ = session.closeTransportAndPeer()
