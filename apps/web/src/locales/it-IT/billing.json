@@ -1,0 +1,1567 @@
+{
+  "contracts": {
+    "shared": {
+      "status": {
+        "draft": "Bozza",
+        "active": "Attivo",
+        "paused": "In pausa",
+        "cancelled": "Annullato",
+        "expired": "Scaduto"
+      },
+      "cadence": {
+        "monthly": "Mensile",
+        "quarterly": "Trimestrale",
+        "annual": "Annuale",
+        "custom": "Ogni {{count}} mesi"
+      },
+      "billingTiming": {
+        "advance": "In anticipo",
+        "arrears": "A consuntivo"
+      },
+      "lineType": {
+        "flat": "Canone fisso",
+        "perDevice": "Per dispositivo",
+        "perSeat": "Per postazione",
+        "manual": "Quantità manuale"
+      },
+      "transition": {
+        "activate": "Attiva",
+        "pause": "Metti in pausa",
+        "resume": "Riprendi",
+        "cancel": "Annulla"
+      },
+      "values": {
+        "auto": "auto"
+      }
+    },
+    "contractDetail": {
+      "fields": {
+        "billingTiming": "Tempistica di fatturazione",
+        "cadence": "Cadenza",
+        "startDate": "Data di inizio",
+        "endDate": "Data di fine",
+        "nextBilling": "Prossima fatturazione",
+        "autoIssue": "Emissione automatica",
+        "renewal": "Rinnovo",
+        "estimatedPerPeriod": "Stima / periodo",
+        "notes": "Note"
+      },
+      "values": {
+        "noDrafts": "No (bozze)"
+      },
+      "renewal": {
+        "autoRenews": "Rinnovo automatico",
+        "everyMonths": "ogni {{count}} mesi",
+        "currentTermEnds": "· il periodo corrente termina il {{date}}",
+        "noticeDays": "· preavviso di {{count}} giorni",
+        "doesNotAutoRenew": "Non si rinnova automaticamente"
+      },
+      "table": {
+        "unitPrice": "Prezzo unitario",
+        "qty": "Qtà",
+        "tax": "Imposta",
+        "empty": "Questo contratto non contiene righe."
+      },
+      "billingHistory": {
+        "title": "Cronologia fatturazione",
+        "period": "Periodo",
+        "generated": "Generata",
+        "invoice": "Fattura",
+        "empty": "Non è stata ancora generata alcuna fattura.",
+        "viewInvoice": "Visualizza fattura"
+      },
+      "summary": {
+        "active": "Questo contratto è attivo e genererà fatture secondo la sua cadenza.",
+        "inactive": "Le fatture vengono generate mentre il contratto è attivo."
+      },
+      "actions": {
+        "generateInvoiceNow": "Genera fattura ora",
+        "deleteDraft": "Elimina bozza"
+      },
+      "errors": {
+        "transition": {
+          "activate": "Impossibile attivare il contratto.",
+          "pause": "Impossibile mettere in pausa il contratto.",
+          "resume": "Impossibile riprendere il contratto.",
+          "cancel": "Impossibile annullare il contratto."
+        },
+        "generateInvoice": "Impossibile generare una fattura.",
+        "deleteDraft": "Impossibile eliminare la bozza."
+      },
+      "toast": {
+        "transition": {
+          "activate": "Contratto attivato",
+          "pause": "Contratto messo in pausa",
+          "resume": "Contratto ripreso",
+          "cancel": "Contratto annullato"
+        },
+        "invoiceGenerated": "Fattura generata",
+        "draftDeleted": "Bozza eliminata"
+      },
+      "cancelConfirm": {
+        "title": "Annullare questo contratto?",
+        "message": "L'annullamento interrompe tutta la fatturazione futura di questo contratto. L'operazione non può essere annullata: per riprendere la fatturazione dovrai creare un nuovo contratto.",
+        "confirm": "Annulla contratto"
+      },
+      "deleteConfirm": {
+        "title": "Elimina contratto in bozza",
+        "message": "Il contratto in bozza verrà eliminato definitivamente. L'operazione non può essere annullata.",
+        "confirm": "Elimina bozza"
+      },
+      "documents": {
+        "title": "Documenti eseguiti",
+        "columns": {
+          "template": "Template",
+          "signer": "Firmatario",
+          "signedAt": "Firmato",
+          "quote": "Preventivo"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Nessun documento eseguito.",
+        "loadError": "Impossibile caricare i documenti eseguiti.",
+        "downloadError": "Impossibile scaricare il PDF.",
+        "download": "Scarica PDF",
+        "preparing": "Preparazione…",
+        "viewQuote": "Visualizza preventivo"
+      }
+    },
+    "contractEditor": {
+      "validation": {
+        "enterMonths": "Inserisci il numero di mesi",
+        "enterRenewalTermBeforeSaving": "Inserisci un periodo di rinnovo (mesi) prima di salvare.",
+        "enterContractName": "Inserisci un nome per il contratto.",
+        "enterStartDate": "Inserisci una data di inizio.",
+        "renewalTermRange": "Inserisci un periodo di rinnovo tra 1 e 120 mesi.",
+        "advanceNoticeRange": "Inserisci un preavviso tra 0 e 365 giorni."
+      },
+      "errors": {
+        "loadOrganizations": "Impossibile caricare le organizzazioni.",
+        "loadSites": "Impossibile caricare i siti.",
+        "createContract": "Impossibile creare il contratto.",
+        "saveContract": "Impossibile salvare il contratto.",
+        "addLine": "Impossibile aggiungere la riga.",
+        "removeLine": "Impossibile rimuovere la riga.",
+        "activateContract": "Impossibile attivare il contratto."
+      },
+      "toast": {
+        "contractCreated": "Contratto creato",
+        "lineAdded": "Riga aggiunta",
+        "lineRemoved": "Riga rimossa",
+        "contractActivated": "Contratto attivato"
+      },
+      "schedule": {
+        "title": "Pianificazione",
+        "selectOrganization": "Seleziona un'organizzazione…",
+        "namePlaceholder": "es. Servizi gestiti — Acme Co",
+        "billingTiming": "Tempistica di fatturazione",
+        "billingCadence": "Cadenza di fatturazione",
+        "customCadence": "Personalizzata…",
+        "intervalMonths": "Intervallo (mesi)",
+        "startDate": "Data di inizio"
+      },
+      "renewal": {
+        "title": "Rinnovo",
+        "endDateOptional": "Data di fine (facoltativa)",
+        "autoIssue": "Emetti automaticamente le fatture generate (altrimenti restano come bozze)",
+        "autoRenewAtEnd": "Rinnova automaticamente alla fine del periodo",
+        "autoRenewSetEndDate": "Rinnova automaticamente alla fine del periodo (imposta prima una data di fine)",
+        "renewalTermMonths": "Periodo di rinnovo (mesi)",
+        "advanceNoticeDays": "Preavviso (giorni)"
+      },
+      "content": {
+        "title": "Contenuto",
+        "notesOptional": "Note (facoltative)",
+        "termsOptional": "Termini (facoltativi, mostrati sulla fattura)",
+        "termsPlaceholder": "es. 30 giorni netto. Rinnovo automatico salvo annullamento 30 giorni prima."
+      },
+      "lines": {
+        "unitPrice": "Prezzo unitario",
+        "qty": "Qtà",
+        "tax": "Imposta",
+        "empty": "Nessuna riga. Aggiungi una riga ricorrente qui sotto."
+      },
+      "addLine": {
+        "integrationHint": "Aggiungi da un'integrazione: precompila una riga.",
+        "linkPax8Subscription": "Collega abbonamento Pax8",
+        "addFromPax8Catalog": "Aggiungi dal catalogo Pax8",
+        "importFromTdSynnex": "Importa da TD SYNNEX",
+        "lineType": "Tipo di riga",
+        "descriptionPlaceholder": "es. Gestione workstation",
+        "unitPrice": "Prezzo unitario",
+        "quantity": "Quantità",
+        "siteOptional": "Sito (facoltativo: limita il conteggio dei dispositivi)",
+        "allSites": "Tutti i siti",
+        "linkCatalogItemOptional": "Collega elemento di catalogo (facoltativo)",
+        "itemFallback": "Elemento",
+        "clearCatalogLink": "Cancella collegamento al catalogo",
+        "searchCatalog": "Cerca nel catalogo…",
+        "taxable": "Imponibile",
+        "quantityResolvedAutomatically": "Quantità risolta automaticamente al momento della fatturazione.",
+        "lineTotal": "Totale riga: {{total}}",
+        "addLine": "Aggiungi riga"
+      },
+      "estimate": {
+        "title": "Stimato per questo periodo",
+        "saveFirst": "Salva il contratto, poi aggiungi righe per vedere una stima.",
+        "plusAuto": "+ auto",
+        "includesLiveCounts": "Include i conteggi in tempo reale di dispositivi/postazioni aggiornati a oggi.",
+        "loadLiveCountsFailed": "Impossibile caricare i conteggi in tempo reale.",
+        "loadLiveCountsFailedWithAuto": "Impossibile caricare i conteggi in tempo reale: le righe per dispositivo/postazione non sono incluse in questo totale."
+      },
+      "actions": {
+        "createContract": "Crea contratto",
+        "activateContract": "Attiva contratto",
+        "activateHint": "Aggiungi almeno una riga per attivare."
+      },
+      "removeLineConfirm": {
+        "title": "Rimuovi riga",
+        "message": "La riga \"{{description}}\" verrà rimossa dal contratto. L'operazione non può essere annullata.",
+        "thisLine": "questa riga",
+        "confirm": "Rimuovi riga"
+      }
+    },
+    "contractWorkspace": {
+      "errors": {
+        "missingContractId": "ID contratto mancante",
+        "notFound": "Contratto non trovato.",
+        "loadContract": "Impossibile caricare il contratto",
+        "unavailable": "Contratto non disponibile."
+      },
+      "backToContracts": "← Contratti",
+      "backToContractsText": "Torna ai contratti",
+      "newContract": "Nuovo contratto",
+      "doneEditing": "Modifica completata"
+    },
+    "contractsList": {
+      "title": "Contratti",
+      "description": "Accordi ricorrenti che generano automaticamente bozze di fattura secondo una cadenza.",
+      "newContract": "Nuovo contratto",
+      "accessDenied": "Non hai l'autorizzazione per visualizzare i contratti.",
+      "errors": {
+        "loadOrganizations": "Impossibile caricare le organizzazioni.",
+        "loadContracts": "Impossibile caricare i contratti"
+      },
+      "filters": {
+        "allStatuses": "Tutti gli stati",
+        "searchPlaceholder": "Cerca nome o org",
+        "searchAria": "Cerca contratti"
+      },
+      "stats": {
+        "estimatedMonthlyRecurring": "Ricorrente mensile stimato",
+        "activeContractCount": "{{count}} contratti attivi",
+        "activeContractCount_one": "{{count}} contratto attivo",
+        "activeContractCount_other": "{{count}} contratti attivi"
+      },
+      "actions": {
+        "tryAgain": "Riprova",
+        "clearFilters": "Cancella filtri"
+      },
+      "empty": {
+        "noMatches": "Nessun contratto corrisponde a questi filtri.",
+        "title": "Nessun contratto",
+        "description": "I contratti fatturano un'organizzazione con una cadenza ricorrente e generano automaticamente le fatture per te.",
+        "createFirst": "Crea il primo contratto"
+      },
+      "table": {
+        "selectAllAria": "Seleziona tutti i contratti",
+        "startDate": "Data di inizio",
+        "cadence": "Cadenza",
+        "nextBill": "Prossima fattura",
+        "estimatedPerPeriod": "Stima / periodo",
+        "selectContractAria": "Seleziona contratto {{name}}"
+      },
+      "bulk": {
+        "deleteDrafts": "Elimina bozze",
+        "deleteDrafts_one": "Elimina bozza",
+        "deleteDrafts_other": "Elimina bozze"
+      },
+      "toast": {
+        "bulkLimit": "Seleziona fino a {{limit}} alla volta.",
+        "bulkFailed": "{{verb}} in blocco non riuscito. Riprova.",
+        "bulkPartial": "{{succeeded}} {{verb}}, {{skipped}} ignorati{{failedText}}",
+        "failedSuffix": ", {{failed}} non riusciti",
+        "bulkSuccess": "{{succeeded}} {{verb}}"
+      },
+      "cancelConfirm": {
+        "title": "Annulla contratti",
+        "message": "Annullare {{count}} contratti selezionati? I contratti attivi e in pausa verranno annullati; l'operazione non può essere annullata.",
+        "confirm": "Annulla contratti"
+      },
+      "deleteConfirm": {
+        "title": "Elimina contratti in bozza",
+        "message": "Eliminare {{count}} contratti in bozza? Vengono eliminate solo le bozze{{untouched}}; l'operazione non può essere annullata.",
+        "message_one": "Eliminare {{count}} contratto in bozza? Vengono eliminate solo le bozze{{untouched}}; l'operazione non può essere annullata.",
+        "message_other": "Eliminare {{count}} contratti in bozza? Vengono eliminate solo le bozze{{untouched}}; l'operazione non può essere annullata.",
+        "untouchedSuffix": " — eventuali contratti attivi o in pausa nella selezione restano invariati",
+        "confirm": "Elimina bozze"
+      }
+    },
+    "contractPax8Drawer": {
+      "title": "Collega un abbonamento Pax8",
+      "subtitlePicked": "Scegli una riga di questo contratto (o creane una) da collegare.",
+      "subtitleChoose": "Scegli un abbonamento sincronizzato da aggiungere a questo contratto.",
+      "loadingSubscriptions": "Caricamento abbonamenti…",
+      "empty": "Nessun abbonamento Pax8 è ancora sincronizzato per questa organizzazione. Sincronizzali in Integrazioni → Pax8.",
+      "subscriptionFallback": "Abbonamento Pax8",
+      "quantity": "qtà {{quantity}}",
+      "priceEach": "{{currency}} {{price}}/cad",
+      "alreadyLinked": "già collegato",
+      "relink": "Ricollega",
+      "link": "Collega",
+      "errors": {
+        "loadSubscriptions": "Impossibile caricare gli abbonamenti Pax8 per questa organizzazione."
+      }
+    },
+    "tabs": {
+      "contracts": "Contratti",
+      "templates": "Template",
+      "documents": "Documenti"
+    },
+    "templatesTab": {
+      "title": "Template di contratto",
+      "description": "Documenti di contratto riutilizzabili che puoi allegare ai preventivi accettati.",
+      "newTemplate": "Nuovo template",
+      "includeArchived": "Mostra archiviati",
+      "allOrgs": "Tutte le org",
+      "ownerOrg": "Organizzazione",
+      "noVersions": "Nessuna versione",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Archivia",
+      "loadError": "Impossibile caricare i template di contratto",
+      "createError": "Impossibile creare il template",
+      "created": "Template creato",
+      "archiveError": "Impossibile archiviare il template",
+      "archiveSuccess": "Template archiviato",
+      "columns": {
+        "name": "Nome",
+        "owner": "Proprietario",
+        "status": "Stato",
+        "latestVersion": "Ultima versione"
+      },
+      "status": {
+        "active": "Attivo",
+        "archived": "Archiviato"
+      },
+      "empty": {
+        "title": "Nessun template",
+        "description": "Crea il primo template di contratto per iniziare."
+      },
+      "createDialog": {
+        "title": "Nuovo template di contratto",
+        "name": "Nome",
+        "namePlaceholder": "es. Accordo quadro per servizi",
+        "description": "Descrizione",
+        "descriptionPlaceholder": "Riepilogo facoltativo di questo template",
+        "scope": "Proprietà",
+        "allOrganizations": "Tutte le organizzazioni",
+        "partnerWide": "Template a livello partner",
+        "thisOrgOnly": "Solo questa organizzazione",
+        "organization": "Organizzazione",
+        "selectOrg": "Seleziona un'organizzazione",
+        "orgRequired": "Seleziona un'organizzazione per un template di proprietà dell'organizzazione.",
+        "nameRequired": "Inserisci un nome per il template.",
+        "cancel": "Annulla",
+        "create": "Crea template",
+        "creating": "Creazione…"
+      }
+    },
+    "documentsTab": {
+      "title": "Documenti",
+      "description": "Documenti di contratto eseguiti non ancora collegati a un contratto.",
+      "empty": {
+        "title": "Nessun documento non collegato",
+        "description": "I documenti eseguiti vengono mostrati qui finché non sono collegati a un contratto."
+      },
+      "loadError": "Impossibile caricare i documenti.",
+      "columns": {
+        "template": "Template",
+        "signer": "Firmatario",
+        "signedAt": "Firmato",
+        "quote": "Preventivo",
+        "organization": "Organizzazione"
+      },
+      "download": "Scarica PDF",
+      "preparing": "Preparazione…",
+      "viewQuote": "Visualizza preventivo",
+      "linkAction": "Collega a contratto",
+      "linkDialog": {
+        "title": "Collega a un contratto",
+        "contractLabel": "Contratto",
+        "selectContract": "Seleziona un contratto",
+        "noContracts": "Nessun contratto trovato per questa organizzazione.",
+        "loadContractsError": "Impossibile caricare i contratti. Riprova.",
+        "cancel": "Annulla",
+        "confirm": "Collega",
+        "linking": "Collegamento…"
+      },
+      "linkSuccess": "Documento collegato al contratto.",
+      "linkError": "Impossibile collegare il documento a quel contratto."
+    },
+    "templateEditor": {
+      "back": "Indietro",
+      "loadError": "Impossibile caricare il template",
+      "newVersion": "Nuova versione",
+      "newVersionConfirm": {
+        "title": "Scartare le modifiche non salvate?",
+        "message": "L'avvio di una nuova versione svuoterà l'editor. Le modifiche non salvate a questa bozza andranno perse.",
+        "confirm": "Avvia nuova versione"
+      },
+      "uploadPdf": "Carica PDF",
+      "versions": "Versioni",
+      "noVersions": "Nessuna versione",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Bozza",
+        "published": "Pubblicata"
+      },
+      "sourceType": {
+        "authored": "Creato nell'editor",
+        "uploaded": "PDF caricato"
+      },
+      "publish": "Pubblica",
+      "publishDirtyHint": "Salva la bozza prima di pubblicare",
+      "body": "Corpo",
+      "bodyAria": "Corpo del template di contratto",
+      "preview": "Anteprima",
+      "edit": "Modifica",
+      "saveDraft": "Salva bozza",
+      "saving": "Salvataggio…",
+      "emptyBody": "Aggiungi contenuto prima di salvare.",
+      "autoVariables": "Variabili automatiche",
+      "manualVariables": "Variabili manuali",
+      "noManualVariables": "Nessuna rilevata",
+      "archivedNotice": "Questo template è archiviato. Non è possibile aggiungere nuove versioni.",
+      "saveError": "Impossibile salvare la versione in bozza",
+      "saveSuccess": "Versione in bozza salvata",
+      "uploadError": "Impossibile caricare il PDF",
+      "uploadSuccess": "Versione PDF caricata",
+      "publishError": "Impossibile pubblicare la versione",
+      "publishSuccess": "Versione pubblicata"
+    }
+  },
+  "quotes": {
+    "editor": {
+      "actions": {
+        "addImage": "Aggiungi immagine",
+        "addLine": "Aggiungi riga",
+        "addSection": "Aggiungi sezione",
+        "adding": "Aggiunta…",
+        "cancel": "Annulla",
+        "dragSection": "Trascina per riordinare la sezione",
+        "fetch": "Recupera",
+        "fetchAddImage": "Recupera e aggiungi immagine",
+        "fromUrl": "Da URL",
+        "hideCostMargin": "Nascondi costo e margine",
+        "imageFromUrl": "Aggiungi immagine da URL…",
+        "lineActions": "Azioni riga",
+        "moveLineDown": "Sposta riga in basso",
+        "moveLineTo": "Sposta riga in",
+        "moveLineToAnotherTable": "Sposta riga in un'altra tabella prezzi",
+        "moveLineUp": "Sposta riga in alto",
+        "moveSectionDown": "Sposta sezione in basso",
+        "moveSectionUp": "Sposta sezione in alto",
+        "moveTo": "Sposta in",
+        "remove": "Rimuovi",
+        "removeImage": "Rimuovi immagine",
+        "removeLine": "Rimuovi riga",
+        "removeSection": "Rimuovi sezione",
+        "replaceImage": "Sostituisci immagine",
+        "sectionActions": "Azioni sezione",
+        "showCostMargin": "Mostra costo e margine",
+        "uploadAddImage": "Carica e aggiungi immagine",
+        "uploading": "Caricamento…",
+        "collapseSection": "Comprimi sezione",
+        "dragLine": "Trascina per riordinare la riga",
+        "dragLineTitle": "Trascina per riordinare all'interno di questa tabella. Da tastiera: usa Sposta su / Sposta giù nel menu della riga.",
+        "expandSection": "Espandi sezione",
+        "tidyAllDescriptions": "Sistema tutte le descrizioni"
+      },
+      "addLine": {
+        "catalogItem": "Elemento di catalogo",
+        "manualLine": "Riga manuale",
+        "searchDistributor": "Cerca distributore",
+        "searchPax8": "Cerca Pax8",
+        "addFromCatalog": "Aggiungi dal catalogo",
+        "aiLookupAction": "Ricerca AI",
+        "moreDetails": "Altri dettagli"
+      },
+      "addSection": {
+        "captionPlaceholder": "Didascalia (facoltativa)",
+        "headingPlaceholder": "Testo intestazione",
+        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Aggiungi sezione",
+        "richTextPlaceholder": "Testo della proposta…",
+        "title": "Aggiungi sezione",
+        "uploadFile": "Carica file"
+      },
+      "autoFill": {
+        "filledDescription": "descrizione",
+        "filledEstimatedCost": "costo stimato {{amount}}",
+        "filledName": "nome",
+        "filledPriceWithDefaultMarkup": "prezzo {{amount}} (ricarico predefinito {{markup}}%)",
+        "filledTaxableOff": "imponibile: no",
+        "filledTaxableOn": "imponibile: sì",
+        "help": "Cerca sul web e compila nome, descrizione, imposta e costo stimato. Il prezzo lo imposti tu.",
+        "helpWithDefaultMarkup": "Cerca sul web, compila nome, descrizione e imposta, stima il tuo costo e imposta il prezzo della riga con il ricarico predefinito del {{markup}}%.",
+        "label": "Compilato automaticamente:",
+        "review": "Rivedi e modifica prima di aggiungere."
+      },
+      "autosaveHint": "Le modifiche vengono salvate automaticamente. Un bordo ambra indica una modifica non salvata.",
+      "block": {
+        "imageSectionPdf": "Sezione immagine (renderizzata nel PDF).",
+        "richTextContentAria": "Contenuto di testo formattato"
+      },
+      "blockTypes": {
+        "heading": "Intestazione",
+        "image": "Immagine",
+        "pricingTable": "Tabella prezzi",
+        "richText": "Testo formattato",
+        "contract": "Contratto"
+      },
+      "catalog": {
+        "addSome": "Aggiungine alcuni nel Catalogo prodotti",
+        "empty": "Nessun elemento di catalogo.",
+        "loadError": "Impossibile caricare il catalogo. Riapri l'editor per riprovare: gli elementi esistenti sono al sicuro.",
+        "searchPlaceholder": "Cerca nel catalogo per nome o SKU"
+      },
+      "categories": {
+        "hardware": "Hardware",
+        "other": "Altro",
+        "service": "Servizio",
+        "software": "Software"
+      },
+      "confirm": {
+        "removeLineMessage": "La riga \"{{name}}\" verrà rimossa dal preventivo. L'operazione non può essere annullata.",
+        "removeLineTitle": "Rimuovi riga",
+        "removeSectionMessage": "Questa sezione verrà rimossa. L'operazione non può essere annullata.",
+        "removeSectionTitle": "Rimuovi sezione",
+        "removeSectionWithLines_one": "La tabella prezzi e la sua {{count}} riga verranno rimosse. L'operazione non può essere annullata.",
+        "removeSectionWithLines_other": "La tabella prezzi e le sue {{count}} righe verranno rimosse. L'operazione non può essere annullata.",
+        "thisLine": "questa riga",
+        "removeSectionWithLines": "La tabella prezzi e le relative righe verranno rimosse. L'operazione non può essere annullata."
+      },
+      "customer": {
+        "confirmLabel": "Sposta preventivo",
+        "confirmMessage": "Spostare questo preventivo in {{name}}? L'assegnazione del sito e l'override del destinatario fattura verranno cancellati e verrà applicata l'aliquota fiscale della nuova azienda.",
+        "confirmTitle": "Cambiare cliente?",
+        "help": "Spostare una bozza a un'altra azienda cancella l'assegnazione del sito e applica l'aliquota fiscale di quell'azienda.",
+        "label": "Cliente",
+        "success": "Preventivo spostato in {{name}}."
+      },
+      "deposit": {
+        "due": "Acconto dovuto",
+        "dueUpFront": "Acconto dovuto in anticipo",
+        "eligibleAria": "Idoneo per acconto",
+        "label": "Acconto",
+        "none": "Nessun acconto",
+        "percent": "Percentuale",
+        "percentOfDue": "Percentuale dell'importo dovuto",
+        "selectedLines": "Righe selezionate",
+        "selectedLinesHelp": "Seleziona le righe una tantum idonee all'acconto in ogni tabella prezzi.",
+        "selectedLinesStagedHint": "Contrassegna almeno una riga una tantum qui sotto come idonea all'acconto: la modalità viene salvata quando una riga è contrassegnata.",
+        "short": "Acconto"
+      },
+      "emptyBlocks": "Nessun contenuto. Aggiungi un'intestazione, testo formattato o una tabella prezzi qui sotto.",
+      "errors": {
+        "addCatalogItem": "Impossibile aggiungere l'elemento di catalogo.",
+        "addContractSection": "Impossibile aggiungere la sezione contratto",
+        "addDistributorItem": "Impossibile aggiungere l'elemento del distributore.",
+        "addImageSection": "Impossibile aggiungere la sezione immagine.",
+        "addLine": "Impossibile aggiungere la riga.",
+        "addPax8Product": "Impossibile aggiungere il prodotto Pax8.",
+        "addSection": "Impossibile aggiungere la sezione.",
+        "costZeroOrMore": "Inserisci un costo pari o superiore a 0.",
+        "depositPercentRange": "Inserisci una percentuale tra 0,01 e 99,99.",
+        "fetchImageFromUrl": "Impossibile recuperare l'immagine da quell'URL.",
+        "imageAddedSectionFailed": "Immagine aggiunta, ma l'aggiunta della sezione non è riuscita.",
+        "imageTooLarge": "L'immagine deve essere di 5 MB o meno.",
+        "importDistributorItem": "Impossibile importare l'elemento del distributore.",
+        "importPax8Product": "Impossibile importare il prodotto Pax8.",
+        "lineAddedCatalogSaveFailed": "Riga aggiunta, ma il salvataggio nel catalogo non è riuscito.",
+        "lineNeedsNameOrDescription": "Una riga deve avere un nome o una descrizione.",
+        "loadContractTemplates": "Impossibile caricare i template di contratto",
+        "moveLine": "Impossibile spostare la riga.",
+        "quantityWholeGreaterThanZero": "Inserisci una quantità intera maggiore di 0.",
+        "removeLine": "Impossibile rimuovere la riga.",
+        "removeSection": "Impossibile rimuovere la sezione.",
+        "reorderBlocks": "Impossibile riordinare i blocchi.",
+        "reorderLines": "Impossibile riordinare le righe.",
+        "reorderSections": "Impossibile riordinare le sezioni.",
+        "saveCoverPage": "Impossibile salvare la copertina",
+        "saveCustomer": "Impossibile cambiare il cliente.",
+        "saveTerms": "Impossibile salvare i termini.",
+        "saveTitle": "Impossibile salvare il titolo.",
+        "unitPriceZeroOrMore": "Inserisci un prezzo unitario pari o superiore a 0.",
+        "updateBlock": "Impossibile aggiornare il blocco.",
+        "updateDeposit": "Impossibile aggiornare l'acconto.",
+        "updateLine": "Impossibile aggiornare la riga.",
+        "updateSection": "Impossibile aggiornare la sezione.",
+        "uploadImage": "Impossibile caricare l'immagine."
+      },
+      "image": {
+        "alt": "Immagine del preventivo",
+        "previewUnavailable": "Anteprima immagine non disponibile."
+      },
+      "internal": {
+        "full": "Interno · non mostrato al cliente",
+        "short": "Interno"
+      },
+      "line": {
+        "addDescription": "descrizione",
+        "billing": "Fatturazione",
+        "billingFrequencyAria": "Frequenza di fatturazione",
+        "cost": "Costo",
+        "descriptionAria": "Descrizione riga",
+        "descriptionOptional": "Descrizione (facoltativa)",
+        "enterCostFirstMarkup": "Inserisci prima un costo per impostare il ricarico %",
+        "enterCostFirstMarkupSentence": "Inserisci prima un costo per impostare il ricarico %.",
+        "imageUrlAria": "URL immagine",
+        "markup": "Ricarico",
+        "markupPercent": "Ricarico %",
+        "nameAria": "Nome riga",
+        "namePlaceholder": "Nome",
+        "partNumberAbbr": "PN",
+        "partNumberOptional": "Cod. parte (facoltativo)",
+        "profit": "Profitto",
+        "quantityAria": "Quantità",
+        "saveToCatalog": "Salva nel catalogo",
+        "sku": "SKU",
+        "skuOptional": "SKU (facoltativo)",
+        "unitCost": "Costo unitario",
+        "costMissingAria": "Costo non inserito — questa riga è esclusa dalla stima del profitto.",
+        "noCost": "Nessun costo",
+        "noCostHelp": "Contrassegna questa riga come intenzionalmente priva di costo (es. manodopera o un servizio) — la esclude dall'avviso di costo mancante.",
+        "partNumberHelp": "Il codice parte del produttore per questo elemento.",
+        "showLess": "Mostra meno",
+        "showMore": "Mostra altro",
+        "skuHelp": "Il tuo numero di catalogo o del distributore per questo elemento.",
+        "tidyWithAi": "Sistema con AI"
+      },
+      "liveTotals": {
+        "annualRecurring": "Ricorrente annuale",
+        "dueOnAcceptance": "Dovuto all'accettazione",
+        "firstPeriodTotal": "Totale primo periodo (incl. ricorrenti)",
+        "monthlyRecurring": "Ricorrente mensile",
+        "oneTime": "Una tantum",
+        "srUpdated": "Totali aggiornati. Una tantum {{oneTime}}, ricorrente mensile {{monthly}}, ricorrente annuale {{annual}}, dovuto all'accettazione {{due}}.",
+        "srUpdatedWithTax": "Totali aggiornati. Una tantum {{oneTime}}, ricorrente mensile {{monthly}}, ricorrente annuale {{annual}}, imposta {{tax}}, dovuto all'accettazione {{due}}.",
+        "tax": "Imposta",
+        "taxRate": "Aliquota fiscale",
+        "taxRateHelp": "Si applica alle righe contrassegnate come imponibili. Impostata nelle impostazioni fiscali dell'organizzazione.",
+        "title": "Totali in tempo reale",
+        "firstPeriodSubtotal": "Subtotale primo periodo",
+        "subtotal": "Subtotale",
+        "total": "Totale"
+      },
+      "recurrence": {
+        "annual": "Annuale",
+        "monthly": "Mensile",
+        "one_time": "Una tantum"
+      },
+      "status": {
+        "saved": "Salvato"
+      },
+      "success": {
+        "imageSectionAdded": "Sezione immagine aggiunta",
+        "itemAdded": "Elemento aggiunto",
+        "lineAdded": "Riga aggiunta",
+        "lineMoved": "Riga spostata",
+        "lineRemoved": "Riga rimossa",
+        "savedToCatalog": "Salvato nel catalogo",
+        "sectionAdded": "Sezione aggiunta",
+        "sectionRemoved": "Sezione rimossa",
+        "contractSectionAdded": "Sezione contratto aggiunta"
+      },
+      "symbols": {
+        "check": "✓",
+        "notAvailable": "—",
+        "percent": "%",
+        "plusSeparator": " + "
+      },
+      "table": {
+        "emptyLines": "Nessuna riga. Aggiungi un elemento di catalogo o una riga manuale qui sotto.",
+        "fallbackName": "Tabella prezzi {{number}}",
+        "item": "Elemento",
+        "labelAria": "Etichetta tabella prezzi",
+        "labelPlaceholder": "Etichetta tabella (facoltativa, es. Servizi mensili)",
+        "notTaxable": "Non imponibile",
+        "qty": "Qtà",
+        "recurrence": "Ricorrenza",
+        "scrollAria": "Tabella prezzi — scorri lateralmente su schermi stretti per totali e azioni riga",
+        "showSubtotal": "Mostra riga subtotale",
+        "tax": "Imposta",
+        "taxSuffix": "+ {{amount}} imposta",
+        "taxTitle": "Imposta per riga. Il totale imposta nell'intestazione è quello autorevole e può differire di un centesimo per arrotondamento.",
+        "taxable": "Imponibile",
+        "total": "Totale",
+        "unitPrice": "Prezzo unitario",
+        "collapsedSummary": "{{count}} righe · {{amount}}",
+        "collapsedSummary_one": "{{count}} riga · {{amount}}",
+        "collapsedSummary_other": "{{count}} righe · {{amount}}"
+      },
+      "terms": {
+        "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",
+        "title": "Termini e condizioni"
+      },
+      "title": {
+        "label": "Titolo preventivo",
+        "placeholder": "es. Rinnovo rete ufficio"
+      },
+      "units": {
+        "perMonth": "/mese",
+        "perYear": "/anno"
+      },
+      "contract": {
+        "templateLabel": "Template di contratto",
+        "templatePlaceholder": "Seleziona un template…",
+        "noTemplates": "Nessun template di contratto. Creane uno in Contratti → Template.",
+        "noPublishedVersion": "Questo template non ha ancora una versione pubblicata. Pubblicalo prima di allegarlo.",
+        "pinnedVersion": "Fissato a v{{version}}",
+        "autoVariablesTitle": "Compilate automaticamente dal preventivo",
+        "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
+        "manualVariablesTitle": "Compila per questa proposta",
+        "labelFieldLabel": "Etichetta sezione",
+        "labelPlaceholder": "Etichetta facoltativa (es. Accordo quadro per servizi)",
+        "variableRequired": "Inserisci un valore",
+        "variableUnresolved": "Questa variabile è ancora non risolta",
+        "untitledTemplate": "Contratto",
+        "readOnlyHint": "Rimuovi e riaggiungi questa sezione per cambiare template, versione o variabili.",
+        "updateToVersion": "Aggiorna a v{{version}}",
+        "saveVariables": "Salva variabili",
+        "unresolvedWarning": "Variabili non risolte (bloccheranno l'invio): {{names}}"
+      },
+      "coverPage": {
+        "title": "Copertina",
+        "enable": "Mostra una copertina",
+        "summaryOn": "Mostrata come prima pagina della proposta.",
+        "summaryOff": "Nessuna copertina: la proposta inizia con il suo contenuto.",
+        "titleLabel": "Titolo copertina",
+        "titlePlaceholder": "es. Proposta servizi IT gestiti",
+        "preparedForLabel": "Preparata per",
+        "preparedForPlaceholder": "Sostituisci il nome del cliente",
+        "showPreparedBy": "Mostra “preparata da” (la tua azienda)",
+        "imageLabel": "Immagine copertina",
+        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "removeImage": "Rimuovi immagine"
+      },
+      "ghost": {
+        "add": "Aggiungi",
+        "nameAria": "Nome nuova riga",
+        "placeholder": "Digita il nome di un elemento…"
+      },
+      "bulk": {
+        "applied_one": "Aggiornata {{count}} riga.",
+        "applied_other": "Aggiornate {{count}} righe.",
+        "apply": "Applica",
+        "barAria": "Modifica in blocco delle righe selezionate",
+        "clearSelection": "Cancella selezione",
+        "invalidMarkup": "Inserisci una percentuale di ricarico valida.",
+        "markupHint": "Si applica alle righe selezionate che hanno un costo.",
+        "partialFailure": "{{failed}} di {{total}} righe non aggiornate.",
+        "selectAllAria": "Seleziona tutte le righe in {{label}}",
+        "selectLineAria": "Seleziona {{name}}",
+        "selectedCount_one": "{{count}} riga selezionata",
+        "selectedCount_other": "{{count}} righe selezionate",
+        "setCost": "Imposta costo",
+        "setMarkup": "Imposta ricarico %",
+        "skippedNoCost_one": "Ignorata {{count}} riga senza costo.",
+        "skippedNoCost_other": "Ignorate {{count}} righe senza costo.",
+        "taxableOff": "Non imponibile",
+        "taxableOn": "Imponibile"
+      },
+      "lastSaved": {
+        "saved": "Salvato {{time}}",
+        "saving": "Salvataggio…"
+      },
+      "outline": {
+        "aria": "Contenuti del preventivo",
+        "shortcutHint": "Alt+Giù / Alt+Su passa alla sezione successiva o precedente durante la modifica.",
+        "title": "Contenuti"
+      },
+      "tidyAll": {
+        "complete": "Revisione completata per {{count}} descrizione/i.",
+        "noDescriptions": "Nessuna descrizione di riga da sistemare in questa sezione."
+      },
+      "undo": {
+        "lineDeleted": "Riga eliminata",
+        "sectionDeleted": "Sezione eliminata"
+      },
+      "unassigned": {
+        "explainer": "Queste righe non fanno parte di nessuna tabella prezzi, ma compaiono comunque nel preventivo del cliente e contano ai fini dei totali. Sposta ciascuna riga in una tabella prezzi per controllare dove compare.",
+        "moveAria": "Sposta {{line}} in una tabella prezzi",
+        "movePlaceholder": "Sposta in…",
+        "noTargets": "Aggiungi una tabella prezzi, poi sposta queste righe al suo interno.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Righe non assegnate"
+      }
+    },
+    "actions": {
+      "cloneDialog": {
+        "companyLabel": "Azienda",
+        "confirm": "Crea clone",
+        "defaultTitle": "Clone di {{name}}",
+        "message": "Crea una nuova bozza con lo stesso contenuto. Scegli l'azienda destinataria e assegna un titolo.",
+        "retargetHint": "La nuova bozza userà i dati di fatturazione e l'aliquota fiscale di questa azienda; l'assegnazione del sito viene cancellata.",
+        "title": "Clona preventivo",
+        "titleLabel": "Titolo"
+      },
+      "cloneError": "Impossibile clonare il preventivo.",
+      "cloneQuote": "Clona preventivo",
+      "cloneSavingTitle": "Attendi il salvataggio delle modifiche prima di clonare.",
+      "cloneSuccess": "Preventivo clonato.",
+      "cloning": "Clonazione…",
+      "deleteConfirm": {
+        "message": "La bozza di preventivo verrà eliminata definitivamente. L'operazione non può essere annullata.",
+        "title": "Elimina bozza di preventivo"
+      },
+      "deleteDraft": "Elimina bozza",
+      "deleteError": "Impossibile eliminare la bozza.",
+      "deleteSuccess": "Bozza eliminata",
+      "downloadPdf": "Scarica PDF",
+      "emptyHint": "Aggiungi almeno un elemento prima dell'invio.",
+      "moreActions": "Altre azioni",
+      "savingHint": "Salvataggio modifiche… L'invio si sblocca quando tutto è salvato.",
+      "savingTitle": "Salvataggio delle modifiche: l'invio si sblocca quando tutto è salvato.",
+      "sendConfirm": {
+        "ccLabel": "Cc",
+        "ccToggle": "Cc",
+        "includePdfLabel": "Allega il PDF della proposta",
+        "invalidEmail": "Indirizzo email non valido: {{addresses}}",
+        "message": "Invieremo questa proposta via email a {{orgName}} e la contrassegneremo come Inviata — {{amount}} dovuto all'accettazione. L'operazione non può essere annullata.",
+        "messageLabel": "Aggiungi un messaggio personale (facoltativo)",
+        "messagePlaceholder": "Includi una breve nota: apparirà nell'email sopra il link di accettazione.",
+        "paymentEnabled": "Il pagamento online è abilitato: il cliente può pagare con carta dopo l'accettazione.",
+        "paymentNoteNoStripe": "Quando il cliente accetta, non avrà un'opzione di pagamento online. Collega Stripe in Impostazioni → Integrazioni per offrirne una.",
+        "paymentWarningDeposit": "Questa proposta richiede un acconto, ma i clienti non possono ancora pagare online: collega Stripe in Impostazioni → Integrazioni così l'acconto può essere incassato all'accettazione.",
+        "recipientRequired": "Inserisci almeno un destinatario per l'invio.",
+        "signaturePreviewLabel": "Firma (impostata in Impostazioni → Branding):",
+        "subjectLabel": "Oggetto",
+        "subjectPlaceholder": "Proposta {{number}} dalla tua azienda",
+        "subjectPlaceholderNoNumber": "Proposta dalla tua azienda",
+        "title": "Inviare questa proposta?",
+        "toLabel": "A",
+        "toPlaceholder": "Aggiungi destinatario…",
+        "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
+        "zeroTotalWarning": "Il totale di questo preventivo è $0.00: verifica che gli elementi abbiano un prezzo prima dell'invio."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione oppure condividi manualmente il link di accettazione.",
+        "noEmailService": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: l'email non è configurata su questo server.",
+        "pdfRenderFailed": "Proposta contrassegnata come Inviata, ma non è stato possibile generare il PDF, quindi nessuna email è stata consegnata. Controlla i file di contratto allegati, poi invia di nuovo.",
+        "sendFailed": "Proposta contrassegnata come Inviata, ma l'email non è stata consegnata. Controlla l'indirizzo e prova a condividere manualmente il link di accettazione."
+      },
+      "sendError": "Impossibile inviare la proposta.",
+      "sendProposal": "Invia proposta",
+      "sendScheduled": "Invio a {{orgName}} tra 30 secondi: puoi ancora annullare.",
+      "sendSuccess": "Proposta inviata: la contrassegneremo come Visualizzata e Accettata quando {{orgName}} la apre e firma.",
+      "sending": "Invio…",
+      "sendingIn": "Invio tra {{seconds}}s…",
+      "undoError": "Impossibile annullare l'invio.",
+      "undoSend": "Annulla invio",
+      "undoSuccess": "Invio annullato: il preventivo è ancora una bozza.",
+      "undoTooLate": "Troppo tardi per annullare: la proposta è già stata inviata."
+    },
+    "detail": {
+      "addContentInEditor": "Aggiungi contenuto nell'Editor",
+      "created": "Creato",
+      "customer": "Cliente",
+      "empty": "Questo preventivo non contiene ancora contenuti.",
+      "expires": "Scade il {{date}}",
+      "from": "Da",
+      "imageUnavailable": "Immagine non disponibile",
+      "issued": "Emesso",
+      "lifecycle": {
+        "accepted": "Accettato",
+        "declined": "Rifiutato",
+        "sent": "Inviato",
+        "viewed": "Visualizzato"
+      },
+      "pax8Order": {
+        "message_one": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elemento) in attesa dei dettagli di provisioning",
+        "message_other": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elementi) in attesa dei dettagli di provisioning",
+        "open": "Apri ordine Pax8"
+      },
+      "pricing": "Prezzi",
+      "proposalImageAlt": "Immagine della proposta",
+      "scheduledSendFailed": "L'invio pianificato non è riuscito: questa proposta NON è stata inviata ed è ancora una bozza. Rivedila e prova a inviare di nuovo.",
+      "table": {
+        "item": "Elemento",
+        "noLines": "Nessuna riga in questa tabella.",
+        "qty": "Qtà",
+        "recurrence": "Ricorrenza",
+        "tax": "Imposta",
+        "total": "Totale",
+        "unitPrice": "Prezzo unitario"
+      },
+      "tableScrollAria": "{{label}} — scorri lateralmente per altre colonne",
+      "terms": "Termini",
+      "totals": {
+        "annualRecurring": "Ricorrente annuale",
+        "dueOnAcceptance": "Dovuto all'accettazione",
+        "firstPeriod": "Totale primo periodo (incl. ricorrenti)",
+        "monthlyRecurring": "Ricorrente mensile",
+        "oneTime": "Una tantum",
+        "tax": "Imposta",
+        "title": "Totali"
+      },
+      "viewInvoice": "Visualizza fattura"
+    },
+    "distributorLookup": {
+      "available": "{{count}} disp.",
+      "cost": "costo {{currency}} {{amount}}",
+      "endOfLife": "Fine vita",
+      "importAndAdd": "Importa e aggiungi",
+      "inStockOnly": "Solo disponibili",
+      "lookupFailed": "Ricerca non riuscita.",
+      "mfgPart": "Cod. produttore {{part}}",
+      "msrp": "MSRP {{amount}}",
+      "nightlyHint": "Digita almeno {{count}} caratteri per cercare nel catalogo notturno.",
+      "nightlyPlaceholder": "Cerca per nome, SKU, cod. produttore o produttore",
+      "noResults": "Nessun prodotto corrispondente.",
+      "outOfStock": "Non disponibile",
+      "placeholder": "SKU SYNNEX o cod. produttore",
+      "searching": "Ricerca…",
+      "sellPrice": "Prezzo di vendita",
+      "sku": "SKU {{sku}}",
+      "source": "Origine",
+      "sourceEcExpress": "EC Express (SKU / cod. parte esatto)",
+      "sourceNightly": "Catalogo TD SYNNEX (file notturno)",
+      "syncedDaysAgo": "sincronizzato {{count}}g fa",
+      "syncedHoursAgo": "sincronizzato {{count}}h fa",
+      "syncedJustNow": "sincronizzato ora",
+      "syncedMinutesAgo": "sincronizzato {{count}}m fa",
+      "syncedUnknown": "ora di sincronizzazione sconosciuta",
+      "toBeDiscontinued": "In dismissione",
+      "warehouses": "Magazzini: {{list}}"
+    },
+    "document": {
+      "additionalItems": "Elementi aggiuntivi",
+      "contract": {
+        "download": "Scarica contratto",
+        "previewTitle": "Documento contratto {{name}}",
+        "unavailable": "File contratto non disponibile",
+        "versionFooter": "{{name}} — v{{version}}"
+      },
+      "draft": "Bozza",
+      "empty": "Questa proposta non contiene ancora contenuti.",
+      "imageUnavailable": "Immagine non disponibile",
+      "issued": "Emesso",
+      "preparedFor": "Preparato per",
+      "taxId": "ID fiscale: {{id}}",
+      "imageZoomAria": "Visualizza immagine più grande",
+      "preview": {
+        "description": "Questo è ciò che il cliente vede nel link della proposta.",
+        "downloadPdf": "Scarica PDF",
+        "preparing": "Preparazione…"
+      },
+      "pricing": "Prezzi",
+      "pricingScrollAria": "Prezzi — scorri lateralmente per altre colonne",
+      "proposal": "Proposta",
+      "proposalImageAlt": "Immagine della proposta",
+      "recurrence": {
+        "annual": "Annuale",
+        "monthly": "Mensile"
+      },
+      "table": {
+        "amount": "Importo",
+        "description": "Descrizione",
+        "qty": "Qtà",
+        "tax": "Imposta",
+        "unitPrice": "Prezzo unitario"
+      },
+      "terms": "Termini",
+      "totals": {
+        "annualRecurring": "Ricorrente annuale",
+        "depositDue": "Acconto dovuto",
+        "depositDueNow": "Acconto dovuto ora",
+        "dueOnAcceptance": "Dovuto all'accettazione",
+        "firstPeriodSubtotal": "Subtotale primo periodo",
+        "firstPeriodTotal": "Totale primo periodo",
+        "monthlyRecurring": "Ricorrente mensile",
+        "recurringNote": "Accettando questa proposta vengono fatturati ora gli addebiti una tantum. Le righe ricorrenti vengono fatturate secondo la propria pianificazione.",
+        "remainingBalance": "Saldo residuo (dovuto secondo i termini)",
+        "subtotal": "Subtotale",
+        "tax": "Imposta"
+      },
+      "validUntil": "Valido fino al"
+    },
+    "page": {
+      "accessDenied": "Non hai l'autorizzazione per visualizzare i preventivi.",
+      "bulk": {
+        "deleteDrafts": "Elimina bozze",
+        "deletedVerb": "eliminati",
+        "failed": "{{verb}} in blocco non riuscito. Riprova.",
+        "limit": "Seleziona fino a {{limit}} alla volta.",
+        "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorati{{failedText}}",
+        "send": "Invia",
+        "sentVerb": "inviati",
+        "success": "{{succeeded}} {{verb}}"
+      },
+      "bulkDelete": {
+        "message_one": "Eliminare il preventivo selezionato? Vengono eliminati solo i preventivi in stato DRAFT; l'operazione non può essere annullata.",
+        "message_other": "Eliminare {{count}} preventivi selezionati? Vengono eliminati solo i preventivi in stato DRAFT; l'operazione non può essere annullata.",
+        "skippedNotDraft": "Non è una bozza (ignorato)",
+        "title": "Elimina bozze di preventivo"
+      },
+      "bulkSend": {
+        "message_one": "Inviare via email la proposta selezionata al cliente? L'operazione non può essere annullata.",
+        "message_other": "Inviare via email {{count}} proposte selezionate ai rispettivi clienti? L'operazione non può essere annullata.",
+        "recipients": "Ogni proposta viene inviata via email al contatto di fatturazione della sua organizzazione e contrassegnata come Inviata.",
+        "title": "Invia preventivi",
+        "unnumbered": "Bozza"
+      },
+      "create": {
+        "description": "Scegli il cliente per questa proposta. Potrai aggiungere blocchi e prezzi dopo.",
+        "error": "Impossibile creare una bozza di preventivo.",
+        "genericError": "Impossibile creare il preventivo.",
+        "noSpecificSite": "Nessun sito specifico",
+        "selectOrganization": "Seleziona un'organizzazione…",
+        "siteClearedOnClone": "Il sito viene cancellato quando si parte da un preventivo esistente.",
+        "siteOptional": "Sito (facoltativo)",
+        "startBlank": "Preventivo vuoto",
+        "startFrom": "Parti da (facoltativo)",
+        "submit": "Crea bozza",
+        "success": "Bozza di preventivo creata",
+        "title": "Nuovo preventivo",
+        "titleOptional": "Titolo (facoltativo)",
+        "titlePlaceholder": "es. Rinnovo rete ufficio",
+        "working": "Elaborazione…"
+      },
+      "deposit": {
+        "deposit": "Acconto",
+        "paid": "Acconto pagato",
+        "unpaid": "Acconto non pagato"
+      },
+      "duplicate": "Duplica preventivo",
+      "duplicateAria": "Duplica preventivo {{quote}}",
+      "duplicateError": "Impossibile duplicare il preventivo.",
+      "empty": {
+        "clearFilters": "Cancella filtri",
+        "description": "Prepara una proposta con intestazioni, testo formattato e una tabella prezzi, poi inviala per l'accettazione.",
+        "filtered": "Nessun preventivo corrisponde a questi filtri.",
+        "title": "Nessun preventivo"
+      },
+      "errors": {
+        "loadOrganizations": "Impossibile caricare le organizzazioni.",
+        "loadQuotes": "Impossibile caricare i preventivi",
+        "loadSites": "Impossibile caricare i siti."
+      },
+      "filters": {
+        "allStatuses": "Tutti gli stati",
+        "searchAria": "Cerca preventivi",
+        "searchPlaceholder": "Cerca numero o org",
+        "statusAria": "Filtra per stato"
+      },
+      "newQuote": "Nuovo preventivo",
+      "stats": {
+        "awaiting": "{{count}} in attesa",
+        "drafts": "Bozze",
+        "notYetSent": "non ancora inviati",
+        "outForSignature": "In attesa di firma"
+      },
+      "subtitle": "Crea proposte con blocchi rich e prezzi ricorrenti, poi inviale ai clienti.",
+      "table": {
+        "created": "Creato",
+        "draftQuote": "Preventivo in bozza",
+        "firstPeriodSuffix": "primo periodo",
+        "number": "Numero",
+        "selectAll": "Seleziona tutti i preventivi",
+        "selectQuote": "Seleziona preventivo {{quote}}",
+        "total": "Totale"
+      },
+      "title": "Preventivi",
+      "tryAgain": "Riprova"
+    },
+    "pax8ProductLookup": {
+      "cost": "costo {{currency}} {{amount}}",
+      "importAndAdd": "Importa e aggiungi",
+      "option": "Opzione {{number}}",
+      "placeholder": "Prodotto, vendor o SKU",
+      "searchFailed": "Ricerca non riuscita.",
+      "searching": "Ricerca…",
+      "sellPrice": "Prezzo di vendita",
+      "term": "Termine"
+    },
+    "recurrence": {
+      "one_time": "Una tantum",
+      "monthly": "Mensile",
+      "annual": "Annuale"
+    },
+    "status": {
+      "draft": "Bozza",
+      "sent": "Inviato",
+      "viewed": "Visualizzato",
+      "accepted": "Accettato",
+      "declined": "Rifiutato",
+      "expired": "Scaduto",
+      "converted": "Convertito"
+    },
+    "workspace": {
+      "backLabel": "Preventivi",
+      "backToQuotes": "Torna ai preventivi",
+      "draftTitle": "Preventivo in bozza",
+      "errors": {
+        "loadFailed": "Impossibile caricare il preventivo",
+        "missingId": "ID preventivo mancante",
+        "notFound": "Preventivo non trovato.",
+        "unavailable": "Preventivo non disponibile."
+      },
+      "tabs": {
+        "editor": "Editor",
+        "preview": "Anteprima",
+        "detail": "Dettaglio"
+      }
+    }
+  },
+  "billingUi": {
+    "margin": {
+      "cost": "Costo",
+      "missingCost": "La stima del profitto è incompleta: {{count}} riga senza costo.",
+      "missingCost_one": "La stima del profitto è incompleta: {{count}} riga senza costo.",
+      "missingCost_other": "La stima del profitto è incompleta: {{count}} righe senza costo.",
+      "profitAnnual": "Profitto (annuale)",
+      "profitMonthly": "Profitto (mensile)",
+      "profitOneTime": "Profitto (una tantum)",
+      "title": "Margine (interno)"
+    },
+    "recurringBillingNote": "L'accettazione di questo preventivo fattura ora solo gli addebiti una tantum. Le righe ricorrenti (mensili + annuali) vengono fatturate più avanti secondo la propria pianificazione. Il totale del primo periodo combina gli addebiti una tantum con il primo periodo di ogni cadenza ricorrente.",
+    "units": {
+      "perMonth": "/mese",
+      "perYear": "/anno"
+    },
+    "unsaved": "Non salvato"
+  },
+  "bulk": {
+    "bulkActionBar": {
+      "selected": "{{count}} selezionati"
+    }
+  },
+  "invoice": {
+    "status": {
+      "draft": "Bozza",
+      "sent": "Inviata",
+      "issued": "Emessa",
+      "partially_paid": "Parzialmente pagata",
+      "overdue": "Scaduta",
+      "paid": "Pagata",
+      "void": "Stornata"
+    }
+  },
+  "invoiceEditor": {
+    "addLine": {
+      "add": "Aggiungi",
+      "addInCatalog": "Aggiungine alcuni nel Catalogo prodotti",
+      "bundle": "Bundle",
+      "catalogItem": "Elemento di catalogo",
+      "clearSelection": "Cancella selezione",
+      "manualLine": "Riga manuale",
+      "noCatalogItems": "Nessun elemento di catalogo.",
+      "searchCatalog": "Cerca nel catalogo per nome o SKU",
+      "sourceAria": "Origine aggiunta riga"
+    },
+    "billTo": {
+      "addInSettings": "Aggiungine uno nelle impostazioni dell'organizzazione",
+      "noContact": "Nessun contatto di fatturazione impostato.",
+      "title": "Fattura a"
+    },
+    "errors": {
+      "addLine": "Impossibile aggiungere la riga.",
+      "loadCatalog": "Impossibile caricare il catalogo.",
+      "nameOrDescription": "Una riga deve avere un nome o una descrizione.",
+      "nonNegativeUnitPrice": "Inserisci un prezzo unitario pari o superiore a 0.",
+      "quantityGreaterThanZero": "Inserisci una quantità maggiore di 0.",
+      "removeLine": "Impossibile rimuovere la riga.",
+      "saveNotes": "Impossibile salvare le note.",
+      "saveTerms": "Impossibile salvare i termini.",
+      "updateLine": "Impossibile aggiornare la riga."
+    },
+    "fields": {
+      "descriptionOptional": "Descrizione (facoltativa)",
+      "lineDescription": "Descrizione riga",
+      "lineName": "Nome riga",
+      "name": "Nome",
+      "quantity": "Quantità",
+      "taxable": "Imponibile",
+      "unitPrice": "Prezzo unitario"
+    },
+    "hiddenSuffix": " (nascosta)",
+    "notes": {
+      "placeholder": "Note interne o per il cliente…",
+      "title": "Note"
+    },
+    "remove": "Rimuovi",
+    "saved": "Salvato",
+    "success": {
+      "lineAdded": "Riga aggiunta",
+      "lineRemoved": "Riga rimossa",
+      "notesSaved": "Note salvate",
+      "termsSaved": "Termini salvati"
+    },
+    "summary": {
+      "noTaxRate": "Le righe sono contrassegnate come imponibili, ma non è impostata alcuna aliquota fiscale.",
+      "setTaxRate": "Impostane una in Impostazioni fatturazione",
+      "subtotal": "Subtotale",
+      "tax": "Imposta",
+      "title": "Riepilogo",
+      "total": "Totale"
+    },
+    "table": {
+      "customerVisible": "Visibile al cliente",
+      "customerVisibleTitle": "Indica se questa riga appare sulla fattura del cliente",
+      "empty": "Nessuna riga. Aggiungi elementi di catalogo, un bundle o una riga manuale qui sotto.",
+      "item": "Elemento",
+      "price": "Prezzo",
+      "qty": "Qtà",
+      "tax": "Imposta",
+      "total": "Totale"
+    },
+    "terms": {
+      "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",
+      "title": "Termini e condizioni"
+    },
+    "unapprovedTime": "{{count}} righe fanno riferimento a tempo non approvato. Rivedi prima dell'emissione.",
+    "unapprovedTime_one": "{{count}} riga fa riferimento a tempo non approvato. Rivedi prima dell'emissione.",
+    "unapprovedTime_other": "{{count}} righe fanno riferimento a tempo non approvato. Rivedi prima dell'emissione."
+  },
+  "invoiceActions": {
+    "deleteConfirm": {
+      "message": "La fattura in bozza verrà eliminata definitivamente. L'operazione non può essere annullata.",
+      "title": "Elimina fattura in bozza"
+    },
+    "deleteDraft": "Elimina bozza",
+    "deleteError": "Impossibile eliminare la bozza.",
+    "deleteSuccess": "Bozza eliminata",
+    "downloadPdf": "Scarica PDF",
+    "downloadPdfError": "Impossibile scaricare il PDF della fattura.",
+    "issue": "Emetti",
+    "issueAndSend": "Emetti e invia",
+    "issueError": "Impossibile emettere la fattura.",
+    "issueNoEmailWarning": "Fattura emessa, ma nessuna email è stata inviata (nessun contatto di fatturazione / email non configurata)",
+    "issueSendConfirm": {
+      "customerFallback": "il cliente",
+      "message": "La fattura verrà emessa e inviata via email a {{customer}} per {{amount}}. L'operazione non può essere annullata.",
+      "title": "Emettere e inviare questa fattura?"
+    },
+    "issueSendError": "Fattura emessa, ma l'invio non è riuscito.",
+    "issueSentSuccess": "Fattura emessa e inviata",
+    "issueSuccess": "Fattura emessa",
+    "issuing": "Emissione…",
+    "noVisibleLineHint": "Aggiungi almeno una riga visibile al cliente per emettere.",
+    "preparing": "Preparazione…"
+  },
+  "invoiceDetail": {
+    "accountingView": "Vista contabile (costo, margine, componenti nascosti)",
+    "deposit": {
+      "duePrefix": "Acconto di",
+      "dueSuffix": "dovuto — {{paid}} di {{total}} pagati.",
+      "paid": "Acconto pagato — saldo residuo {{balance}}."
+    },
+    "dueDate": {
+      "aria": "Data di scadenza",
+      "display": "Scadenza {{date}}",
+      "updateError": "Impossibile aggiornare la data di scadenza.",
+      "updateSuccess": "Data di scadenza aggiornata"
+    },
+    "from": "Da",
+    "lines": {
+      "cost": "Costo",
+      "description": "Descrizione",
+      "hiddenMarker": " (nascosta)",
+      "margin": "Margine",
+      "price": "Prezzo",
+      "qty": "Qtà",
+      "tax": "Imposta",
+      "total": "Totale"
+    },
+    "paymentMethods": {
+      "cash": "Contanti",
+      "check": "Assegno",
+      "bank_transfer": "Bonifico bancario",
+      "card": "Carta",
+      "other": "Altro"
+    },
+    "payments": {
+      "amount": "Importo",
+      "amountRequired": "Inserisci un importo di pagamento da registrare",
+      "connectStripe": "Collega Stripe per accettare pagamenti online.",
+      "date": "Data pagamento",
+      "draftHint": "Emetti questa fattura per registrare pagamenti.",
+      "empty": "Nessun pagamento registrato.",
+      "linkCopied": "Link di pagamento copiato negli appunti",
+      "linkError": "Impossibile creare un link di pagamento.",
+      "loadFailed": "Impossibile caricare i pagamenti.",
+      "method": "Metodo di pagamento",
+      "noLinkReturned": "Non è stato restituito alcun link di pagamento. Riprova.",
+      "online": "Online",
+      "record": "Registra pagamento",
+      "recordConfirm": {
+        "message": "Registrare un pagamento di {{amount}} ({{method}}) datato {{date}}?",
+        "title": "Registra pagamento"
+      },
+      "recordError": "Impossibile registrare il pagamento.",
+      "recordSuccess": "Pagamento registrato",
+      "reference": "Riferimento",
+      "referencePlaceholder": "Riferimento (facoltativo)",
+      "reverse": "Storna",
+      "reverseAria": "Storna pagamento di {{amount}}",
+      "reverseConfirm": {
+        "label": "Storna pagamento",
+        "message": "Il pagamento {{method}} di {{amount}} verrà stornato e rimosso dal saldo della fattura. L'operazione non può essere annullata.",
+        "title": "Stornare questo pagamento?"
+      },
+      "reverseError": "Impossibile stornare il pagamento.",
+      "reverseSuccess": "Pagamento stornato",
+      "sendLink": "Invia link di pagamento",
+      "setUp": "Configura",
+      "shareLinkPrompt": "Condividi questo link di pagamento con il cliente:",
+      "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
+      "title": "Pagamenti",
+      "viaStripe": "tramite Stripe"
+    },
+    "requestPayment": {
+      "invoiceSent": "Fattura inviata",
+      "noEmailWarning": "Nessuna email è stata inviata (nessun contatto di fatturazione / email non configurata)",
+      "paymentRequestSent": "Richiesta di pagamento inviata",
+      "requestPayment": "Richiedi pagamento",
+      "sendError": "Impossibile inviare la fattura.",
+      "sendInvoice": "Invia fattura"
+    },
+    "summary": {
+      "balanceDue": "Saldo dovuto",
+      "paid": "Pagato",
+      "subtotal": "Subtotale",
+      "tax": "Imposta",
+      "total": "Totale"
+    },
+    "terms": "Termini e condizioni",
+    "void": {
+      "button": "Storna fattura",
+      "description": "Lo storno libera il lavoro fatturato così può essere rifatturato. L'operazione non può essere annullata.",
+      "error": "Impossibile stornare la fattura.",
+      "reason": "Motivo",
+      "reissue": "Riemetti come nuova bozza",
+      "reissuedSuccess": "Fattura stornata e riemessa come bozza",
+      "success": "Fattura stornata",
+      "title": "Storna fattura"
+    }
+  },
+  "invoiceDocument": {
+    "billTo": "Fattura a",
+    "documentType": "Fattura",
+    "due": "Scadenza",
+    "empty": "Questa fattura non contiene ancora righe.",
+    "fallbackTitle": "Fattura",
+    "issued": "Emessa",
+    "preview": {
+      "description": "Questo è ciò che il cliente vede sulla fattura.",
+      "downloadError": "Impossibile scaricare il PDF della fattura.",
+      "downloadPdf": "Scarica PDF",
+      "preparing": "Preparazione…"
+    },
+    "table": {
+      "amount": "Importo",
+      "description": "Descrizione",
+      "qty": "Qtà",
+      "tax": "Imposta",
+      "unitPrice": "Prezzo unitario"
+    },
+    "terms": "Termini e condizioni",
+    "totals": {
+      "amountDue": "Importo dovuto",
+      "paid": "Pagato",
+      "subtotal": "Subtotale",
+      "tax": "Imposta",
+      "total": "Totale"
+    }
+  },
+  "invoiceWorkspace": {
+    "backLabel": "Fatture",
+    "backToInvoices": "Torna alle fatture",
+    "draftTitle": "Fattura in bozza",
+    "errors": {
+      "loadFailed": "Impossibile caricare la fattura",
+      "missingId": "ID fattura mancante",
+      "notFound": "Fattura non trovata.",
+      "unavailable": "Fattura non disponibile."
+    },
+    "tabs": {
+      "editor": "Editor",
+      "preview": "Anteprima",
+      "detail": "Dettaglio"
+    }
+  },
+  "invoicesPage": {
+    "accessDenied": "Non hai l'autorizzazione per visualizzare le fatture.",
+    "bulk": {
+      "deleteDrafts": "Elimina bozze",
+      "deletedVerb": "eliminate",
+      "failed": "{{verb}} in blocco non riuscito. Riprova.",
+      "issue": "Emetti",
+      "issuedVerb": "emesse",
+      "limit": "Seleziona fino a {{limit}} alla volta.",
+      "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorate{{failedText}}",
+      "success": "{{succeeded}} {{verb}}",
+      "void": "Storna",
+      "voidedVerb": "stornate"
+    },
+    "bulkDelete": {
+      "message": "Eliminare {{count}} fatture selezionate? Verranno eliminate solo le fatture in stato DRAFT; l'operazione non può essere annullata.",
+      "title": "Elimina fatture in bozza"
+    },
+    "bulkVoid": {
+      "description": "Lo storno libera il lavoro fatturato così può essere rifatturato. L'operazione non può essere annullata.",
+      "reason": "Motivo",
+      "submit": "Storna fatture",
+      "title": "Storna fatture"
+    },
+    "deposit": {
+      "paid": "Acconto pagato",
+      "unpaid": "Acconto non pagato"
+    },
+    "dialog": {
+      "allSites": "Tutti i siti",
+      "assemble": "Componi",
+      "assembleError": "Impossibile comporre una fattura per quell'intervallo.",
+      "assembleFromWork": "Componi da lavoro",
+      "assembleSuccess": "Bozza di fattura composta",
+      "blankInvoice": "Fattura vuota",
+      "createDraft": "Crea bozza",
+      "createError": "Impossibile creare una bozza di fattura.",
+      "createGenericError": "Impossibile creare la fattura.",
+      "createSuccess": "Bozza di fattura creata",
+      "description": "Componi il lavoro non fatturato in una bozza oppure parti da una fattura vuota.",
+      "from": "Da",
+      "selectOrganization": "Seleziona un'organizzazione…",
+      "siteOptional": "Sito (facoltativo)",
+      "sourceAria": "Origine fattura",
+      "title": "Nuova fattura",
+      "to": "A",
+      "working": "Elaborazione…"
+    },
+    "empty": {
+      "description": "Componi tempo e parti non fatturati in una bozza oppure parti da una fattura vuota.",
+      "filtered": "Nessuna fattura corrisponde a questi filtri.",
+      "title": "Nessuna fattura"
+    },
+    "errors": {
+      "loadInvoices": "Impossibile caricare le fatture",
+      "loadOrganizations": "Impossibile caricare le organizzazioni.",
+      "loadSites": "Impossibile caricare i siti."
+    },
+    "filters": {
+      "allStatuses": "Tutti gli stati",
+      "issuedFrom": "Emesse da",
+      "issuedTo": "Emesse fino a",
+      "searchAria": "Cerca fatture",
+      "searchPlaceholder": "Cerca numero o org",
+      "statusAria": "Filtra per stato"
+    },
+    "newInvoice": "Nuova fattura",
+    "stats": {
+      "drafts": "Bozze",
+      "needsFollowUp": "richiedono follow-up",
+      "notYetIssued": "non ancora emesse",
+      "open": "{{count}} aperte",
+      "outstanding": "In sospeso",
+      "overdue": "Scadute"
+    },
+    "subtitle": "Componi, emetti e traccia le fatture dei clienti.",
+    "table": {
+      "balance": "Saldo",
+      "draftInvoice": "Fattura in bozza",
+      "due": "Scadenza",
+      "issued": "Emessa",
+      "number": "Numero",
+      "selectAll": "Seleziona tutte le fatture",
+      "selectInvoice": "Seleziona fattura {{invoice}}",
+      "total": "Totale"
+    },
+    "title": "Fatture",
+    "tryAgain": "Riprova"
+  },
+  "orgBillingSettings": {
+    "address": {
+      "city": "Città",
+      "country": "Paese",
+      "line1": "Indirizzo riga 1",
+      "line2": "Indirizzo riga 2",
+      "postal": "Codice postale",
+      "region": "Regione / stato",
+      "title": "Indirizzo di fatturazione"
+    },
+    "contact": {
+      "description": "Preventivi e fatture vengono inviati via email a questo indirizzo. Senza un contatto, l'invio di una proposta la contrassegna come Inviata ma non spedisce alcuna email.",
+      "email": "Email contatto",
+      "emailInvalid": "Inserisci un indirizzo email valido",
+      "emailPlaceholder": "billing@customer.example",
+      "name": "Nome contatto",
+      "title": "Contatto di fatturazione"
+    },
+    "loadError": "Impossibile caricare le impostazioni di fatturazione.",
+    "loading": "Caricamento impostazioni di fatturazione…",
+    "saveButton": "Salva impostazioni di fatturazione",
+    "saveError": "Impossibile salvare le impostazioni di fatturazione dell'organizzazione.",
+    "saveSuccess": "Impostazioni di fatturazione dell'organizzazione salvate",
+    "tax": {
+      "partnerDefault": "Predefinito partner",
+      "taxExempt": "Esente da imposta",
+      "taxId": "ID fiscale",
+      "taxRate": "Aliquota fiscale (%)",
+      "title": "Imposta"
+    }
+  },
+  "partnerBillingSettings": {
+    "company": {
+      "addressLine1": "Indirizzo riga 1",
+      "addressLine2": "Indirizzo riga 2",
+      "city": "Città",
+      "country": "Paese",
+      "defaultTerms": "Termini e condizioni predefiniti",
+      "defaultTermsPlaceholder": "Termini di pagamento, liberatorie, testo di garanzia, ecc.",
+      "description": "Mostrato come venditore su preventivi e fatture.",
+      "name": "Nome azienda",
+      "phone": "Telefono",
+      "postal": "Codice postale",
+      "region": "Stato / regione",
+      "title": "Contatto aziendale",
+      "website": "Sito web"
+    },
+    "defaults": {
+      "aiStyle": "Stile dei testi prodotto generati dall'AI",
+      "aiStyleHelp": "Definisce come le funzioni di compilazione automatica dal web e miglioramento con l'AI scrivono nomi e descrizioni dei prodotti su preventivi, fatture ed elementi di catalogo. Lascia vuoto per il formato predefinito.",
+      "aiStylePlaceholder": "Predefinito: il nome dell'elemento è un nome breve, generico e comprensibile per il cliente (\"Access point wireless\"); la descrizione inizia con il nome completo del prodotto, poi elenca specifiche puntuali sufficienti per verificare un ordine. Descrivi qui il tuo stile per sovrascriverlo.",
+      "autoTaxHardware": "Applica automaticamente l'imposta agli elementi hardware",
+      "autoTaxHardwareHelp": "I nuovi hardware importati sono imponibili per impostazione predefinita.",
+      "currencyCode": "Codice valuta",
+      "defaultMarkup": "Ricarico predefinito (%)",
+      "defaultTaxRate": "Aliquota fiscale predefinita (%)",
+      "description": "Valuta, imposte, numerazione e termini applicati a nuovi preventivi e fatture per tutti i clienti.",
+      "invoiceFooter": "Piè di pagina fattura",
+      "invoiceFooterPlaceholder": "Istruzioni di pagamento, nota di ringraziamento, ecc.",
+      "invoiceNumberPrefix": "Prefisso numero fattura",
+      "markupHelp": "Ricarico predefinito sul costo del distributore, usato per precompilare il prezzo di vendita quando importi elementi di catalogo. Il margine lordo risultante viene mostrato durante l'importazione.",
+      "paymentTermsDays": "Termini di pagamento (giorni)",
+      "title": "Valori predefiniti di fatturazione"
+    },
+    "loadError": "Impossibile caricare le impostazioni di fatturazione.",
+    "loading": "Caricamento impostazioni di fatturazione…",
+    "saveButton": "Salva impostazioni di fatturazione",
+    "saveError": "Impossibile salvare le impostazioni di fatturazione.",
+    "saveSuccess": "Impostazioni di fatturazione salvate"
+  },
+  "shared": {
+    "documentWorkspace": {
+      "backAria": "Torna a {{label}}"
+    },
+    "sortableTh": {
+      "ascending": "Crescente",
+      "descending": "Decrescente",
+      "sortBy": "Ordina per {{label}}",
+      "sortByWithDirection": "Ordina per {{label}}, {{direction}}"
+    },
+    "statusPill": {
+      "prefix": "Stato:"
+    }
+  }
+}

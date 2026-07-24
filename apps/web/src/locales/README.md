@@ -38,9 +38,9 @@ Every extraction PR containing machine-drafted Portuguese must include:
 
 `pt-BR strings are machine-drafted pending native review`
 
-The Spanish, French, and German catalogs are also machine drafts awaiting native review:
+The Spanish, French, German, and Italian catalogs are also machine drafts awaiting native review:
 
-`es-419, fr-FR, fr-CA, and de-DE strings are machine-drafted pending native review`
+`es-419, fr-FR, fr-CA, de-DE, and it-IT strings are machine-drafted pending native review`
 
 Do NOT translate `data-testid` values, log messages, or API payload values.
 
@@ -51,4 +51,4 @@ Do NOT translate `data-testid` values, log messages, or API payload values.
 - **Rich text:** embedded markup uses `<Trans i18nKey="ns:key">plain <strong>bold</strong> text</Trans>` from `react-i18next`. Never split a sentence across multiple `t()` calls.
 - **Reuse:** check `common:actions`, `common:states`, and `common:labels` before minting a key. A plain Save button is always `t('common:actions.save')`.
 - **Scope:** translate visible text plus `placeholder`, `title`, `aria-label`, toast, and message strings. Do not translate `data-testid`, React keys, structural test fields, or API values.
-- **Review flag:** every extraction PR with machine-drafted Portuguese includes the exact line `pt-BR strings are machine-drafted pending native review` in its description. PRs that add or substantially revise the Spanish, French, or German catalogs include `es-419, fr-FR, fr-CA, and de-DE strings are machine-drafted pending native review`.
+- **Review flag:** every extraction PR with machine-drafted Portuguese includes the exact line `pt-BR strings are machine-drafted pending native review` in its description. PRs that add or substantially revise the Spanish, French, German, or Italian catalogs include `es-419, fr-FR, fr-CA, de-DE, and it-IT strings are machine-drafted pending native review`.

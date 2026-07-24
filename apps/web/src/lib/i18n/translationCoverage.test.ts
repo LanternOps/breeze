@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
-const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const;
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
 type TranslatedLocale = (typeof translatedLocales)[number];
 
 // Per-namespace count caps for exact-English duplicates that survived review
@@ -42,7 +42,8 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     'scripts.json': 55,
     'security.json': 140,
-    'settings.json': 109,
+    // +1: the it-IT locale's self-name is intentionally identical in every catalog.
+    'settings.json': 110,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
   },
@@ -74,7 +75,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32,
     'scripts.json': 57,
     'security.json': 114,
-    'settings.json': 112,
+    'settings.json': 113,
     'tickets.json': 13,
     'vulnerabilities.json': 16,
   },
@@ -110,7 +111,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 142,
+    'settings.json': 143,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -140,7 +141,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 147,
+    'settings.json': 148,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },
@@ -171,9 +172,36 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     'scripts.json': 53,
     'security.json': 166,
-    'settings.json': 164,
+    'settings.json': 165,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
+  },
+  'it-IT': {
+    'admin.json': 31,
+    'ai.json': 12,
+    'alerts.json': 57,
+    'auth.json': 21,
+    'backup.json': 45,
+    // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
+    // multiplication sign with no wording to translate.
+    'billing.json': 30,
+    // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
+    // acronym.
+    'common.json': 97,
+    'devices.json': 144,
+    'discovery.json': 22,
+    'integrations.json': 81,
+    'patches.json': 18,
+    'peripherals.json': 4,
+    'policies.json': 363,
+    'portal.json': 9,
+    'remote.json': 14,
+    'reports.json': 51,
+    'scripts.json': 57,
+    'security.json': 163,
+    'settings.json': 155,
+    'tickets.json': 6,
+    'vulnerabilities.json': 17,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
 

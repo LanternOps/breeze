@@ -920,11 +920,11 @@ describe('user routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toBe(
-        'Invalid locale value. Must be en, pt-BR, es-419, fr-FR, fr-CA, or de-DE.'
+        'Invalid locale value. Must be en, pt-BR, es-419, fr-FR, fr-CA, de-DE, or it-IT.'
       );
     });
 
-    it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const)(
+    it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const)(
       'accepts and merges the %s locale preference',
       async (locale) => {
         const existingPreferences = { theme: 'dark' };

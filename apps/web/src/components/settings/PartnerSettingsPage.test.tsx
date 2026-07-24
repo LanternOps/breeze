@@ -190,7 +190,7 @@ describe('PartnerSettingsPage language control', () => {
     const languageSelect = screen.getByLabelText('Language') as HTMLSelectElement;
     expect(languageSelect.value).toBe('en');
     expect(Array.from(languageSelect.options).map(option => option.value)).toEqual([
-      'en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE',
+      'en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT',
     ]);
     expect(screen.getByText('Default language for partner settings.')).not.toBeNull();
   });
@@ -214,7 +214,7 @@ describe('PartnerSettingsPage language control', () => {
     expect(body.settings.language).toBe('en');
   });
 
-  it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const)(
+  it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const)(
     'hydrates %s and preserves it when an unrelated partner setting is saved',
     async (persistedLocale) => {
       const user = await renderPartner(persistedLocale);

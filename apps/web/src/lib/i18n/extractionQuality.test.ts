@@ -56,7 +56,7 @@ describe('i18n extraction quality', () => {
   });
 
   it('keeps Pax8 contract links observation-only in every locale', () => {
-    const locales = ['en', 'de-DE', 'es-419', 'fr-FR', 'fr-CA', 'pt-BR'];
+    const locales = ['en', 'de-DE', 'es-419', 'fr-FR', 'fr-CA', 'it-IT', 'pt-BR'];
     const requiredPax8Keys = [
       'subscriptionObservationDescription',
       'observingQuantity',

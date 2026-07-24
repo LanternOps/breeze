@@ -1,0 +1,446 @@
+{
+  "aiApprovalDialog": {
+    "idleFor": "inattivo da {{duration}}",
+    "justNow": "proprio adesso",
+    "offlineFor": "offline da {{duration}}",
+    "sessionStates": {
+      "active": "attivo",
+      "idle": "inattivo",
+      "locked": "bloccato",
+      "away": "assente",
+      "disconnected": "disconnesso",
+      "unknown": "sconosciuto"
+    },
+    "ariaLabel": "Approvazione strumento richiesta: {{toolName}}",
+    "title": "Approvazione richiesta",
+    "pendingApproverTitle": "In attesa di un approvatore",
+    "pendingApproverDescription": "Questa azione richiede l'approvazione nell'area Approvazioni o nell'app mobile Breeze.",
+    "timeRemaining": "{{minutes}} minuti e {{seconds}} secondi rimanenti",
+    "urgentWarning": "Meno di 30 secondi rimanenti. Questa richiesta verrà rifiutata automaticamente.",
+    "progressLabel": "Tempo rimanente prima del rifiuto automatico",
+    "showParameters": "Mostra parametri",
+    "approve": "Approva",
+    "reject": "Rifiuta",
+    "selfApproveTitle": "È richiesta la tua approvazione",
+    "approveVerify": "Verifica e approva",
+    "verifying": "In attesa di verifica…",
+    "deny": "Rifiuta",
+    "verificationFailed": "Verifica non riuscita. Riprova.",
+    "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "contentChanged": "I dettagli di questa richiesta sono cambiati dopo la creazione, quindi non può più essere approvata.",
+    "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
+    "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
+    "noApproverDevice": "Approvare la tua stessa richiesta richiede Touch ID / Windows Hello.",
+    "registerDevice": "Registra questo dispositivo",
+    "decideFailed": "Invio della decisione non riuscito",
+    "approvedToast": "Azione approvata",
+    "deniedToast": "Azione rifiutata"
+  },
+  "aiChatInput": {
+    "waiting": "In attesa della risposta...",
+    "placeholder": "Chiedi informazioni sui tuoi dispositivi...",
+    "stopResponse": "Interrompi risposta",
+    "thinking": "L'AI sta elaborando... fai clic su Interrompi per annullare",
+    "sendShortcut": "Cmd+Enter per inviare"
+  },
+  "aiChatMessages": {
+    "title": "Breeze AI Assistant",
+    "description": "Chiedi informazioni su dispositivi, avvisi, metriche o risoluzione dei problemi.",
+    "unknownTool": "Strumento sconosciuto",
+    "toolResult": "Risultato dello strumento",
+    "pauseAi": "Metti in pausa l'AI",
+    "quickActions": {
+      "serverHealth": {
+        "label": "Controlla integrità server",
+        "prompt": "Controlla lo stato di integrità di tutti i server Windows — mostra CPU, RAM, utilizzo del disco ed eventuali avvisi"
+      },
+      "criticalAlerts": {
+        "label": "Mostra avvisi critici",
+        "prompt": "Elenca tutti gli avvisi critici e ad alta severità delle ultime 24 ore con i dettagli dei dispositivi"
+      },
+      "offlineDevices": {
+        "label": "Trova dispositivi offline",
+        "prompt": "Mostrami tutti i dispositivi attualmente offline e quando sono stati visti l'ultima volta"
+      },
+      "securityOverview": {
+        "label": "Panoramica sicurezza",
+        "prompt": "Dammi una panoramica della sicurezza — minacce attive, scansioni recenti e dispositivi che richiedono attenzione"
+      },
+      "diskSpace": {
+        "label": "Report spazio disco",
+        "prompt": "Quali dispositivi hanno poco spazio su disco? Mostra i dispositivi con oltre l'80% di utilizzo del disco"
+      },
+      "recentActivity": {
+        "label": "Attività recente",
+        "prompt": "Mostrami le voci del registro di controllo più recenti — quali azioni sono state eseguite nelle ultime ore?"
+      }
+    }
+  },
+  "aiChatSidebar": {
+    "history": "Cronologia",
+    "title": "Breeze AI",
+    "conversationHistory": "Cronologia conversazioni",
+    "newConversation": "Nuova conversazione",
+    "unflagConversation": "Rimuovi segnalazione conversazione",
+    "flagConversation": "Segnala conversazione per revisione",
+    "closeShortcut": "Chiudi (Cmd+Shift+A)",
+    "searchPlaceholder": "Cerca conversazioni...",
+    "noResults": "Nessun risultato trovato",
+    "untitledConversation": "Conversazione senza titolo",
+    "noConversations": "Ancora nessuna conversazione",
+    "m365Customer": "Cliente M365",
+    "noM365Customer": "Nessun cliente M365",
+    "dismiss": "Ignora"
+  },
+  "aiContextBadge": {
+    "context": "Contesto",
+    "dashboard": "Dashboard"
+  },
+  "aiCostIndicator": {
+    "messageCount": "{{count}} msg",
+    "messageCount_one": "{{count}} msg",
+    "messageCount_other": "{{count}} msg"
+  },
+  "aiPlanProgressBar": {
+    "completed": "Piano completato ({{completed}}/{{total}})",
+    "aborted": "Piano interrotto al passaggio {{step}}",
+    "executing": "Esecuzione: passaggio {{step}} di {{total}}",
+    "stop": "Interrompi",
+    "stepTitle": "Passaggio {{step}}: {{name}}"
+  },
+  "aiPlanReviewCard": {
+    "title": "Piano d'azione",
+    "stepCount": "{{count}} passaggi",
+    "stepCount_one": "{{count}} passaggio",
+    "stepCount_other": "{{count}} passaggi",
+    "approveAll": "Approva tutto",
+    "reject": "Rifiuta"
+  },
+  "aiToolCallCard": {
+    "running": "In esecuzione...",
+    "input": "Input:",
+    "error": "Errore:",
+    "output": "Output:"
+  },
+  "aiForOfficePage": {
+    "title": "AI per Office",
+    "description": "Assistente AI governato in Excel per i tuoi clienti — provisioning, criteri, audit, utilizzo e template",
+    "tabs": {
+      "orgs": "Organizzazioni",
+      "sessions": "Sessioni",
+      "usage": "Utilizzo",
+      "templates": "Template"
+    }
+  },
+  "orgsTab": {
+    "status": {
+      "active": "Attivo",
+      "consentPending": "Consenso in sospeso",
+      "notProvisioned": "Non provisionato"
+    },
+    "errors": {
+      "removeMapping": "Impossibile rimuovere la mappatura tenant",
+      "loadStatus": "Impossibile caricare lo stato dell'organizzazione.",
+      "saveMapping": "Impossibile salvare la mappatura tenant",
+      "copyConsent": "Impossibile copiare — seleziona manualmente l'URL",
+      "enableAi": "Impossibile abilitare AI per Office",
+      "loadConsent": "Impossibile caricare l'URL di consenso. Chiudi e riprova."
+    },
+    "messages": {
+      "mappingRemoved": "Mappatura tenant rimossa per {{orgName}}",
+      "mappingSaved": "Mappatura tenant salvata",
+      "consentCopied": "URL di consenso copiato",
+      "aiEnabled": "AI per Office abilitato per {{orgName}}"
+    },
+    "notEnabled": {
+      "title": "Breeze AI for Office non è abilitato su questa istanza.",
+      "description": "Imposta <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (la registrazione app Entra dell'add-in) sull'API e ricarica."
+    },
+    "title": "Organizzazioni clienti",
+    "description": "Provisiona l'assistente AI Excel per ogni organizzazione cliente: mappa il tenant Entra, concedi il consenso amministratore, abilita il criterio e distribuisci l'add-in.",
+    "columns": {
+      "aiEnabled": "AI abilitata",
+      "entraTenant": "Tenant Entra",
+      "costMtd": "Costo (MTD)",
+      "messagesMtd": "Messaggi (MTD)"
+    },
+    "manage": "Gestisci",
+    "setUp": "Configura",
+    "policy": "Criterio",
+    "unmap": "Rimuovi mappatura",
+    "noOrganizations": "Nessuna organizzazione",
+    "removeMapping": {
+      "title": "Rimuovi mappatura tenant",
+      "message": "Gli utenti nel tenant Entra di {{orgName}} non potranno più accedere all'assistente Excel. Il criterio dell'organizzazione e la cronologia di utilizzo vengono mantenuti.",
+      "confirm": "Rimuovi mappatura"
+    },
+    "wizard": {
+      "steps": {
+        "tenant": "Tenant",
+        "consent": "Consenso",
+        "enable": "Abilita",
+        "deploy": "Distribuisci"
+      },
+      "title": "Configura AI per Office — {{orgName}}",
+      "mapDescription": "Mappa questa organizzazione al suo tenant Microsoft Entra (Directory ID). La mappatura è il perno dell'isolamento tenant — ogni accesso a Excel da questo tenant arriva in questa organizzazione.",
+      "prefilled": " Precompilato dalla connessione Microsoft 365 esistente dell'organizzazione.",
+      "entraTenantId": "Entra tenant ID",
+      "guidError": "Deve essere un GUID (Entra admin center → Overview → Tenant ID).",
+      "saveContinue": "Salva e continua",
+      "consentDescription": "Un amministratore Microsoft 365 del tenant cliente deve concedere il consenso amministratore all'app Breeze AI for Office. Invia questo link al cliente (oppure aprilo tu se hai Global Admin nel tenant cliente):",
+      "loadingConsent": "Caricamento URL di consenso…",
+      "copyUrl": "Copia URL",
+      "openNewTab": "Apri in una nuova scheda",
+      "afterConsent": "Dopo la concessione, Microsoft reindirizza a una pagina di conferma Breeze. Il consenso risulta concesso qui dopo il primo accesso da Excel — non viene eseguito polling in tempo reale verso Microsoft (decisione Plan-4 1).",
+      "consentGranted": "Ho concesso il consenso",
+      "enableDescription": "Abilita l'assistente per questa organizzazione. Questo scrive <code>enabled: true</code> nel criterio dell'organizzazione con impostazioni predefinite sicure (tutti gli utenti, read/write con approvazione dell'utente finale, redazione DLP per dati finanziari/credenziali). Potrai poi regolare tutto nell'editor criteri.",
+      "enabling": "Abilitazione…",
+      "alreadyEnabled": "Già abilitato — continua",
+      "enableAi": "Abilita AI per Office",
+      "deployTitle": "Distribuisci l'add-in Excel tramite distribuzione centralizzata Microsoft 365",
+      "deploySteps": {
+        "signIn": "Accedi al <strong>Microsoft 365 admin center</strong> del tenant cliente → Settings → Integrated apps.",
+        "upload": "Scegli <strong>Upload custom apps</strong> → Office add-in → fornisci l'URL del manifest Breeze AI for Office dalla tua istanza Breeze.",
+        "assign": "Assegna l'add-in a tutti o ai gruppi di utenti coperti dal criterio di accesso di questa organizzazione.",
+        "wait": "La distribuzione può richiedere fino a 24 ore per comparire nella barra multifunzione di Excel degli utenti (Home → Add-ins).",
+        "signInAutomatically": "Gli utenti accedono automaticamente con il loro account di lavoro Microsoft — nessuna credenziale aggiuntiva."
+      },
+      "openPolicyEditor": "Apri editor criteri"
+    }
+  },
+  "policyEditor": {
+    "errors": {
+      "ruleNameRequired": "Ogni regola DLP personalizzata richiede un nome",
+      "invalidPattern": "La regola DLP \"{{ruleName}}\" contiene un pattern non valido — correggilo prima di salvare",
+      "save": "Impossibile salvare il criterio",
+      "load": "Impossibile caricare il criterio dell'organizzazione."
+    },
+    "messages": {
+      "saved": "Criterio salvato"
+    },
+    "organizations": "Organizzazioni",
+    "title": "Criterio organizzazione",
+    "description": "Tutto ciò che l'assistente Excel di questa organizzazione cliente è autorizzato a fare.",
+    "sections": {
+      "general": "Generale",
+      "userAccess": "Accesso utenti",
+      "budgets": "Budget e limiti di frequenza",
+      "branding": "Branding",
+      "dlp": "Prevenzione della perdita di dati"
+    },
+    "assistant": "Assistente",
+    "workbookAccess": "Accesso alla cartella di lavoro",
+    "workbookAccessOptions": {
+      "readWrite": "Lettura e scrittura (scritture soggette ad approvazione dell'utente finale)",
+      "readOnly": "Sola lettura (strumenti di scrittura rimossi dal modello)"
+    },
+    "workbookWrites": "Scritture nella cartella di lavoro",
+    "writeOptions": {
+      "ask": "Chiedi ogni volta (l'utente finale approva ogni scrittura)",
+      "allowAuto": "Consenti auto-apply (l'utente finale può scegliere l'applicazione automatica)"
+    },
+    "autoApplyHint": "Auto-apply è disattivato per impostazione predefinita ed è possibile solo se consentito qui.",
+    "allowedModels": "Modelli consentiti",
+    "allModelsHint": "Nessuna selezione = tutti i modelli disponibili.",
+    "whoCanUse": "Chi può usare l'assistente",
+    "userAccessOptions": {
+      "all": "Tutti gli utenti nel tenant mappato",
+      "selected": "Solo utenti selezionati"
+    },
+    "noUsersHint": "Nessun utente ha ancora eseguito l'accesso da Excel — gli utenti compariranno qui dopo il primo accesso. Fino ad allora, lascia l'accesso su \"Tutti gli utenti\".",
+    "dailyBudget": "Budget giornaliero ($)",
+    "monthlyBudget": "Budget mensile ($)",
+    "noLimit": "Nessun limite",
+    "messagesPerMinute": "Messaggi/min per utente",
+    "messagesPerHour": "Messaggi/ora per organizzazione",
+    "retentionDays": "Conservazione trascrizioni (giorni)",
+    "keepForever": "Conserva per sempre",
+    "brandingDescription": "Mostrato nel piè di pagina del componente aggiuntivo: \"Gestito dal tuo fornitore IT\" — punto di personalizzazione white-label (specifica §11).",
+    "displayName": "Nome visualizzato",
+    "mspNamePlaceholder": "Nome del tuo MSP",
+    "logoUrl": "Logo URL",
+    "dlpDescription": "Ogni payload che lascia Breeze verso il modello viene analizzato (specifica §6). I valori oscurati vengono memorizzati già oscurati — il registro di controllo non conserva mai la forma sensibile.",
+    "builtins": {
+      "creditCard": "Numeri di carta di credito (validati con Luhn)",
+      "ssn": "SSN / ID nazionali",
+      "iban": "Numeri di conto IBAN",
+      "apiKey": "API key e token",
+      "email": "Indirizzi email",
+      "phone": "Numeri di telefono"
+    },
+    "actions": {
+      "redact": "Oscura",
+      "block": "Blocca richiesta",
+      "log": "Solo log",
+      "off": "Disattivato"
+    },
+    "customRules": "Regole personalizzate",
+    "addRule": "Aggiungi regola",
+    "testSample": "Campione di test (incolla dati di celle rappresentativi — valutati localmente, mai inviati altrove)",
+    "ruleName": "Nome regola",
+    "regexPlaceholder": "Espressione regolare, ad es. PRJ-\\d{4}",
+    "removeRule": "Rimuovi regola",
+    "matchCount": "{{count}} corrispondenze nel campione",
+    "matchCount_one": "{{count}} corrispondenza nel campione",
+    "matchCount_other": "{{count}} corrispondenze nel campione",
+    "patternCompiles": "Il pattern viene compilato — aggiungi un campione di test sopra per vedere le corrispondenze",
+    "patternError": "Errore pattern: {{error}}",
+    "savePolicy": "Salva criterio"
+  },
+  "sessionsTab": {
+    "toolStatus": {
+      "pending": "in sospeso",
+      "approved": "approvato",
+      "rejected": "rifiutato",
+      "completed": "completato",
+      "failed": "non riuscito"
+    },
+    "errors": {
+      "flag": "Impossibile segnalare la sessione",
+      "unflag": "Impossibile rimuovere la segnalazione dalla sessione",
+      "load": "Impossibile caricare le sessioni.",
+      "loadTranscript": "Impossibile caricare la trascrizione della sessione."
+    },
+    "messages": {
+      "flagged": "Sessione segnalata",
+      "unflagged": "Segnalazione sessione rimossa"
+    },
+    "allOrganizations": "Tutte le organizzazioni",
+    "allUsers": "Tutti gli utenti",
+    "from": "Da",
+    "to": "A",
+    "flaggedOnly": "Solo segnalate",
+    "columns": {
+      "started": "Inizio",
+      "title": "Titolo",
+      "turns": "Turni",
+      "cost": "Costo",
+      "flagged": "Segnalata"
+    },
+    "untitled": "Senza titolo",
+    "flagged": "Segnalata",
+    "empty": "Nessuna sessione AI cliente corrisponde ai filtri",
+    "pagination": "{{from}}–{{to}} di {{total}}",
+    "prev": "Prec",
+    "transcriptTitle": "Trascrizione sessione",
+    "untitledSession": "Sessione senza titolo",
+    "flagReason": "Motivo segnalazione: {{reason}}",
+    "unflag": "Rimuovi segnalazione",
+    "flag": "Segnala",
+    "redacted": "oscurato: {{type}} ×{{count}}",
+    "noMessages": "Nessun messaggio memorizzato per questa sessione.",
+    "approvalTrail": "Traccia approvazioni strumenti",
+    "tokenCounts": "{{input}} in / {{output}} out",
+    "requestedAt": "richiesto {{time}}",
+    "approvedAt": "approvato {{time}}",
+    "rejectedAt": "rifiutato {{time}}",
+    "appliedAt": "applicato {{time}}",
+    "flagDialog": {
+      "title": "Segnala sessione",
+      "description": "La segnalazione marca la sessione per un follow-up e viene registrata nel registro di controllo.",
+      "reason": "Motivo (facoltativo)",
+      "flagging": "Segnalazione…"
+    },
+    "unflagDialog": {
+      "title": "Rimuovi segnalazione sessione",
+      "message": "Rimuovere la segnalazione da questa sessione? La cronologia di segnalazione/rimozione resta nel registro di controllo."
+    }
+  },
+  "templatesTab": {
+    "allApps": "Tutte le app",
+    "allOrgs": "A livello di partner",
+    "org": "Org",
+    "errors": {
+      "delete": "Impossibile eliminare il template",
+      "load": "Impossibile caricare i template.",
+      "update": "Impossibile aggiornare il template",
+      "create": "Impossibile creare il template"
+    },
+    "messages": {
+      "deleted": "Template \"{{name}}\" eliminato",
+      "updated": "Template aggiornato",
+      "created": "Template creato"
+    },
+    "title": "Template prompt",
+    "description": "Mostrati nel selettore chat vuota dell'add-in. I template \"All orgs\" raggiungono tutte le organizzazioni clienti; i template org solo la propria.",
+    "newTemplate": "Nuovo template",
+    "columns": {
+      "scope": "Ambito",
+      "apps": "App",
+      "category": "Categoria",
+      "updated": "Aggiornato"
+    },
+    "empty": "Ancora nessun template — crea il primo",
+    "deleteDialog": {
+      "title": "Elimina template",
+      "message": "Eliminare \"{{name}}\"? Scomparirà immediatamente dal selettore template dell'add-in."
+    },
+    "editTemplate": "Modifica template",
+    "categoryPlaceholder": "ad es. finanza",
+    "promptBody": "Corpo del prompt",
+    "partnerWide": "Tutte le organizzazioni (partner-wide)",
+    "scopeImmutable": "L'ambito non può cambiare dopo la creazione — elimina e ricrea per spostarlo.",
+    "appsHint": "Lascia tutto deselezionato per mostrare questo template in ogni app.",
+    "saveChanges": "Salva modifiche",
+    "createTemplate": "Crea template"
+  },
+  "usageTab": {
+    "errors": {
+      "export": "Esportazione non riuscita",
+      "load": "Impossibile caricare il report di utilizzo."
+    },
+    "fromMonth": "Dal mese",
+    "toMonth": "Al mese",
+    "allOrganizations": "Tutte le organizzazioni",
+    "exporting": "Esportazione…",
+    "exportCsv": "Esporta CSV",
+    "rangeError": "Dal mese deve essere ≤ al mese",
+    "columns": {
+      "orgUser": "Organizzazione / utente",
+      "month": "Mese",
+      "messages": "Messaggi",
+      "sessions": "Sessioni",
+      "tokens": "Token (in/out)",
+      "cost": "Costo"
+    },
+    "rowCount": "{{count}} righe",
+    "rowCount_one": "{{count}} riga",
+    "rowCount_other": "{{count}} righe",
+    "empty": "Nessun utilizzo registrato in questo intervallo",
+    "total": "Totale"
+  },
+  "workspaceChatPanel": {
+    "errors": {
+      "autoDraft": "Impossibile generare automaticamente una bozza da questa conversazione — puoi compilare il ticket manualmente.",
+      "createTicket": "Impossibile creare il ticket."
+    },
+    "createTicket": "Crea ticket",
+    "dismiss": "Ignora"
+  },
+  "workspaceEmptyState": {
+    "title": "Area di lavoro AI",
+    "description": "Esegui più conversazioni AI contemporaneamente. Analizza un problema su un dispositivo in una scheda mentre configuri un criterio in un'altra.",
+    "newConversation": "Nuova conversazione",
+    "limit": "Fino a 5 conversazioni simultanee"
+  },
+  "workspaceTab": {
+    "approvalPending": "Approvazione in sospeso"
+  },
+  "workspaceTabBar": {
+    "newTabShortcut": "Nuova scheda (Cmd+Shift+N)",
+    "new": "Nuova"
+  },
+  "createTicketFromChatModal": {
+    "title": "Crea ticket dalla conversazione",
+    "subject": "Oggetto",
+    "problem": "Problema",
+    "open": "Aperto",
+    "resolved": "Risolto",
+    "resolution": "Risoluzione",
+    "resolutionRequired": "È necessaria una nota di risoluzione per risolvere.",
+    "timeMinutes": "Tempo (min)",
+    "timeMinutesAria": "Tempo (minuti)",
+    "billable": "Fatturabile",
+    "createTicket": "Crea ticket"
+  }
+}

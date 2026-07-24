@@ -379,7 +379,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
 
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
