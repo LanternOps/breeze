@@ -13,11 +13,11 @@
     "fleet": "Flotta",
     "aiWorkspace": "Area di lavoro AI",
     "aiForOffice": "AI per Office",
-      "networkMonitor": "Monitoraggio rete",
-      "networkDiscovery": "Rilevamento rete",
+    "networkMonitor": "Monitoraggio rete",
+    "networkDiscovery": "Rilevamento rete",
     "security": "Sicurezza",
     "edr": "EDR",
-      "dnsSecurity": "Sicurezza DNS",
+    "dnsSecurity": "Sicurezza DNS",
     "pam": "PAM",
     "userRisk": "Rischio utente",
     "sensitiveData": "Dati sensibili",
@@ -207,7 +207,13 @@
     "stats": {
       "totalDevices": "Dispositivi totali",
       "warnings": "Avvisi",
-      "critical": "Critico"
+      "critical": "Critico",
+      "openTickets": "Ticket aperti",
+      "unassignedCount": "{{count}} non assegnati",
+      "unassignedCount_one": "{{count}} non assegnato",
+      "unassignedCount_other": "{{count}} non assegnati",
+      "patchCompliance": "Conformità patch",
+      "loadFailed": "Caricamento non riuscito"
     },
     "emptyDevices": {
       "title": "Nessun dispositivo ancora registrato",
@@ -219,7 +225,8 @@
       "onlineCount": "{{online}}/{{total}} online",
       "allOnline": "Tutti i dispositivi online",
       "healthy": "La flotta è operativa",
-      "viewOffline": "Visualizza tutti gli {{count}} offline"
+      "viewOffline": "Visualizza tutti gli {{count}} offline",
+      "other": "Altro"
     },
     "activity": {
       "title": "Attività recente",
@@ -294,7 +301,51 @@
         "30d": "Ultimi 30 giorni"
       },
       "defaultPerRole": "Dashboard predefinita per ruolo"
-    }
+    },
+    "attention": {
+      "title": "Richiede attenzione"
+    },
+    "security": {
+      "title": "Postura di sicurezza",
+      "good": "Buono stato",
+      "fair": "Da migliorare",
+      "poor": "A rischio",
+      "empty": "Nessun dato di sicurezza ancora",
+      "trendLabel": "Andamento punteggio a 30 giorni",
+      "atRiskCount": "{{count}} dispositivi a rischio",
+      "atRiskCount_one": "{{count}} dispositivo a rischio",
+      "atRiskCount_other": "{{count}} dispositivi a rischio",
+      "threatsCount": "{{count}} minacce attive",
+      "threatsCount_one": "{{count}} minaccia attiva",
+      "threatsCount_other": "{{count}} minacce attive"
+    },
+    "patch": {
+      "title": "Conformità patch",
+      "installed": "Installato",
+      "failed": "Non riuscito",
+      "devicesCompliant": "{{compliant}} di {{total}} dispositivi completamente aggiornati",
+      "criticalPending": "{{count}} patch critiche in sospeso",
+      "criticalPending_one": "{{count}} patch critica in sospeso",
+      "criticalPending_other": "{{count}} patch critiche in sospeso",
+      "empty": "Nessun dato sulle patch ancora"
+    },
+    "vuln": {
+      "title": "Vulnerabilità",
+      "criticalOpen": "Critiche aperte",
+      "kev": "Sfruttamento noto",
+      "patchReady": "Patch disponibile",
+      "totalOpen": "{{count}} rilevamenti aperti",
+      "totalOpen_one": "{{count}} rilevamento aperto",
+      "totalOpen_other": "{{count}} rilevamenti aperti",
+      "allClear": "Nessuna vulnerabilità aperta",
+      "kevCves": "{{count}} CVE",
+      "kevCves_one": "{{count}} CVE",
+      "kevCves_other": "{{count}} CVE",
+      "kevDevices": "{{count}} dispositivi",
+      "kevDevices_one": "{{count}} dispositivo",
+      "kevDevices_other": "{{count}} dispositivi"
+    },
+    "refreshFailed": "Aggiornamento non riuscito — vengono mostrati dati meno recenti"
   },
   "filters": {
     "advanced": "Filtro avanzato",
@@ -431,7 +482,7 @@
     "revoked": "Revocato",
     "revoking": "Revoca…",
     "errors": {
-        "network": "Errore di rete. Riprova.",
+      "network": "Errore di rete. Riprova.",
       "revokeNetwork": "Errore di rete durante la revoca"
     },
     "approval": {

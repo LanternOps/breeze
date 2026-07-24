@@ -12,7 +12,7 @@ export type FontPreference = (typeof FONT_OPTIONS)[number];
 export const TIME_FORMAT_OPTIONS = ['12h', '24h'] as const satisfies readonly TimeFormat[];
 export type TimeFormatPreference = TimeFormat;
 
-['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
+export const LOCALE_OPTIONS = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
 export type LocalePreference = SupportedLocale;
 
 /**

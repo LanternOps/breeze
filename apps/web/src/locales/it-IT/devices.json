@@ -205,7 +205,11 @@
     "sendAWakeOnLanPacket": "Invia un pacchetto Wake-on-LAN tramite un agente peer online sulla LAN del dispositivo",
     "power": "Alimentazione",
     "shutdown": "Arresta",
-    "deviceSettings": "Impostazioni del dispositivo"
+    "deviceSettings": "Impostazioni del dispositivo",
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — il Terminale remoto richiede un agente connesso. I comandi in coda verranno comunque eseguiti alla riconnessione.",
+      "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
+    }
   },
   "deviceActivityFeed": {
     "activity": "Attività",
@@ -1728,7 +1732,7 @@
     "subtitle": "Gestisci e monitora la tua flotta.",
     "title": "Dispositivi",
     "toasts": {
-      "actionFailed": "Azione non riuscita",
+      "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
       "alreadyPendingTail": "Già in sospeso",
       "bulkActionFailed": "Azione in blocco non riuscita",
@@ -1743,7 +1747,7 @@
       "bulkWakeAllFailed": "Riattivazione in blocco non riuscita per tutti i dispositivi",
       "bulkWakeSent": "Riattivazione in blocco inviata",
       "bulkWakeSomeFailed": "Riattivazione in blocco parzialmente non riuscita",
-      "commandSent": "Comando inviato",
+      "commandSent": "{{action}} inviato a {{hostname}}",
       "decommissionCancelled": "Dismissione annullata",
       "decommissionFailed": "Dismissione non riuscita",
       "decommissioned": "Dismesso",
@@ -1769,7 +1773,8 @@
       "unknownAction": "Azione sconosciuta",
       "unknownBulkAction": "Azione in blocco sconosciuta",
       "wakeSentWatching": "Richiesta di riattivazione inviata, monitoraggio in corso",
-      "wakeTimeout": "Timeout della riattivazione"
+      "wakeTimeout": "Timeout della riattivazione",
+      "commandQueued": "{{action}} in coda — verrà eseguito quando {{hostname}} si riconnette"
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",

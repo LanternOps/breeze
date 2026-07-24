@@ -50,6 +50,8 @@
     "es419Description": "Spagnolo (America Latina)",
     "frFRLabel": "Français (France)",
     "frFRDescription": "Francese (Francia)",
+    "frCALabel": "Français (Canada)",
+    "frCADescription": "Francese (Canada)",
     "deDELabel": "Deutsch (Deutschland)",
     "deDEDescription": "Tedesco (Germania)",
     "itITLabel": "Italiano (Italia)",
@@ -1400,7 +1402,16 @@
     "registering": "Registrazione in corso…",
     "registerThisDevice": "Registra questo dispositivo",
     "revoking": "Revoca in corso…",
-    "revokeDevice": "Revoca dispositivo"
+    "revokeDevice": "Revoca dispositivo",
+    "incorrectCode": "Codice errato.",
+    "incorrectPassword": "Password errata.",
+    "passkeyVerificationFailed": "Verifica passkey non riuscita — riprova.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Troppi tentativi — riprova tra qualche minuto.",
+    "verificationExpiredPleaseVerifyAgain": "Verifica scaduta — verifica di nuovo.",
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Usa invece la passkey o il codice authenticator — ricarica la pagina per aggiornare le opzioni.",
+    "pendingActivatesOnFirstApproval": "In sospeso — si attiva alla prima approvazione",
+    "sessionExpiredReloadAndTryAgain": "Sessione scaduta — ricarica la pagina e riprova.",
+    "registrationCancelled": "Registrazione annullata."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Risposte predefinite",
@@ -3122,7 +3133,8 @@
       "invite": "Invita utente",
       "resendInvite": "Reinvia invito",
       "manageMobileDevices": "Gestisci i dispositivi mobili di questo utente",
-      "devices": "Dispositivi"
+      "devices": "Dispositivi",
+      "resetMfa": "Reimposta MFA"
     },
     "searchLabel": "Cerca utenti",
     "searchPlaceholder": "Cerca per nome, email o ruolo",
@@ -3149,7 +3161,8 @@
     "actions": {
       "tryAgain": "Riprova",
       "saveChanges": "Salva modifiche",
-      "removing": "Rimozione..."
+      "removing": "Rimozione...",
+      "resetting": "Reimpostazione..."
     },
     "errors": {
       "fetchUsers": "Impossibile recuperare gli utenti",
@@ -3158,7 +3171,8 @@
       "sendInvite": "Impossibile inviare l'invito",
       "updateUser": "Impossibile aggiornare l'utente",
       "updateRole": "Impossibile aggiornare il ruolo",
-      "removeUser": "Impossibile rimuovere l'utente"
+      "removeUser": "Impossibile rimuovere l'utente",
+      "resetMfa": "Reimpostazione MFA non riuscita"
     },
     "invite": {
       "title": "Invita utente",
@@ -3183,7 +3197,19 @@
       "inviteManual": "Invito creato per {{email}}, ma l'email non è stata inviata. Copia il link di invito per condividerlo manualmente.",
       "inviteSent": "Invito inviato a {{email}}",
       "copied": "Copiato!",
-      "copyLink": "Copia link"
+      "copyLink": "Copia link",
+      "mfaReset": "MFA reimpostata per {{email}}"
+    },
+    "resetMfa": {
+      "title": "Reimpostare MFA?",
+      "messagePrefix": "Questo rimuove il secondo fattore per",
+      "messageSuffix": " Accederà solo con la password, gli verrà richiesto di configurare di nuovo l'MFA e tutte le sessioni attive verranno disconnesse.",
+      "confirm": "Reimposta MFA"
     }
+  },
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "Confermerai con la tua passkey (Touch ID / Windows Hello) al momento della registrazione.",
+    "authenticatorCode": "Codice authenticator",
+    "confirmYourPassword": "Conferma la password"
   }
 }

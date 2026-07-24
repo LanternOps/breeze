@@ -25,7 +25,11 @@ describe('locale preference', () => {
   });
 
   it('exposes exactly the supported locales', () => {
-expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']);
+    expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']);
+  });
+
+  it('validates locales', () => {
+    for (const locale of ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']) {
       expect(isValidLocale(locale)).toBe(true);
       expect(normalizeLocale(locale)).toBe(locale);
     }

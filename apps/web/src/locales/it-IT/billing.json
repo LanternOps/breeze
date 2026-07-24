@@ -469,14 +469,21 @@
         "sectionActions": "Azioni sezione",
         "showCostMargin": "Mostra costo e margine",
         "uploadAddImage": "Carica e aggiungi immagine",
-        "uploading": "Caricamento…"
+        "uploading": "Caricamento…",
+        "collapseSection": "Comprimi sezione",
+        "dragLine": "Trascina per riordinare la riga",
+        "dragLineTitle": "Trascina per riordinare all'interno di questa tabella. Da tastiera: usa Sposta su / Sposta giù nel menu della riga.",
+        "expandSection": "Espandi sezione",
+        "tidyAllDescriptions": "Sistema tutte le descrizioni"
       },
       "addLine": {
         "catalogItem": "Elemento di catalogo",
         "manualLine": "Riga manuale",
-        "moreWays": "Altri modi per aggiungere (catalogo, ricerca AI, dettagli)",
         "searchDistributor": "Cerca distributore",
-        "searchPax8": "Cerca Pax8"
+        "searchPax8": "Cerca Pax8",
+        "addFromCatalog": "Aggiungi dal catalogo",
+        "aiLookupAction": "Ricerca AI",
+        "moreDetails": "Altri dettagli"
       },
       "addSection": {
         "captionPlaceholder": "Didascalia (facoltativa)",
@@ -621,7 +628,15 @@
         "saveToCatalog": "Salva nel catalogo",
         "sku": "SKU",
         "skuOptional": "SKU (facoltativo)",
-        "unitCost": "Costo unitario"
+        "unitCost": "Costo unitario",
+        "costMissingAria": "Costo non inserito — questa riga è esclusa dalla stima del profitto.",
+        "noCost": "Nessun costo",
+        "noCostHelp": "Contrassegna questa riga come intenzionalmente priva di costo (es. manodopera o un servizio) — la esclude dall'avviso di costo mancante.",
+        "partNumberHelp": "Il codice parte del produttore per questo elemento.",
+        "showLess": "Mostra meno",
+        "showMore": "Mostra altro",
+        "skuHelp": "Il tuo numero di catalogo o del distributore per questo elemento.",
+        "tidyWithAi": "Sistema con AI"
       },
       "liveTotals": {
         "annualRecurring": "Ricorrente annuale",
@@ -634,7 +649,10 @@
         "tax": "Imposta",
         "taxRate": "Aliquota fiscale",
         "taxRateHelp": "Si applica alle righe contrassegnate come imponibili. Impostata nelle impostazioni fiscali dell'organizzazione.",
-        "title": "Totali in tempo reale"
+        "title": "Totali in tempo reale",
+        "firstPeriodSubtotal": "Subtotale primo periodo",
+        "subtotal": "Subtotale",
+        "total": "Totale"
       },
       "recurrence": {
         "annual": "Annuale",
@@ -677,7 +695,10 @@
         "taxTitle": "Imposta per riga. Il totale imposta nell'intestazione è quello autorevole e può differire di un centesimo per arrotondamento.",
         "taxable": "Imponibile",
         "total": "Totale",
-        "unitPrice": "Prezzo unitario"
+        "unitPrice": "Prezzo unitario",
+        "collapsedSummary": "{{count}} righe · {{amount}}",
+        "collapsedSummary_one": "{{count}} riga · {{amount}}",
+        "collapsedSummary_other": "{{count}} righe · {{amount}}"
       },
       "terms": {
         "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",
@@ -728,6 +749,51 @@
         "add": "Aggiungi",
         "nameAria": "Nome nuova riga",
         "placeholder": "Digita il nome di un elemento…"
+      },
+      "bulk": {
+        "applied_one": "Aggiornata {{count}} riga.",
+        "applied_other": "Aggiornate {{count}} righe.",
+        "apply": "Applica",
+        "barAria": "Modifica in blocco delle righe selezionate",
+        "clearSelection": "Cancella selezione",
+        "invalidMarkup": "Inserisci una percentuale di ricarico valida.",
+        "markupHint": "Si applica alle righe selezionate che hanno un costo.",
+        "partialFailure": "{{failed}} di {{total}} righe non aggiornate.",
+        "selectAllAria": "Seleziona tutte le righe in {{label}}",
+        "selectLineAria": "Seleziona {{name}}",
+        "selectedCount_one": "{{count}} riga selezionata",
+        "selectedCount_other": "{{count}} righe selezionate",
+        "setCost": "Imposta costo",
+        "setMarkup": "Imposta ricarico %",
+        "skippedNoCost_one": "Ignorata {{count}} riga senza costo.",
+        "skippedNoCost_other": "Ignorate {{count}} righe senza costo.",
+        "taxableOff": "Non imponibile",
+        "taxableOn": "Imponibile"
+      },
+      "lastSaved": {
+        "saved": "Salvato {{time}}",
+        "saving": "Salvataggio…"
+      },
+      "outline": {
+        "aria": "Contenuti del preventivo",
+        "shortcutHint": "Alt+Giù / Alt+Su passa alla sezione successiva o precedente durante la modifica.",
+        "title": "Contenuti"
+      },
+      "tidyAll": {
+        "complete": "Revisione completata per {{count}} descrizione/i.",
+        "noDescriptions": "Nessuna descrizione di riga da sistemare in questa sezione."
+      },
+      "undo": {
+        "lineDeleted": "Riga eliminata",
+        "sectionDeleted": "Sezione eliminata"
+      },
+      "unassigned": {
+        "explainer": "Queste righe non fanno parte di nessuna tabella prezzi, ma compaiono comunque nel preventivo del cliente e contano ai fini dei totali. Sposta ciascuna riga in una tabella prezzi per controllare dove compare.",
+        "moveAria": "Sposta {{line}} in una tabella prezzi",
+        "movePlaceholder": "Sposta in…",
+        "noTargets": "Aggiungi una tabella prezzi, poi sposta queste righe al suo interno.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Righe non assegnate"
       }
     },
     "actions": {

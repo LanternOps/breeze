@@ -28,7 +28,16 @@
     "session": "Sessione:",
     "tier3ApprovalHistory": "Cronologia approvazioni Tier 3",
     "toolInput": "Input strumento",
-    "wait": "Attesa:"
+    "wait": "Attesa:",
+    "tempPasswordAlreadyRevealed": "La password temporanea è già stata rivelata.",
+    "tempPasswordCopied": "Copiato",
+    "tempPasswordCopy": "Copia",
+    "tempPasswordExpired": "La password temporanea è scaduta senza essere rivelata.",
+    "tempPasswordForbidden": "Solo il tecnico che ha richiesto questo reset può rivelare la password.",
+    "tempPasswordReveal": "Rivela password temporanea",
+    "tempPasswordRevealFailed": "Rivelazione della password temporanea non riuscita",
+    "tempPasswordShownOnce": "Salvala ora — non verrà mostrata di nuovo. L'utente dovrà cambiarla al prossimo accesso.",
+    "tempPasswordTitle": "Password temporanea"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Filtra limiti di frequenza...",
@@ -1109,7 +1118,7 @@
         "descriptionOptional": "Descrizione (facoltativa)",
         "signers": "Firmatari",
         "signersHelp": "Un firmatario Authenticode (subject CN) per riga; corrispondenza senza distinzione tra maiuscole e minuscole.",
-      "signerPlaceholder": "es. Microsoft Corporation"
+        "signerPlaceholder": "es. Microsoft Corporation"
       },
       "actions": {
         "removeSigner": "Rimuovi firmatario",
