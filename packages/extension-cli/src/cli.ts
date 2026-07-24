@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runInspect } from './commands/inspect';
 import { runPack } from './commands/pack';
 import { runSign } from './commands/sign';
@@ -73,10 +74,29 @@ export function createProgram(): Command {
   return program;
 }
 
+/**
+ * True when this module is the process entry point.
+ *
+ * Compares REALPATHS, not the raw URL against `pathToFileURL(argv[1])`. When
+ * the CLI is launched through a pnpm-installed bin, `process.argv[1]` is the
+ * `node_modules/.bin` (or `.pnpm`) *symlink*, while `import.meta.url` already
+ * reflects the module's *realpath* (Node resolves symlinks when loading ESM).
+ * A raw comparison therefore never matches under pnpm, `isMainModule()` returns
+ * false, and the binary exits 0 having parsed nothing — a silent no-op, the
+ * worst failure shape for a signing/packing pipeline. Resolving both sides to
+ * their realpath makes the comparison hold regardless of symlink indirection.
+ *
+ * `realpathSync` throws if a path does not exist (e.g. a synthetic `argv[1]`);
+ * a throw here just means "not the entry point", so it is swallowed.
+ */
 function isMainModule(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
-  return import.meta.url === pathToFileURL(entry).href;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
 }
 
 if (isMainModule()) {
