@@ -76,16 +76,53 @@ if (-not (Test-Path $TaskXmlPath)) {
 
 # Register scheduled task. Register-ScheduledTask -Force is idempotent —
 # safe to invoke on first install, major upgrade, and msiexec /fa repair.
+# Retried because the RegisterUserHelperTask CA is Return="check": a single
+# transient Task Scheduler hiccup (service busy, momentary lock on the
+# existing task from the previous version) would otherwise roll back an
+# entire, otherwise-good upgrade. (The upgrade-backstop caller,
+# ReRegisterUserHelperTaskAfterUpgrade, is Return="ignore".)
 try {
-    Register-ScheduledTask -Xml (Get-Content $TaskXmlPath -Raw) -TaskName "AgentUserHelper" -TaskPath "\Breeze\" -Force | Out-Null
+    $taskXml = Get-Content $TaskXmlPath -Raw
+} catch {
+    Write-FailureDiagnostic "Failed to read task XML at ${TaskXmlPath}: $_"
+    exit 1
+}
+$maxAttempts = 3
+$registered = $false
+$attemptErrors = @()
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        Register-ScheduledTask -Xml $taskXml -TaskName "AgentUserHelper" -TaskPath "\Breeze\" -Force | Out-Null
+        $registered = $true
+        break
+    } catch {
+        $attemptErrors += "attempt ${attempt}: $_"
+        # Best-effort Warning per failed attempt (Event ID 9002) so a fleet
+        # whose registrations only ever succeed on retry is distinguishable
+        # from a healthy one — without this, the retry being load-bearing is
+        # invisible until the day all attempts fail.
+        try {
+            Write-EventLog -LogName Application -Source BreezeAgent -EntryType Warning -EventId 9002 -Message "user-helper task registration attempt $attempt/$maxAttempts failed: $_" -ErrorAction SilentlyContinue
+        } catch {
+            # Ignore — diagnostic is auxiliary
+        }
+        if ($attempt -lt $maxAttempts) {
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+if ($registered) {
     Write-Host "  Scheduled task registered: $TaskName"
     # Clear the sentinel from any prior failed install so support staff can
     # tell a fresh failure from a stale record.
     if (Test-Path $SentinelPath) {
         Remove-Item -Path $SentinelPath -Force -ErrorAction SilentlyContinue
     }
-} catch {
-    Write-FailureDiagnostic "Failed to register scheduled task: $_"
+} else {
+    # Report every distinct attempt error, not just the last — attempt 1 may
+    # carry the real root cause (e.g. malformed XML) while later attempts
+    # fail differently.
+    Write-FailureDiagnostic "Failed to register scheduled task after $maxAttempts attempts: $($attemptErrors -join ' | ')"
     exit 1
 }
 

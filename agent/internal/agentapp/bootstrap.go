@@ -17,8 +17,12 @@ import (
 
 var errNoBootstrapInput = errors.New("no bootstrap token from filename or properties")
 
-// bootstrapInstallData is the WiX CustomActionData payload, packed by the
-// SetBootstrapData type-51 CA as "<OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL>".
+// bootstrapInstallData arrives via --install-data on the BootstrapEnroll
+// deferred CA's command line, formatted directly from
+// "[OriginalDatabase]|[BOOTSTRAP_TOKEN]|[SERVER_URL]" at MSI schedule time.
+// (The old SetBootstrapData/CustomActionData indirection was removed — an
+// EXE CA cannot read CustomActionData, so it delivered an empty string on
+// every install; see the BootstrapEnroll comment in installer/breeze.wxs.)
 var bootstrapInstallData string
 
 type bootstrapResult struct {
@@ -107,6 +111,22 @@ func runBootstrap() {
 	initEnrollLogging(cfg, quietEnroll)
 	bsLog := logging.L("bootstrap")
 
+	// The MSI BootstrapEnroll CA runs on major upgrades too (NOT Installed is
+	// true for the new product). Bail out before redeeming: enrollDevice would
+	// skip anyway (same cfg.AgentID check), but by then redeemBootstrapToken
+	// has already consumed the SINGLE-USE bootstrap token for nothing and
+	// spent up to 30s on the redeem HTTP call inside a blocking deferred CA.
+	// Worse: upgrading with an MSI whose filename token was ALREADY redeemed
+	// (the original install's downloaded file, re-run later) makes the redeem
+	// 4xx and os.Exit(1) — Return="check" would roll back the whole upgrade.
+	if cfg.AgentID != "" {
+		bsLog.Info("agent already enrolled; skipping bootstrap", "agent_id", cfg.AgentID)
+		if !quietEnroll {
+			fmt.Println("Agent already enrolled; skipping bootstrap enrollment.")
+		}
+		return // exit 0 — upgrade over an enrolled agent must never burn the token
+	}
+
 	token, server, err := resolveBootstrapInputs(bootstrapInstallData)
 	if err != nil {
 		bsLog.Info("no bootstrap token present; skipping enrollment (agent will idle until enrolled)")
@@ -121,7 +141,7 @@ func runBootstrap() {
 	if err != nil {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
 		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
-		os.Exit(1) // hard — roll back the install
+		osExit(1) // hard — roll back the install (osExit: test seam, enroll_error.go)
 	}
 
 	// Hand off to the existing enroll path via the package globals it reads.
