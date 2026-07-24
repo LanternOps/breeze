@@ -292,3 +292,104 @@ func TestEvaluateStaleHeartbeat(t *testing.T) {
 		}
 	})
 }
+
+// --- State-sync corroboration (#2763): the freshest of (file, IPC state_sync)
+// drives staleness. A missing/frozen agent.state with live state_syncs is a
+// blocked WRITER (AV/EDR), not a dead agent — field-confirmed 2026-07-24 where
+// the watchdog killed a heartbeating agent 5x and stranded it stopped.
+
+func TestStaleFileVetoedByFreshStateSync(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	s := &state.AgentState{LastHeartbeat: time.Now().Add(-30 * time.Minute)} // file frozen
+	if got := hc.CheckHeartbeatStaleness(s); got != CheckHeartbeatStale {
+		t.Fatalf("precondition: frozen file should be stale, got %q", got)
+	}
+	hc.NoteStateSync(time.Now().Add(-20 * time.Second)) // agent just heartbeated
+	if got := hc.CheckHeartbeatStaleness(s); got != CheckOK {
+		t.Fatalf("fresh state_sync must override frozen file: expected %q, got %q", CheckOK, got)
+	}
+}
+
+func TestNilFileWithFreshStateSyncIsOK(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	// The field shape: agent.state was NEVER writable, state.Read fails
+	// forever, agentState stays nil — but state_syncs flow.
+	hc.NoteStateSync(time.Now().Add(-10 * time.Second))
+	if got := hc.CheckHeartbeatStaleness(nil); got != CheckOK {
+		t.Fatalf("nil file with fresh sync must be OK: got %q", got)
+	}
+}
+
+func TestNilFileWithoutAnySyncStaysStale(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	if got := hc.CheckHeartbeatStaleness(nil); got != CheckHeartbeatStale {
+		t.Fatalf("nil file and no sync ever must remain stale: got %q", got)
+	}
+}
+
+func TestStaleSyncDoesNotMaskFreshFile(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	hc.NoteStateSync(time.Now().Add(-1 * time.Hour))
+	s := &state.AgentState{LastHeartbeat: time.Now().Add(-5 * time.Second)}
+	if got := hc.CheckHeartbeatStaleness(s); got != CheckOK {
+		t.Fatalf("fresh file must win over stale sync: got %q", got)
+	}
+}
+
+func TestBothSourcesStaleIsStale(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	hc.NoteStateSync(time.Now().Add(-10 * time.Minute))
+	s := &state.AgentState{LastHeartbeat: time.Now().Add(-20 * time.Minute)}
+	if got := hc.CheckHeartbeatStaleness(s); got != CheckHeartbeatStale {
+		t.Fatalf("both sources stale must be stale: got %q", got)
+	}
+}
+
+func TestNoteStateSyncNeverRegresses(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	fresh := time.Now().Add(-10 * time.Second)
+	hc.NoteStateSync(fresh)
+	hc.NoteStateSync(fresh.Add(-1 * time.Hour)) // out-of-order older value
+	if got := hc.LastKnownHeartbeat(nil); !got.Equal(fresh) {
+		t.Fatalf("older sync must not regress stored heartbeat: got %v want %v", got, fresh)
+	}
+}
+
+func TestFreshSyncReArmsStaleVetoBudget(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	stale := &state.AgentState{LastHeartbeat: time.Now().Add(-30 * time.Minute)}
+	// Burn one veto against the stale file.
+	if d, _ := hc.EvaluateStaleHeartbeat(stale, true); d != StaleVetoed {
+		t.Fatalf("expected first stale verdict to be vetoed")
+	}
+	// Agent heartbeats (sync arrives) → staleness clears AND veto budget re-arms.
+	hc.NoteStateSync(time.Now())
+	if d, _ := hc.EvaluateStaleHeartbeat(stale, true); d != HeartbeatOK {
+		t.Fatalf("fresh sync must clear staleness")
+	}
+	if hc.StaleVetoCount() != 0 {
+		t.Fatalf("fresh sync must re-arm veto budget, count=%d", hc.StaleVetoCount())
+	}
+}
+
+func TestLastKnownHeartbeatPicksFreshest(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	fileHB := time.Now().Add(-2 * time.Minute)
+	syncHB := time.Now().Add(-1 * time.Minute)
+	hc.NoteStateSync(syncHB)
+	s := &state.AgentState{LastHeartbeat: fileHB}
+	if got := hc.LastKnownHeartbeat(s); !got.Equal(syncHB) {
+		t.Fatalf("expected sync heartbeat (fresher), got %v", got)
+	}
+	if got := hc.LastKnownHeartbeat(nil); !got.Equal(syncHB) {
+		t.Fatalf("nil file: expected sync heartbeat, got %v", got)
+	}
+}

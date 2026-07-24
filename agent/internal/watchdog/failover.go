@@ -43,6 +43,18 @@ type FailoverClient struct {
 	agentID string
 	token   string
 	client  *http.Client
+	// pollClient carries a longer timeout than the heartbeat client. The
+	// commands GET is the ONLY channel through which an operator can revive
+	// an agent while the watchdog is in FAILOVER, and in the field it has
+	// been observed taking >30s server-side (connection-hold class, #1105)
+	// — with a 30s client timeout every poll died with "context deadline
+	// exceeded" and the escape hatch was permanently dead (#2763). Cost: the
+	// poll runs synchronously in the main select loop, so a worst-case slow
+	// server now stalls other ticks for up to 90s instead of 30s — in
+	// FAILOVER there is nothing time-critical queued behind it (the 64-slot
+	// IPC buffer absorbs the window), and a bounded stall beats a
+	// permanently dead revive channel.
+	pollClient *http.Client
 }
 
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
@@ -60,6 +72,10 @@ func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *F
 		token:   token,
 		client: &http.Client{
 			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
+		pollClient: &http.Client{
+			Timeout:   90 * time.Second,
 			Transport: transport,
 		},
 	}
@@ -158,7 +174,7 @@ func (c *FailoverClient) PollCommands() ([]FailoverCommand, error) {
 	}
 	c.setHeaders(req)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.pollClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failover: poll request: %w", err)
 	}
