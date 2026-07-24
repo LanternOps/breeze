@@ -936,13 +936,23 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
 			"version": resp.UpgradeTo,
 		})
-		doUpdateAgent(resp.UpgradeTo, serverURL, cfg, tokens, journal)
+		if err := doUpdateAgent(resp.UpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_agent_failed", map[string]any{
+				"version": resp.UpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	if resp.WatchdogUpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
 			"version": resp.WatchdogUpgradeTo,
 		})
-		doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, cfg, tokens, journal)
+		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_watchdog_failed", map[string]any{
+				"version": resp.WatchdogUpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	return resp.Commands
 }

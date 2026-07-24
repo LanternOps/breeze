@@ -54,7 +54,7 @@ func TestDoUpdateWatchdogFollowsFailoverBaseURLPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new journal: %v", err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 
 	// cfg pins the dead primary — proving doUpdateWatchdog does not read
 	// cfg.ServerURL for the download origin.
