@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createProgram } from './cli';
+
+const execFileAsync = promisify(execFile);
 
 describe('breeze-ext CLI surface', () => {
   it('registers exactly the commands validate, pack, sign, inspect', () => {
@@ -127,4 +135,40 @@ describe('module load purity', () => {
       ).not.toBeInstanceOf(Promise);
     }
   });
+});
+
+describe('breeze-ext bin entry (isMainModule) under symlink indirection', () => {
+  // Regression for #2657. When `breeze-ext` is launched through a pnpm-installed
+  // bin, `process.argv[1]` is the `node_modules/.bin` symlink while
+  // `import.meta.url` is the module's realpath. The old guard compared the raw
+  // URL against `pathToFileURL(argv[1])`, never matched under a symlink, and the
+  // process exited 0 having parsed nothing — a silent no-op. Launching the real
+  // cli.ts through a symlink and observing the program actually run (here: emit
+  // its version) proves the guard now resolves both sides to their realpath.
+  const cliPath = join(dirname(fileURLToPath(import.meta.url)), 'cli.ts');
+  const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+  let linkDir: string;
+
+  beforeEach(async () => {
+    linkDir = await mkdtemp(join(tmpdir(), 'breeze-ext-binlink-'));
+  });
+
+  afterEach(async () => {
+    await rm(linkDir, { recursive: true, force: true });
+  });
+
+  it('runs the program when invoked as the entry point through a symlink', async () => {
+    const link = join(linkDir, 'breeze-ext-link.ts');
+    await symlink(cliPath, link);
+
+    // node --import tsx <symlink> --version — with the old guard this printed
+    // nothing and exited 0; with the fix it prints the CLI version.
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ['--import', 'tsx', link, '--version'],
+      { cwd: packageRoot },
+    );
+
+    expect(stdout.trim()).toBe('1.0.0');
+  }, 30000);
 });

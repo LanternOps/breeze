@@ -20,7 +20,13 @@ export {
 } from './commands/inspect';
 export { packExtension, runPack, type PackOptions, type PackResult } from './commands/pack';
 export { runSign, signArtifact, type SignOptions, type SignResult } from './commands/sign';
-export { runValidate, type ValidateOptions } from './commands/validate';
+export {
+  runValidate,
+  validateExtension,
+  type ValidateFinding,
+  type ValidateOptions,
+  type ValidateResult,
+} from './commands/validate';
 
 // Artifact-building primitives, exposed so conformance tests and downstream
 // tooling can drive the same functions the CLI commands use — notably
