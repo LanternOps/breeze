@@ -26,7 +26,16 @@ export type PostureProduct = {
   category: PostureProductCategory;
   active: boolean;
   lastSyncStatus?: string | null;
+  /** Devices the product is installed on / inventoried across (union of evidence). */
   deviceCoverage?: number | null;
+  /**
+   * Devices where the product is actively protecting — for native AV this is the
+   * count with real-time protection ON. Distinct from `deviceCoverage` so the
+   * inventory doesn't imply a single RTP-on device protects the whole fleet
+   * (issue #2517). Null when the product has no per-device evidence (integrations
+   * whose `active` is a connection-health flag, not a per-device count).
+   */
+  activeDeviceCoverage?: number | null;
 };
 
 export type PostureControls = {
