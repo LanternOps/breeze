@@ -424,6 +424,10 @@ func runWatchdog(stopCh <-chan struct{}) {
 		startedAt time.Time
 	}
 
+	// Transition flag for journaling process-ticker state-file read failures
+	// without flooding the journal at the 5s cadence.
+	var processReadFailJournaled bool
+
 	// Wrap auth token in a mutable holder so IPC token updates are visible
 	// to every goroutine that reads the token (failover client, updater, etc.).
 	tokenStore := &tokenHolder{}
@@ -498,11 +502,21 @@ func runWatchdog(stopCh <-chan struct{}) {
 			return
 
 		case <-processTicker.C:
-			// Re-read state file for fresh PID.
+			// Re-read state file for fresh PID. Journal read failures on
+			// the transition only — this ticker runs every few seconds and
+			// a persistent failure would otherwise flood the journal; the
+			// heartbeat ticker journals its own read failures every time.
 			if s, err := state.Read(statePath); err == nil && s != nil {
 				pid = s.PID
 				agentState = s
+				processReadFailJournaled = false
 			} else if err != nil {
+				if !processReadFailJournaled {
+					processReadFailJournaled = true
+					journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+						"path": statePath, "error": err.Error(),
+					})
+				}
 				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 			}
 
@@ -542,16 +556,36 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case <-heartbeatTicker.C:
-			// Re-read state file for heartbeat staleness.
+			// Re-read state file for heartbeat staleness. Journal (not
+			// slog) the failure: this read feeds a restart decision, and
+			// as an SCM service stderr is discarded — the journal is what
+			// collect_diagnostics ships. A persistent read failure here
+			// (ACL regression, EDR quarantine, torn JSON) plays out as
+			// stale → escalated restarts of a healthy agent, and the
+			// shipped evidence must say why.
 			if s, err := state.Read(statePath); err == nil {
 				agentState = s
 			} else {
-				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
+				journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+					"path": statePath, "error": err.Error(),
+				})
 			}
-			result := healthChecker.CheckHeartbeatStaleness(agentState)
-			if result == watchdog.CheckHeartbeatStale {
-				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", nil)
+			// Stale check + bounded IPC-corroboration veto — see
+			// EvaluateStaleHeartbeat for why a stale state file alone
+			// must not trigger a restart, and what the count means.
+			ipcUp := ipcClient.IsConnected()
+			decision, vetoes := healthChecker.EvaluateStaleHeartbeat(agentState, ipcUp)
+			switch decision {
+			case watchdog.StaleRestart:
+				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", map[string]any{
+					"ipc_connected": ipcUp,
+					"vetoes_before": vetoes,
+				})
 				wd.HandleEvent(watchdog.EventAgentUnhealthy)
+			case watchdog.StaleVetoed:
+				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
+					"consecutive_vetoes": vetoes,
+				})
 			}
 
 		case env := <-ipcMessages:
@@ -578,7 +612,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 				if s, err := state.Read(statePath); err == nil && s != nil {
 					agentState = s
 				} else if err != nil {
-					slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
+					journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+						"path": statePath, "error": err.Error(),
+					})
 				}
 				// Success = heartbeat advanced past (startedAt + grace).
 				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)

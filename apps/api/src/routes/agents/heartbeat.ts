@@ -65,6 +65,67 @@ export function detectWatchdogStateCollapse(
   return { field: 'watchdogState', rawValue };
 }
 
+const WATCHDOG_RESTART_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const WATCHDOG_RESTART_LOG_CACHE_MAX = 10_000;
+const watchdogRestartLogCache = new Map<string, { signature: string; loggedAt: number }>();
+
+/**
+ * #799 flap-log dedupe. Watchdog failover heartbeats arrive every ~30s and
+ * carry the same restart counters for hours, and each one wrote an
+ * agent_logs row — thousands of identical rows per device per day during the
+ * 2026-07-22 restart-storm incident. A row is written only when the restart
+ * signature changes, or hourly as a keep-alive trail while the condition
+ * persists. The cache is in-memory per API instance, so scaling out (or a
+ * process restart) degrades gracefully to at most one extra row per
+ * signature-hour per device per instance.
+ *
+ * Read-only check; call markWatchdogRestartActivityLogged AFTER the insert
+ * succeeds. Marking on the check would let one failed insert suppress the
+ * trail's first-occurrence row for a stable signature for up to an hour —
+ * and a flap episode that resolves within that hour would leave no trace at
+ * all. Exported for unit tests.
+ */
+export function shouldLogWatchdogRestartActivity(
+  deviceId: string,
+  signature: string,
+  nowMs: number,
+): boolean {
+  const prev = watchdogRestartLogCache.get(deviceId);
+  return !(
+    prev &&
+    prev.signature === signature &&
+    nowMs - prev.loggedAt < WATCHDOG_RESTART_LOG_INTERVAL_MS
+  );
+}
+
+export function markWatchdogRestartActivityLogged(
+  deviceId: string,
+  signature: string,
+  nowMs: number,
+): void {
+  if (watchdogRestartLogCache.size >= WATCHDOG_RESTART_LOG_CACHE_MAX) {
+    const cutoff = nowMs - 24 * 60 * 60 * 1000;
+    for (const [key, entry] of watchdogRestartLogCache) {
+      if (entry.loggedAt < cutoff) watchdogRestartLogCache.delete(key);
+    }
+    // Pathological case: cache full of fresh entries — drop oldest-inserted
+    // rather than grow unbounded.
+    if (watchdogRestartLogCache.size >= WATCHDOG_RESTART_LOG_CACHE_MAX) {
+      const oldest = watchdogRestartLogCache.keys().next().value;
+      if (oldest !== undefined) watchdogRestartLogCache.delete(oldest);
+    }
+  }
+  watchdogRestartLogCache.set(deviceId, { signature, loggedAt: nowMs });
+}
+
+export function resetWatchdogRestartLogCacheForTests(): void {
+  watchdogRestartLogCache.clear();
+}
+
+export function watchdogRestartLogCacheSizeForTests(): number {
+  return watchdogRestartLogCache.size;
+}
+
 export const heartbeatRoutes = new Hono();
 
 heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }), zValidator('json', heartbeatSchema), async (c) => {
@@ -268,7 +329,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // agent_logs so on-call has a queryable trail of flap-loop scenarios.
     // Do not block the heartbeat path on logging failure.
     const restartCount = data.mainAgentRestartCount24h ?? 0;
-    if (restartCount > 0 || data.flapDetected === true) {
+    // watchdogState is part of the signature so a RECOVERING→FAILOVER
+    // transition with unchanged counters still lands a trail row.
+    const restartSignature = `${restartCount}|${data.flapDetected === true}|${data.mainAgentLastRestartAt ?? ''}|${data.watchdogState ?? ''}`;
+    if (
+      (restartCount > 0 || data.flapDetected === true) &&
+      shouldLogWatchdogRestartActivity(device.id, restartSignature, now.getTime())
+    ) {
       try {
         await db.insert(agentLogs).values({
           deviceId: device.id,
@@ -287,6 +354,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           },
           agentVersion: data.agentVersion,
         });
+        // Commit to the dedupe cache only after the row landed — a failed
+        // insert must stay retryable on the next heartbeat.
+        markWatchdogRestartActivityLogged(device.id, restartSignature, now.getTime());
       } catch (err) {
         console.error('Failed to write watchdog restart-activity log:', err);
       }
