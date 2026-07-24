@@ -1,0 +1,472 @@
+{
+  "slaChip": {
+    "pausedLeft": "En pause · temps restant : {{relative}}",
+    "left": "Temps restant : {{relative}}",
+    "breached": "Violation"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "Première réponse",
+    "resolution": "Résolution",
+    "state": {
+      "met": "Respecté",
+      "notMet": "Non respecté",
+      "breached": "Violation",
+      "pausedLeft": "En pause · temps restant : {{relative}}",
+      "left": "Temps restant : {{relative}}"
+    },
+    "clockPaused": "L’horloge s’est arrêtée alors que le billet était {{status}}.",
+    "status": {
+      "onHold": "En attente",
+      "pending": "En attente"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Réponse préfabriquée"
+  },
+  "deviceTicketsTab": {
+    "loading": "Chargement des billets...",
+    "loadFailed": "Les billets n’ont pas été chargés.",
+    "empty": "Aucun billet pour cet appareil.",
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "Élevée",
+      "normal": "Normal",
+      "low": "Faible"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "Aucun billet ne correspond.",
+    "clearFilters": "Effacer les filtres",
+    "ariaLabel": "File d’attente pour les billets",
+    "selectTicket": "Sélectionner {{ticket}}",
+    "timeAgo": {
+      "minutes": "{{count}}m",
+      "minutes_one": "{{count}}m",
+      "minutes_other": "{{count}}m",
+      "hours": "Il y a {{count}} h",
+      "hours_one": "{{count}}h",
+      "hours_other": "{{count}}h",
+      "days": "{{count}}d",
+      "days_one": "{{count}}d",
+      "days_other": "{{count}}d"
+    },
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "Élevée",
+      "normal": "Normal",
+      "low": "Faible"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "Aucun billet archivé.",
+    "emptyDescription": "Les billets supprimés se trouvent ici. Restaurez-en un pour le remettre dans les files d’attente actives.",
+    "ariaLabel": "Billets archivés",
+    "deleted": "supprimé {{relative}}",
+    "restore": "Restaurer",
+    "restoring": "Restauration...",
+    "timeAgo": {
+      "minutes": "{{count}}m",
+      "minutes_one": "{{count}}m",
+      "minutes_other": "{{count}}m",
+      "hours": "{{count}}h",
+      "hours_one": "{{count}}h",
+      "hours_other": "{{count}}h",
+      "days": "{{count}}d",
+      "days_one": "{{count}}d",
+      "days_other": "{{count}}d"
+    },
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "Élevée",
+      "normal": "Normal",
+      "low": "Faible"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Réponse",
+    "internalNote": "Note interne",
+    "internalBanner": "Interne : non visible pour le demandeur",
+    "replyPlaceholder": "Réponse à {{requester}}...",
+    "requesterFallback": "demandeur",
+    "internalPlaceholder": "Ajouter une note interne...",
+    "sending": "Envoi en cours",
+    "sendReply": "Envoyer une réponse",
+    "addInternalNote": "Ajouter une note interne"
+  },
+  "ticketFeed": {
+    "empty": "Pas encore d’activité.",
+    "commentDeleted": "{{author}} — supprimé",
+    "commentFallback": "Un commentaire",
+    "requester": "Demandeur",
+    "technician": "Technicien",
+    "internal": "Interne",
+    "edited": "modifié",
+    "system": {
+      "systemAuthor": "Système",
+      "technicianAuthor": "Technicien",
+      "statusChanged": "{{author}} a changé le statut de {{from}} à {{to}}",
+      "assigned": "{{author}} a attribué ce billet",
+      "unassigned": "{{author}} a retiré l’attribution de ce billet",
+      "loggedTime": "{{author}} a consigné du temps",
+      "systemEvent": "Événement système",
+      "collapsed": "{{count}} modifications. Afficher",
+      "collapsed_one": "{{count}} modification. Afficher",
+      "collapsed_other": "{{count}} modifications. Afficher"
+    },
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "deleteDialog": {
+      "title": "Supprimer le commentaire",
+      "message": "Êtes-vous sûr de vouloir supprimer ce commentaire ? Cette action ne peut être annulée."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Pièces",
+    "empty": "Aucune pièce.",
+    "nonBillableSuffix": " · non facturable",
+    "marginTitle": "Marge",
+    "deletePrompt": "Supprimer ?",
+    "addPart": "Ajouter une pièce",
+    "fromCatalogPrefix": "À partir du catalogue :",
+    "unlink": "Dissocier",
+    "catalogPlaceholder": "Ajouter à partir du catalogue (optionnel)",
+    "quantity": "Quantité",
+    "unitPrice": "Prix unitaire",
+    "costPlaceholder": "Coût (optionnel)",
+    "cost": "Coût",
+    "billable": "Facturable",
+    "update": "Mettre à jour",
+    "toast": {
+      "updateFailed": "Impossible de mettre à jour la pièce",
+      "updated": "Pièce mise à jour",
+      "addFailed": "Impossible d’ajouter une pièce",
+      "added": "Pièce ajoutée",
+      "updateFailedSentence": "Impossible de mettre à jour la pièce.",
+      "addFailedSentence": "Impossible d’ajouter une pièce.",
+      "deleteFailed": "Impossible de supprimer la pièce",
+      "deleted": "Pièce supprimée",
+      "deleteFailedSentence": "Impossible de supprimer la pièce."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Temps et facturation",
+    "totalTime": "Temps total",
+    "billable": "Facturable",
+    "timeAmount": "Durée",
+    "partsCount": "Pièces ({{count}})",
+    "partsCount_one": "Pièce ({{count}})",
+    "partsCount_other": "Pièces ({{count}})",
+    "starting": "Commencer...",
+    "startTimer": "Démarrer le minuteur",
+    "logTime": "Consigner du temps",
+    "minutes": "Minutes",
+    "descriptionPlaceholder": "Description (optionnelle)",
+    "techFallback": "Technicien",
+    "running": "En cours",
+    "toast": {
+      "startTimerFailed": "Impossible de démarrer le minuteur.",
+      "logFailed": "Impossible d’enregistrer le temps",
+      "logged": "Temps enregistré",
+      "logFailedSentence": "Impossible de noter le temps."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "File de révision",
+    "description": "Courriels entrants mis en quarantaine (expéditeur inconnu) ou ayant échoué. Convertissez-les en billets ou ignorez-les.",
+    "loading": "Chargement...",
+    "loadFailed": "Impossible de charger la file de révision.",
+    "adminsOnly": "La file d’attente de révision est accessible uniquement aux administrateurs.",
+    "empty": "Aucun élément à réviser.",
+    "unknownSender": "(expéditeur inconnu)",
+    "noSubject": "(sans sujet)",
+    "selectOrganization": "Sélectionner une organisation...",
+    "createTicket": "Créer un billet",
+    "convertToTicket": "Convertir en billet",
+    "dismiss": "Ignorer",
+    "prev": "Précédent",
+    "pageOf": "Page {{page}} de {{totalPages}}",
+    "pickOrgFirst": "Choisissez d’abord une organisation.",
+    "convertFailed": "Conversion en billet échouée. Réessayez.",
+    "ticketCreated": "Billet créé à partir d’un courriel",
+    "dismissFailed": "Impossible d’ignorer. Réessayez.",
+    "dismissed": "Courriel entrant rejeté",
+    "parseStatus": {
+      "quarantined": "Mise en quarantaine",
+      "failed": "Échec"
+    },
+    "friendly": {
+      "orgNotAccessible": "Cette organisation n’est pas accessible par votre partenaire.",
+      "rowNotFound": "Ce courriel entrant n’est plus disponible.",
+      "rowAlreadyResolved": "Ce courriel entrant a déjà été traité. Actualisation de la liste.",
+      "noSender": "Ce courriel n’a pas d’adresse d’expéditeur utilisable et ne peut donc pas devenir un billet. Ignorez-le ou faites un suivi par un autre moyen."
+    }
+  },
+  "createTicketPage": {
+    "title": "Créer un billet",
+    "orgsLoadFailed": "Impossible de charger les organisations.",
+    "selectOrganization": "Sélectionner une organisation",
+    "subject": "Sujet",
+    "requesterOptional": "Demandeur (optionnel)",
+    "defaultYou": "Par défaut (vous)",
+    "someoneElse": "Quelqu’un d’autre...",
+    "requesterName": "Nom du demandeur",
+    "emailOptional": "Courriel (optionnel)",
+    "requesterEmail": "Courriel du demandeur",
+    "deviceOptional": "Appareil (optionnel)",
+    "category": "Catégorie",
+    "priority": "Priorité",
+    "creating": "Création en cours",
+    "createTicket": "Créer un billet",
+    "creationFailed": "La création de billets a échoué. Réessayez.",
+    "createdToast": "Billet {{number}} créé",
+    "startFromForm": "Commencez par un formulaire (optionnel)",
+    "blankTicketOption": "Billet vierge",
+    "priorityOptions": {
+      "low": "Faible",
+      "normal": "Normal",
+      "high": "Élevée",
+      "urgent": "Urgent"
+    }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Sélectionner..."
+  },
+  "ticketsPage": {
+    "title": "Billets",
+    "createTicket": "Créer un billet",
+    "reviewQueue": "File de révision",
+    "archived": "Archivé",
+    "searchPlaceholder": "Rechercher des billets",
+    "filterByPriority": "Filtrer par priorité",
+    "allPriorities": "Toutes les priorités",
+    "filterByCategory": "Filtrer par catégorie",
+    "allCategories": "Toutes les catégories",
+    "assigneeLockedTitle": "Cet onglet filtre déjà par personne assignée",
+    "filterByAssignee": "Filtrer par personne assignée",
+    "allAssignees": "Toutes les personnes assignées",
+    "sortTickets": "Trier les billets",
+    "loadFailed": "Les billets n’ont pas été chargés.",
+    "selectAll": "Sélectionner tout",
+    "selectedCount": "{{count}} sélectionné",
+    "selectedCount_one": "{{count}} sélectionné",
+    "selectedCount_other": "{{count}} sélectionnés",
+    "clearSelection": "Effacer la sélection",
+    "noSelection": "Choisissez un billet. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketingSettings": "Paramètres de billetterie",
+    "assignFailed": "Assignation échouée. Réessayez.",
+    "assignedToYou": "Vous a été attribué",
+    "restoreFailed": "Échec de la restauration. Réessayez.",
+    "ticketRestored": "Billet rétabli",
+    "tabs": {
+      "mine": "Mes billets",
+      "unassigned": "Non attribué",
+      "open": "Tous les billets ouverts",
+      "breaching": "Échéance bientôt dépassée",
+      "closed": "Fermé"
+    },
+    "sort": {
+      "triage": "Ordre de triage",
+      "newest": "Les plus récents d’abord",
+      "oldest": "Les plus anciens d’abord",
+      "due": "Date d’échéance"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "Élevée",
+      "normal": "Normal",
+      "low": "Faible"
+    },
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "empty": {
+      "title": "Pas encore de billets",
+      "description": "Les billets arrivent depuis le portail client, les règles d’alerte et les techniciens. Créez le premier, ou configurez une règle d’alerte pour ouvrir automatiquement les billets."
+    },
+    "bulk": {
+      "assignToAria": "Assignation en bloc à",
+      "assignTo": "Assigner à...",
+      "unassign": "Désattribuer",
+      "setStatusAria": "Définir le statut en bloc",
+      "setStatus": "Définir le statut...",
+      "updateFailed": "La mise à jour en masse a échoué. Réessayez.",
+      "deleteFailed": "La suppression massive a échoué. Réessayez.",
+      "updatedPast": "mis à jour",
+      "deletedPast": "supprimés",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} sauté{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} échoué",
+      "reasonsSuffix": " — {{reasons}}",
+      "reason": {
+        "outOfScope": "hors de votre périmètre",
+        "invalidTransition": "Changement de statut invalide",
+        "assigneeNotFound": "assigné non trouvé",
+        "assigneeWrongPartner": "la personne assignée appartient à un autre partenaire",
+        "concurrentModification": "modifié par quelqu’un d’autre",
+        "ticketPartnerUnresolvable": "partenaire du billet introuvable",
+        "other": "autres erreurs"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "Supprimer {{count}} billet ?",
+      "title_one": "Supprimer {{count}} billet ?",
+      "title_other": "Supprimer {{count}} billets ?",
+      "message": "Cela les cache de toutes les files d’attente ; un administrateur peut les restaurer depuis Archivé.",
+      "confirm": "Supprimer les billets"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
+    "loadFailed": "Impossible de charger le billet.",
+    "backToQueue": "Retour à la file d’attente",
+    "ticketSubject": "Sujet du billet",
+    "openFullPage": "Ouvrir la page entière",
+    "priorityLabel": "Priorité",
+    "categoryLabel": "Catégorie",
+    "noCategory": "Aucune catégorie",
+    "currentCategory": "Catégorie actuelle",
+    "assignee": "Personne assignée",
+    "unassigned": "Non attribué",
+    "mspStaff": "Personnel du MSP",
+    "assigneeValue": "Personne assignée : {{assignee}} ✕",
+    "source": "Source",
+    "dueDate": "Date d’échéance",
+    "waitingOn": "En attente",
+    "resolution": "Résolution",
+    "linkedAlerts": "Alertes liées",
+    "status": {
+      "new": "Nouveau",
+      "open": "Ouvert",
+      "pending": "En attente",
+      "on_hold": "En attente",
+      "resolved": "Résolu",
+      "closed": "Fermé"
+    },
+    "priority": {
+      "urgent": "Urgent",
+      "high": "Élevée",
+      "normal": "Normal",
+      "low": "Faible"
+    },
+    "tags": {
+      "label": "Étiquettes",
+      "removeTag": "Supprimer l’étiquette {{tag}}",
+      "addTag": "Ajouter une étiquette...",
+      "addTagAria": "Ajouter une étiquette"
+    },
+    "invoice": {
+      "create": "Créer une facture",
+      "creating": "Création…",
+      "createFailed": "Impossible de créer une facture à partir de ce billet.",
+      "created": "Projet de facture créé"
+    },
+    "move": {
+      "open": "Passer à une autre organisation...",
+      "label": "Passage à l’organisation",
+      "selectOrganization": "Sélectionner une organisation...",
+      "confirm": "Déplacer",
+      "failed": "Échec du déplacement. Réessayez."
+    },
+    "triage": {
+      "title": "Triage suggéré",
+      "checking": "Vérification des signaux de billets...",
+      "priority": "Priorité : {{priority}}",
+      "category": "Catégorie : {{category}}",
+      "confidence": "{{percent}} % confiance",
+      "notRight": "Suggestion incorrecte",
+      "applying": "Application en cours...",
+      "suggestedCategory": "Catégorie suggérée",
+      "applyFailed": "Impossible d’appliquer la suggestion de triage des billets.",
+      "applied": "Suggestion de triage des billets appliquée",
+      "feedbackFailed": "Impossible d’enregistrer les retours de triage des billets.",
+      "feedbackSaved": "Retour d’information sur le triage des billets enregistré"
+    },
+    "resolve": {
+      "noteLabel": "Note de résolution (visible pour le demandeur)",
+      "submit": "Résoudre le billet"
+    },
+    "pending": {
+      "reasonLabel": "Qu’attendez-vous ? (optionnel)",
+      "setPending": "Définir comme en attente",
+      "putOnHold": "Mettre en attente"
+    },
+    "description": {
+      "empty": "Aucune description.",
+      "add": "Ajouter une description"
+    },
+    "requester": {
+      "label": "Demandeur",
+      "someoneElse": "Quelqu’un d’autre...",
+      "nameAria": "Nom du demandeur",
+      "emailPlaceholder": "Courriel (optionnel)",
+      "emailAria": "Courriel du demandeur"
+    },
+    "device": {
+      "none": "Aucun appareil",
+      "unlink": "Dissocier"
+    },
+    "toast": {
+      "statusUpdated": "Statut mis à jour",
+      "statusUpdateFailed": "Mise à jour de statut échouée. Réessayez.",
+      "ticketResolved": "Billet résolu",
+      "resolveFailed": "Impossible de résoudre. Réessayez.",
+      "replyFailed": "Réponse échouée. Réessayez.",
+      "updateFailed": "Mise à jour échouée. Réessayez.",
+      "commentEditFailed": "Modification du commentaire échouée. Réessayez.",
+      "commentDeleteFailed": "Suppression de commentaire échouée. Réessayez.",
+      "priorityUpdateFailed": "La mise à jour prioritaire a échoué. Réessayez.",
+      "categoryUpdateFailed": "Mise à jour de catégorie échouée. Réessayez.",
+      "assigned": "Assigné",
+      "unassigned": "Non attribué",
+      "assignFailed": "Assignation échouée. Réessayez."
+    },
+    "delete": {
+      "failed": "Échec de la suppression. Réessayez.",
+      "deleted": "Billet supprimé"
+    },
+    "deleteDialog": {
+      "title": "Supprimer ce billet ?",
+      "message": "Cela masque le billet de toutes les files d’attente. Un administrateur peut le restaurer depuis la file d’attente Archivée.",
+      "confirm": "Supprimer le billet"
+    }
+  }
+}

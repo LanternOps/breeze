@@ -2637,7 +2637,7 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
-    it.each(['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const)(
+    it.each(['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE'] as const)(
       'accepts %s as the partner default language',
       async (language) => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123' });

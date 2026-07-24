@@ -133,7 +133,7 @@
     "maintenancePlaceholder": "par exemple dimanche 02h00-06h00, 02h00-04h00, ou 24h/24",
     "maintenanceInvalid": "Utilisez une fenêtre UTC comme <first>Dim 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> pour l’all-on. Laisse vide pour que les organisations le configurent.",
     "maintenanceHelp": "Fenêtre temporelle (UTC) pour les mises à jour et redémarrages automatiques. Utilisez <always>24/7</always> pour le mode toujours activé, ou laissez vide pour que les organisations le configurent individuellement.",
-    "deviceGroup": "Groupe de périphériques par défaut",
+    "deviceGroup": "Groupe de appareils par défaut",
     "alertThreshold": "Seuil d’alerte par défaut",
     "autoEnrollment": {
       "title": "Inscription automatique",
@@ -146,7 +146,7 @@
     "enable": "Activez l’expédition centralisée du journal d’événements",
     "endpoint": "URL du point de terminaison des journaux",
     "indexPrefix": "Préfixe d’index",
-    "apiKey": "API Clé",
+    "apiKey": "Clé API",
     "username": "Nom d’utilisateur (authentification de base)",
     "password": "Mot de passe (authentification de base)",
     "notSet": "Non défini — les organisations se configurent individuellement",
@@ -192,7 +192,7 @@
     "company": "Entreprise",
     "companyName": "Nom de l’entreprise",
     "address": "Adresse",
-    "addressDescription": "Utilisé pour des PDF de marque, des factures et des pieds de page d’email.",
+    "addressDescription": "Utilisé pour les PDF personnalisés, les factures et les pieds de page de courriel.",
     "street1": "Rue 1",
     "street2": "Rue 2",
     "city": "Ville",
@@ -202,11 +202,11 @@
     "contact": "Contact",
     "contactDescription": "Contact principal pour votre MSP.",
     "contactName": "Nom du contact",
-    "email": "E-mail",
+    "email": "Courriel",
     "phone": "Téléphone",
     "website": "Site web",
-    "emailSignature": "Signature d'e-mail",
-    "emailSignatureDescription": "Ajoutée à la fin des e-mails de proposition envoyés à vos clients.",
+    "emailSignature": "Signature de courriel",
+    "emailSignatureDescription": "Ajoutée à la fin des courriels de proposition envoyés à vos clients.",
     "placeholders": {
       "company": "Acme MSP",
       "contactName": "John Smith",
@@ -259,8 +259,8 @@
     "notSet": "Non défini — les organisations se configurent individuellement",
     "imageTooLarge": "L’image est trop grande après encodage (max 400 Ko). Essayez une image plus petite ou plus simple.",
     "readError": "Impossible de lire l’image. Veuillez essayer un autre fichier.",
-    "blobError": "Les URL de blob sont temporaires et ne peuvent pas être enregistrées. Télécharge le fichier à la place.",
-    "urlError": "URL non supporté. Utilisez un https:// URL ou téléchargez un fichier.",
+    "blobError": "Les URL blob sont temporaires et ne peuvent pas être enregistrées. Téléversez plutôt le fichier.",
+    "urlError": "URL non prise en charge. Utilisez une URL https:// ou téléversez un fichier.",
     "primaryColor": "Couleur primaire",
     "secondaryColor": "Couleur secondaire",
     "theme": "Thème",
@@ -272,7 +272,7 @@
     "logo": "Logo",
     "logoPreview": "Aperçu du logo",
     "noLogo": "Pas de logo",
-    "uploadImage": "Télécharger l’image",
+    "uploadImage": "Téléverser l’image",
     "imageHelp": "PNG, JPEG ou WebP · max 400 Ko après encodage · Redimensionné pour 256×256",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
@@ -347,7 +347,7 @@
     "fieldPlaceholder": "par exemple rustdesk_id",
     "templateHint": "Utilisez {id} pour la valeur par appareil extraite des champs personnalisés, et {password} pour le mot de passe prédéfini. Exemples : rustdesk://{id}?password={password} (protocole personnalisé) — https://acme.screenconnect.com/Host#Access///{id}/Join (HTTPS, s’ouvre dans un nouvel onglet).",
     "customFieldKey": "Clé de champ personnalisée",
-    "customFieldHelp": "Tapez sous <code>device.custom_fields</code> contenant l’identifiant par appareil (par ex. RustDesk ID).",
+    "customFieldHelp": "Clé sous <code>device.custom_fields</code> contenant l’identifiant propre à l’appareil (p. ex. l’ID RustDesk).",
     "presetPassword": "Mot de passe prédéfini",
     "passwordPlaceholder": "Laissez vide si l’outil vous invite à connecter",
     "hidePassword": "Masquer le mot de passe",
@@ -355,7 +355,7 @@
     "passwordHelp": "URL les caractères réservés sont automatiquement encodés en pourcentage. Enregistré côté serveur dans les paramètres partenaires ; Jamais intégré dans le bundle web.",
     "errors": {
       "schemeRequired": "Le modèle URL doit commencer par un schéma suivi de deux-points (par exemple rustdesk:, https:)",
-      "schemeBlocked": "Ce schéma URL n’est pas autorisé — javascript :, data :, vbscript :, file :, about :, chrome :, jar :, blob :, view-source : et filesystem : sont bloqués.",
+      "schemeBlocked": "Ce schéma d’URL n’est pas autorisé — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: et filesystem: sont bloqués.",
       "idRequired": "Le modèle URL doit inclure le marqueur {id} pour la valeur par appareil."
     }
   },
@@ -393,10 +393,10 @@
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Alertes email et webhooks"
+        "description": "Alertes courriel et webhooks"
       },
       "ticketing": {
-        "label": "Ticketterie",
+        "label": "Billetterie",
         "description": "Statuts, SLA, exportations"
       },
       "aiBudgets": {
@@ -428,7 +428,7 @@
     "selfSaving": "Cette section conserve ses propres modifications.",
     "saveSettings": "Enregistrer les paramètres",
     "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
-    "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations."
+    "ticketingDescription": "Configurez les statuts des billets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations."
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -458,7 +458,7 @@
     "loadFailed": "Impossible de charger l’identité visuelle",
     "noOrganization": "Aucune organisation sélectionnée",
     "saveFailed": "Impossible d’enregistrer la marque",
-    "uploadFailed": "Impossible de télécharger des actifs de identité visuelle",
+    "uploadFailed": "Impossible de téléverser les éléments de l’identité visuelle",
     "saved": "Paramètres de branding enregistrés.",
     "saveError": "Quelque chose a mal tourné en sauvant la marque.",
     "resetSuccess": "Les changements se réinitialisent à l’état de enregistrement précédent.",
@@ -469,7 +469,7 @@
     "save": "Enregistrer l’identité visuelle",
     "logos": "Logos",
     "lightLogo": "Logo en mode lumière",
-    "lightLogoDescription": "Affiché sur des fonds clairs dans les emails et le portail.",
+    "lightLogoDescription": "Affiché sur des fonds clairs dans les courriels et le portail.",
     "logoHelp": "SVG ou PNG, recommandé 512x512.",
     "darkLogo": "Logo en mode sombre",
     "darkLogoDescription": "Affiché sur des fonds sombres et en mode sombre.",
@@ -480,15 +480,15 @@
     "primaryColor": "Couleur primaire",
     "secondaryColor": "Couleur secondaire",
     "customCss": "Personnalisé CSS (avancé)",
-    "customCssHelp": "CSS est injecté dans votre portail et les modèles d’email après l’enregistrement.",
+    "customCssHelp": "Le CSS est injecté dans votre portail et vos modèles de courriel après l’enregistrement.",
     "livePreview": "Aperçu en direct",
-    "emailPreview": "Aperçu du modèle d’e-mail",
+    "emailPreview": "Aperçu du modèle de courriel",
     "lightLogoPreview": "Aperçu du logo de la lumière",
     "weeklySummary": "Résumé hebdomadaire des activités",
     "helloPreview": "Bonjour Priya,",
-    "emailBodyPreview": "Vous avez fermé 12 tickets cette semaine. Votre temps de réponse moyen était de 23 minutes.",
+    "emailBodyPreview": "Vous avez fermé 12 billets cette semaine. Votre temps de réponse moyen était de 23 minutes.",
     "viewDashboard": "Voir tableau de bord",
-    "questions": "Des questions ? {{email}}",
+    "questions": "Des questions? {{email}}",
     "portalPreview": "Aperçu du branding du portail",
     "faviconPreview": "Aperçu de Favicon",
     "portalLogoPreview": "Aperçu du logo du portail",
@@ -566,52 +566,52 @@
     "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Cela ne peut pas être annulé."
   },
   "inboundEmail": {
-    "saveError": "Impossible d’enregistrer les paramètres des e-mails entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",
+    "saveError": "Impossible d’enregistrer les paramètres des courriels entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",
     "orgNotAccessible": "Cette organisation n’est pas disponible sous le nom de votre partenaire.",
-    "saved": "Paramètres des emails entrants enregistrés",
+    "saved": "Paramètres des courriels entrants enregistrés",
     "changeAddressConfirm": "Les clients utilisant votre adresse actuelle vous contacteront toujours. De nouvelles réponses seront envoyées depuis la nouvelle adresse. Changer ?",
     "addressUpdated": "Adresse entrante mise à jour",
     "addressCopied": "Adresse entrante copiée",
-    "loadFailed": "Les paramètres des emails entrants n’ont pas réussi à se charger.",
+    "loadFailed": "Impossible de charger les paramètres des courriels entrants.",
     "title": "Courriels entrants",
-    "description": "Transformez les emails adressés à votre adresse entrante en tickets.",
-    "enable": "Activez l’e-mail-to-ticket",
+    "description": "Transformez les courriels adressés à votre adresse entrante en billets.",
+    "enable": "Activer la conversion des courriels en billets",
     "address": "Adresse entrante",
     "localPart": "Adresse entrante : partie locale",
     "domainNotConfigured": "Le domaine entrant de la plateforme n’est pas encore configuré. Contactez votre administrateur.",
     "triageOrganization": "Organisation par défaut du triage",
     "unknownSenders": "Expéditeurs inconnus",
-    "unknownDescription": "Que faire avec un courrier dont l’expéditeur n’est pas un utilisateur du portail, un domaine client mappé, ou une réponse à un ticket existant ?",
+    "unknownDescription": "Que faire avec un courrier dont l’expéditeur n’est pas un utilisateur du portail, un domaine client mappé, ou une réponse à un billet existant ?",
     "quarantine": "Quarantaine pour révision",
     "default": "Par défaut",
-    "quarantineDescription": "Maintenu dans la file d’attente des tickets → révision pour conversion manuelle ou annulation.",
+    "quarantineDescription": "Maintenu dans la file d’attente des billets → révision pour conversion manuelle ou annulation.",
     "routeToTriage": "Itinéraire vers l’organisation de triage",
-    "triageDescription": "Un ticket crée automatiquement dans l’organisation de triage ci-dessus.",
+    "triageDescription": "Un billet crée automatiquement dans l’organisation de triage ci-dessus.",
     "selectTriageFirst": "Choisissez d’abord une organisation de triage.",
     "dropSilently": "Descends silencieusement",
-    "dropDescription": "Aucun ticket, aucune entrée dans la file de revue et aucune réponse automatique. Une ligne d’audit reste enregistrée. Utilisez cette option pour écarter les courriers indésirables non associés de la qualification et de la file de revue.",
+    "dropDescription": "Aucun billet, aucune entrée dans la file de revue et aucune réponse automatique. Une ligne d’audit reste enregistrée. Utilisez cette option pour écarter les courriers indésirables non associés de la qualification et de la file de revue.",
     "dropUnverified": "Envoi de courrier qui échoue à l’authentification de l’expéditeur (SPF/DKIM/DMARC)",
-    "dropUnverifiedDescription": "Lorsque cette option est désactivée, les e-mails non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
-    "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux tickets par e-mail",
+    "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
+    "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
     "autoresponseMessage": "Message d’autoréponse",
     "subject": "Sujet",
     "subjectPlaceholder": "Nous avons reçu votre demande : {{ticket_subject}}",
     "body": "Carrosserie",
-    "bodyPlaceholder": "Merci {{requester_name}} — nous avons ouvert le ticket {{ticket_number}}.",
+    "bodyPlaceholder": "Merci {{requester_name}} — nous avons ouvert le billet {{ticket_number}}.",
     "insert": "Insérer :",
     "preview": "Aperçu",
     "defaultAcknowledgement": "Laissez vide pour utiliser l’accusé de réception par défaut.",
     "saveAutoresponse": "Enregistrer la réponse automatique",
     "variables": {
-      "ticket_number": "Numéro de ticket",
-      "ticket_subject": "Sujet du ticket",
+      "ticket_number": "Numéro de billet",
+      "ticket_subject": "Sujet du billet",
       "requester_name": "Nom du demandeur",
-      "requester_email": "Email du demandeur",
+      "requester_email": "Courriel du demandeur",
       "org_name": "Nom de l’organisation",
       "partner_name": "Nom de l’entreprise"
     },
     "sample": {
-      "ticketSubject": "Email qui ne se synchronise pas",
+      "ticketSubject": "Courriel qui ne se synchronise pas",
       "requesterName": "Demandeur d’exemple",
       "partnerName": "Votre entreprise"
     }
@@ -626,7 +626,7 @@
     "disconnectFailed": "Échec de la déconnexion.",
     "disconnected": "Boîte aux lettres déconnectée",
     "title": "Boîte aux lettres de support Microsoft 365",
-    "description": "Connectez votre boîte au service partagée afin que l’email client devienne un ticket et que les réponses soient envoyées depuis celle-ci. Aucun changement de MX ou de transfert n’est requis.",
+    "description": "Connectez votre boîte de soutien partagée afin que les courriels des clients deviennent des billets et que les réponses soient envoyées depuis celle-ci. Aucune modification des enregistrements MX ni du transfert n’est requise.",
     "status": {
       "pending_consent": "Sous réserve de consentement",
       "connected": "Connectée",
@@ -661,7 +661,7 @@
       "3": "L3 — biométrique + code PIN",
       "4": "L4 — clé matérielle + code PIN"
     },
-    "requireEnrollment": "Exiger un dispositif d’approbateur enregistré (appliquer — bloquer les approbations sous-assurées)",
+    "requireEnrollment": "Exiger un appareil d’approbateur enregistré (appliquer — bloquer les approbations sous-assurées)",
     "enforceFrom": "Appliquer depuis (fenêtre de grâce coupée)",
     "toasts": {
       "saved": "Politique de sécurité d’approbation enregistrée."
@@ -681,7 +681,7 @@
     "logo": {
       "title": "Logo",
       "previewAlt": "Aperçu du logo de l’organisation",
-      "uploadNew": "Téléchargez un nouveau logo",
+      "uploadNew": "Téléversez un nouveau logo",
       "recommendation": "SVG ou PNG, recommandé 512x512",
       "selected": "Sélectionné : {{name}}"
     },
@@ -715,7 +715,7 @@
       "portalName": "{{organization}} Portail",
       "welcome": "Bon retour",
       "body": "Cette aperçu reflète votre brouillon de branding actuel sur le portail, y compris les couleurs et les choix de logos.",
-      "openTicket": "Ticket de support ouvert",
+      "openTicket": "Billet de support ouvert",
       "viewDevices": "Voir la liste des appareils",
       "urlLabel": "Aperçu URL",
       "cssPayload": "Charge utile personnalisée CSS",
@@ -729,7 +729,7 @@
     "policies": {
       "title": "Politiques par défaut",
       "fields": {
-        "deviceCompliance": "Conformité des dispositifs",
+        "deviceCompliance": "Conformité des appareils",
         "dataProtection": "Protection des données",
         "accessControl": "Contrôle d’accès"
       },
@@ -741,7 +741,7 @@
       }
     },
     "deviceGroup": {
-      "title": "Groupe de périphériques par défaut",
+      "title": "Groupe de appareils par défaut",
       "description": "Les nouveaux appareils inscrits sont automatiquement ajoutés à ce groupe.",
       "options": {
         "AllManagedDevices": "Tous les appareils gérés",
@@ -817,7 +817,7 @@
     },
     "authentication": {
       "title": "Authentification",
-      "apiKey": "API Clé",
+      "apiKey": "Clé API",
       "usernamePassword": "Nom d’utilisateur / Mot de passe",
       "apiKeyPlaceholder": "Saisie API",
       "username": "Nom d’utilisateur",
@@ -847,7 +847,7 @@
     "save": "Enregistrer les paramètres",
     "managedByPartner": "Géré par un partenaire",
     "email": {
-      "title": "Paramètres de l’email",
+      "title": "Paramètres de courriel",
       "fromAddress": "D’après l’adresse",
       "replyTo": "Adresse de réponse",
       "useCustomSmtp": "Utiliser un serveur SMTP personnalisé",
@@ -877,7 +877,7 @@
       "alertType": "Type d’alerte",
       "description": "Choisissez les canaux utilisés pour chaque type d’alerte.",
       "channels": {
-        "email": "E-mail",
+        "email": "Courriel",
         "slack": "Slack",
         "webhook": "Webhook"
       },
@@ -891,7 +891,7 @@
     }
   },
   "orgPortalSettingsEditor": {
-    "loading": "Paramètres de chargement du portail...",
+    "loading": "Chargement des paramètres du portail...",
     "save": "Paramètres du portail d’enregistrement",
     "toasts": {
       "saved": "Paramètres du portail enregistrés"
@@ -905,8 +905,8 @@
       "description": "Contrôlez ce que ce client peut faire sur son portail. Chaque organisation est indépendante.",
       "toggles": {
         "enableTickets": {
-          "label": "Soumission de tickets",
-          "description": "Les clients peuvent ouvrir et suivre les tickets de support depuis le portail."
+          "label": "Soumission de billets",
+          "description": "Les clients peuvent ouvrir et suivre les billets de support depuis le portail."
         },
         "enableAssetCheckout": {
           "label": "Vérification des actifs",
@@ -925,21 +925,21 @@
     "support": {
       "title": "Contact support",
       "description": "Montré aux clients dans le portail.",
-      "email": "Email de support",
+      "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
       "footerText": "Texte du bas de page"
     }
   },
   "orgPortalUsersEditor": {
-    "loading": "Utilisateurs du portail de chargement...",
+    "loading": "Chargement des utilisateurs du portail...",
     "title": "Utilisateurs du portail",
     "description": "Contacts clients ayant accès au portail de cette organisation.",
     "invitePending": "Invitation en attente ({{count}})",
     "inviteUser": "Inviter l’utilisateur",
     "empty": "Aucun utilisateur du portail pour l’instant.",
     "columns": {
-      "email": "E-mail",
+      "email": "Courriel",
       "lastLogin": "Dernière connexion"
     },
     "status": {
@@ -958,11 +958,11 @@
     },
     "placeholders": {
       "email": "customer@example.com",
-      "message": "Note personnelle pour l’email d’invitation"
+      "message": "Note personnelle pour le courriel d’invitation"
     },
     "removeDialog": {
       "title": "Supprimer l’utilisateur du portail",
-      "message": "Retirer {{email}} ? Ils perdent immédiatement l’accès au portail de cette organisation. Cela ne peut pas être annulé — il faudrait les réinviter."
+      "message": "Retirer {{email}}? Cette personne perdra immédiatement l’accès au portail de l’organisation. Cette action est irréversible; vous devrez l’inviter de nouveau."
     },
     "toasts": {
       "inviteSent": "Invitation envoyée",
@@ -973,10 +973,10 @@
       "removed": "Utilisateur supprimé"
     },
     "errors": {
-      "load": "Les utilisateurs du portail n’ont pas réussi à charger.",
+      "load": "Impossible de charger les utilisateurs du portail.",
       "sendInvite": "Impossible d’envoyer l’invitation",
       "action": "Action échouée",
-      "invalidEmail": "Saisissez une adresse e-mail valide"
+      "invalidEmail": "Saisissez une adresse courriel valide"
     }
   },
   "orgRemoteAccessSettings": {
@@ -995,7 +995,7 @@
     },
     "policy": {
       "title": "Politique efficace",
-      "edit": "Modifier la stratégie",
+      "edit": "Modifier la politique",
       "empty": "(Aucune politique d’accès distant n’est attribuée)"
     },
     "allowlist": {
@@ -1027,7 +1027,7 @@
       "durationSeconds": "{{seconds}}s",
       "types": {
         "vnc": "VNC",
-        "proxy": "Proxy"
+        "proxy": "PROXY"
       },
       "units": {
         "bytes": "B",
@@ -1075,7 +1075,7 @@
     "reviewer": "réviseur",
     "selected": "sélectionné.",
     "setADeadlineToKeepReviewersOnSchedule": "Définissez une échéance pour respecter le calendrier de la revue.",
-    "emailReviewersWhenTheCampaignStarts": "Envoyer un e-mail aux réviseurs au démarrage de la campagne.",
+    "emailReviewersWhenTheCampaignStarts": "Envoyer un courriel aux réviseurs au démarrage de la campagne.",
     "cancel": "Annuler",
     "back": "Retour",
     "next": "Suivant",
@@ -1188,8 +1188,8 @@
     "failedToFetchAccessReviews": "Impossible de récupérer les revues d’accès",
     "failedToFetchReviewers": "Impossible de récupérer les réviseurs",
     "failedToFetchReviewDetails": "Impossible de récupérer les détails de la revue",
-    "noReviewerEmailsAvailableForNotifications": "Aucune adresse e-mail de réviseur n’est disponible pour les notifications",
-    "unableToLaunchEmailNotification": "Impossible de lancer une notification par e-mail",
+    "noReviewerEmailsAvailableForNotifications": "Aucune adresse courriel de réviseur n’est disponible pour les notifications",
+    "unableToLaunchEmailNotification": "Impossible de lancer une notification par courriel",
     "failedToCreateAccessReview": "Impossible de créer une revue d’accès",
     "failedToUpdateDecision": "Impossible de mettre à jour la décision",
     "failedToFetchReviewForReport": "Impossible de récupérer la revue pour le rapport",
@@ -1252,14 +1252,14 @@
   "apiKeyForm": {
     "devicesRead": "Appareils : Lecture",
     "viewDeviceInformationAndStatus": "Voir les informations et l’état des appareils",
-    "devicesWrite": "Dispositifs : Écriture",
+    "devicesWrite": "Appareils : Écriture",
     "createUpdateAndDeleteDevices": "Créer, mettre à jour et supprimer des appareils",
     "scriptsRead": "Scénarios : Lisez",
     "viewScriptsAndExecutionHistory": "Voir les scripts et l’historique d’exécution",
     "scriptsWrite": "Scripts : Écrire",
     "createAndModifyScripts": "Créer et modifier des scripts",
     "scriptsExecute": "Scripts : Exécution",
-    "runScriptsOnDevices": "Exécuter des scripts sur les périphériques",
+    "runScriptsOnDevices": "Exécuter des scripts sur les appareils",
     "alertsRead": "Alertes : Lisez",
     "viewAlertsAndNotifications": "Voir les alertes et notifications",
     "alertsWrite": "Alertes : Écrivez",
@@ -1276,15 +1276,15 @@
     "executeCommandsAndScriptsViaAIMCP": "Exécuter des commandes et des scripts via IA/MCP",
     "usersRead": "Utilisateurs : Lire",
     "viewUserInformation": "Voir les informations utilisateur",
-    "aPIKeyCreated": "API Clé créée",
+    "aPIKeyCreated": "Clé API créée",
     "yourNewAPIKeyHasBeenCreatedSuccessfully": "Votre nouvelle clé API a été créée avec succès.",
     "thisKeyWillOnlyBeShownOncePleaseCopyAndStoreItSecurely": "Cette clé ne sera affichée qu’une seule fois. Veuillez les copier et les stocker en toute sécurité.",
-    "yourAPIKey": "Votre API Clé",
+    "yourAPIKey": "Votre clé API",
     "copied": "Copié",
     "copy": "Copier",
     "done": "Terminé",
     "name": "Nom",
-    "myAPIKey": "Ma API Clé",
+    "myAPIKey": "Ma clé API",
     "expiration": "Expiration",
     "neverExpires": "Ne expire jamais",
     "rateLimitRequestsPerHour": "Limite de requêtes par heure",
@@ -1302,7 +1302,7 @@
     "organizationRequired": "Choisissez l’organisation à laquelle appartient cette clé"
   },
   "apiKeyList": {
-    "aPIKeys": "API Clés",
+    "aPIKeys": "Clés API",
     "of": "de",
     "keys": "Clés",
     "searchByName": "Rechercher par nom",
@@ -1330,9 +1330,9 @@
     "expired": "Expirée"
   },
   "apiKeysPage": {
-    "loadingAPIKeys": "Chargement des API des clés...",
+    "loadingAPIKeys": "Chargement des clés API...",
     "tryAgain": "Réessayer",
-    "aPIKeys": "API Clés",
+    "aPIKeys": "Clés API",
     "manageAPIKeysForProgrammaticAccessToYourAccount": "Gérez API les clés pour l’accès programmatique à votre compte.",
     "createKey": "Créer une clé",
     "createAPIKey": "Créer une clé API",
@@ -1351,7 +1351,7 @@
     "thisWillGenerateANewKeyAndInvalidateTheCurrentOneImmedia": "? Cela générera une nouvelle clé et invalidera immédiatement la clé actuelle.",
     "anyApplicationsUsingThisKeyWillNeedToBeUpdatedWithTheNew": "Toute application utilisant cette clé devra être mise à jour avec la nouvelle clé.",
     "cancel": "Annuler",
-    "revokeAPIKey": "Révoquer API Clé",
+    "revokeAPIKey": "Révoquer la clé API",
     "areYouSureYouWantToRevoke": "Êtes-vous sûr de vouloir révoquer ?",
     "thisActionCannotBeUndone": "? Cette action ne peut être annulée.",
     "anyApplicationsUsingThisKeyWillImmediatelyLoseAccess": "Toute application utilisant cette clé perdra immédiatement l’access.",
@@ -1359,9 +1359,9 @@
     "failedToFetchAPIKeys": "Impossible de récupérer les clés API",
     "noOrganizationSelected": "Aucune organisation sélectionnée",
     "failedToRotateAPIKey": "Impossible de faire pivoter clé API",
-    "failedToRevokeAPIKey": "Impossible de révoquer API clé",
+    "failedToRevokeAPIKey": "Impossible de révoquer la clé API",
     "anErrorOccurred": "Une erreur s’est produite",
-    "failedToCreateAPIKey": "Impossible de créer API clé",
+    "failedToCreateAPIKey": "Impossible de créer la clé API",
     "createANewAPIKeyWithSpecificPermissions": "Créez une nouvelle clé API avec des permissions spécifiques.",
     "never": "Jamais",
     "default": "Par défaut",
@@ -1376,7 +1376,7 @@
     "deviceRenamed": "Appareil renommé",
     "approvalSecurity": "Sécurité de l’approbation",
     "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Ces appareils peuvent confirmer les approbations à haut risque (accès privilégié, actions IA) à l’aide d’un biométrie. Votre téléphone s’enregistre automatiquement lorsque vous vous connectez à l’application mobile Breeze ; vous pouvez également enregistrer ce navigateur avec Windows Hello ou Touch ID. Tout cela est optionnel — les approbations fonctionnent toujours sans cela.",
-    "loadingApproverDevices": "Chargement des appau-dessus...",
+    "loadingApproverDevices": "Chargement des appareils d’approbation...",
     "tryAgain": "Réessayer",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Aucun appareil d’approbation n’est encore enregistré. Connectez-vous à l’application mobile Breeze sur votre téléphone et elle apparaît automatiquement ici, ou inscrivez-vous à ce navigateur ci-dessous pour approuver avec une biométrie.",
     "platformBound": "En direction du quai",
@@ -1394,27 +1394,22 @@
     "failedToRegisterThisDevice": "Impossible d’enregistrer cet appareil",
     "failedToRevokeDevice": "Impossible de révoquer l’appareil",
     "failedToRenameDevice": "Impossible de renommer l’appareil",
-    "failedToLoadApproverDevices": "Impossible de charger les appareils appositeurs",
+    "failedToLoadApproverDevices": "Impossible de charger les appareils d’approbation",
     "saving": "Enregistrement...",
     "save": "Enregistrer",
     "registering": "Enregistrement...",
     "registerThisDevice": "Enregistrez cet appareil",
     "revoking": "Révoque...",
-    "revokeDevice": "Révoquer le dispositif",
+    "revokeDevice": "Révoquer le appareil",
     "incorrectCode": "Code incorrect.",
     "incorrectPassword": "Mot de passe incorrect.",
-    "passkeyVerificationFailed": "Échec de la vérification par clé d’accès — veuillez réessayer.",
+    "passkeyVerificationFailed": "Échec de la vérification de la clé d'accès — réessayez.",
     "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives — réessayez dans quelques minutes.",
     "verificationExpiredPleaseVerifyAgain": "Vérification expirée — veuillez vérifier à nouveau.",
-    "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d’accès ou votre code d’authentification — actualisez la page pour mettre à jour vos options.",
-    "pendingActivatesOnFirstApproval": "En attente — s’active à la première approbation",
-    "sessionExpiredReloadAndTryAgain": "Session expirée — actualisez la page et réessayez.",
-    "registrationCancelled": "L’enregistrement a été annulé."
-  },
-  "stepUpPrompt": {
-    "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d’accès (Touch ID / Windows Hello) lors de l’enregistrement.",
-    "authenticatorCode": "Code d’authentification",
-    "confirmYourPassword": "Confirmez votre mot de passe"
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d'accès ou votre code d'authentification — rechargez la page pour mettre à jour vos options.",
+    "pendingActivatesOnFirstApproval": "En attente — s'active dès la première approbation",
+    "sessionExpiredReloadAndTryAgain": "Session expirée — rechargez la page et réessayez.",
+    "registrationCancelled": "L'inscription a été annulée."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Réponses préfabriquées",
@@ -1449,7 +1444,7 @@
     "enterAValidOverridePrice": "Entrez un prix de dérogation valide.",
     "overrideSaved": "enregistrement de la dérogation",
     "overrideRemoved": "Suppression de la dérogation",
-    "imageUploaded": "Image téléchargée",
+    "imageUploaded": "Image téléversée",
     "enterAnImageURL": "Entrez une image URL.",
     "imageImported": "Image importée",
     "imageRemoved": "Image supprimée",
@@ -1493,7 +1488,7 @@
     "perOrganizationPricing": "Tarification par organisation",
     "overrideTheBaseUnitPriceForASpecificCustomerEveryoneElse": "Passer outre le prix unitaire de base pour un client spécifique. Tous les autres sont facturés au prix du catalogue.",
     "noOverridesEveryOrganizationIsBilledTheBasePrice": "Aucune dérogation — chaque organisation se voit facturer le prix de base.",
-    "selectOrganization": "Organisation sélectionnée...",
+    "selectOrganization": "Sélectionner une organisation...",
     "overridePrice": "Prix de dépassement",
     "set": "Décor",
     "allOrganizationsHaveAnOverride": "Toutes les organisations ont une dérogation.",
@@ -1506,7 +1501,7 @@
     "removeOverride": "Supprimer la dérogation pour {{organization}}",
     "couldNotSetTheOverrideRetry": "Impossible de régler l’override. Réessayez.",
     "couldNotRemoveTheOverrideRetry": "Impossible de retirer la dérogation. Réessayez.",
-    "couldNotUploadTheImageRetry": "Impossible de télécharger l’image. Réessayez.",
+    "couldNotUploadTheImageRetry": "Impossible de téléverser l’image. Réessayez.",
     "couldNotImportTheImageFromThatURLRetry": "Impossible d’importer l’image de ce URL. Réessayez.",
     "couldNotRemoveTheImageRetry": "Impossible de supprimer l’image. Réessayez.",
     "bundleComponentsCouldNotBeSavedRetry": "Les composants du bundle n’ont pas pu être sauvés. Réessayez.",
@@ -1531,7 +1526,7 @@
     "importFromTDSYNNEX": "Importation depuis TD SYNNEX",
     "importFromPax8": "Importation depuis Pax8",
     "addItem": "Ajouter un élément",
-    "catalogFailedToLoad": "Le catalogue n’a pas réussi à se charger.",
+    "catalogFailedToLoad": "Impossible de charger le catalogue.",
     "tryAgain": "Réessayer",
     "noArchivedItems": "Aucun élément archivé.",
     "buildYourCatalog": "Créez votre catalogue",
@@ -1608,12 +1603,12 @@
     "couldNotConnectSingleSignOn": "Impossible de connecter l’accès simple.",
     "connecting": "En connexion...",
     "connect": "Connecter",
-    "emailMismatch": "Ce compte fournisseur d’identité utilise une adresse e-mail différente de votre compte Breeze. Connectez-vous à votre fournisseur avec l’adresse e-mail sur votre compte Breeze et réessayez.",
+    "emailMismatch": "Ce compte fournisseur d’identité utilise une adresse courriel différente de votre compte Breeze. Connectez-vous à votre fournisseur avec l’adresse courriel sur votre compte Breeze et réessayez.",
     "identityInUse": "Ce compte de fournisseur d’identité est déjà lié à un autre utilisateur Breeze.",
     "sessionInvalid": "Votre session a changé avant que la liaison puisse aboutir. Veuillez vous reconnecter et réessayer.",
     "providerInactive": "Ce fournisseur de connexion unique n’est plus actif. Contactez votre administrateur.",
     "configChanged": "La configuration de la connexion unique a été modifiée pendant l’opération. Veuillez réessayer.",
-    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse e-mail est vérifiée. Contactez votre administrateur."
+    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse courriel est vérifiée. Contactez votre administrateur."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Chargement des applications connectées...",
@@ -1709,13 +1704,13 @@
     "profileInformation": "Informations sur le profil",
     "updateYourPersonalDetails": "Mettez à jour vos informations personnelles.",
     "avatar": "Avatar",
-    "uploadNewPicture": "Télécharger une nouvelle image",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG ou WebP. Max 5 Mo. Glisser-déposer sur le cercle, ou cliquez sur Téléverser.",
+    "uploadNewPicture": "Téléverser une nouvelle image",
+    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG ou WebP. Maximum de 5 Mo. Glissez-déposez l’image sur le cercle ou cliquez sur Téléverser.",
     "cancel": "Annuler",
     "name": "Nom",
     "yourName": "Votre nom",
-    "email": "E-mail",
-    "emailCannotBeChangedContactSupportForAssistance": "L’email ne peut pas être modifié. Contactez le support pour obtenir de l’aide.",
+    "email": "Courriel",
+    "emailCannotBeChangedContactSupportForAssistance": "Le courriel ne peut pas être modifié. Communiquez avec le soutien pour obtenir de l’aide.",
     "passkeys": "Clés d’accès",
     "managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo": "Gérez les clés d’accès qui peuvent servir d’authentification multi-facteurs pour votre compte.",
     "loadingPasskeys": "Chargement des clés d’accès...",
@@ -1746,7 +1741,7 @@
     "passkeyDeleted": "Clé d’accès supprimée",
     "failedToLoadPasskeys": "Impossible de charger les clés d’accès",
     "failedToUpdateProfile": "Impossible de mettre à jour le profil",
-    "failedToUploadAvatar": "Impossible de télécharger l’avatar",
+    "failedToUploadAvatar": "Impossible de téléverser l’avatar",
     "failedToRemoveAvatar": "Impossible de retirer l’avatar",
     "failedToChangePassword": "Impossible de changer le mot de passe",
     "failedToStartMFASetup": "Impossible de démarrer MFA installation",
@@ -1763,7 +1758,7 @@
     "failedToDeletePasskeyHttp": "Impossible de supprimer la clé d’accès (HTTP {{status}})",
     "removing": "Enlèvement...",
     "remove": "Retirer",
-    "uploading": "Téléchargement...",
+    "uploading": "Téléversement en cours...",
     "upload": "Téléverser",
     "saving": "Enregistrement...",
     "saveChanges": "Enregistrer les modifications",
@@ -1832,7 +1827,7 @@
     "userCount_other": "{{count}} utilisateurs",
     "loadingUsers": "Chargement des utilisateurs...",
     "noUsersAreAssignedToThisRole": "Aucun utilisateur n’est assigné à ce rôle.",
-    "email": "E-mail",
+    "email": "Courriel",
     "status": "Statut",
     "failedToLoadPermissionsStatus": "Impossible de charger les permissions ({{status}} {{statusText}})",
     "error": "Erreur",
@@ -1888,7 +1883,7 @@
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Le nom du fournisseur est requis",
-    "emailAttributeIsRequired": "L’attribut email est requis",
+    "emailAttributeIsRequired": "L’attribut courriel est requis",
     "nameAttributeIsRequired": "L’attribut nom est requis",
     "customConfiguration": "Configuration personnalisée",
     "azureADEntraID": "Azure AD / Entra ID",
@@ -1913,12 +1908,12 @@
     "clientSecret": "Secret client",
     "leaveBlankToKeepExisting": "(laisser vide pour continuer à exister)",
     "scopes": "Champs d’action",
-    "openidProfileEmail": "Email de profil OpenID",
+    "openidProfileEmail": "Courriel de profil OpenID",
     "spaceSeparatedListOfOAuthScopesToRequest": "Liste séparée en espace des portées OAuth à demander",
     "attributeMapping": "Cartographie des attributs",
     "mapIdentityProviderClaimsToUserAttributes": "Les revendications du fournisseur d’identité cartographique aux attributs de l’utilisateur",
-    "emailAttribute": "Attribut Email",
-    "email": "E-mail",
+    "emailAttribute": "Attribut Courriel",
+    "email": "Courriel",
     "displayNameAttribute": "Attribut du nom d’affichage",
     "name": "Nom",
     "firstNameAttribute": "Attribut du prénom",
@@ -1928,7 +1923,7 @@
     "familyName": "family_name",
     "groupsAttribute": "Attribut des groupes",
     "groups": "Groupes",
-    "usedForGroupBasedRoleMappingIfSupportedByYourIdP": "Utilisé pour le mappage de rôles basé sur des groupes (si supporté par votre IdP)",
+    "usedForGroupBasedRoleMappingIfSupportedByYourIdP": "Utilisé pour l’association des rôles selon les groupes (si cette fonction est prise en charge par votre IdP)",
     "userProvisioning": "Provisionnement utilisateur",
     "autoProvisionUsers": "Utilisateurs de provisionnement automatique",
     "automaticallyCreateUserAccountsWhenTheyFirstSignInViaSSO": "Créer automatiquement des comptes utilisateurs lors de leur première connexion via SSO",
@@ -2034,7 +2029,7 @@
     "aPIKeyHeaders": "En-têtes de clé API",
     "bearerToken": "Jeton porteur",
     "basicAuth": "Authentification de base",
-    "aPIKey": "API clé",
+    "aPIKey": "Clé API",
     "aPISecret": "Secret API",
     "accountID": "Compte ID",
     "testPath": "Chemin d’essai",
@@ -2090,13 +2085,13 @@
     "connectTDSYNNEXECExpressToLookUpRealTimePricingAndAvaila": "Connectez TD SYNNEX EC Express pour consulter en temps réel les tarifs et la disponibilité et importer du matériel dans Breeze.",
     "customerNo": "Client n°",
     "region": "Région",
-    "email": "E-mail",
+    "email": "Courriel",
     "password": "Mot de passe",
     "enabled": "Activé",
     "sYNNEXSKUOrMfgPart": "SYNNEX SKU ou partie mfg #",
-    "sYNNEXSKU": "SKU SYNNEX",
+    "sYNNEXSKU": "SYNNEX SKU",
     "yourCost": "Votre coût",
-    "mSRP": "PDSF",
+    "mSRP": "MSRP",
     "totalAvailable": "Total disponible",
     "warehouse": "Entrepôt",
     "available": "Disponible",
@@ -2124,7 +2119,60 @@
     "lastTestFailed": "Dernier test échoué",
     "configured": "Configuré",
     "notConfigured": "Non configuré",
-    "manufacturerPart": " · FAB {{part}}"
+    "manufacturerPart": " · MFG {{part}}"
+  },
+  "tdSynnexSftpPanel": {
+    "tDSYNNEXPriceFile": "Fichier tarifaire TD SYNNEX",
+    "connectTheTDSYNNEXNightlySFTPPriceAndAvailabilityFeed": "Connectez le flux nocturne SFTP de prix et de disponibilité de TD SYNNEX. Breeze télécharge le fichier chaque nuit et maintient à jour votre coût revendeur et vos niveaux de stock.",
+    "loadingTDSYNNEXPriceFile": "Chargement du fichier tarifaire TD SYNNEX.",
+    "configured": "Configuré",
+    "notConfigured": "Non configuré",
+    "lastTestSucceeded": "Dernier test réussi",
+    "lastTestFailed": "Dernier test échoué",
+    "region": "Région",
+    "unitedStates": "États-Unis",
+    "canada": "Canada",
+    "accountNumber": "Numéro de compte",
+    "digitsOnlyTheSFTPUsernameAndFilenameAreDerivedFromIt": "Chiffres uniquement — le nom d'utilisateur SFTP et le nom du fichier distant en sont dérivés.",
+    "password": "Mot de passe",
+    "leaveBlankToKeepTheCurrentPassword": "Laissez vide pour conserver le mot de passe actuel.",
+    "sFTPHost": "Hôte SFTP",
+    "sFTPUsername": "Nom d'utilisateur SFTP",
+    "remoteFile": "Fichier distant",
+    "enabled": "Activé",
+    "saving": "Enregistrement...",
+    "saveSettings": "Enregistrer les paramètres",
+    "testing": "Test en cours...",
+    "testConnection": "Tester la connexion",
+    "queueing": "Mise en file d'attente...",
+    "syncNow": "Synchroniser maintenant",
+    "connectedAndTheNightlyFileWasFound": "Connecté. Le fichier tarifaire nocturne a été trouvé sur le serveur.",
+    "connectedButTheNightlyFileIsNotOnTheServerYet": "Connecté, mais le fichier tarifaire nocturne n'est pas encore sur le serveur.",
+    "theConnectionWorksButTheFileIsNotAvailableYet": "La connexion fonctionne, mais TD SYNNEX n'a pas encore généré votre fichier tarifaire. Il est généralement disponible dans les 24 heures suivant la première connexion réussie.",
+    "lastSync": "Dernière synchronisation",
+    "status": "Statut",
+    "when": "Quand",
+    "file": "Fichier",
+    "rows": "Lignes",
+    "never": "Jamais",
+    "searchBySKUMfgPartOrName": "Rechercher par SKU, réf. fabricant ou nom",
+    "search": "Rechercher",
+    "searching": "Recherche...",
+    "sYNNEXSKU": "SYNNEX SKU",
+    "mfgPartNo": "Réf. fabricant",
+    "name": "Nom",
+    "cost": "Coût",
+    "qty": "Qté",
+    "uSD": "USD",
+    "noPriceRowsYetRunASyncOnceTDSYNNEXHasGeneratedTheFile": "Aucune ligne tarifaire pour l'instant. Lancez une synchronisation une fois que TD SYNNEX a généré votre fichier.",
+    "tDSYNNEXPriceFileSettingsSaved": "Paramètres du fichier tarifaire TD SYNNEX enregistrés",
+    "tDSYNNEXPriceFileSettingsFailedToLoad": "Échec du chargement des paramètres du fichier tarifaire TD SYNNEX.",
+    "tDSYNNEXPriceFileSettingsFailedToSave": "Échec de l'enregistrement des paramètres du fichier tarifaire TD SYNNEX.",
+    "tDSYNNEXPriceFileConnectionTestFailed": "Échec du test de connexion du fichier tarifaire TD SYNNEX.",
+    "tDSYNNEXPriceFileSyncQueued": "Synchronisation du fichier tarifaire TD SYNNEX mise en file d'attente",
+    "tDSYNNEXPriceFileSyncCouldNotBeQueued": "Impossible de mettre en file d'attente la synchronisation du fichier tarifaire TD SYNNEX.",
+    "tDSYNNEXPriceFileSearchFailed": "Échec de la recherche du fichier tarifaire TD SYNNEX.",
+    "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Échec de la recherche du fichier tarifaire TD SYNNEX (réponse non valide)."
   },
   "themingSettings": {
     "light": "Lumière",
@@ -2152,7 +2200,7 @@
   "ticketCategoriesPage": {
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
-    "ticketing": "Ticketterie",
+    "ticketing": "Billetterie",
     "categoriesOrganizeTheQueueAndCarrySLAAndBillingDefaultsS": "Les catégories organisent la file d’attente et le report SLA et les défauts de facturation (SLA l’application arrive avec le moteur SLA).",
     "newCategory": "Nouvelle catégorie",
     "categoryColor": "Couleur de catégorie",
@@ -2193,23 +2241,23 @@
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Priorités et SLA sauvés",
     "prioritiesAmpSLAs": "Priorités & SLA",
-    "renameTicketPrioritiesAndSetTheDefaultResponseAndResolut": "Renommez les priorités des tickets et définissez les SLA de réponse et de résolution par défaut. Ils s’appliquent aux nouveaux tickets de toutes les organisations que vous gérez.",
+    "renameTicketPrioritiesAndSetTheDefaultResponseAndResolut": "Renommez les priorités des billets et définissez les SLA de réponse et de résolution par défaut. Ils s’appliquent aux nouveaux billets de toutes les organisations que vous gérez.",
     "loading": "Chargement.",
-    "prioritySettingsFailedToLoad": "Les paramètres de priorité n’ont pas réussi à se charger.",
+    "prioritySettingsFailedToLoad": "Impossible de charger les paramètres de priorité.",
     "retry": "Réessayer",
     "priority": "Priorité",
     "label": "Libellé",
     "responseMin": "Réponse (min)",
     "resolutionMin": "Résolution (min)",
-    "theseAreYourPartnerWideSLADefaultsEachTicketUsesTheMostS": "Ce sont vos valeurs par défaut pour tous vos partenaires SLA. Chaque ticket utilise le SLA le plus spécifique qui s’applique — un override par ticket, puis sa catégorie, puis un override d’organisation — et revient à ces paramètres par défaut sinon. Laissez un champ vide pour utiliser le code par défaut intégré (Urgent et Élevé uniquement).",
+    "theseAreYourPartnerWideSLADefaultsEachTicketUsesTheMostS": "Ce sont vos valeurs par défaut pour tous vos partenaires SLA. Chaque billet utilise le SLA le plus spécifique qui s’applique — un override par billet, puis sa catégorie, puis un override d’organisation — et revient à ces paramètres par défaut sinon. Laissez un champ vide pour utiliser le code par défaut intégré (Urgent et Élevé uniquement).",
     "couldnTSavePrioritiesAndSLAsRetry": "Impossible d’enregistrer les priorités et les SLA. Réessayez.",
     "saving": "Enregistrement...",
     "save": "Enregistrer"
   },
   "ticketStatusesTab": {
     "statusUpdated": "Statut mis à jour",
-    "ticketStatuses": "Statut des tickets",
-    "manageTheStatusesAvailableInYourTicketingQueueBuiltInSta": "Gérez les statuts disponibles dans votre file d’attente de ticketterie. Des statuts intégrés sont nécessaires et ne peuvent pas être supprimés.",
+    "ticketStatuses": "Statut des billets",
+    "manageTheStatusesAvailableInYourTicketingQueueBuiltInSta": "Gérez les statuts disponibles dans votre file d’attente de billetterie. Des statuts intégrés sont nécessaires et ne peuvent pas être supprimés.",
     "name": "Nom",
     "statusName": "Nom de statut",
     "coreState": "État central",
@@ -2239,8 +2287,8 @@
     "statusInactive": "Ce statut est désactivé."
   },
   "ticketingSettingsPage": {
-    "ticketingSettings": "Paramètres de ticketterie",
-    "configureTicketStatusesPrioritySLADefaultsCategoriesAndB": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation."
+    "ticketingSettings": "Paramètres de billetterie",
+    "configureTicketStatusesPrioritySLADefaultsCategoriesAndB": "Configurez les statuts des billets, les priorités SLA par défaut, les catégories et les exportations de facturation."
   },
   "ticketingSettingsTabs": {
     "intakeForms": "Formulaires d’admission",
@@ -2248,23 +2296,23 @@
     "prioritiesSLAs": "Priorités & SLA",
     "categories": "Catégories",
     "export": "Exporter",
-    "inboundEmail": "Email entrant",
+    "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
-    "subheading": "Champs personnalisés collectés lors de la création d’un ticket. Partagez un formulaire à travers toutes les organisations ou délimitez-le à une seule organisation.",
+    "subheading": "Champs personnalisés collectés lors de la création d’un billet. Partagez un formulaire à travers toutes les organisations ou délimitez-le à une seule organisation.",
     "newForm": "Nouvelle forme",
     "scopeLegend": "Portée",
     "allOrgsOption": "Toutes les organisations",
     "partnerWideHint": "(à l’échelle du partenaire)",
     "orgOnlyOption": "Cette organisation uniquement",
     "selectOrgPlaceholder": "Choisissez une organisation...",
-    "orgsLoadFailedNotice": "Les organisations n’ont pas réussi à charger, donc un formulaire organisé ne peut pas encore être créé.",
+    "orgsLoadFailedNotice": "Impossible de charger les organisations; un formulaire limité à une organisation ne peut donc pas encore être créé.",
     "retry": "Réessayer",
     "visibilityLegend": "Visibilité",
     "limitOrgsLabel": "Limite à des organisations spécifiques",
-    "allowlistOrgsLoadFailedNotice": "Les organisations n’ont pas réussi à se charger, donc la liste des autorisations ne peut pas encore être modifiée.",
+    "allowlistOrgsLoadFailedNotice": "Impossible de charger les organisations; la liste des organisations autorisées ne peut donc pas encore être modifiée.",
     "nameLabel": "Nom",
     "optional": "(optionnel)",
     "descriptionLabel": "Description",
@@ -2313,7 +2361,7 @@
     "cancel": "Annuler",
     "loading": "Chargement.",
     "loadFailed": "Impossible de charger les formulaires d’admission.",
-    "emptyState": "Pas encore de formulaires d’admission. Créez-en un pour collecter des informations structurées sur les nouveaux tickets.",
+    "emptyState": "Pas encore de formulaires d’admission. Créez-en un pour collecter des informations structurées sur les nouveaux billets.",
     "allOrgsTooltip": "Formulaire à l’échelle des partenaires — disponible pour chaque organisation",
     "allOrgsBadge": "À l’échelle du partenaire",
     "limitedOrgsTooltip": "Formulaire à l’échelle des partenaires limité à des organisations spécifiques",
@@ -2394,7 +2442,7 @@
         "description": "Combien de temps chaque certificat mTLS d’agent reste valide avant qu’un renouvellement ne soit requis. Des durées de vie plus courtes améliorent la sécurité mais augmentent la fréquence des renouvellements. Le délai par défaut est de 90 jours."
       },
       "expiredPolicy": {
-        "title": "Stratégie relative aux certificats expirés",
+        "title": "Politique relative aux certificats expirés",
         "label": "À l’expiration d’un certificat",
         "autoReissue": "Réédition automatique",
         "quarantine": "Quarantaine",
@@ -2442,8 +2490,8 @@
       "eventLogsDescription": "Transfert et conservation",
       "communications": "Communications",
       "notifications": "Notifications",
-      "notificationsDescription": "E-mail, Slack, webhooks",
-      "ticketing": "Ticketterie",
+      "notificationsDescription": "Courriel, Slack, webhooks",
+      "ticketing": "Billetterie",
       "ticketingDescription": "SLA et les dérogations de facturation"
     },
     "overview": {
@@ -2652,17 +2700,17 @@
     }
   },
   "orgTicketSettingsEditor": {
-    "loading": "Chargement des paramètres du ticket...",
+    "loading": "Chargement des paramètres du billet...",
     "errors": {
-      "load": "Les paramètres du ticket n’ont pas réussi à se charger.",
-      "save": "Impossible d’enregistrer les paramètres des tickets"
+      "load": "Impossible de charger les paramètres du billet.",
+      "save": "Impossible d’enregistrer les paramètres des billets"
     },
     "toasts": {
-      "saved": "Paramètres du ticket enregistrés"
+      "saved": "Paramètres du billet enregistrés"
     },
     "partnerDefault": "Défaut de départ des partenaires",
     "actions": {
-      "save": "Enregistrer les paramètres des tickets"
+      "save": "Enregistrer les paramètres des billets"
     },
     "sla": {
       "title": "SLA Annule",
@@ -2673,7 +2721,7 @@
     },
     "billing": {
       "title": "Paramètres de facturation par défaut",
-      "description": "Paramètres de facturation par défaut pour les saisies de temps sur les tickets pour cette organisation.",
+      "description": "Paramètres de facturation par défaut pour les saisies de temps sur les billets pour cette organisation.",
       "hourlyRate": "Taux horaire par défaut ($)",
       "billable": "Facturable par défaut",
       "inherit": "Héritage",
@@ -2729,7 +2777,7 @@
       "churned": "Tourné"
     },
     "columns": {
-      "devices": "Dispositifs"
+      "devices": "Appareils"
     },
     "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
   },
@@ -2759,7 +2807,7 @@
       "suspended": "Suspendu",
       "churned": "Tourné"
     },
-    "deviceCount": "{{count}} dispositifs",
+    "deviceCount": "{{count}} appareils",
     "list": {
       "title": "Organisations",
       "searchPlaceholder": "Rechercher...",
@@ -2768,7 +2816,7 @@
       "dragToReorder": "De la traînée à la réorganisation"
     },
     "sites": {
-      "loading": "Sites de chargement..."
+      "loading": "Chargement des sites..."
     },
     "emptySelection": {
       "title": "Aucune organisation sélectionnée",
@@ -2803,7 +2851,7 @@
     }
   },
   "siteDetailPage": {
-    "loading": "Site de chargement...",
+    "loading": "Chargement du site...",
     "backToOrganizations": "Retour aux organisations",
     "breadcrumbs": {
       "settings": "Paramètres",
@@ -2828,7 +2876,7 @@
     "tabs": {
       "details": "Détails",
       "policies": "Politiques de configuration",
-      "devices": "Dispositifs"
+      "devices": "Appareils"
     },
     "details": {
       "title": "Informations sur le site"
@@ -2846,12 +2894,12 @@
       "priority": "Priorité",
       "assignTitle": "Politique d’attribution",
       "policy": "Politique",
-      "selectPolicy": "Choisissez une stratégie...",
+      "selectPolicy": "Choisir une politique...",
       "assigning": "Assignation...",
       "assign": "Politique d’attribution"
     },
     "devices": {
-      "title": "Dispositifs",
+      "title": "Appareils",
       "assigned": "Appareils attribués à ce site",
       "viewAll": "Voir tous les appareils"
     }
@@ -2863,7 +2911,7 @@
     },
     "validation": {
       "nameRequired": "Le nom du site est requis",
-      "email": "Saisissez une adresse e-mail valide"
+      "email": "Saisissez une adresse courriel valide"
     },
     "fields": {
       "name": "Nom du site",
@@ -2874,7 +2922,7 @@
       "state": "État/Région",
       "postalCode": "Code postal",
       "country": "Pays",
-      "email": "E-mail",
+      "email": "Courriel",
       "phone": "Téléphone"
     },
     "placeholders": {
@@ -2900,13 +2948,13 @@
     },
     "columns": {
       "timezone": "Fuse horaire",
-      "devices": "Dispositifs"
+      "devices": "Appareils"
     },
     "empty": "Aucun site trouvé. Ajoutez un site pour commencer."
   },
   "customerDomainsCard": {
     "title": "Domaines de messagerie client",
-    "description": "Orientez les domaines d’email clients vérifiés vers la bonne organisation.",
+    "description": "Acheminez les domaines de courriel vérifiés des clients vers la bonne organisation.",
     "errors": {
       "load": "Les mappages de domaine client ne se chargeaient pas.",
       "save": "Impossible d’enregistrer la cartographie du domaine client. Réessayez."
@@ -2923,7 +2971,7 @@
     "empty": "Pas encore de mappage de domaine client.",
     "placeholders": {
       "domain": "customer.example.com",
-      "organization": "Organisation sélectionnée..."
+      "organization": "Sélectionner une organisation..."
     },
     "new": "Nouveau",
     "actions": {
@@ -3045,7 +3093,7 @@
     "title": "Inviter l’utilisateur",
     "description": "Envoyez une invitation à un nouvel utilisateur ayant le poste approprié.",
     "validation": {
-      "email": "Saisissez une adresse e-mail valide",
+      "email": "Saisissez une adresse courriel valide",
       "nameRequired": "Le nom est requis",
       "roleRequired": "Choisir un rôle",
       "orgRequired": "Fournir au moins une organisation"
@@ -3055,7 +3103,7 @@
       "sending": "Envoi…"
     },
     "fields": {
-      "email": "E-mail",
+      "email": "Courriel",
       "role": "Rôle"
     },
     "placeholders": {
@@ -3083,14 +3131,14 @@
       "invite": "Inviter l’utilisateur",
       "resendInvite": "Réenvoyer l’invitation",
       "manageMobileDevices": "Gérez les appareils mobiles de cet utilisateur",
-      "devices": "Dispositifs",
-      "resetMfa": "Réinitialiser la MFA"
+      "devices": "Appareils",
+      "resetMfa": "Réinitialiser MFA"
     },
     "searchLabel": "Rechercher des utilisateurs",
-    "searchPlaceholder": "Rechercher par nom, e-mail ou rôle",
+    "searchPlaceholder": "Rechercher par nom, courriel ou rôle",
     "count": "{{filtered}} d’utilisateurs {{total}}",
     "columns": {
-      "email": "E-mail",
+      "email": "Courriel",
       "role": "Rôle",
       "lastLogin": "Dernière connexion"
     },
@@ -3122,7 +3170,7 @@
       "updateUser": "Impossible de mettre à jour l’utilisateur",
       "updateRole": "Impossible de mettre à jour le rôle",
       "removeUser": "Impossible de supprimer l’utilisateur",
-      "resetMfa": "Échec de la réinitialisation de la MFA"
+      "resetMfa": "Impossible de réinitialiser MFA"
     },
     "invite": {
       "title": "Inviter l’utilisateur",
@@ -3133,7 +3181,7 @@
       "description": "Mettre à jour le rôle et les permissions pour {{name}}."
     },
     "fields": {
-      "email": "E-mail",
+      "email": "Courriel",
       "role": "Rôle"
     },
     "remove": {
@@ -3142,72 +3190,24 @@
       "messageSuffix": " Ils perdront immédiatement l’access."
     },
     "toasts": {
-      "resendManual": "Invitation renvoyée pour {{email}} mais l’e-mail n’a pas pu être envoyé. Copiez le lien de l’invitation pour le partager manuellement.",
+      "resendManual": "Invitation renvoyée à {{email}}, mais le courriel n’a pas pu être envoyé. Copiez le lien d’invitation pour le transmettre manuellement.",
       "resent": "Invitation envoyée à {{email}}",
-      "inviteManual": "Invitation créée pour {{email}} mais l’e-mail n’a pas pu être envoyé. Copiez le lien de l’invitation pour le partager manuellement.",
+      "inviteManual": "Invitation créée pour {{email}}, mais le courriel n’a pas pu être envoyé. Copiez le lien d’invitation pour le transmettre manuellement.",
       "inviteSent": "Invitation envoyée à {{email}}",
       "copied": "Copié !",
       "copyLink": "Copier le lien",
-      "mfaReset": "MFA réinitialisée pour {{email}}"
+      "mfaReset": "MFA réinitialisé pour {{email}}"
     },
     "resetMfa": {
-      "title": "Réinitialiser la MFA ?",
-      "messagePrefix": "Cela supprime le second facteur de",
-      "messageSuffix": " La connexion se fera avec le seul mot de passe, la MFA devra être reconfigurée, et les sessions actives seront déconnectées.",
-      "confirm": "Réinitialiser la MFA"
+      "title": "Réinitialiser MFA ?",
+      "messagePrefix": "Cela supprime le deuxième facteur pour",
+      "messageSuffix": " Ils se connecteront avec leur seul mot de passe, seront invités à reconfigurer MFA, et toutes les sessions actives seront déconnectées.",
+      "confirm": "Réinitialiser MFA"
     }
   },
-  "tdSynnexSftpPanel": {
-    "tDSYNNEXPriceFile": "Fichier tarifaire TD SYNNEX",
-    "connectTheTDSYNNEXNightlySFTPPriceAndAvailabilityFeed": "Connectez le flux nocturne SFTP de prix et de disponibilité de TD SYNNEX. Breeze télécharge le fichier chaque nuit et maintient à jour votre coût revendeur et vos niveaux de stock.",
-    "loadingTDSYNNEXPriceFile": "Chargement du fichier tarifaire TD SYNNEX.",
-    "configured": "Configuré",
-    "notConfigured": "Non configuré",
-    "lastTestSucceeded": "Dernier test réussi",
-    "lastTestFailed": "Dernier test échoué",
-    "region": "Région",
-    "unitedStates": "États-Unis",
-    "canada": "Canada",
-    "accountNumber": "Numéro de compte",
-    "digitsOnlyTheSFTPUsernameAndFilenameAreDerivedFromIt": "Chiffres uniquement — le nom d'utilisateur SFTP et le nom du fichier distant en sont dérivés.",
-    "password": "Mot de passe",
-    "leaveBlankToKeepTheCurrentPassword": "Laissez vide pour conserver le mot de passe actuel.",
-    "sFTPHost": "Hôte SFTP",
-    "sFTPUsername": "Nom d'utilisateur SFTP",
-    "remoteFile": "Fichier distant",
-    "enabled": "Activé",
-    "saving": "Enregistrement...",
-    "saveSettings": "Enregistrer les paramètres",
-    "testing": "Test en cours...",
-    "testConnection": "Tester la connexion",
-    "queueing": "Mise en file d'attente...",
-    "syncNow": "Synchroniser maintenant",
-    "connectedAndTheNightlyFileWasFound": "Connecté. Le fichier tarifaire nocturne a été trouvé sur le serveur.",
-    "connectedButTheNightlyFileIsNotOnTheServerYet": "Connecté, mais le fichier tarifaire nocturne n'est pas encore sur le serveur.",
-    "theConnectionWorksButTheFileIsNotAvailableYet": "La connexion fonctionne, mais TD SYNNEX n'a pas encore généré votre fichier tarifaire. Il est généralement disponible dans les 24 heures suivant la première connexion réussie.",
-    "lastSync": "Dernière synchronisation",
-    "status": "Statut",
-    "when": "Quand",
-    "file": "Fichier",
-    "rows": "Lignes",
-    "never": "Jamais",
-    "searchBySKUMfgPartOrName": "Rechercher par SKU, réf. fabricant ou nom",
-    "search": "Rechercher",
-    "searching": "Recherche...",
-    "sYNNEXSKU": "SKU SYNNEX",
-    "mfgPartNo": "Réf. fabricant",
-    "name": "Nom",
-    "cost": "Coût",
-    "qty": "Qté",
-    "uSD": "USD",
-    "noPriceRowsYetRunASyncOnceTDSYNNEXHasGeneratedTheFile": "Aucune ligne tarifaire pour l'instant. Lancez une synchronisation une fois que TD SYNNEX a généré votre fichier.",
-    "tDSYNNEXPriceFileSettingsSaved": "Paramètres du fichier tarifaire TD SYNNEX enregistrés",
-    "tDSYNNEXPriceFileSettingsFailedToLoad": "Échec du chargement des paramètres du fichier tarifaire TD SYNNEX.",
-    "tDSYNNEXPriceFileSettingsFailedToSave": "Échec de l'enregistrement des paramètres du fichier tarifaire TD SYNNEX.",
-    "tDSYNNEXPriceFileConnectionTestFailed": "Échec du test de connexion du fichier tarifaire TD SYNNEX.",
-    "tDSYNNEXPriceFileSyncQueued": "Synchronisation du fichier tarifaire TD SYNNEX mise en file d'attente",
-    "tDSYNNEXPriceFileSyncCouldNotBeQueued": "Impossible de mettre en file d'attente la synchronisation du fichier tarifaire TD SYNNEX.",
-    "tDSYNNEXPriceFileSearchFailed": "Échec de la recherche du fichier tarifaire TD SYNNEX.",
-    "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Échec de la recherche du fichier tarifaire TD SYNNEX (réponse non valide)."
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d'accès (Touch ID / Windows Hello) lors de l'enregistrement.",
+    "authenticatorCode": "Code d'authentification",
+    "confirmYourPassword": "Confirmez votre mot de passe"
   }
 }
