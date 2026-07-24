@@ -248,8 +248,18 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * their DB work instead of relying on the request-long wrap in
  * agentAuthMiddleware. See the #1105 note at the wrap site. Auth still runs in
  * full for these routes — only the org-context transaction wrap is skipped.
+ *
+ * `commands` (the GET command poll) is here because its handler claims commands
+ * inside its own `withSystemDbAccessContext` — the same claim+decrypt path the
+ * self-managed heartbeat route already runs context-free. Keeping the
+ * request-long org wrap on top made every poll hold TWO pooled connections at
+ * once (`runOutsideDbContext` does not release the outer transaction), which
+ * self-deadlocked the pool under load: all slots pinned by outer transactions
+ * parked idle-in-transaction waiting for an inner connection, reaped at the
+ * 60s idle_in_transaction_session_timeout as `500 @60s`, re-polled by agents,
+ * repeat (US prod outage, 2026-07-24).
  */
-const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability']);
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
 
 /**
  * Middleware to authenticate agent requests via Bearer token.
