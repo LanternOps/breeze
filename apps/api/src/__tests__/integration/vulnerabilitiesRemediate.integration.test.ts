@@ -183,7 +183,10 @@ async function seedRemediableDeviceVuln(opts: { cveId: string; approved?: boolea
 async function seedThirdPartyFinding(opts: {
   cveId: string;
   patchTitle?: string;
+  patchPackageId?: string;
   patchVersion?: string;
+  invName?: string;
+  invVendor?: string;
   extraPatch?: { title: string; packageId: string };
   vulnerableRange?: { versionEndExcluding: string };
   approved?: boolean;
@@ -197,9 +200,9 @@ async function seedThirdPartyFinding(opts: {
     .values({
       deviceId,
       orgId: env.organization.id,
-      name: 'Mozilla Firefox (x64 en-US)',
+      name: opts.invName ?? 'Mozilla Firefox (x64 en-US)',
       version: '128.0',
-      vendor: 'Mozilla',
+      vendor: opts.invVendor ?? 'Mozilla',
     })
     .returning({ id: softwareInventory.id });
   if (!inv) throw new Error('failed to seed software inventory');
@@ -207,7 +210,7 @@ async function seedThirdPartyFinding(opts: {
   const dvId = await seedDeviceVuln(env.organization.id, deviceId, vulnerabilityId, inv.id);
 
   const patchRows: Array<{ title: string; packageId: string }> = [
-    { title: opts.patchTitle ?? 'Mozilla Firefox', packageId: 'Mozilla.Firefox' },
+    { title: opts.patchTitle ?? 'Mozilla Firefox', packageId: opts.patchPackageId ?? 'Mozilla.Firefox' },
     ...(opts.extraPatch ? [opts.extraPatch] : []),
   ];
   for (const p of patchRows) {
@@ -358,6 +361,63 @@ describe('POST /api/v1/vulnerabilities/remediate', () => {
       .from(deviceCommands)
       .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
     expect(cmds.length).toBe(1);
+  });
+
+  runDb('matches a vendor-prefixed inventory name against a bare patch title when the packageId corroborates the vendor', async () => {
+    // Inventory "Mozilla Firefox" but the pending patch title is just "Firefox"
+    // (no vendor prefix), so the exact nameKey ("mozilla firefox") misses and
+    // the vendor-stripped key ("firefox") is tried. packageId "Mozilla.Firefox"
+    // names the same vendor, so the fallback fires. This is the branch the
+    // earlier fallback test never exercised (its title matched nameKey directly).
+    const { env, deviceId, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60010',
+      invName: 'Mozilla Firefox',
+      invVendor: 'Mozilla',
+      patchTitle: 'Firefox',
+      patchPackageId: 'Mozilla.Firefox',
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number };
+    expect(body.scheduled).toBe(1);
+    const cmds = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(1);
+  });
+
+  runDb('refuses a vendor-stripped match against a different vendor\'s pending patch (no wrong-product install)', async () => {
+    // Inventory "Adobe Reader" (vendor Adobe) has no "adobe reader" patch, so the
+    // stripped key "reader" is tried. The only pending patch titled "Reader"
+    // belongs to a DIFFERENT product (packageId "Foxit.Reader"). Without vendor
+    // corroboration this would remediate Foxit's patch for the Adobe finding —
+    // the wrong product. The guard must decline instead.
+    const { env, deviceId, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60011',
+      invName: 'Adobe Reader',
+      invVendor: 'Adobe',
+      patchTitle: 'Reader',
+      patchPackageId: 'Foxit.Reader',
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
+    const cmds = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(0);
   });
 
   runDb('keeps the approval gate on the third-party fallback path', async () => {
