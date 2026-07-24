@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"golang.org/x/sys/windows"
 )
 
@@ -34,18 +35,18 @@ type openedMainAgentLock struct {
 // mainAgentLockMetadata is an explicit allowlist. Future ProcessStartup fields
 // do not enter ProgramData lock metadata without a deliberate security review.
 type mainAgentLockMetadata struct {
-	Binary             string    `json:"binary"`
-	ExecutablePath     string    `json:"executablePath"`
-	PID                int       `json:"pid"`
-	ParentPID          int       `json:"parentPid"`
-	WindowsSessionID   uint32    `json:"windowsSessionId"`
-	LaunchMode         string    `json:"launchMode"`
-	HelperRole         string    `json:"helperRole,omitempty"`
-	LifecycleKey       string    `json:"lifecycleKey,omitempty"`
-	CompanionHelper    bool      `json:"companionHelper"`
-	MainBinaryFallback bool      `json:"mainBinaryFallback"`
-	Version            string    `json:"version"`
-	CreatedAt          time.Time `json:"createdAt"`
+	Binary             string         `json:"binary"`
+	ExecutablePath     string         `json:"executablePath"`
+	PID                int            `json:"pid"`
+	ParentPID          int            `json:"parentPid"`
+	WindowsSessionID   uint32         `json:"windowsSessionId"`
+	LaunchMode         string         `json:"launchMode"`
+	HelperRole         ipc.HelperRole `json:"helperRole,omitempty"`
+	LifecycleKey       string         `json:"lifecycleKey,omitempty"`
+	CompanionHelper    bool           `json:"companionHelper"`
+	MainBinaryFallback bool           `json:"mainBinaryFallback"`
+	Version            string         `json:"version"`
+	CreatedAt          time.Time      `json:"createdAt"`
 }
 
 func mainAgentLockMetadataFrom(meta ProcessStartup) mainAgentLockMetadata {

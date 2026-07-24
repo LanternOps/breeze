@@ -46,7 +46,7 @@ const (
 // Client is the user-helper side of the IPC connection to the root daemon.
 type Client struct {
 	socketPath string
-	role       string // "system" or "user"
+	role       ipc.HelperRole // "system" or "user"
 	binaryKind string
 	context    string
 	conn       *ipc.Conn
@@ -84,11 +84,11 @@ func (c *Client) setAuthenticatedAt(t time.Time) {
 
 // New creates a new user helper client with the given role.
 // Role should be ipc.HelperRoleSystem or ipc.HelperRoleUser.
-func New(socketPath, role string) *Client {
+func New(socketPath string, role ipc.HelperRole) *Client {
 	return NewWithOptions(socketPath, role, "", "")
 }
 
-func NewWithOptions(socketPath, role, binaryKind, context string) *Client {
+func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context string) *Client {
 	if role == "" {
 		role = ipc.HelperRoleSystem
 	}

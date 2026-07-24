@@ -2,7 +2,11 @@
 
 package sessionbroker
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+)
 
 // SpawnedHelper is only populated on Windows. On other platforms helper
 // spawning is handled by OS-level mechanisms (launchd LaunchAgent, systemd
@@ -17,7 +21,7 @@ type SpawnedHelper struct {
 	PID                uint32
 	BinaryPath         string
 	CommandMode        string
-	Role               string
+	Role               ipc.HelperRole
 	WindowsSessionID   uint32
 	MainBinaryFallback bool
 }
@@ -35,7 +39,7 @@ func (s *SpawnedHelper) Alive() (bool, error) {
 	return false, fmt.Errorf("SpawnedHelper: helper tracking not supported on this platform")
 }
 
-func (s *SpawnedHelper) Terminate() error       { return nil }
+func (s *SpawnedHelper) Terminate() error { return nil }
 
 // Wait is a no-op on non-Windows platforms. Returns (exitCode=-1, nil).
 func (s *SpawnedHelper) Wait() (int, error) { return -1, nil }

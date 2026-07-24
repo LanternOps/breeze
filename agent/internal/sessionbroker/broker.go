@@ -194,14 +194,14 @@ var (
 // handles TypeWatchdogPong and never replies to TypePing, so running keepalive
 // against it would evict every watchdog connection at keepaliveTimeout.
 // Watchdog has its own end-to-end liveness probe via WatchdogPing/Pong.
-func roleSupportsKeepalive(role string) bool {
+func roleSupportsKeepalive(role ipc.HelperRole) bool {
 	return role != ipc.HelperRoleWatchdog
 }
 
 // maybeStartKeepalive starts the keepalive goroutine for the session if its
 // role supports it. Extracted from handleConnection so the gating is testable
 // without driving the full IPC handshake (which needs OS-specific peer creds).
-func (b *Broker) maybeStartKeepalive(session *Session, role string) {
+func (b *Broker) maybeStartKeepalive(session *Session, role ipc.HelperRole) {
 	if roleSupportsKeepalive(role) {
 		go b.runKeepalive(session)
 	}
@@ -1398,7 +1398,7 @@ func (b *Broker) HasHelperForWinSession(winSessionID string) bool {
 
 // HasHelperForWinSessionRole returns true if a helper with the given role
 // is connected in the specified Windows session.
-func (b *Broker) HasHelperForWinSessionRole(winSessionID, role string) bool {
+func (b *Broker) HasHelperForWinSessionRole(winSessionID string, role ipc.HelperRole) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if id, err := strconv.ParseUint(winSessionID, 10, 32); err == nil {
@@ -2429,7 +2429,7 @@ const systemSID = "S-1-5-18"
 // kernel-verified session id can't be forged over a named pipe / Unix socket,
 // so end-to-end pipe tests can only exercise the current test process's own
 // identity.
-func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimedWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
+func roleIdentityRejection(role ipc.HelperRole, sid string, uid uint32, peerWinSession, claimedWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
 	if goos == "windows" {
 		switch {
 		case role == ipc.HelperRoleSystem && sid != systemSID:
@@ -2443,10 +2443,10 @@ func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimed
 		}
 		if role == ipc.HelperRoleUser || role == ipc.HelperRoleSystem {
 			if peerWinSession == "" || peerWinSession == "0" {
-				return role + " role requires an interactive peer session", true
+				return string(role) + " role requires an interactive peer session", true
 			}
 			if peerWinSession != claimedWinSession {
-				return role + " role session claim does not match peer token", true
+				return string(role) + " role session claim does not match peer token", true
 			}
 		}
 		if role == ipc.HelperRoleAssist && (consoleWinSession == "" || consoleWinSession == "0" || peerWinSession != consoleWinSession) {
@@ -2468,7 +2468,7 @@ func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimed
 	return "", false
 }
 
-func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string {
+func (b *Broker) scopesForRole(role ipc.HelperRole, binaryKind, goos, peerPath string) []string {
 	switch role {
 	case ipc.HelperRoleUser:
 		if goos == "darwin" &&
@@ -2493,7 +2493,7 @@ func (b *Broker) scopesForRole(role, binaryKind, goos, peerPath string) []string
 // the role's base scopes plus consent_ui_fallback when a user-role helper
 // advertised native consent support. Always returns a fresh slice — the
 // role-scope vars are shared package state and must not be appended to.
-func (b *Broker) grantScopes(role string, authReq ipc.AuthRequest, goos, peerPath string) []string {
+func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos, peerPath string) []string {
 	base := b.scopesForRole(role, authReq.BinaryKind, goos, peerPath)
 	scopes := make([]string, len(base), len(base)+1)
 	copy(scopes, base)

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -21,18 +22,18 @@ type platformProcessMetadata struct {
 // process startup. CompanionHelper is true only for a user-helper command that
 // did not resolve to the main agent binary fallback.
 type ProcessStartup struct {
-	Binary             string    `json:"binary"`
-	ExecutablePath     string    `json:"executablePath"`
-	PID                int       `json:"pid"`
-	ParentPID          int       `json:"parentPid"`
-	WindowsSessionID   uint32    `json:"windowsSessionId"`
-	LaunchMode         string    `json:"launchMode"`
-	HelperRole         string    `json:"helperRole,omitempty"`
-	LifecycleKey       string    `json:"lifecycleKey,omitempty"`
-	CompanionHelper    bool      `json:"companionHelper"`
-	MainBinaryFallback bool      `json:"mainBinaryFallback"`
-	Version            string    `json:"version"`
-	CreatedAt          time.Time `json:"createdAt"`
+	Binary             string         `json:"binary"`
+	ExecutablePath     string         `json:"executablePath"`
+	PID                int            `json:"pid"`
+	ParentPID          int            `json:"parentPid"`
+	WindowsSessionID   uint32         `json:"windowsSessionId"`
+	LaunchMode         string         `json:"launchMode"`
+	HelperRole         ipc.HelperRole `json:"helperRole,omitempty"`
+	LifecycleKey       string         `json:"lifecycleKey,omitempty"`
+	CompanionHelper    bool           `json:"companionHelper"`
+	MainBinaryFallback bool           `json:"mainBinaryFallback"`
+	Version            string         `json:"version"`
+	CreatedAt          time.Time      `json:"createdAt"`
 }
 
 var mainProcessStartupCache struct {
@@ -56,12 +57,12 @@ func cachedMainProcessStartup() ProcessStartup {
 	return currentProcessStartup("run", "", isWindowsService())
 }
 
-func currentProcessStartup(command, role string, service bool) ProcessStartup {
+func currentProcessStartup(command string, role ipc.HelperRole, service bool) ProcessStartup {
 	executable, _ := os.Executable()
 	metadata := currentPlatformProcessMetadata()
 	mode, fallback := classifyProcess(command, role, executable, service)
 	lifecycleKey := ""
-	if metadata.WindowsSessionID != 0 && (role == "user" || role == "system") {
+	if metadata.WindowsSessionID != 0 && (role == ipc.HelperRoleUser || role == ipc.HelperRoleSystem) {
 		lifecycleKey = fmt.Sprintf("%d-%s", metadata.WindowsSessionID, role)
 	}
 
@@ -81,7 +82,7 @@ func currentProcessStartup(command, role string, service bool) ProcessStartup {
 	}
 }
 
-func classifyProcess(command, role, executable string, service bool) (string, bool) {
+func classifyProcess(command string, role ipc.HelperRole, executable string, service bool) (string, bool) {
 	base := strings.ToLower(filepath.Base(executable))
 	fallback := command == "user-helper" && base != strings.ToLower(sessionbroker.UserHelperBinaryName)
 	switch {
@@ -89,9 +90,9 @@ func classifyProcess(command, role, executable string, service bool) (string, bo
 		return "service-run", false
 	case command == "run":
 		return "console-run", false
-	case command == "user-helper" && role == "system":
+	case command == "user-helper" && role == ipc.HelperRoleSystem:
 		return "system-helper", fallback
-	case command == "user-helper" && role == "user":
+	case command == "user-helper" && role == ipc.HelperRoleUser:
 		return "user-helper", fallback
 	default:
 		return "other", false

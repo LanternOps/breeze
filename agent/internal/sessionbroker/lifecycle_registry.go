@@ -3,6 +3,8 @@ package sessionbroker
 import (
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 type helperState string
@@ -276,7 +278,7 @@ func (r *helperRegistry) startupExpired(key HelperKey, now time.Time, timeout ti
 func (r *helperRegistry) clearFatal(sessionID uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, role := range []string{"system", "user"} {
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleUser} {
 		if entry := r.current[HelperKey{WindowsSessionID: sessionID, Role: role}]; entry != nil {
 			entry.fatalExitUntil = time.Time{}
 		}

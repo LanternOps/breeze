@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 func TestCurrentProcessStartupCapturesDiagnosticRoleMetadata(t *testing.T) {
@@ -29,10 +31,12 @@ func TestCurrentProcessStartupCapturesDiagnosticRoleMetadata(t *testing.T) {
 
 func TestClassifyProcess(t *testing.T) {
 	tests := []struct {
-		name, command, role, exe string
-		service                  bool
-		wantMode                 string
-		wantFallback             bool
+		name, command string
+		role          ipc.HelperRole
+		exe           string
+		service       bool
+		wantMode      string
+		wantFallback  bool
 	}{
 		{"SCM main", "run", "", "breeze-agent.exe", true, "service-run", false},
 		{"console main", "run", "", "breeze-agent.exe", false, "console-run", false},

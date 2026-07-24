@@ -44,14 +44,14 @@ func admissionIdentityKey(base string, peerSession uint32, goos string) string {
 	return fmt.Sprintf("windows:%s:session:%d", base, peerSession)
 }
 
-func helperAdmissionIdentityKey(base string, peerSession uint32, goos, role string) string {
+func helperAdmissionIdentityKey(base string, peerSession uint32, goos string, role ipc.HelperRole) string {
 	if !isWindowsLifecycleRole(goos, role) {
 		return base
 	}
 	return admissionIdentityKey(base, peerSession, goos)
 }
 
-func isWindowsLifecycleRole(goos, role string) bool {
+func isWindowsLifecycleRole(goos string, role ipc.HelperRole) bool {
 	return goos == "windows" && (role == ipc.HelperRoleSystem || role == ipc.HelperRoleUser)
 }
 
@@ -227,7 +227,7 @@ func (b *Broker) canAdmitWithoutEviction(identityKey string) bool {
 
 // registerNonLifecycleSession preserves the original authoritative
 // registration path for Unix and Windows assist/watchdog/backup helpers.
-func (b *Broker) registerNonLifecycleSession(identityKey, helperRole string, session *Session) error {
+func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.HelperRole, session *Session) error {
 	b.mu.Lock()
 	admitted, victim := b.tryAdmitLocked(identityKey)
 	if !admitted {
