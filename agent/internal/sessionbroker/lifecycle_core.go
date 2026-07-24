@@ -295,7 +295,11 @@ func (m *HelperLifecycleManager) spawnKey(key HelperKey) {
 		log.Error("lifecycle: refusing to spawn helper for non-lifecycle role", "helperKey", key.String(), "role", key.Role)
 		return
 	}
-	if m.broker != nil && m.broker.HasHelperKeyOwner(key) {
+	// helperKeySpawnBlocked blocks not only on a live authenticated owner but
+	// also on a bounded post-kill retention window, so a scheduled helper that
+	// survived a failed TerminateHelperKey cannot be duplicated by a respawn
+	// while its PID is still alive (#2530).
+	if m.broker != nil && m.broker.helperKeySpawnBlocked(key) {
 		m.mu.Unlock()
 		return
 	}
