@@ -42,12 +42,12 @@ func TestApplyDisabledStopsRunningHelperAfterRestart(t *testing.T) {
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
 	}
-	mgr.stopByPIDFunc = func(pid int) error {
+	mgr.stopIfOursFunc = func(pid int, binaryPath string) (bool, error) {
 		stopped++
 		if pid != 4242 {
-			t.Fatalf("stopByPID called with pid %d, want 4242", pid)
+			t.Fatalf("stopIfOurs called with pid %d, want 4242", pid)
 		}
-		return nil
+		return true, nil
 	}
 	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return pid == 4242 }
 	mgr.sessions["501"] = newSessionState("501", tmpDir)
@@ -92,7 +92,7 @@ func TestApplyRestartsHelperOnConfigChangeWhenIdle(t *testing.T) {
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
 	}
 	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return pid == 4242 }
-	mgr.stopByPIDFunc = func(pid int) error { stopped++; return nil }
+	mgr.stopIfOursFunc = func(pid int, binaryPath string) (bool, error) { stopped++; return true, nil }
 	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
 		spawned++
 		_ = os.WriteFile(statusPath, []byte("version: 0.14.0\npid: 9001\n"), 0644)
@@ -152,7 +152,7 @@ func TestApplyDefersRestartWhileChatActive(t *testing.T) {
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
 	}
 	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return pid == os.Getpid() }
-	mgr.stopByPIDFunc = func(pid int) error { stopped++; return nil }
+	mgr.stopIfOursFunc = func(pid int, binaryPath string) (bool, error) { stopped++; return true, nil }
 	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
 		spawned++
 		return 9001, nil
