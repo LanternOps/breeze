@@ -35,7 +35,7 @@ func (s *stubPamDismissActuator) Dismiss(ctx context.Context) pamactuator.Result
 	return s.dismissResult
 }
 
-func newPamDismissPipe(t *testing.T, role string, scopes ...string) (*Client, *ipc.Conn) {
+func newPamDismissPipe(t *testing.T, role ipc.HelperRole, scopes ...string) (*Client, *ipc.Conn) {
 	t.Helper()
 
 	helperConn, peerConn := net.Pipe()
@@ -157,7 +157,7 @@ func TestHandlePamDismissConsentPreservesNonSuccessResult(t *testing.T) {
 func TestHandlePamDismissConsentRejectsUnauthorizedHelpers(t *testing.T) {
 	tests := []struct {
 		name   string
-		role   string
+		role   ipc.HelperRole
 		scopes []string
 	}{
 		{name: "wrong role", role: ipc.HelperRoleUser, scopes: []string{ipc.ScopePam}},

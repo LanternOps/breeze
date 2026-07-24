@@ -144,7 +144,7 @@ func runDesktopHelper() {
 	}
 }
 
-func desktopHelperRole() string {
+func desktopHelperRole() ipc.HelperRole {
 	if runtime.GOOS == "darwin" {
 		return ipc.HelperRoleUser
 	}

@@ -12,8 +12,10 @@ func TestRoleIdentityRejection(t *testing.T) {
 	const nonSystemSID = "S-1-5-21-1-2-3-1001"
 
 	tests := []struct {
-		name, role, sid, peer, claimed, console, wantReason string
-		wantReject                                          bool
+		name                                    string
+		role                                    ipc.HelperRole
+		sid, peer, claimed, console, wantReason string
+		wantReject                              bool
 	}{
 		{"RDP user matching kernel session", ipc.HelperRoleUser, nonSystemSID, "7", "7", "1", "", false},
 		{"RDP user session mismatch", ipc.HelperRoleUser, nonSystemSID, "7", "8", "1", "user role session claim does not match peer token", true},
@@ -258,7 +260,7 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleLookupFailed(t *testing.T) {
 		sessions: map[string]*Session{
 			helper.SessionID: helper,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 		// "0" is the WTSGetActiveConsoleSessionId failure / Session-0 sentinel,
 		// normalized to "" by ConsoleSessionID().
 		consoleSessionIDFn: func() string { return "0" },

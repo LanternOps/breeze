@@ -23,14 +23,14 @@ import (
 // never load-bearing again.
 func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 	cases := []struct {
-		role       string
+		role       ipc.HelperRole
 		wantSubstr string
 	}{
 		{"system", "--role system"},
 		{"user", "--role user"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.role, func(t *testing.T) {
+		t.Run(string(tc.role), func(t *testing.T) {
 			got := buildUserHelperCmdLine(`C:\Program Files\Breeze\breeze-agent.exe`, tc.role)
 			if !strings.Contains(got, tc.wantSubstr) {
 				t.Fatalf("cmdline missing %q: got %q", tc.wantSubstr, got)
@@ -72,7 +72,7 @@ func TestSpawnedHelperDiagnosticsRetainRoleProvenance(t *testing.T) {
 func TestHelperRoleSpawnableRejectsNonLifecycleRoles(t *testing.T) {
 	tests := []struct {
 		name string
-		role string
+		role ipc.HelperRole
 		want bool
 	}{
 		{"system role spawnable", ipc.HelperRoleSystem, true},

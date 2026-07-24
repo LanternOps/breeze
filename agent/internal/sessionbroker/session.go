@@ -31,8 +31,8 @@ type Session struct {
 	Capabilities   *ipc.Capabilities
 	TCCStatus      *ipc.TCCStatus
 	AllowedScopes  []string
-	WinSessionID   string // Windows session ID string (e.g., "1", "2") for targeting
-	HelperRole     string // "system" or "user" — determines scopes and capabilities
+	WinSessionID   string         // Windows session ID string (e.g., "1", "2") for targeting
+	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
 	BinaryKind     string
 	DesktopContext string
 	ConnectedAt    time.Time
@@ -414,7 +414,7 @@ type SessionInfo struct {
 	ConnectedAt    time.Time         `json:"connectedAt"`
 	LastSeen       time.Time         `json:"lastSeen"`
 	WinSessionID   string            `json:"winSessionId,omitempty"`
-	HelperRole     string            `json:"helperRole,omitempty"`
+	HelperRole     ipc.HelperRole    `json:"helperRole,omitempty"`
 	BinaryKind     string            `json:"binaryKind,omitempty"`
 	DesktopContext string            `json:"desktopContext,omitempty"`
 }

@@ -1,11 +1,13 @@
 package sessionbroker
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 func TestSessionAuthenticatedMarksOnlyCurrentBrokerOwnerConnected(t *testing.T) {
@@ -290,7 +292,7 @@ func TestLifecycleBootstrapPublishesDesiredKeysBeforeSpawning(t *testing.T) {
 	if err := m.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	for _, role := range []string{"system", "user"} {
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleUser} {
 		key := HelperKey{WindowsSessionID: 7, Role: role}
 		if !b.helperKeyDesired(key) {
 			t.Fatalf("%s key was not published by bootstrap", role)

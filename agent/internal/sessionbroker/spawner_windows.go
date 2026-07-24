@@ -27,7 +27,7 @@ type SpawnedHelper struct {
 	Handle             windows.Handle
 	BinaryPath         string
 	CommandMode        string
-	Role               string
+	Role               ipc.HelperRole
 	WindowsSessionID   uint32
 	MainBinaryFallback bool
 	mu                 sync.Mutex
@@ -387,7 +387,7 @@ func createSystemHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExe
 		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
-	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "system"))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, ipc.HelperRoleSystem))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -448,7 +448,7 @@ func createUserHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExecu
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "user"))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, ipc.HelperRoleUser))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -478,13 +478,13 @@ func createUserHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExecu
 // creates a private one-process Job Object and transfers that spawner to the
 // returned helper so Close releases the Job after the process exits.
 func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
-	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: "system"})
+	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleSystem})
 }
 
 // SpawnUserHelperInSession is the user-token counterpart to
 // SpawnHelperInSession.
 func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
-	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: "user"})
+	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleUser})
 }
 
 func spawnStandaloneHelper(key HelperKey) (*SpawnedHelper, error) {

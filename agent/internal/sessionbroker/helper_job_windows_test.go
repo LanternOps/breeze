@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"golang.org/x/sys/windows"
 )
 
@@ -324,7 +325,7 @@ func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
 	createErr := errors.New("CreateProcessAsUser failed")
 	tests := []struct {
 		name         string
-		role         string
+		role         ipc.HelperRole
 		resolved     ResolvedHelperExecutable
 		wantWarnings int
 	}{

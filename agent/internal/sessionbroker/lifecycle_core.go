@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 const (
@@ -184,10 +186,10 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 	}
 	desired := make(map[HelperKey]bool, len(sessions)*2)
 	for _, session := range sessions {
-		if key, ok := helperKeyFromDetected(session, "system"); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem); ok {
 			desired[key] = true
 		}
-		if key, ok := helperKeyFromDetected(session, "user"); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser); ok {
 			desired[key] = true
 		}
 	}
@@ -310,7 +312,7 @@ func (m *HelperLifecycleManager) spawnKey(key HelperKey) {
 		log.Warn("lifecycle: failed to spawn helper", "helperKey", key.String(), "error", err.Error())
 		return
 	}
-	mode := key.Role + "-helper"
+	mode := string(key.Role) + "-helper"
 	entry, attached := m.registry.attachReserved(key, generation, process, mode)
 	if !attached {
 		_ = process.Terminate()
@@ -351,9 +353,9 @@ func (m *HelperLifecycleManager) watchDetachedProcess(key HelperKey, generation 
 }
 
 func (m *HelperLifecycleManager) stopSession(sessionID uint32) {
-	m.removeDesired(HelperKey{WindowsSessionID: sessionID, Role: "system"}, HelperKey{WindowsSessionID: sessionID, Role: "user"})
-	m.stopKey(HelperKey{WindowsSessionID: sessionID, Role: "user"})
-	m.stopKey(HelperKey{WindowsSessionID: sessionID, Role: "system"})
+	m.removeDesired(HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleSystem}, HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleUser})
+	m.stopKey(HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleUser})
+	m.stopKey(HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleSystem})
 }
 
 func (m *HelperLifecycleManager) removeDesired(keys ...HelperKey) {
@@ -500,7 +502,7 @@ func (m *HelperLifecycleManager) sessionClosed(session *Session) {
 }
 
 func helperKeyFromSession(session *Session) (HelperKey, bool) {
-	if session == nil || (session.HelperRole != "system" && session.HelperRole != "user") {
+	if session == nil || (session.HelperRole != ipc.HelperRoleSystem && session.HelperRole != ipc.HelperRoleUser) {
 		return HelperKey{}, false
 	}
 	id, err := strconv.ParseUint(session.WinSessionID, 10, 32)

@@ -269,7 +269,7 @@ func init() {
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	bootstrapCmd.Flags().StringVar(&bootstrapInstallData, "install-data", "", "Pipe-packed bootstrap inputs from the MSI BootstrapEnroll CA: <OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL>")
 	bootstrapCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr)")
-	userHelperCmd.Flags().StringVar(&helperRole, "role", "user", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
+	userHelperCmd.Flags().StringVar(&helperRole, "role", string(ipc.HelperRoleUser), "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(startCmd)
@@ -1461,21 +1461,23 @@ func checkStatus() {
 // runUserHelper starts the per-user session helper process.
 // It connects to the root daemon via IPC and handles user-context operations.
 func runUserHelper() {
-	runHelperProcess("user helper", helperRole, "", ipc.HelperBinaryUserHelper)
+	// helperRole is bound to the cobra --role string flag; convert at this
+	// CLI boundary into the typed HelperRole used everywhere downstream.
+	runHelperProcess("user helper", ipc.HelperRole(helperRole), "", ipc.HelperBinaryUserHelper)
 }
 
 func runDesktopHelper() {
 	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
 }
 
-func desktopHelperRole() string {
+func desktopHelperRole() ipc.HelperRole {
 	if runtime.GOOS == "darwin" {
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem
 }
 
-func runHelperProcess(name, role, context, binaryKind string) {
+func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
 	// helper subcommand routed through runHelperProcess — because all of
