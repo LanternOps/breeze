@@ -406,16 +406,22 @@ export async function initializeWebhookDelivery(
   // Subscribe to all events
   eventBus.subscribe('*', async (event) => {
     try {
-      await runWithSystemDbAccess(async () => {
-        // Get webhooks configured for this event type in this org
-        const webhooks = await getWebhooksForEvent(event.orgId, event.type);
+      // Get webhooks configured for this event type in this org — short DB context.
+      const webhooks = await runWithSystemDbAccess(() => getWebhooksForEvent(event.orgId, event.type));
 
-        // Queue delivery for each webhook
-        for (const webhook of webhooks) {
-          const deliveryId = createDeliveryRecord ? await createDeliveryRecord(webhook, event) : null;
-          await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
-        }
-      });
+      // Queue delivery for each webhook. The delivery record is created in
+      // its own short DB context right before its enqueue ("mark-attempted
+      // before send"); `queueDelivery` itself is a Redis LPUSH and runs
+      // OUTSIDE any DB context (#1105) — looping Redis calls while a pooled
+      // Postgres connection sits idle-in-transaction is exactly the hold
+      // pattern that exhausts the pool under load, and this subscriber fires
+      // on every event fleet-wide.
+      for (const webhook of webhooks) {
+        const deliveryId = createDeliveryRecord
+          ? await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event))
+          : null;
+        await worker.queueDelivery(webhook, event, deliveryId ?? undefined);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('CONNECTION_DESTROYED') || msg.includes('CONNECTION_ENDED')) {

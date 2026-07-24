@@ -80,6 +80,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // Microsoft/executor HTTP and must never inherit an ambient request tx.
   { method: 'GET', pattern: /^\/api\/v1\/m365\/consent\/callback\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/m365\/connections\/[^/]+\/retest\/?$/ },
+  // Notification channel "Send test" fires a REAL synchronous outbound send
+  // (email/webhook/Slack/Teams/PagerDuty/Pushover/SMS), observed holding the
+  // connection ~10s (Sentry #1105 / BREEZE-A). The handler wraps the channel
+  // read and the test-result write in their own short withDbAccessContext
+  // blocks (see withChannelsDbContext in routes/alerts/channels.ts) and runs
+  // the send between them, holding no connection across the network call.
+  { method: 'POST', pattern: /^\/api\/v1\/alerts\/channels\/[^/]+\/test\/?$/ },
 ];
 
 /**
