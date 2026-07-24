@@ -13,6 +13,8 @@ import {
   deviceVulnerabilities,
   patchApprovals,
   patches,
+  softwareInventory,
+  softwareProductResolutions,
   softwareProducts,
   softwareVulnerabilities,
   vulnerabilities,
@@ -59,6 +61,7 @@ beforeEach(async () => {
   await withSystemDbAccessContext(async () => {
     await db.delete(deviceVulnerabilities);
     await db.delete(softwareVulnerabilities);
+    await db.delete(softwareProductResolutions);
     await db.delete(softwareProducts);
     await db.delete(vulnerabilities);
     await db.delete(vulnerabilitySources);
@@ -103,13 +106,19 @@ async function seedVuln(cveId: string): Promise<string> {
   return row.id;
 }
 
-async function seedDeviceVuln(orgId: string, deviceId: string, vulnerabilityId: string): Promise<string> {
+async function seedDeviceVuln(
+  orgId: string,
+  deviceId: string,
+  vulnerabilityId: string,
+  softwareInventoryId?: string,
+): Promise<string> {
   const [row] = await getTestDb()
     .insert(deviceVulnerabilities)
     .values({
       orgId,
       deviceId,
       vulnerabilityId,
+      softwareInventoryId: softwareInventoryId ?? null,
       status: 'open',
       riskScore: '100.00',
       detectedAt: new Date('2026-06-23T12:00:00Z'),
@@ -158,6 +167,109 @@ async function seedRemediableDeviceVuln(opts: { cveId: string; approved?: boolea
       partnerId: env.partner.id,
       patchId: patch.id,
       status: 'approved',
+    });
+  }
+
+  return { env, orgId: env.organization.id, deviceId, dvId };
+}
+
+/**
+ * Third-party finding shape: the finding is tied to an installed-software row
+ * and the device has a pending winget-style patch for the same product that
+ * does NOT advertise the CVE (cveIds empty — the production norm, since only
+ * OSV-enriched catalog packages ever get cveIds). Remediation must fall back
+ * to product-identity matching.
+ */
+async function seedThirdPartyFinding(opts: {
+  cveId: string;
+  patchTitle?: string;
+  patchPackageId?: string;
+  patchVersion?: string;
+  invName?: string;
+  invVendor?: string;
+  extraPatch?: { title: string; packageId: string };
+  vulnerableRange?: { versionEndExcluding: string };
+  approved?: boolean;
+}): Promise<{ env: TestEnvironment; orgId: string; deviceId: string; dvId: string }> {
+  const env = await setupTestEnvironment({ scope: 'organization' });
+  const deviceId = await seedDevice(env);
+  const vulnerabilityId = await seedVuln(opts.cveId);
+
+  const [inv] = await getTestDb()
+    .insert(softwareInventory)
+    .values({
+      deviceId,
+      orgId: env.organization.id,
+      name: opts.invName ?? 'Mozilla Firefox (x64 en-US)',
+      version: '128.0',
+      vendor: opts.invVendor ?? 'Mozilla',
+    })
+    .returning({ id: softwareInventory.id });
+  if (!inv) throw new Error('failed to seed software inventory');
+
+  const dvId = await seedDeviceVuln(env.organization.id, deviceId, vulnerabilityId, inv.id);
+
+  const patchRows: Array<{ title: string; packageId: string }> = [
+    { title: opts.patchTitle ?? 'Mozilla Firefox', packageId: opts.patchPackageId ?? 'Mozilla.Firefox' },
+    ...(opts.extraPatch ? [opts.extraPatch] : []),
+  ];
+  for (const p of patchRows) {
+    const [patch] = await getTestDb()
+      .insert(patches)
+      .values({
+        source: 'third_party',
+        externalId: uniq(p.packageId),
+        title: p.title,
+        packageId: p.packageId,
+        version: opts.patchVersion ?? '129.0',
+        severity: 'unknown',
+        supersededBy: null,
+        releaseDate: '2026-07-01',
+      })
+      .returning({ id: patches.id });
+    if (!patch) throw new Error('failed to seed third-party patch');
+
+    await getTestDb().insert(devicePatches).values({
+      deviceId,
+      orgId: env.organization.id,
+      patchId: patch.id,
+      status: 'pending',
+    });
+
+    if (opts.approved !== false) {
+      await getTestDb().insert(patchApprovals).values({
+        partnerId: env.partner.id,
+        patchId: patch.id,
+        status: 'approved',
+      });
+    }
+  }
+
+  if (opts.vulnerableRange) {
+    const [product] = await getTestDb()
+      .insert(softwareProducts)
+      .values({
+        normalizedName: 'mozilla firefox',
+        normalizedVendor: 'mozilla',
+        cpe: 'cpe:2.3:a:mozilla:firefox',
+        cpeConfidence: 'curated',
+      })
+      .returning({ id: softwareProducts.id });
+    if (!product) throw new Error('failed to seed software product');
+    await getTestDb().insert(softwareProductResolutions).values({
+      lookupName: 'mozilla firefox (x64 en-us)',
+      lookupVendor: 'mozilla',
+      normalizedName: 'mozilla firefox',
+      softwareProductId: product.id,
+      confidence: 'curated',
+      matchedVia: 'curated',
+      resolverVersion: 1,
+      resolvedAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    await getTestDb().insert(softwareVulnerabilities).values({
+      productId: product.id,
+      vulnerabilityId,
+      versionEndExcluding: opts.vulnerableRange.versionEndExcluding,
     });
   }
 
@@ -227,6 +339,144 @@ describe('POST /api/v1/vulnerabilities/remediate', () => {
       body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
     });
     expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
+  });
+
+  runDb('falls back to product matching for a third-party finding without cveIds', async () => {
+    const { env, deviceId, dvId } = await seedThirdPartyFinding({ cveId: 'CVE-2025-60001' });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number; skipped: unknown[] };
+    expect(body.scheduled).toBe(1);
+    expect(body.skipped).toEqual([]);
+
+    const cmds = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(1);
+  });
+
+  runDb('matches a vendor-prefixed inventory name against a bare patch title when the packageId corroborates the vendor', async () => {
+    // Inventory "Mozilla Firefox" but the pending patch title is just "Firefox"
+    // (no vendor prefix), so the exact nameKey ("mozilla firefox") misses and
+    // the vendor-stripped key ("firefox") is tried. packageId "Mozilla.Firefox"
+    // names the same vendor, so the fallback fires. This is the branch the
+    // earlier fallback test never exercised (its title matched nameKey directly).
+    const { env, deviceId, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60010',
+      invName: 'Mozilla Firefox',
+      invVendor: 'Mozilla',
+      patchTitle: 'Firefox',
+      patchPackageId: 'Mozilla.Firefox',
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number };
+    expect(body.scheduled).toBe(1);
+    const cmds = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(1);
+  });
+
+  runDb('refuses a vendor-stripped match against a different vendor\'s pending patch (no wrong-product install)', async () => {
+    // Inventory "Adobe Reader" (vendor Adobe) has no "adobe reader" patch, so the
+    // stripped key "reader" is tried. The only pending patch titled "Reader"
+    // belongs to a DIFFERENT product (packageId "Foxit.Reader"). Without vendor
+    // corroboration this would remediate Foxit's patch for the Adobe finding —
+    // the wrong product. The guard must decline instead.
+    const { env, deviceId, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60011',
+      invName: 'Adobe Reader',
+      invVendor: 'Adobe',
+      patchTitle: 'Reader',
+      patchPackageId: 'Foxit.Reader',
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
+    const cmds = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(0);
+  });
+
+  runDb('keeps the approval gate on the third-party fallback path', async () => {
+    const { env, dvId } = await seedThirdPartyFinding({ cveId: 'CVE-2025-60002', approved: false });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('patch_not_approved');
+  });
+
+  runDb('skips a third-party fallback patch whose version is still vulnerable', async () => {
+    // Pending upgrade targets 129.0 but the CVE is only fixed in 130.0 —
+    // installing it cannot resolve the finding, so nothing is scheduled.
+    const { env, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60003',
+      patchVersion: '129.0',
+      vulnerableRange: { versionEndExcluding: '130.0' },
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
+  });
+
+  runDb('schedules a third-party fallback patch whose version clears the vulnerable range', async () => {
+    const { env, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60004',
+      patchVersion: '130.0',
+      vulnerableRange: { versionEndExcluding: '130.0' },
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: unknown[] };
+    expect(body.scheduled).toBe(1);
+  });
+
+  runDb('drops an ambiguous normalized title (two packageIds) instead of guessing', async () => {
+    const { env, dvId } = await seedThirdPartyFinding({
+      cveId: 'CVE-2025-60005',
+      // Same normalized name ("mozilla firefox") from a different packageId —
+      // the x64/x86-twin shape. Neither may be picked.
+      extraPatch: { title: 'Mozilla Firefox (x86)', packageId: 'Mozilla.Firefox.x86' },
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
     const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
     expect(body.scheduled).toBe(0);
     expect(body.skipped[0]!.reason).toBe('no_available_patch');
