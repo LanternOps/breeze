@@ -22,7 +22,6 @@
   "exclude": [
     "node_modules",
     "perf-harness/**",
-    "doc-verify/**",
     "live-signup/**",
     "fixtures/runtime-extension/build/**"
   ]

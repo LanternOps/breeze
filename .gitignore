@@ -33,8 +33,6 @@ pnpm-debug.log*
 
 # Testing
 coverage/
-e2e-tests/doc-verify/reports/
-e2e-tests/doc-verify/assertions.json
 
 # Database
 *.db
