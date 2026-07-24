@@ -66,8 +66,13 @@ func runDesktopHelper() {
 	}
 	logging.Init("text", "info", output)
 
-	cfg, _ := config.Load("")
-	if cfg == nil {
+	// Use LoadHelperConfig, NOT Load: on macOS the desktop-helper runs as the
+	// logged-in user (Aqua LaunchAgent), and Load() unconditionally reads
+	// root-only secrets.yaml and errors there, leaving the helper with no
+	// shipper (#2483). LoadHelperConfig reads agent.yaml only.
+	cfg, err := config.LoadHelperConfig("")
+	if err != nil {
+		log.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
 
@@ -81,10 +86,10 @@ func runDesktopHelper() {
 	// (#2323) — so its shipper reads the persisted server URL on a TTL instead
 	// of freezing the startup copy at the dead primary (#2463).
 	//
-	// Also like the user-helper, this gate is only reachable when config.Load
-	// above succeeded, which it does not in a user context (it reads root-only
-	// secrets.yaml) — see #2483. Reachable today on Windows, where the
-	// desktop-helper runs as SYSTEM.
+	// This gate is now reachable in user context too: LoadHelperConfig reads
+	// agent.yaml (world-readable) and skips root-only secrets.yaml, so the macOS
+	// user-session desktop-helper populates AgentID/ServerURL/HelperAuthToken
+	// and ships its diagnostics (#2483), as does the Windows SYSTEM helper.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.HelperAuthToken = ""
