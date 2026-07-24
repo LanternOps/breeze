@@ -68,7 +68,7 @@ beforeEach(async () => {
   });
 });
 
-async function seedDevice(env: TestEnvironment): Promise<string> {
+async function seedDevice(env: TestEnvironment, osType: 'windows' | 'macos' | 'linux' = 'windows'): Promise<string> {
   const [device] = await getTestDb()
     .insert(devices)
     .values({
@@ -76,7 +76,7 @@ async function seedDevice(env: TestEnvironment): Promise<string> {
       siteId: env.site.id,
       agentId: uniq('rem-agent'),
       hostname: uniq('rem-host'),
-      osType: 'windows',
+      osType,
       osVersion: '11',
       architecture: 'x86_64',
       agentVersion: '0.0.0-test',
@@ -276,6 +276,71 @@ async function seedThirdPartyFinding(opts: {
   return { env, orgId: env.organization.id, deviceId, dvId };
 }
 
+/**
+ * Windows OS finding shape (#2733): the finding has NO software link (the shape
+ * the fleet view groups as "Windows updates") and the device has pending
+ * microsoft-source patches that do NOT advertise the CVE (the production norm —
+ * WUA scans carry no CVE data). Remediation must fall back to the newest
+ * pending, approved, non-superseded cumulative/security update.
+ */
+async function seedWindowsOsFinding(opts: {
+  cveId: string;
+  osType?: 'windows' | 'macos' | 'linux';
+  osPatches: Array<{
+    title: string;
+    category?: string;
+    releaseDate: string;
+    approved?: boolean;
+    superseded?: boolean;
+  }>;
+}): Promise<{
+  env: TestEnvironment;
+  orgId: string;
+  deviceId: string;
+  dvId: string;
+  patchIdByTitle: Record<string, string>;
+}> {
+  const env = await setupTestEnvironment({ scope: 'organization' });
+  const deviceId = await seedDevice(env, opts.osType ?? 'windows');
+  const vulnerabilityId = await seedVuln(opts.cveId);
+  const dvId = await seedDeviceVuln(env.organization.id, deviceId, vulnerabilityId);
+
+  const patchIdByTitle: Record<string, string> = {};
+  for (const p of opts.osPatches) {
+    const [patch] = await getTestDb()
+      .insert(patches)
+      .values({
+        source: 'microsoft',
+        externalId: uniq('KB'),
+        title: p.title,
+        category: p.category ?? 'security',
+        severity: 'critical',
+        supersededBy: p.superseded ? uniq('KB-newer') : null,
+        releaseDate: p.releaseDate,
+      })
+      .returning({ id: patches.id });
+    if (!patch) throw new Error('failed to seed microsoft patch');
+    patchIdByTitle[p.title] = patch.id;
+
+    await getTestDb().insert(devicePatches).values({
+      deviceId,
+      orgId: env.organization.id,
+      patchId: patch.id,
+      status: 'pending',
+    });
+
+    if (p.approved !== false) {
+      await getTestDb().insert(patchApprovals).values({
+        partnerId: env.partner.id,
+        patchId: patch.id,
+        status: 'approved',
+      });
+    }
+  }
+
+  return { env, orgId: env.organization.id, deviceId, dvId, patchIdByTitle };
+}
+
 /** Open device-vuln with NO matching pending patch. */
 async function seedDeviceVulnNoPatch(): Promise<{ env: TestEnvironment; dvId: string }> {
   const env = await setupTestEnvironment({ scope: 'organization' });
@@ -471,6 +536,101 @@ describe('POST /api/v1/vulnerabilities/remediate', () => {
       // Same normalized name ("mozilla firefox") from a different packageId —
       // the x64/x86-twin shape. Neither may be picked.
       extraPatch: { title: 'Mozilla Firefox (x86)', packageId: 'Mozilla.Firefox.x86' },
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('no_available_patch');
+  });
+
+  runDb('targets the newest pending OS cumulative for a Windows OS finding', async () => {
+    const { env, deviceId, dvId, patchIdByTitle } = await seedWindowsOsFinding({
+      cveId: 'CVE-2025-70001',
+      osPatches: [
+        // Newest security update overall is the .NET cumulative — the OS
+        // cumulative must still win (rank), and the newer of the two OS
+        // cumulatives must be picked (release date within rank).
+        { title: '2026-07 Cumulative Update for .NET Framework 3.5 and 4.8.1 for Windows 11 (KB5041002)', releaseDate: '2026-07-09' },
+        { title: '2026-07 Cumulative Update for Windows 11 Version 23H2 for x64-based Systems (KB5040442)', releaseDate: '2026-07-08' },
+        { title: '2026-06 Cumulative Update for Windows 11 Version 23H2 for x64-based Systems (KB5039212)', releaseDate: '2026-06-11' },
+        // Non-security categories must never be targeted.
+        { title: 'Security Intelligence Update for Microsoft Defender Antivirus (KB2267602)', category: 'definitions', releaseDate: '2026-07-20' },
+      ],
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scheduled: number; skipped: unknown[] };
+    expect(body.scheduled).toBe(1);
+    expect(body.skipped).toEqual([]);
+
+    const cmds = await getTestDb()
+      .select({ payload: deviceCommands.payload })
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds.length).toBe(1);
+    expect(cmds[0]!.payload).toEqual({
+      patchIds: [patchIdByTitle['2026-07 Cumulative Update for Windows 11 Version 23H2 for x64-based Systems (KB5040442)']],
+    });
+  });
+
+  runDb('skips superseded and unapproved cumulatives on the OS fallback path', async () => {
+    const { env, deviceId, dvId, patchIdByTitle } = await seedWindowsOsFinding({
+      cveId: 'CVE-2025-70002',
+      osPatches: [
+        { title: '2026-07 Cumulative Update for Windows 11 Version 23H2 (KB5040442)', releaseDate: '2026-07-08', superseded: true },
+        { title: '2026-06 Cumulative Update for Windows 11 Version 23H2 (KB5039212)', releaseDate: '2026-06-11', approved: false },
+        { title: '2026-05 Cumulative Update for Windows 11 Version 23H2 (KB5037771)', releaseDate: '2026-05-14' },
+      ],
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: unknown[] };
+    expect(body.scheduled).toBe(1);
+
+    const cmds = await getTestDb()
+      .select({ payload: deviceCommands.payload })
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.type, 'install_patches')));
+    expect(cmds[0]!.payload).toEqual({
+      patchIds: [patchIdByTitle['2026-05 Cumulative Update for Windows 11 Version 23H2 (KB5037771)']],
+    });
+  });
+
+  runDb('keeps the approval gate on the OS fallback path', async () => {
+    const { env, dvId } = await seedWindowsOsFinding({
+      cveId: 'CVE-2025-70003',
+      osPatches: [
+        { title: '2026-07 Cumulative Update for Windows 11 Version 23H2 (KB5040442)', releaseDate: '2026-07-08', approved: false },
+      ],
+    });
+    const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
+      method: 'POST',
+      headers: await mfaHeaders(env),
+      body: JSON.stringify({ deviceVulnerabilityIds: [dvId] }),
+    });
+    const body = await res.json() as { scheduled: number; skipped: Array<{ reason: string }> };
+    expect(body.scheduled).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('patch_not_approved');
+  });
+
+  runDb('does not apply the OS fallback to non-Windows devices', async () => {
+    const { env, dvId } = await seedWindowsOsFinding({
+      cveId: 'CVE-2025-70004',
+      osType: 'macos',
+      osPatches: [
+        { title: '2026-07 Cumulative Update for Windows 11 Version 23H2 (KB5040442)', releaseDate: '2026-07-08' },
+      ],
     });
     const res = await buildApp().request('/api/v1/vulnerabilities/remediate', {
       method: 'POST',
