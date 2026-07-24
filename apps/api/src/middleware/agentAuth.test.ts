@@ -340,6 +340,42 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
+
+  // #1105 — the GET command poll claims commands inside its own
+  // withSystemDbAccessContext (see routes/agents/commands.ts). Wrapping the
+  // request in the org transaction on top made every poll hold TWO pooled
+  // connections at once and self-deadlocked the pool under load (US prod
+  // outage, 2026-07-24), so the middleware must NOT add the request-long wrap.
+  it('skips the request-long org wrap for the self-managed commands poll route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/commands' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  // The command RESULT route ends in `result`, not `commands` — it must keep
+  // the request-long org wrap.
+  it('keeps the request-long org wrap for the command result route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('agentAuthMiddleware - per-org rate limit', () => {
