@@ -21,6 +21,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
+// staticServerURL wraps a fixed URL as a Config.ServerURL provider for tests
+// that don't exercise failover promotion. Config.ServerURL is a func() string
+// (#2478) so long-lived updaters follow backup-server-URL promotion.
+func staticServerURL(s string) func() string {
+	return func() string { return s }
+}
+
 func signedDownloadInfo(t *testing.T, version, component, rawURL string, content []byte) downloadInfo {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
@@ -162,7 +169,7 @@ func TestEmbeddedTrustRootMatchesRepoPubKey(t *testing.T) {
 
 func TestNewCreatesUpdater(t *testing.T) {
 	cfg := &Config{
-		ServerURL:      "http://localhost:3001",
+		ServerURL:      staticServerURL("http://localhost:3001"),
 		AuthToken:      secmem.NewSecureString("brz_test"),
 		CurrentVersion: "0.1.0",
 		BinaryPath:     "/usr/local/bin/breeze-agent",
@@ -390,7 +397,7 @@ func TestDownloadBinary(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -466,7 +473,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -499,7 +506,7 @@ func TestDownloadBinaryAcceptsSignedReleaseArtifactManifest(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -558,7 +565,7 @@ func TestDownloadBinaryAcceptsServerRelativeUrlWithMatchingChecksum(t *testing.T
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -594,7 +601,7 @@ func TestDownloadBinaryRejectsWrongSignedReleaseArtifact(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -630,7 +637,7 @@ func TestDownloadBinaryRejectsRedirectResponseWithoutSignedManifest(t *testing.T
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -651,7 +658,7 @@ func TestDownloadBinaryMissingChecksum(t *testing.T) {
 	}))
 	defer server.Close()
 
-	u := New(&Config{ServerURL: server.URL})
+	u := New(&Config{ServerURL: staticServerURL(server.URL)})
 	u.client = server.Client()
 
 	_, _, _, err := u.downloadBinary("1.0.0")
@@ -666,7 +673,7 @@ func TestDownloadBinaryServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	u := New(&Config{ServerURL: server.URL})
+	u := New(&Config{ServerURL: staticServerURL(server.URL)})
 	u.client = server.Client()
 
 	_, _, _, err := u.downloadBinary("1.0.0")
@@ -719,7 +726,7 @@ func TestDownloadBinary_ChecksumMismatchCleansUpTempFile(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL: server.URL,
+		ServerURL: staticServerURL(server.URL),
 		AuthToken: secmem.NewSecureString("test-token"),
 	})
 	u.client = server.Client()
@@ -772,7 +779,7 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	defer server.Close()
 
 	u := New(&Config{
-		ServerURL:      server.URL,
+		ServerURL:      staticServerURL(server.URL),
 		AuthToken:      secmem.NewSecureString("tok"),
 		CurrentVersion: "0.1.0",
 		BinaryPath:     binaryPath,
@@ -1044,7 +1051,7 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
 
 	u := New(&Config{
-		ServerURL:  "http://localhost:0",
+		ServerURL:  staticServerURL("http://localhost:0"),
 		BinaryPath: binaryFile.Name(),
 		BackupPath: binaryFile.Name() + ".backup",
 		// AuthToken intentionally nil — forces downloadBinary to return early.
@@ -1080,7 +1087,7 @@ func TestUpdateToWithOptions_NoUserHelperIsNoOp(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
 
 	u := New(&Config{
-		ServerURL:  "http://localhost:0",
+		ServerURL:  staticServerURL("http://localhost:0"),
 		BinaryPath: binaryFile.Name(),
 		BackupPath: binaryFile.Name() + ".backup",
 	})
@@ -1107,7 +1114,7 @@ func TestUpdateTo_DelegatesToUpdateToWithOptions(t *testing.T) {
 
 	mkUpdater := func() *Updater {
 		return New(&Config{
-			ServerURL:  "http://localhost:0",
+			ServerURL:  staticServerURL("http://localhost:0"),
 			BinaryPath: binaryFile.Name(),
 			BackupPath: binaryFile.Name() + ".backup",
 		})

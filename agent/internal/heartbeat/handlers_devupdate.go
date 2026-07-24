@@ -108,7 +108,7 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 	}
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
@@ -291,7 +291,7 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		BinaryPath:            binaryPath,
@@ -330,7 +330,7 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 	}
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,

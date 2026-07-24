@@ -77,10 +77,15 @@ func WithManifestKeys(keys []string) Option {
 
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
 type Manager struct {
-	mu                sync.Mutex
-	binaryPath        string
-	baseDir           string
-	serverURL         string
+	mu         sync.Mutex
+	binaryPath string
+	baseDir    string
+	// serverURL resolves the control-plane base URL. It is a provider
+	// (func() string) rather than a plain string so the verified downloader
+	// re-resolves it at call time and follows the heartbeat's backup-server-URL
+	// promotion (#2323) after a failover, instead of pinning the dead primary
+	// captured at construction (#2478).
+	serverURL         func() string
 	authToken         *secmem.SecureString
 	agentID           string
 	ctx               context.Context
@@ -104,8 +109,10 @@ type Manager struct {
 	abandonedVersion     string // version we gave up updating to
 }
 
-// New creates a new helper Manager.
-func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, agentID string, opts ...Option) *Manager {
+// New creates a new helper Manager. serverURL is a provider (func() string) so
+// the verified package downloader follows backup-server-URL promotion after a
+// failover (#2478) — see the serverURL field doc.
+func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureString, agentID string, opts ...Option) *Manager {
 	m := &Manager{
 		ctx:               ctx,
 		binaryPath:        defaultBinaryPath(),
@@ -128,6 +135,16 @@ func New(ctx context.Context, serverURL string, authToken *secmem.SecureString, 
 		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.authToken, m.agentVersion, m.manifestKeys)
 	}
 	return m
+}
+
+// resolveServerURL resolves the control-plane base URL from the serverURL
+// provider. Nil-safe so a directly-constructed Manager (tests) without a
+// provider logs "" rather than panicking.
+func (m *Manager) resolveServerURL() string {
+	if m.serverURL == nil {
+		return ""
+	}
+	return m.serverURL()
 }
 
 func defaultBinaryPath() string {
@@ -561,7 +578,7 @@ func (m *Manager) downloadAndInstall(version string) error {
 		return fmt.Errorf("cannot download helper: verified downloader not configured")
 	}
 
-	log.Info("downloading helper package (verified)", "version", version, "server", m.serverURL)
+	log.Info("downloading helper package (verified)", "version", version, "server", m.resolveServerURL())
 
 	verifiedPath, err := m.downloadFunc(version)
 	if err != nil {

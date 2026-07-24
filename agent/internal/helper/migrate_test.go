@@ -10,7 +10,7 @@ import (
 
 func TestNeedsSessionMigration(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 
 	if !mgr.needsSessionMigration() {
@@ -27,7 +27,7 @@ func TestNeedsSessionMigration(t *testing.T) {
 
 func TestMigrateToSessionsCreatesLayout(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := New(context.Background(), "", nil, "")
+	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
