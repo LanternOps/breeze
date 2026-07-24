@@ -120,6 +120,41 @@ func TestFailedKillRetentionEndsAtDeadlineWhenLivenessUnknown(t *testing.T) {
 	}
 }
 
+func TestFailedKillRetentionEndsAtDeadlineEvenWhenPIDStillAlive(t *testing.T) {
+	b := New("retain-cap-alive-"+t.Name(), nil)
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	// The probe keeps reporting the PID alive — e.g. a stuck/un-killable helper
+	// or a reused PID. The hard deadline cap must still release the key so it
+	// can never wedge (the "guaranteed to end" invariant, #2530).
+	liveness := &pidLivenessStub{alive: true, known: true}
+	b.helperKeyPIDAliveFn = liveness.probe
+
+	base := time.Unix(1_700_000_000, 0)
+	nowVal := base
+	b.nowFn = func() time.Time { return nowVal }
+
+	m, spawner := scheduledOwnerWithFailedKill(t, b, key, 4050)
+
+	nowVal = base.Add(b.helperKeyRetentionTTL - time.Second)
+	if !b.helperKeySpawnBlocked(key) {
+		t.Fatal("a live retained PID must block respawn before the cap")
+	}
+	m.spawnKey(key)
+	if got := spawner.SpawnCount(key); got != 0 {
+		t.Fatalf("respawn fired before deadline cap: spawn count = %d, want 0", got)
+	}
+
+	// Past the cap, retention ends regardless of the still-alive probe.
+	nowVal = base.Add(b.helperKeyRetentionTTL + time.Second)
+	if b.helperKeySpawnBlocked(key) {
+		t.Fatal("deadline cap must release the key even while the PID reports alive")
+	}
+	m.spawnKey(key)
+	if got := spawner.SpawnCount(key); got != 1 {
+		t.Fatalf("respawn after deadline cap: spawn count = %d, want 1", got)
+	}
+}
+
 func TestFailedKillRetentionYieldsToFreshAuthenticatedOwner(t *testing.T) {
 	b := New("retain-fresh-owner-"+t.Name(), nil)
 	key := HelperKey{WindowsSessionID: 7, Role: "system"}

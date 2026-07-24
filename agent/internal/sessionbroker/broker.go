@@ -323,16 +323,16 @@ type Broker struct {
 	helperKeyPIDAliveFn func(pid uint32) (alive, known bool)
 }
 
-// helperKillRetentionTTL caps how long a helper key stays owned after a failed
-// kill when the original PID's liveness cannot be determined. Sized well above
-// the reconcile interval (30s) so a genuinely dying process has time to exit
-// and self-clear retention early, while still guaranteeing the key is released
-// if liveness can never be observed.
+// helperKillRetentionTTL is the hard cap on how long a helper key stays owned
+// after a failed kill. Sized well above the reconcile interval (30s) so a
+// genuinely dying process has time to exit and self-clear retention early,
+// while still guaranteeing the key is released even if the PID stays alive,
+// becomes unprobeable, or is reused.
 const helperKillRetentionTTL = 5 * time.Minute
 
 // retainedHelperKey is a bounded record that a failed kill left a helper PID
 // possibly alive, so a respawn for this key must be blocked until the PID is
-// confirmed dead or (when liveness is indeterminate) the deadline elapses.
+// confirmed dead or the deadline cap elapses, whichever comes first.
 type retainedHelperKey struct {
 	pid      uint32
 	deadline time.Time
@@ -675,41 +675,50 @@ func (b *Broker) retainHelperKeyOwnership(key HelperKey, pid int) {
 
 // helperKeySpawnBlocked reports whether a proactive respawn of key must be
 // withheld: either an authenticated helper currently owns it, or a bounded
-// post-kill retention window is still active. It self-clears retention when the
-// PID is confirmed dead, when a live authenticated owner exists, or (for
-// indeterminate liveness) once the deadline has elapsed — so retention is
-// always guaranteed to end and can never wedge the key.
+// post-kill retention window is still active.
+//
+// The deadline is a HARD cap: once it elapses, retention ends regardless of
+// liveness. That is the "guaranteed to end" half of the invariant — a stuck,
+// un-probeable, or PID-reused process can never extend retention forever, so
+// the key can never wedge. Within the cap, a confirmed-dead PID clears
+// retention EARLY so a legitimately terminated helper can be replaced promptly;
+// otherwise (PID alive, or liveness indeterminate) we fail closed and block.
 func (b *Broker) helperKeySpawnBlocked(key HelperKey) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.helperByKey[key] != nil {
 		// A live helper owns the key; any stale retention is irrelevant.
 		delete(b.helperKeyRetention, key)
+		b.mu.Unlock()
 		return true
 	}
 	entry, ok := b.helperKeyRetention[key]
 	if !ok {
+		b.mu.Unlock()
 		return false
 	}
-	alive, known := b.helperKeyPIDAlive(entry.pid)
-	if known {
-		if alive {
-			// The original process is provably still running, so blocking the
-			// respawn is exactly right — and this is not a wedge: the entry
-			// clears the moment the PID dies.
-			return true
-		}
-		// Confirmed dead: safe to respawn now.
+	if !b.now().Before(entry.deadline) {
 		delete(b.helperKeyRetention, key)
+		b.mu.Unlock()
 		return false
 	}
-	// Liveness indeterminate: fail closed, but only until the deadline cap so
-	// retention cannot outlive a process we can never observe.
-	if b.now().Before(entry.deadline) {
-		return true
+	b.mu.Unlock()
+
+	// Probe liveness OUTSIDE b.mu, mirroring TerminateHelperKey, which never
+	// holds the broker lock across a process syscall. Only a CONFIRMED-dead PID
+	// clears retention early; alive or indeterminate keeps it blocked until the
+	// cap checked above.
+	alive, known := b.helperKeyPIDAlive(entry.pid)
+	if known && !alive {
+		b.mu.Lock()
+		// Re-check identity: only drop the entry we probed, never a newer one
+		// installed by a retention that replaced it between unlock and relock.
+		if cur, ok := b.helperKeyRetention[key]; ok && cur.pid == entry.pid && cur.deadline.Equal(entry.deadline) {
+			delete(b.helperKeyRetention, key)
+		}
+		b.mu.Unlock()
+		return false
 	}
-	delete(b.helperKeyRetention, key)
-	return false
+	return true
 }
 
 func (b *Broker) currentListener() net.Listener {
@@ -2311,8 +2320,8 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 			// followed by a proactive spawn and a duplicate (#2530). We now
 			// record a bounded retention window keyed on the surviving PID via
 			// retainHelperKeyOwnership; helperKeySpawnBlocked consults it at the
-			// spawn gate and self-clears it once the PID is confirmed dead (or,
-			// for indeterminate liveness, at a deadline cap). Do NOT instead
+			// spawn gate and clears it once the PID is confirmed dead or the
+			// deadline cap elapses, whichever comes first. Do NOT instead
 			// re-register this closed session in helperByKey: the session is
 			// closed immediately below, HasHelperKeyOwner does not filter closed
 			// owners, and nothing would ever clear the entry, so the key would
