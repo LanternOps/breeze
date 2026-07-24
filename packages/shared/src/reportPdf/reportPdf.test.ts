@@ -115,6 +115,40 @@ describe('buildReportPdf in Node (no DOM)', () => {
     expect(detailPage).toBeGreaterThan(continuationPage);
   });
 
+  it('spells out the RTP-on subset so one active device is not read as full coverage (issue #2517)', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      securityProducts: [
+        // Installed on 200, real-time protection on for only 1.
+        { product: 'Defender', category: 'antivirus', active: true, deviceCoverage: 200, activeDeviceCoverage: 1 },
+      ],
+    };
+    const doc = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('200 devices, 1 with real-time protection on');
+  });
+
+  it('omits the RTP subset note when every installed device is active', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      securityProducts: [
+        { product: 'SentinelOne', category: 'edr', active: true, deviceCoverage: 4, activeDeviceCoverage: 4 },
+      ],
+    };
+    const doc = buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('4 devices');
+    expect(text).not.toContain('with real-time protection on');
+  });
+
   it('continues a large product inventory across multiple ordered pages with page chrome', () => {
     const products = Array.from({ length: 80 }, (_, index) => ({
       product: `Security Product [${String(index + 1).padStart(3, '0')}]`,

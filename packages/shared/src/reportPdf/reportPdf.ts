@@ -960,6 +960,14 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
   const coverage = product.deviceCoverage != null
     ? ` — ${product.deviceCoverage} device${product.deviceCoverage === 1 ? '' : 's'}`
     : '';
+  // "Installed on N" reads as "protecting N". When only a subset of those devices
+  // are actually protecting (native AV with real-time protection on), spell that
+  // out so one RTP-on device can't imply full-fleet coverage (issue #2517).
+  const activeCount = product.activeDeviceCoverage;
+  const rtpNote =
+    product.deviceCoverage != null && activeCount != null && activeCount < product.deviceCoverage
+      ? `, ${activeCount} with real-time protection on`
+      : '';
   // Sync status is only interesting when it's a problem; success is machine
   // noise on a client-facing page.
   const syncOk = !product.lastSyncStatus || /^(ok|success|succeeded)$/i.test(product.lastSyncStatus);
@@ -970,9 +978,9 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
   set.fill(doc, product.active === false ? C.warning : C.success);
   doc.circle(PAGE.mx + 1.4, y - 1.2, 1.2, 'F');
   set.text(doc, C.ink);
-  doc.text(`${product.product}${cat}${coverage}`, PAGE.mx + 5, y);
+  doc.text(`${product.product}${cat}${coverage}${rtpNote}`, PAGE.mx + 5, y);
   if (sync || degraded) {
-    const baseW = doc.getTextWidth(`${product.product}${cat}${coverage}`);
+    const baseW = doc.getTextWidth(`${product.product}${cat}${coverage}${rtpNote}`);
     set.text(doc, C.warning);
     doc.text(`${sync}${degraded}`, PAGE.mx + 5 + baseW, y);
   }
