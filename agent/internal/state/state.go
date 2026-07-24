@@ -96,14 +96,31 @@ func Read(path string) (*AgentState, error) {
 	return &s, nil
 }
 
-// UpdateHeartbeat updates only the last_heartbeat field in the state file.
+// UpdateHeartbeat updates only the last_heartbeat field in the state file,
+// recreating the file if it has gone missing.
+//
+// The recreate path is load-bearing. This is read-modify-write, and without
+// it a single absent agent.state means the agent never records another
+// heartbeat for the entire life of the process — every call returns "state
+// file not found" and nothing ever puts the file back. The watchdog then
+// reads a permanently stale/absent heartbeat and restarts a perfectly healthy
+// agent until it burns the 24h budget (#2763). That is not hypothetical: on
+// the field endpoint the startup Write lost its rename to a sharing violation
+// (AV/EDR on ProgramData), so the file never existed and every subsequent
+// heartbeat logged "state file not found".
+//
+// PID is repopulated because the caller IS the agent process, and the
+// watchdog's process check is skipped entirely when PID is 0 — a recreated
+// file that omitted it would silently disable liveness checking. Status and
+// Version are left to the owning writer in agentapp; the watchdog does not
+// branch on them.
 func UpdateHeartbeat(path string, t time.Time) error {
 	s, err := Read(path)
 	if err != nil {
 		return err
 	}
 	if s == nil {
-		return fmt.Errorf("state file not found")
+		s = &AgentState{PID: os.Getpid()}
 	}
 	s.LastHeartbeat = t
 	s.Timestamp = time.Now()

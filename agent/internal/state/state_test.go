@@ -199,13 +199,22 @@ func TestUpdateHeartbeat(t *testing.T) {
 	}
 }
 
-func TestUpdateHeartbeatMissingFile(t *testing.T) {
+// Behavior change (#2763): UpdateHeartbeat used to return an error for a
+// missing state file and leave it missing. That error was decorative — the
+// only caller logs a warning and continues — while the real consequence was
+// permanent: read-modify-write with no create path meant the agent never
+// recorded another heartbeat for the life of the process, and the watchdog
+// restarted a healthy agent until it burned its 24h budget. It now recreates
+// the file; see TestUpdateHeartbeatRecreatesMissingFile for the contract.
+func TestUpdateHeartbeatMissingFileRecreatesRatherThanErroring(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent.state")
 
-	err := UpdateHeartbeat(path, time.Now())
-	if err == nil {
-		t.Fatal("UpdateHeartbeat on missing file should return error")
+	if err := UpdateHeartbeat(path, time.Now()); err != nil {
+		t.Fatalf("UpdateHeartbeat on a missing file must recreate it, got error: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("state file was not created: %v", err)
 	}
 }
 
@@ -296,5 +305,57 @@ func TestWritePersistentRenameFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
 		t.Errorf("tmp file should be removed after exhausting rename attempts")
+	}
+}
+
+// A missing agent.state must be recreated by UpdateHeartbeat, not error
+// forever. Without this, one lost file (AV/EDR quarantine, or a startup Write
+// that lost its rename to a sharing violation) means the agent never records
+// another heartbeat for the life of the process, and the watchdog restarts a
+// healthy agent until it burns its 24h budget (#2763).
+func TestUpdateHeartbeatRecreatesMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.state")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("precondition: state file should not exist")
+	}
+	hb := time.Now().Truncate(time.Second)
+	if err := UpdateHeartbeat(path, hb); err != nil {
+		t.Fatalf("UpdateHeartbeat on missing file: %v", err)
+	}
+	s, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read after recreate: %v", err)
+	}
+	if s == nil {
+		t.Fatal("state file was not recreated")
+	}
+	if !s.LastHeartbeat.Equal(hb) {
+		t.Fatalf("LastHeartbeat = %v, want %v", s.LastHeartbeat, hb)
+	}
+	if s.PID != os.Getpid() {
+		t.Fatalf("PID = %d, want %d (a zero PID silently disables the watchdog process check)", s.PID, os.Getpid())
+	}
+}
+
+// Recreating must never clobber fields of an existing file.
+func TestUpdateHeartbeatPreservesExistingFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.state")
+	orig := &AgentState{Status: StatusRunning, PID: 4242, Version: "9.9.9", Reason: ReasonUpdate}
+	if err := Write(path, orig); err != nil {
+		t.Fatalf("seed Write: %v", err)
+	}
+	hb := time.Now().Truncate(time.Second)
+	if err := UpdateHeartbeat(path, hb); err != nil {
+		t.Fatalf("UpdateHeartbeat: %v", err)
+	}
+	s, err := Read(path)
+	if err != nil || s == nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.Status != StatusRunning || s.PID != 4242 || s.Version != "9.9.9" || s.Reason != ReasonUpdate {
+		t.Fatalf("existing fields clobbered: %+v", s)
+	}
+	if !s.LastHeartbeat.Equal(hb) {
+		t.Fatalf("LastHeartbeat = %v, want %v", s.LastHeartbeat, hb)
 	}
 }
