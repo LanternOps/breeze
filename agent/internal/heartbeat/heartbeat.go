@@ -544,7 +544,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	go func() { <-h.stopChan; helperCancel() }()
 
 	if runtime.GOOS == "windows" && cfg.IsService {
-		h.helperMgr = helper.New(helperCtx, h.serverURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -572,7 +572,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// (the needsBroker block below), so a broker-backed headless spawn arm here
 		// would always be dead code; the user-role IPC spawn path is wired via the
 		// session broker after it exists.
-		h.helperMgr = helper.New(helperCtx, h.serverURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
