@@ -122,8 +122,13 @@ const namespaceDuplicateBaselines = {
     'backup.json': 60,
     // Contract-template format strings, French cognates, and locale-invariant
     // quote composer fields are intentionally identical to English.
-    'billing.json': 48,
-    'common.json': 95,
+    // +2: liveTotals "Total" is the identical French cognate (already accepted
+    // in fr-FR), and unassigned.qtyPrice "{{qty}} × {{price}}" is two
+    // interpolations plus a multiplication sign with no wording to translate.
+    'billing.json': 50,
+    // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
+    // acronym.
+    'common.json': 96,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,

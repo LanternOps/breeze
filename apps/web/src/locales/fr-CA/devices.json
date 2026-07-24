@@ -205,7 +205,11 @@
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "power": "Puissance",
     "shutdown": "Éteindre",
-    "deviceSettings": "Paramètres de l’appareil"
+    "deviceSettings": "Paramètres de l’appareil",
+    "gateHint": {
+      "liveSessionOnly": "{{reason}} — le terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent tout de même à la reconnexion.",
+      "allCommands": "{{reason}} — aucun agent n'est disponible pour exécuter des commandes."
+    }
   },
   "deviceActivityFeed": {
     "activity": "Activité",
@@ -1724,7 +1728,7 @@
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
     "toasts": {
-      "actionFailed": "Action échouée",
+      "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
@@ -1738,7 +1742,7 @@
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
-      "commandSent": "Commandement envoyé",
+      "commandSent": "{{action}} envoyé à {{hostname}}",
       "decommissionCancelled": "Mise hors service annulée",
       "decommissionFailed": "Échec de la mise hors service",
       "decommissioned": "Hors service",
@@ -1765,7 +1769,8 @@
       "unknownBulkAction": "Action en vrac inconnue",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
       "wakeTimeout": "Temps d’arrêt du réveil",
-      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont désaffectés — ils n'ont plus d'agent pour exécuter cette action."
+      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont désaffectés — ils n'ont plus d'agent pour exécuter cette action.",
+      "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",

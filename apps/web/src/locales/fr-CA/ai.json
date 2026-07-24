@@ -20,7 +20,21 @@
     "progressLabel": "Temps restant avant l’auto-rejet",
     "showParameters": "Paramètres de présentation",
     "approve": "Approuver",
-    "reject": "Rejeter"
+    "reject": "Rejeter",
+    "selfApproveTitle": "Votre approbation est requise",
+    "approveVerify": "Vérifier et approuver",
+    "verifying": "En attente de vérification…",
+    "deny": "Refuser",
+    "verificationFailed": "Échec de la vérification. Réessayez.",
+    "alreadyDecided": "Cette demande a déjà été traitée.",
+    "contentChanged": "Les détails de cette demande ont changé depuis sa création ; elle ne peut plus être approuvée.",
+    "expired": "Cette demande a expiré avant qu'une décision soit prise.",
+    "notSoleApprover": "Un autre approbateur est désormais requis — vous ne pouvez plus approuver votre propre demande.",
+    "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
+    "registerDevice": "Enregistrer cet appareil",
+    "decideFailed": "Impossible d'envoyer la décision",
+    "approvedToast": "Action approuvée",
+    "deniedToast": "Action refusée"
   },
   "aiChatInput": {
     "waiting": "En attente de réponse...",

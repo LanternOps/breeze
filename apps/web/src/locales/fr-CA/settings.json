@@ -1400,7 +1400,16 @@
     "registering": "Enregistrement...",
     "registerThisDevice": "Enregistrez cet appareil",
     "revoking": "Révoque...",
-    "revokeDevice": "Révoquer le appareil"
+    "revokeDevice": "Révoquer le appareil",
+    "incorrectCode": "Code incorrect.",
+    "incorrectPassword": "Mot de passe incorrect.",
+    "passkeyVerificationFailed": "Échec de la vérification de la clé d'accès — réessayez.",
+    "tooManyAttemptsTryAgainInAFewMinutes": "Trop de tentatives — réessayez dans quelques minutes.",
+    "verificationExpiredPleaseVerifyAgain": "Vérification expirée — veuillez vérifier à nouveau.",
+    "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d'accès ou votre code d'authentification — rechargez la page pour mettre à jour vos options.",
+    "pendingActivatesOnFirstApproval": "En attente — s'active dès la première approbation",
+    "sessionExpiredReloadAndTryAgain": "Session expirée — rechargez la page et réessayez.",
+    "registrationCancelled": "L'inscription a été annulée."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Réponses préfabriquées",
@@ -3122,7 +3131,8 @@
       "invite": "Inviter l’utilisateur",
       "resendInvite": "Réenvoyer l’invitation",
       "manageMobileDevices": "Gérez les appareils mobiles de cet utilisateur",
-      "devices": "Appareils"
+      "devices": "Appareils",
+      "resetMfa": "Réinitialiser MFA"
     },
     "searchLabel": "Rechercher des utilisateurs",
     "searchPlaceholder": "Rechercher par nom, courriel ou rôle",
@@ -3149,7 +3159,8 @@
     "actions": {
       "tryAgain": "Réessayer",
       "saveChanges": "Enregistrer les modifications",
-      "removing": "Enlèvement..."
+      "removing": "Enlèvement...",
+      "resetting": "Réinitialisation..."
     },
     "errors": {
       "fetchUsers": "Impossible de récupérer les utilisateurs",
@@ -3158,7 +3169,8 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "updateUser": "Impossible de mettre à jour l’utilisateur",
       "updateRole": "Impossible de mettre à jour le rôle",
-      "removeUser": "Impossible de supprimer l’utilisateur"
+      "removeUser": "Impossible de supprimer l’utilisateur",
+      "resetMfa": "Impossible de réinitialiser MFA"
     },
     "invite": {
       "title": "Inviter l’utilisateur",
@@ -3183,7 +3195,19 @@
       "inviteManual": "Invitation créée pour {{email}}, mais le courriel n’a pas pu être envoyé. Copiez le lien d’invitation pour le transmettre manuellement.",
       "inviteSent": "Invitation envoyée à {{email}}",
       "copied": "Copié !",
-      "copyLink": "Copier le lien"
+      "copyLink": "Copier le lien",
+      "mfaReset": "MFA réinitialisé pour {{email}}"
+    },
+    "resetMfa": {
+      "title": "Réinitialiser MFA ?",
+      "messagePrefix": "Cela supprime le deuxième facteur pour",
+      "messageSuffix": " Ils se connecteront avec leur seul mot de passe, seront invités à reconfigurer MFA, et toutes les sessions actives seront déconnectées.",
+      "confirm": "Réinitialiser MFA"
     }
+  },
+  "stepUpPrompt": {
+    "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d'accès (Touch ID / Windows Hello) lors de l'enregistrement.",
+    "authenticatorCode": "Code d'authentification",
+    "confirmYourPassword": "Confirmez votre mot de passe"
   }
 }

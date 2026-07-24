@@ -28,7 +28,16 @@
     "session": "Session :",
     "tier3ApprovalHistory": "Historique des approbations de niveau 3",
     "toolInput": "Entrée d’outil",
-    "wait": "Attends :"
+    "wait": "Attends :",
+    "tempPasswordAlreadyRevealed": "Le mot de passe temporaire a déjà été révélé.",
+    "tempPasswordCopied": "Copié",
+    "tempPasswordCopy": "Copier",
+    "tempPasswordExpired": "Le mot de passe temporaire a expiré sans avoir été révélé.",
+    "tempPasswordForbidden": "Seul le technicien qui a demandé cette réinitialisation peut révéler le mot de passe.",
+    "tempPasswordReveal": "Révéler le mot de passe temporaire",
+    "tempPasswordRevealFailed": "Impossible de révéler le mot de passe temporaire",
+    "tempPasswordShownOnce": "Enregistrez-le maintenant — il ne sera plus affiché. L'utilisateur devra le changer à sa prochaine connexion.",
+    "tempPasswordTitle": "Mot de passe temporaire"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Limites de débit de filtre...",

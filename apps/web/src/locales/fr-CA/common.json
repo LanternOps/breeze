@@ -207,7 +207,13 @@
     "stats": {
       "totalDevices": "Nombre total d’appareils",
       "warnings": "Avertissements",
-      "critical": "Critique"
+      "critical": "Critique",
+      "openTickets": "Tickets ouverts",
+      "unassignedCount": "{{count}} non assignés",
+      "unassignedCount_one": "{{count}} non assigné",
+      "unassignedCount_other": "{{count}} non assignés",
+      "patchCompliance": "Conformité aux correctifs",
+      "loadFailed": "Impossible de charger"
     },
     "emptyDevices": {
       "title": "Aucun appareil enregistré pour l’instant",
@@ -219,7 +225,8 @@
       "onlineCount": "{{online}}/{{total}} en ligne",
       "allOnline": "Tous les appareils en ligne",
       "healthy": "Votre flotte est en bonne santé",
-      "viewOffline": "Voir tous les {{count}} hors ligne"
+      "viewOffline": "Voir tous les {{count}} hors ligne",
+      "other": "Autres"
     },
     "activity": {
       "title": "Activités récentes",
@@ -294,7 +301,51 @@
         "30d": "30 derniers jours"
       },
       "defaultPerRole": "Tableau de bord par défaut par rôle"
-    }
+    },
+    "attention": {
+      "title": "Besoin d'attention"
+    },
+    "security": {
+      "title": "Posture de sécurité",
+      "good": "En bonne santé",
+      "fair": "Besoin d'attention",
+      "poor": "À risque",
+      "empty": "Aucune donnée de sécurité pour l'instant",
+      "trendLabel": "Tendance du score sur 30 jours",
+      "atRiskCount": "{{count}} appareils à risque",
+      "atRiskCount_one": "{{count}} appareil à risque",
+      "atRiskCount_other": "{{count}} appareils à risque",
+      "threatsCount": "{{count}} menaces actives",
+      "threatsCount_one": "{{count}} menace active",
+      "threatsCount_other": "{{count}} menaces actives"
+    },
+    "patch": {
+      "title": "Conformité aux correctifs",
+      "installed": "Installé",
+      "failed": "Échec",
+      "devicesCompliant": "{{compliant}} appareils sur {{total}} entièrement patchés",
+      "criticalPending": "{{count}} correctifs critiques en attente",
+      "criticalPending_one": "{{count}} correctif critique en attente",
+      "criticalPending_other": "{{count}} correctifs critiques en attente",
+      "empty": "Aucune donnée de correctifs pour l'instant"
+    },
+    "vuln": {
+      "title": "Vulnérabilités",
+      "criticalOpen": "Critiques ouvertes",
+      "kev": "Exploitation connue",
+      "patchReady": "Correctif disponible",
+      "totalOpen": "{{count}} constats ouverts",
+      "totalOpen_one": "{{count}} constat ouvert",
+      "totalOpen_other": "{{count}} constats ouverts",
+      "allClear": "Aucune vulnérabilité ouverte",
+      "kevCves": "{{count}} CVE",
+      "kevCves_one": "{{count}} CVE",
+      "kevCves_other": "{{count}} CVE",
+      "kevDevices": "{{count}} appareils",
+      "kevDevices_one": "{{count}} appareil",
+      "kevDevices_other": "{{count}} appareils"
+    },
+    "refreshFailed": "Impossible d'actualiser — affichage de données plus anciennes"
   },
   "filters": {
     "advanced": "Filtre avancé",

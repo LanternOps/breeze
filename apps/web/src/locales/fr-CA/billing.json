@@ -469,14 +469,21 @@
         "sectionActions": "Actions de la section",
         "showCostMargin": "Afficher coût et marge",
         "uploadAddImage": "Téléverser et ajouter l'image",
-        "uploading": "Téléversement…"
+        "uploading": "Téléversement…",
+        "collapseSection": "Réduire la section",
+        "dragLine": "Glisser pour réordonner la ligne",
+        "dragLineTitle": "Glisser pour réordonner dans ce tableau. Clavier : utilisez Monter la ligne / Descendre la ligne dans le menu de la ligne.",
+        "expandSection": "Développer la section",
+        "tidyAllDescriptions": "Nettoyer toutes les descriptions"
       },
       "addLine": {
         "catalogItem": "Article du catalogue",
         "manualLine": "Ligne manuelle",
-        "moreWays": "Plus de façons d'ajouter (catalogue, recherche IA, détails)",
         "searchDistributor": "Rechercher un distributeur",
-        "searchPax8": "Rechercher Pax8"
+        "searchPax8": "Rechercher Pax8",
+        "addFromCatalog": "Ajouter depuis le catalogue",
+        "aiLookupAction": "Recherche IA",
+        "moreDetails": "Plus de détails"
       },
       "addSection": {
         "captionPlaceholder": "Légende (facultatif)",
@@ -621,7 +628,15 @@
         "saveToCatalog": "Enregistrer dans le catalogue",
         "sku": "SKU",
         "skuOptional": "SKU (facultatif)",
-        "unitCost": "Coût unitaire"
+        "unitCost": "Coût unitaire",
+        "costMissingAria": "Coût non saisi — cette ligne est exclue de l'estimation du profit.",
+        "noCost": "Sans coût",
+        "noCostHelp": "Indiquez que cette ligne n'a délibérément aucun coût (p. ex. main-d'œuvre ou service) — elle est alors exclue de l'avertissement de coût manquant.",
+        "partNumberHelp": "Le numéro de pièce du fabricant pour cet article.",
+        "showLess": "Afficher moins",
+        "showMore": "Afficher plus",
+        "skuHelp": "Votre numéro d'article de catalogue ou de distributeur pour cet article.",
+        "tidyWithAi": "Nettoyer avec l'IA"
       },
       "liveTotals": {
         "annualRecurring": "Récurrent annuel",
@@ -634,7 +649,10 @@
         "tax": "Taxe",
         "taxRate": "Taux de taxe",
         "taxRateHelp": "S'applique aux lignes marquées taxables. Défini dans les paramètres fiscaux de l'organisation.",
-        "title": "Totaux en direct"
+        "title": "Totaux en direct",
+        "firstPeriodSubtotal": "Sous-total de la première période",
+        "subtotal": "Sous-total",
+        "total": "Total"
       },
       "recurrence": {
         "annual": "Annuel",
@@ -677,7 +695,10 @@
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
         "total": "Total",
-        "unitPrice": "Prix unitaire"
+        "unitPrice": "Prix unitaire",
+        "collapsedSummary": "{{count}} lignes · {{amount}}",
+        "collapsedSummary_one": "{{count}} ligne · {{amount}}",
+        "collapsedSummary_other": "{{count}} lignes · {{amount}}"
       },
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
@@ -728,6 +749,51 @@
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
         "placeholder": "Saisissez le nom de l'article…"
+      },
+      "bulk": {
+        "applied_one": "{{count}} ligne mise à jour.",
+        "applied_other": "{{count}} lignes mises à jour.",
+        "apply": "Appliquer",
+        "barAria": "Modifier en bloc les lignes sélectionnées",
+        "clearSelection": "Effacer la sélection",
+        "invalidMarkup": "Saisissez un pourcentage de marge valide.",
+        "markupHint": "S'applique aux lignes sélectionnées ayant un coût.",
+        "partialFailure": "{{failed}} des {{total}} lignes n'ont pas pu être mises à jour.",
+        "selectAllAria": "Sélectionner toutes les lignes dans {{label}}",
+        "selectLineAria": "Sélectionner {{name}}",
+        "selectedCount_one": "{{count}} ligne sélectionnée",
+        "selectedCount_other": "{{count}} lignes sélectionnées",
+        "setCost": "Définir le coût",
+        "setMarkup": "Définir la marge %",
+        "skippedNoCost_one": "{{count}} ligne sans coût ignorée.",
+        "skippedNoCost_other": "{{count}} lignes sans coût ignorées.",
+        "taxableOff": "Non taxable",
+        "taxableOn": "Taxable"
+      },
+      "lastSaved": {
+        "saved": "Enregistré {{time}}",
+        "saving": "Enregistrement…"
+      },
+      "outline": {
+        "aria": "Contenu du devis",
+        "shortcutHint": "Alt+Bas / Alt+Haut passe à la section suivante ou précédente pendant l'édition.",
+        "title": "Table des matières"
+      },
+      "tidyAll": {
+        "complete": "Révision de {{count}} description(s) terminée.",
+        "noDescriptions": "Aucune description de ligne à nettoyer dans cette section."
+      },
+      "undo": {
+        "lineDeleted": "Ligne supprimée",
+        "sectionDeleted": "Section supprimée"
+      },
+      "unassigned": {
+        "explainer": "Ces lignes ne figurent dans aucune section de prix, mais elles apparaissent quand même sur le devis du client et comptent dans ses totaux. Déplacez chacune vers une section de prix pour contrôler son emplacement.",
+        "moveAria": "Déplacer {{line}} vers une section de prix",
+        "movePlaceholder": "Déplacer vers…",
+        "noTargets": "Ajoutez une section de prix, puis déplacez ces lignes vers celle-ci.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Lignes non affectées"
       }
     },
     "actions": {
