@@ -3,6 +3,7 @@ package helper
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -133,19 +134,52 @@ func removeAutoStart() error {
 	return nil
 }
 
-func stopByPID(pid int) error {
+// stopByPIDIfOurs terminates pid only if it is a Breeze helper process, using a
+// SINGLE process handle for both the image-path check and the kill.
+//
+// This closes the PID-reuse TOCTOU (#2531) that existed when the caller ran
+// isOurProcess() (one OpenProcess to check the image) and then stopByPID()
+// (a second OpenProcess to terminate) as two separate syscalls on a bare PID.
+// A Windows handle pins the exact kernel process object, so once we have opened
+// the PID nothing can redirect our TerminateProcess to a different process:
+//   - if the helper exits and Windows recycles the PID AFTER our OpenProcess,
+//     our handle still refers to the original (now-dead) process, so the
+//     terminate is a harmless no-op on the process we verified — never the
+//     unrelated process that inherited the number;
+//   - if the PID was already recycled BEFORE our OpenProcess, the image-path
+//     check on this handle fails and we terminate nothing.
+//
+// Returns (true, nil) when the process was ours and was terminated, (false, nil)
+// when the pid is gone or is not a helper, and (false, err) when a confirmed
+// helper could not be terminated.
+func stopByPIDIfOurs(pid int, binaryPath string) (bool, error) {
 	if pid <= 0 {
-		return fmt.Errorf("invalid pid %d", pid)
+		return false, nil
 	}
-	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	handle, err := windows.OpenProcess(
+		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
+		false, uint32(pid),
+	)
 	if err != nil {
-		return fmt.Errorf("OpenProcess(%d): %w", pid, err)
+		// Process is gone or inaccessible — nothing we can (or should) kill.
+		return false, nil
 	}
 	defer windows.CloseHandle(handle)
-	if err := windows.TerminateProcess(handle, 0); err != nil {
-		return fmt.Errorf("TerminateProcess(%d): %w", pid, err)
+
+	buf := make([]uint16, windows.MAX_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(handle, 0, &buf[0], &size); err != nil {
+		// Can't confirm identity on this handle — refuse to terminate.
+		return false, nil
 	}
-	return nil
+	exePath := windows.UTF16ToString(buf[:size])
+	if !strings.EqualFold(filepath.Clean(exePath), filepath.Clean(binaryPath)) {
+		return false, nil
+	}
+	if err := windows.TerminateProcess(handle, 0); err != nil {
+		return false, fmt.Errorf("TerminateProcess(%d): %w", pid, err)
+	}
+	return true, nil
 }
 
 func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
