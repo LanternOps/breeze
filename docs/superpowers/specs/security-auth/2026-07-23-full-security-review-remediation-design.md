@@ -1,7 +1,7 @@
 # Full Security Review Remediation Design
 
 - **Date:** 2026-07-23
-- **Status:** Draft — design approved; written-spec review pending
+- **Status:** Approved for implementation planning
 - **Source:** `internal/security-reviews/2026-07-23-full-security-review.md`
 - **Original review baseline:** `d137f5d2826226548e324236995409b08755d785`
 - **Revalidated planning baseline:** `6ddee2cc53db9f0fad55f63295a8144305127fac`
