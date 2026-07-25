@@ -59,12 +59,28 @@ function toastBus(): ToastBus {
   return created;
 }
 
+// Queueing while no container is mounted is LEGITIMATE (flush-on-mount, #720)
+// — so queueing itself must not warn. But an unbounded queue is how #2014 stayed
+// invisible: toasts piled up forever with no signal until a QA sweep noticed the
+// missing feedback. A queue this deep means nothing is draining it, which is
+// never normal, so cap it and say so out loud.
+const MAX_PENDING_TOASTS = 50;
+
 export function showToast(toast: Omit<ToastData, 'id'>) {
   const bus = toastBus();
   if (bus.emit) {
     bus.emit(toast);
-  } else {
-    bus.pending.push(toast);
+    return;
+  }
+  bus.pending.push(toast);
+  if (bus.pending.length > MAX_PENDING_TOASTS) {
+    const dropped = bus.pending.shift();
+    console.warn(
+      `[Toast] ${MAX_PENDING_TOASTS}+ toasts queued with no ToastContainer registered — ` +
+        'nothing is draining the queue, so action feedback is being lost. ' +
+        'Is <ToastContainer /> mounted on this page (see DashboardLayout.astro)? ' +
+        `Dropped oldest: ${dropped?.message ?? '(unknown)'}`
+    );
   }
 }
 

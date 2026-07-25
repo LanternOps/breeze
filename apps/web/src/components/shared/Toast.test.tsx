@@ -185,60 +185,151 @@ describe('ToastContainer', () => {
     }
   });
 
-  // These two run LAST on purpose: they call vi.resetModules(), which perturbs the
-  // module registry for the remainder of the file. Keeping them at the end means
-  // no other case can inherit a re-evaluated module copy.
-  it('delivers a toast when showToast and ToastContainer come from DUPLICATED copies of this module (#2014 Astro-island module graphs)', async () => {
-    // Reproduces the dev-server failure mode directly: `vi.resetModules()` clears
-    // the module registry, so the dynamic import below re-evaluates Toast.tsx and
-    // hands back a genuinely separate module instance — the same split Astro 7 /
-    // Vite 8 dev produces when two islands each get their own module graph.
-    // Pre-fix, the container registered into copy B's module-scope `addToastFn`
-    // while showToast pushed into copy A's `pendingToasts`, and nothing ever
-    // drained it: the toast was silently swallowed. The globalThis-keyed bus makes
-    // both copies talk to the same emitter slot.
-    vi.resetModules();
-    const duplicate = await import('./Toast');
+  it('caps the pre-mount queue and warns instead of growing it forever when nothing drains', async () => {
+    // Queueing with no container mounted is legitimate (flush-on-mount, #720), so
+    // it must stay silent. But a queue this deep means nothing is draining it —
+    // the silent-forever version of that is what let #2014 hide until a manual QA
+    // sweep caught it. Cap + warn so the next occurrence announces itself.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // Guard the guard: if the re-import ever starts returning the cached instance
-    // this test would pass vacuously and stop protecting anything.
-    expect(duplicate.default).not.toBe(ToastContainer);
+    for (let i = 0; i < 50; i++) {
+      showToast({ type: 'success', message: `queued-${i}` });
+    }
+    expect(warn).not.toHaveBeenCalled(); // at the cap, still silent
 
-    const DuplicatedContainer = duplicate.default;
-    render(<DuplicatedContainer />);
+    showToast({ type: 'success', message: 'queued-50' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/no ToastContainer registered/);
 
-    act(() => {
-      // Emitter from the ORIGINAL copy; container from the duplicate.
-      showToast({ type: 'success', message: 'cross-module-emit' });
-    });
-
+    // Oldest was dropped, newest retained, depth held at the cap.
+    render(<ToastContainer />);
     await waitFor(() => {
-      expect(screen.getByText('cross-module-emit')).toBeInTheDocument();
+      expect(screen.getAllByTestId('toast')).toHaveLength(50);
     });
-    expect(screen.getAllByTestId('toast')).toHaveLength(1);
+    expect(screen.queryByText('queued-0')).not.toBeInTheDocument();
+    expect(screen.getByText('queued-50')).toBeInTheDocument();
 
-    // The duplicate's reset must clear the same shared bus the original sees.
-    duplicate._resetToastQueueForTests();
+    warn.mockRestore();
   });
 
-  it('drains a pre-mount queued toast across duplicated module copies (#2014 queue half of the split)', async () => {
-    // The other half of the same split: the toast is queued BEFORE any container
-    // exists, then the container mounts from a different module copy. Pre-fix the
-    // queue and the drain lived in two different arrays, so the drain found
-    // nothing.
-    showToast({ type: 'error', message: 'queued-across-copies' });
-
-    vi.resetModules();
-    const duplicate = await import('./Toast');
-    const DuplicatedContainer = duplicate.default;
-
-    render(<DuplicatedContainer />);
-
-    await waitFor(() => {
-      expect(screen.getByText('queued-across-copies')).toBeInTheDocument();
+  // Nested so the registry churn is CONTAINED rather than merely "last in the
+  // file": vi.resetModules() perturbs the module registry for everything after
+  // it, and a comment is not enforcement — anyone appending a case below would
+  // silently inherit a re-evaluated copy. The afterEach here resets the registry
+  // back so that can't happen.
+  describe('module duplication across Astro islands (#2014)', () => {
+    afterEach(() => {
+      vi.resetModules();
     });
-    expect(screen.getByTestId('toast')).toHaveAttribute('role', 'alert');
 
-    duplicate._resetToastQueueForTests();
+    // Helper: a genuinely separate evaluation of this module, with the
+    // anti-vacuity check baked in so no case can forget it. If the re-import ever
+    // starts handing back the cached instance, every test here fails loudly
+    // instead of silently degenerating into a same-copy duplicate.
+    async function loadDuplicateModule() {
+      vi.resetModules();
+      const duplicate = await import('./Toast');
+      expect(duplicate.default).not.toBe(ToastContainer);
+      return duplicate;
+    }
+
+    it('delivers a live toast when showToast and ToastContainer come from DUPLICATED copies of this module', async () => {
+      // Reproduces the dev-server failure mode directly: the duplicate is a
+      // genuinely separate evaluation of Toast.tsx — the same split Astro 7 /
+      // Vite 8 dev produces when two islands each get their own module graph.
+      // Pre-fix, the container registered into copy B's module-scope `addToastFn`
+      // while showToast pushed into copy A's `pendingToasts`, and nothing ever
+      // drained it: the toast was silently swallowed. The globalThis-keyed bus
+      // makes both copies talk to the same emitter slot.
+      const duplicate = await loadDuplicateModule();
+
+      const DuplicatedContainer = duplicate.default;
+      render(<DuplicatedContainer />);
+
+      act(() => {
+        // Emitter from the ORIGINAL copy; container from the duplicate.
+        showToast({ type: 'success', message: 'cross-module-emit' });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('cross-module-emit')).toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('toast')).toHaveLength(1);
+
+      // The duplicate's reset must clear the same shared bus the original sees.
+      duplicate._resetToastQueueForTests();
+    });
+
+    it('drains a pre-mount queued toast across duplicated module copies (queue half of the split)', async () => {
+      // The other half of the same split: the toast is queued BEFORE any container
+      // exists, then the container mounts from a different module copy. Pre-fix the
+      // queue and the drain lived in two different arrays, so the drain found
+      // nothing.
+      showToast({ type: 'error', message: 'queued-across-copies' });
+
+      const duplicate = await loadDuplicateModule();
+      const DuplicatedContainer = duplicate.default;
+
+      render(<DuplicatedContainer />);
+
+      await waitFor(() => {
+        expect(screen.getByText('queued-across-copies')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('toast')).toHaveAttribute('role', 'alert');
+
+      duplicate._resetToastQueueForTests();
+    });
+
+    it('renders exactly ONE toast when containers from two different module copies are both mounted (#1301 must not regress)', async () => {
+      // The case that justifies this whole design choice. Sharing the emitter
+      // across module copies is only safe if it stays a single OVERWRITABLE slot:
+      // had the fix used a window CustomEvent bus, each copy's container would
+      // have added its own listener and a single emit would paint two toasts —
+      // exactly the #1301 duplicate-toast report. Two containers from two
+      // different copies + one emit must still be one toast.
+      const duplicate = await loadDuplicateModule();
+      const DuplicatedContainer = duplicate.default;
+
+      render(<ToastContainer />);
+      render(<DuplicatedContainer />);
+
+      act(() => {
+        showToast({ type: 'success', message: 'one-toast-across-copies' });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('one-toast-across-copies')).toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('toast')).toHaveLength(1);
+
+      duplicate._resetToastQueueForTests();
+    });
+
+    it('keeps the surviving container registered when a container from the OTHER module copy unmounts', async () => {
+      // Cross-copy version of the cleanup guard: the unmounting container must
+      // only clear the shared slot if it still owns it. If copy A's cleanup
+      // unconditionally nulled the bus, copy B's live container would go deaf and
+      // every later toast would queue forever — the #2014 symptom re-introduced
+      // through the back door.
+      const duplicate = await loadDuplicateModule();
+      const DuplicatedContainer = duplicate.default;
+
+      const first = render(<ToastContainer />);
+      const second = render(<DuplicatedContainer />);
+
+      first.unmount();
+
+      act(() => {
+        showToast({ type: 'success', message: 'survives-other-copy-unmount' });
+      });
+
+      await waitFor(() => {
+        expect(
+          within(second.container).getByText('survives-other-copy-unmount')
+        ).toBeInTheDocument();
+      });
+
+      duplicate._resetToastQueueForTests();
+    });
   });
 });
