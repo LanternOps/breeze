@@ -100,10 +100,18 @@ export const listNetworkDevicesSchema = z.object({
 // command can enroll a whole batch; `ttlMinutes` is the operator's per-token
 // expiry choice (#2777).
 //
-// Bounds mirror the enrollment-keys installer routes exactly
-// (`installerQuerySchema` / `installerLinkSchema` in routes/enrollmentKeys.ts)
-// so the two paths cannot drift: 1..525_600 minutes (365 days) and
-// 1..1000 uses. The TTL is a security control on an enrollment credential —
+// The TTL bound is deliberately identical to the enrollment-keys installer
+// routes (`installerQuerySchema` / `installerLinkSchema` in
+// routes/enrollmentKeys.ts, both `MAX_TTL_MINUTES`) so the two paths cannot
+// drift: 1..525_600 minutes (365 days).
+//
+// The count bound is intentionally NOT the same. Those routes allow up to
+// 100_000 because they mint installer child keys for mass imaging; this route
+// hands back a token pasted into a shell, and it keeps the 1..1000 ceiling
+// #1108 gave it. Do not "align" the two — widening this one widens the blast
+// radius of a single leaked CLI token.
+//
+// The TTL is a security control on an enrollment credential —
 // the ceiling is enforced here, server-side, and is never taken from the
 // client. Out-of-range now *rejects* with 400 rather than silently clamping:
 // silent coercion is precisely what hid the CLI tab's stuck 60-minute default

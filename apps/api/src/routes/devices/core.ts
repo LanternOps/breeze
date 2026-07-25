@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '../../lib/validation';
+import { optionalJsonBody, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
@@ -277,16 +277,23 @@ function envInt(name: string, fallback: number): number {
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
 // shared secret; otherwise the short-lived key stands on its own.
 //
-// The body is optional: Hono's json validator leaves the parsed value as `{}`
-// when the request carries no `application/json` content-type, and every field
-// in onboardingTokenSchema is optional — so bodyless callers
-// (apps/web/.../setup/EnrollDeviceStep.tsx) keep working unchanged and fall
-// back to the deployment defaults below.
+// The body is optional and every field in onboardingTokenSchema is optional, so
+// bodyless callers (apps/web/.../setup/EnrollDeviceStep.tsx) keep working and
+// fall back to the deployment defaults below.
+//
+// `optionalJsonBody()` is load-bearing for that: `fetchWithAuth` stamps
+// `Content-Type: application/json` onto every non-FormData request even when
+// there is no body, and Hono's json validator 400s on `JSON.parse('')`. Without
+// it the setup wizard's enroll step breaks. See lib/validation.ts (#2777).
+//
+// Auth ordering is deliberate — scope, permission and MFA all run BEFORE any
+// body parsing, so an unauthorised caller can never reach the validator.
 coreRoutes.post(
   '/onboarding-token',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  optionalJsonBody(),
   zValidator('json', onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');

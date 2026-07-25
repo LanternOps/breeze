@@ -1022,10 +1022,17 @@ export default function AddDeviceModal({
                           max={1000}
                           value={cliDeviceCount}
                           onChange={(e) =>
+                            // Math.trunc matters now that the server rejects
+                            // instead of clamping (#2777): `type=number`
+                            // happily yields "2.5", and a fractional count
+                            // would come back as a 400 rather than the
+                            // silently floored value it used to produce.
                             setCliDeviceCount(
-                              Math.min(
-                                1000,
-                                Math.max(1, Number(e.target.value) || 1),
+                              Math.trunc(
+                                Math.min(
+                                  1000,
+                                  Math.max(1, Number(e.target.value) || 1),
+                                ),
                               ),
                             )
                           }

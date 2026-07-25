@@ -37,8 +37,54 @@
  */
 import { zValidator as baseZValidator } from '@hono/zod-validator';
 import type { Hook } from '@hono/zod-validator';
-import type { Context, Env, ValidationTargets } from 'hono';
+import type { Context, Env, MiddlewareHandler, ValidationTargets } from 'hono';
 import type { z } from 'zod';
+
+/**
+ * Mirrors Hono's own `jsonRegex` (hono/validator) so this middleware engages on
+ * exactly the requests the json validator would try to parse — no more, no less.
+ */
+const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
+
+/**
+ * Makes a JSON request body genuinely optional for `zValidator('json', …)`.
+ *
+ * Hono's json validator skips parsing entirely when there is no json
+ * content-type (leaving the validated value as `{}`), but if the content-type
+ * IS json it calls `c.req.json()` unconditionally — and `JSON.parse('')` throws,
+ * which Hono turns into a 400 `Malformed JSON in request body`.
+ *
+ * That combination bites any route whose body is optional, because the web
+ * client's `fetchWithAuth` (apps/web/src/stores/auth.ts) sets
+ * `Content-Type: application/json` on every non-FormData request — including
+ * ones sent with no body at all. Such a caller looks bodyless at the call site
+ * but arrives as "json content-type + empty body", i.e. the one shape that 400s.
+ * Routes that previously hand-rolled `await c.req.json().catch(() => ({}))`
+ * swallowed this; moving them onto `zValidator` reintroduces it (#2777).
+ *
+ * Mount this immediately before the json `zValidator` on any route whose body
+ * is optional. An empty (or whitespace-only) body is normalised to `{}` so the
+ * schema's own defaults/optionals apply; a non-empty body is left completely
+ * untouched, so genuinely malformed JSON still 400s as it should.
+ */
+export function optionalJsonBody(): MiddlewareHandler {
+  return async (c, next) => {
+    const contentType = c.req.header('content-type');
+    if (contentType && JSON_CONTENT_TYPE.test(contentType)) {
+      // Hono implements `json()` as `text().then(JSON.parse)` and memoises the
+      // text in `bodyCache`, so reading it here costs nothing extra downstream:
+      // the validator reuses this exact promise instead of re-reading the
+      // stream. `bodyCache.text` is typed as `string` but always holds a
+      // `Promise<string>` at runtime (Hono assigns `raw.text()` to it), hence
+      // the cast.
+      const text = await c.req.text();
+      if (text.trim() === '') {
+        c.req.bodyCache.text = Promise.resolve('{}') as unknown as string;
+      }
+    }
+    await next();
+  };
+}
 
 export type ValidationErrorBody = {
   error: string;

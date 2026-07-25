@@ -568,4 +568,33 @@ describe('AddDeviceModal', () => {
     });
     expect(screen.queryByTestId('cli-token-ttl-pending')).toBeNull();
   });
+
+  // The API now rejects a non-integer count instead of flooring it (#2777), and
+  // `<input type="number">` will hand us "2.5" quite happily. Truncating here
+  // keeps a stray decimal from turning into a 400 the operator can't explain.
+  it('truncates a fractional device count before sending it (#2777)', async () => {
+    await openCliTab();
+
+    const countInput = document.getElementById('cli-device-count') as HTMLInputElement;
+    fireEvent.change(countInput, { target: { value: '2.5' } });
+    expect(countInput.value).toBe('2');
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-two',
+        maxUsage: 2,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      })
+    );
+    fireEvent.click(screen.getByText('Generate new token'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        '/devices/onboarding-token',
+        expect.objectContaining({
+          body: JSON.stringify({ count: 2, ttlMinutes: 1440 }),
+        })
+      );
+    });
+  });
 });

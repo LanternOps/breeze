@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { formatZodError, zValidator } from './validation';
+import { formatZodError, optionalJsonBody, zValidator } from './validation';
 
 describe('zValidator wrapper (issue #2201)', () => {
   const schema = z
@@ -245,5 +245,86 @@ describe('formatZodError', () => {
     });
     expect(result.details.fieldErrors).toEqual({ value: ['Too small'] });
     expect(result.error).toBe('value: Too small');
+  });
+});
+
+describe('optionalJsonBody (issue #2777)', () => {
+  const schema = z
+    .object({
+      count: z.number().int().min(1).max(10).optional(),
+    })
+    .strict();
+
+  function makeApp() {
+    const app = new Hono();
+    app.post('/things', optionalJsonBody(), zValidator('json', schema), (c) => {
+      const { count } = c.req.valid('json');
+      return c.json({ count: count ?? 'default' });
+    });
+    return app;
+  }
+
+  // The shape apps/web's fetchWithAuth actually produces for a "bodyless"
+  // POST: it stamps a JSON content-type on every non-FormData request, so the
+  // body is empty but the validator still tries to JSON.parse it.
+  it('treats a json content-type with an empty body as {}', async () => {
+    const res = await makeApp().request('/things', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 'default' });
+  });
+
+  it('treats a whitespace-only body as {}', async () => {
+    const res = await makeApp().request('/things', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '   \n ',
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 'default' });
+  });
+
+  it('leaves a populated body untouched', async () => {
+    const res = await makeApp().request('/things', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ count: 3 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 3 });
+  });
+
+  // Normalising *empty* must not become "accept anything".
+  it('still rejects a malformed non-empty body', async () => {
+    const res = await makeApp().request('/things', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{oops',
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('still enforces the schema on a populated body', async () => {
+    const res = await makeApp().request('/things', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 99 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).details).toBeDefined();
+  });
+
+  it('is inert when there is no json content-type at all', async () => {
+    const res = await makeApp().request('/things', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 'default' });
   });
 });

@@ -209,6 +209,43 @@ describe('device routes', () => {
   });
 
   describe('POST /devices/onboarding-token', () => {
+    /**
+     * Arms the happy path: a site exists and the insert succeeds, so the route
+     * WOULD return 200 if it got that far.
+     *
+     * Every "rejects X" test below must call this first. Without it the shared
+     * beforeEach default leaves `db.select(...).limit()` resolving to `[]`, the
+     * route short-circuits on "No site found for this organization" — also a
+     * 400, also with no insert — and the assertion passes no matter what the
+     * validator does. That is not hypothetical: deleting `.strict()` from
+     * onboardingTokenSchema left all 26 tests green before this helper existed.
+     */
+    const armHappyPath = () => {
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+      return valuesMock;
+    };
+
+    /**
+     * Asserts the 400 came from the zod validator and not from some unrelated
+     * guard. `formatZodError` (lib/validation.ts) always emits `details`, which
+     * the route's own hand-written `{error: '…'}` responses never do.
+     */
+    const expectValidationRejection = async (res: Response, because: string) => {
+      expect(res.status, because).toBe(400);
+      const body = await res.json();
+      expect(body.details, `${because} — expected a zod validation body, got ${JSON.stringify(body)}`)
+        .toBeDefined();
+      expect(body.error).not.toContain('No site found');
+    };
+
     it('should require orgId for partner/system contexts with multiple accessible orgs', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -329,6 +366,39 @@ describe('device routes', () => {
       expect((await res.json()).token).toMatch(/^enroll_/);
     });
 
+    // The test above is NOT the shape the real bodyless caller sends. The web
+    // client's fetchWithAuth (apps/web/src/stores/auth.ts) sets
+    // `Content-Type: application/json` on every non-FormData request — even
+    // when there is no body at all — so EnrollDeviceStep's
+    // `fetchWithAuth('/devices/onboarding-token', { method: 'POST' })` arrives
+    // as json content-type + empty body. Hono's json validator then calls
+    // `c.req.json()`, which throws on an empty body and turns into a 400
+    // "Malformed JSON in request body". The pre-#2777 hand-rolled
+    // `c.req.json().catch(() => ({}))` swallowed exactly this, so the setup
+    // wizard must keep working.
+    it('accepts a json content-type with an empty body (#2777 regression)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).token).toMatch(/^enroll_/);
+      // Falls through to the deployment defaults, exactly as before.
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 1 }));
+    });
+
     it('defaults to a single-use token when no count is supplied (#1108)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
       const valuesMock = vi.fn().mockResolvedValue(undefined);
@@ -379,10 +449,12 @@ describe('device routes', () => {
     // #2777: the endpoint now runs onboardingTokenSchema. Out-of-range and
     // non-integer values are REJECTED rather than silently clamped/floored —
     // silent coercion is what let the web CLI tab sit on a stuck 60-minute
-    // token with no signal that the field was being ignored. Bounds mirror the
-    // enrollment-keys installer routes (1..1000 uses, 1..525_600 minutes).
+    // token with no signal that the field was being ignored. Bounds are
+    // 1..1000 uses (this route's own ceiling, from #1108) and 1..525_600
+    // minutes (shared with the enrollment-keys installer routes).
     it('rejects an out-of-range count instead of silently clamping it (#2777)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = armHappyPath();
 
       const res = await app.request('/devices/onboarding-token', {
         method: 'POST',
@@ -390,23 +462,24 @@ describe('device routes', () => {
         body: JSON.stringify({ count: 999999 })
       });
 
-      expect(res.status).toBe(400);
+      await expectValidationRejection(res, 'count=999999');
       // No key is minted when validation fails.
-      expect(db.insert).not.toHaveBeenCalled();
+      expect(valuesMock).not.toHaveBeenCalled();
     });
 
     it('rejects a zero/negative/garbage/non-integer count (#2777)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
       for (const badCount of [0, -5, 'abc', 1.5, null]) {
+        const valuesMock = armHappyPath();
         const res = await app.request('/devices/onboarding-token', {
           method: 'POST',
           headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
           body: JSON.stringify({ count: badCount })
         });
 
-        expect(res.status, `count=${String(badCount)} should be rejected`).toBe(400);
+        await expectValidationRejection(res, `count=${String(badCount)}`);
+        expect(valuesMock).not.toHaveBeenCalled();
       }
-      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('accepts the inclusive count/ttlMinutes boundaries (#2777)', async () => {
@@ -438,10 +511,75 @@ describe('device routes', () => {
       }
     });
 
+    // Mirrors the count guard above. Without this, `.min(1).int()` could be
+    // deleted from ttlMinutes and every other test would still pass: a 0 or
+    // negative TTL mints a key that is already expired on arrival, and a
+    // fractional one produces a nonsense expiry.
+    it('rejects a zero/negative/garbage/non-integer ttlMinutes (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      for (const ttlMinutes of [0, -60, 'abc', 1.5, null]) {
+        const valuesMock = armHappyPath();
+        const res = await app.request('/devices/onboarding-token', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ttlMinutes })
+        });
+
+        await expectValidationRejection(res, `ttlMinutes=${String(ttlMinutes)}`);
+        expect(valuesMock).not.toHaveBeenCalled();
+      }
+    });
+
+    // optionalJsonBody() normalises an EMPTY body to `{}`; it must not turn
+    // genuinely malformed JSON into a silent success.
+    it('still rejects a malformed non-empty JSON body (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = armHappyPath();
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: '{"count":'
+      });
+
+      // Hono raises this one as an HTTPException before the zod hook runs, so
+      // it has the plain-text shape rather than the formatZodError body.
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain('Malformed JSON');
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    // Inserting zValidator into the chain must not let an unauthenticated
+    // caller reach the body parser. Auth runs first, so a bad body from a
+    // rejected caller yields the auth failure — never a 400 that would confirm
+    // the endpoint's field names to someone with no credentials.
+    it('rejects unauthenticated callers before validating the body (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = armHappyPath();
+
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementation((c: any) =>
+        c.json({ error: 'Unauthorized' }, 401)
+      );
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer bad', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUses: 5, ttlMinutes: 99_999_999 })
+      });
+
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      // No zod detail, so nothing about the schema leaks pre-auth.
+      expect(body.details).toBeUndefined();
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
     // #945's lesson applied here: an unknown key must 400 rather than be
     // dropped while the response reports the default the caller never asked for.
     it('rejects unknown body keys (#2777, cf. #945)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = armHappyPath();
 
       const res = await app.request('/devices/onboarding-token', {
         method: 'POST',
@@ -449,8 +587,8 @@ describe('device routes', () => {
         body: JSON.stringify({ maxUses: 5, ttlMins: 1440 })
       });
 
-      expect(res.status).toBe(400);
-      expect(db.insert).not.toHaveBeenCalled();
+      await expectValidationRejection(res, 'unknown keys maxUses/ttlMins');
+      expect(valuesMock).not.toHaveBeenCalled();
     });
 
     it('defaults the token TTL to 60 minutes and honors a supplied ttlMinutes (#1108)', async () => {
@@ -499,12 +637,14 @@ describe('device routes', () => {
       // clamped to 525_600, which meant the caller could not distinguish
       // "you got what you asked for" from "we quietly substituted something
       // else" — the same blindness that hid the CLI tab's missing field.
+      valuesMock = captureExpiry();
       res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlMinutes: 99_999_999 })
       });
-      expect(res.status).toBe(400);
+      await expectValidationRejection(res, 'ttlMinutes=99_999_999');
+      expect(valuesMock).not.toHaveBeenCalled();
     });
 
     // The onboarding token is an enrollment credential, so its lifetime cannot
@@ -514,14 +654,15 @@ describe('device routes', () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
 
       for (const ttlMinutes of [525_601, 1_000_000, Number.MAX_SAFE_INTEGER]) {
+        const valuesMock = armHappyPath();
         const res = await app.request('/devices/onboarding-token', {
           method: 'POST',
           headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
           body: JSON.stringify({ ttlMinutes })
         });
-        expect(res.status, `ttlMinutes=${ttlMinutes} should be rejected`).toBe(400);
+        await expectValidationRejection(res, `ttlMinutes=${ttlMinutes}`);
+        expect(valuesMock).not.toHaveBeenCalled();
       }
-      expect(db.insert).not.toHaveBeenCalled();
     });
 
     // A misconfigured ENROLLMENT_KEY_DEFAULT_TTL_MINUTES must not be able to
