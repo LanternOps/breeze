@@ -6,6 +6,7 @@ import { partnerInventoryRoutes } from './inventory';
 import { partnerRelationshipRoutes } from './relationships';
 import { partnerConfigurationRoutes } from './configuration';
 import { partnerExportAuditMiddleware } from './audit';
+import { partnerEnrollmentKeyRoutes } from './enrollmentKeys';
 
 export const partnerApiRoutes = new Hono();
 
@@ -20,3 +21,4 @@ partnerApiRoutes.route('/', partnerDeviceRoutes);
 partnerApiRoutes.route('/', partnerInventoryRoutes);
 partnerApiRoutes.route('/', partnerRelationshipRoutes);
 partnerApiRoutes.route('/', partnerConfigurationRoutes);
+partnerApiRoutes.route('/', partnerEnrollmentKeyRoutes);
