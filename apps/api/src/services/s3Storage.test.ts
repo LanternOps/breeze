@@ -32,6 +32,13 @@ vi.mock('node:fs', () => ({
 
 const ORIGINAL_ENV = { ...process.env };
 
+// Every test here calls `vi.resetModules()` then `await import('./s3Storage')`,
+// so the first one to run pays the cold transform of the @aws-sdk/client-s3
+// graph. On a loaded machine that alone can exceed the 5s default and fail
+// whichever test happens to be first — nothing to do with the assertion. Give
+// the dynamic-import suites headroom instead of letting them flake.
+const IMPORT_TIMEOUT_MS = 30_000;
+
 // Sentry BREEZE-P: S3_ENDPOINT is operator-set (not per-tenant user input),
 // but a scheme-less value used to reach the SDK unmodified and fail opaquely
 // inside @smithy/core's endpoint resolver the first time S3 was used, instead
@@ -39,7 +46,7 @@ const ORIGINAL_ENV = { ...process.env };
 // a bare host ("s3.example.com") throws `TypeError: Invalid URL`, while
 // "minio.local:9000" parses into a URL with an empty host and fails later as
 // a connection error — see coerceS3EndpointUrl.
-describe('s3Storage getS3Client (via uploadBinary)', () => {
+describe('s3Storage getS3Client (via uploadBinary)', { timeout: IMPORT_TIMEOUT_MS }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
@@ -98,6 +105,43 @@ describe('s3Storage getS3Client (via uploadBinary)', () => {
     );
     expect(s3ClientCtorMock).not.toHaveBeenCalled();
   });
+
+  // `coerceS3EndpointUrl` quotes the offending value back in its message, and an
+  // S3-compatible endpoint can carry inline credentials. The upload route
+  // returns this error's text to the caller, so the client-facing variant must
+  // name the env var without echoing the value (#2794).
+  it('keeps inline endpoint credentials out of the client-facing message', async () => {
+    process.env.S3_ENDPOINT = 's3://AKIAIOSFODNN7EXAMPLE:sUp3r-s3cr3t@bucket.example.com';
+    const { uploadBinary, S3ConfigError } = await import('./s3Storage');
+
+    const err = (await uploadBinary('/tmp/binary', 'binaries/agent.bin').catch(
+      (e: unknown) => e,
+    )) as InstanceType<typeof S3ConfigError>;
+
+    expect(err).toBeInstanceOf(S3ConfigError);
+    expect(err.clientMessage).toMatch(/S3_ENDPOINT/);
+    expect(err.clientMessage).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+    expect(err.clientMessage).not.toMatch(/sUp3r-s3cr3t/);
+  });
+
+  // `message` is not returned to an API caller, but it does reach Sentry and
+  // any logger that prints `err.message`. Neither is a place for a secret, so
+  // the userinfo is stripped at construction — the rest of the bad value stays
+  // so the operator can still see what they typed wrong (#2794).
+  it('redacts inline endpoint credentials from the detailed message too', async () => {
+    process.env.S3_ENDPOINT = 's3://AKIAIOSFODNN7EXAMPLE:sUp3r-s3cr3t@bucket.example.com';
+    const { uploadBinary } = await import('./s3Storage');
+
+    const err = (await uploadBinary('/tmp/binary', 'binaries/agent.bin').catch(
+      (e: unknown) => e,
+    )) as Error;
+
+    expect(err.message).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+    expect(err.message).not.toMatch(/sUp3r-s3cr3t/);
+    // Still diagnosable: the env var, the redaction marker, and the host.
+    expect(err.message).toMatch(/Invalid S3_ENDPOINT env var/);
+    expect(err.message).toMatch(/s3:\/\/\*\*\*@bucket\.example\.com/);
+  });
 });
 
 // #2794: every object-storage fault used to propagate to the global error
@@ -105,7 +149,7 @@ describe('s3Storage getS3Client (via uploadBinary)', () => {
 // "Failed to upload version" with no path to a cause. These lock in the mapping
 // from the codes the SDK / Node net+TLS layers actually emit onto hints that
 // name the env var to fix.
-describe('classifyS3Failure', () => {
+describe('classifyS3Failure', { timeout: IMPORT_TIMEOUT_MS }, () => {
   /** An AWS SDK service error: code on `name`, message may echo request detail. */
   function awsError(name: string, extra: Record<string, unknown> = {}): Error {
     const err = new Error(`provider response mentioning ${name}`);
@@ -207,7 +251,7 @@ describe('classifyS3Failure', () => {
   });
 });
 
-describe('uploadBinary object-storage error handling', () => {
+describe('uploadBinary object-storage error handling', { timeout: IMPORT_TIMEOUT_MS }, () => {
   const FAKE_ACCESS_KEY = 'AKIAIOSFODNN7EXAMPLE';
   const FAKE_SECRET_KEY = 'wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY';
   let consoleErrorSpy: MockInstance<(...args: unknown[]) => void>;
@@ -287,6 +331,40 @@ describe('uploadBinary object-storage error handling', () => {
     // Final path segment is an operator-supplied filename => untrusted log input.
     expect(line).not.toContain('INJECTED-LOG-LINE');
     expect(line).not.toMatch(/[\n\r]/);
+  });
+
+  // The log line reports the endpoint so an operator can tell which storage
+  // target failed, and it derives that from `URL.host` precisely because host
+  // drops userinfo. An endpoint configured as `https://key:secret@host` must
+  // therefore log as the bare host (#2794).
+  it('logs only the endpoint host when S3_ENDPOINT carries inline credentials', async () => {
+    process.env.S3_ENDPOINT = 'https://AKIAIOSFODNN7EXAMPLE:sUp3r-s3cr3t@minio.internal.example:9000';
+    const { uploadBinary } = await import('./s3Storage');
+    s3SendMock.mockRejectedValueOnce(
+      Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+    );
+
+    await uploadBinary('/tmp/binary', 'software/org-1/cat-2/ver-3/setup.msi').catch(() => {});
+
+    const line = String(consoleErrorSpy.mock.calls[0]![0]);
+    expect(line).toContain('endpoint=minio.internal.example:9000');
+    expect(line).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(line).not.toContain('sUp3r-s3cr3t');
+  });
+
+  it('clamps S3_BUCKET so a stray newline cannot break the log line', async () => {
+    process.env.S3_BUCKET = 'binaries\nFAKE-LOG-LINE';
+    const { uploadBinary } = await import('./s3Storage');
+    s3SendMock.mockRejectedValueOnce(
+      Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+    );
+
+    await uploadBinary('/tmp/binary', 'software/org-1/cat-2/ver-3/setup.msi').catch(() => {});
+
+    const line = String(consoleErrorSpy.mock.calls[0]![0]);
+    expect(line).not.toMatch(/[\n\r]/);
+    // Collapsed onto one field rather than forging a second log record.
+    expect(line).toContain('bucket=binariesFAKE-LOG-LINE endpoint=');
   });
 
   it('resolves normally when the upload succeeds (no error path regression)', async () => {

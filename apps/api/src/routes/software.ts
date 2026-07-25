@@ -911,8 +911,10 @@ softwareRoutes.post(
       } catch (err) {
         captureException(err, c);
         // Misconfigured env => 503, matching the isS3Configured() gate above.
+        // `clientMessage`, not `message`: the latter can quote the raw
+        // S3_ENDPOINT value, which may carry inline credentials.
         if (err instanceof S3ConfigError) {
-          return c.json({ error: err.message }, 503);
+          return c.json({ error: err.clientMessage }, 503);
         }
         // Storage reachable-ish but failing => 502. The message is curated in
         // classifyS3Failure and never echoes raw provider output.

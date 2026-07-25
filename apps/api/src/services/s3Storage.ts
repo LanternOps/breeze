@@ -13,11 +13,20 @@ let s3Client: S3Client | null = null;
  * Object storage is misconfigured (missing/unparseable env var). The operator
  * has to change `.env` — retrying will never help. Callers map this to a 503,
  * matching the existing `isS3Configured()` gate.
+ *
+ * `message` may quote the offending env var VALUE (credential-redacted) so the
+ * fault is diagnosable in Sentry and the API log. Callers returning anything to
+ * an HTTP client must use `clientMessage`, which names the env var and never
+ * its value — see the S3_ENDPOINT case in `getS3Client`.
  */
 export class S3ConfigError extends Error {
-  constructor(message: string) {
+  /** Curated text safe for an API response body: names the env var, never its value. */
+  readonly clientMessage: string;
+
+  constructor(message: string, clientMessage?: string) {
     super(message);
     this.name = 'S3ConfigError';
+    this.clientMessage = clientMessage ?? message;
   }
 }
 
@@ -48,6 +57,19 @@ function requireBucket(): string {
   return requireEnv('S3_BUCKET');
 }
 
+/**
+ * Strip `user:password@` userinfo out of any URL-ish substring so a
+ * credential-bearing endpoint can't ride along inside an error message. Keeps
+ * the rest of the value, which is the part that makes the fault diagnosable
+ * (wrong scheme, stray quote, trailing slash).
+ *
+ * Matches on `<scheme>://<userinfo>@` rather than parsing, because the values
+ * that reach here are by definition the ones `new URL()` refused.
+ */
+function redactUrlCredentials(text: string): string {
+  return text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/g, '$1***@');
+}
+
 function getS3Client(): S3Client {
   if (!s3Client) {
     const accessKeyId = requireEnv('S3_ACCESS_KEY');
@@ -64,7 +86,16 @@ function getS3Client(): S3Client {
       endpoint = coerceS3EndpointUrl(process.env.S3_ENDPOINT);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new S3ConfigError(`Invalid S3_ENDPOINT env var: ${detail}`);
+      // `coerceS3EndpointUrl` quotes the raw endpoint back in its message, and
+      // an endpoint can carry inline credentials (`s3://key:secret@host`).
+      // Two layers here: `redactUrlCredentials` strips the userinfo so no
+      // secret sits in the Error at all (it would otherwise reach Sentry and
+      // any `err.message` logger), and the client-facing variant drops the
+      // value entirely so an API caller only learns which env var is wrong.
+      throw new S3ConfigError(
+        `Invalid S3_ENDPOINT env var: ${redactUrlCredentials(detail)}`,
+        'The S3_ENDPOINT env var is not a valid URL. Expected a host (s3.example.com) or host:port (minio.local:9000), optionally prefixed with http:// or https://.'
+      );
     }
 
     s3Client = new S3Client({
@@ -309,11 +340,15 @@ function wrapS3Failure(
   const providerCode = sanitizeCode(collectErrorCodes(err).find((c) => c !== 'Error')) ?? 'unknown';
   const httpStatus = findHttpStatus(err) ?? 'none';
   const keyPrefix = s3Key.slice(0, s3Key.lastIndexOf('/') + 1).replace(/[^A-Za-z0-9_./:-]/g, '');
+  // S3_BUCKET is operator-set rather than request input, but it lands in the
+  // same log line as the sanitized fields — clamp it identically so no env
+  // value can break the line format.
+  const safeBucket = bucket.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64);
 
   console.error(
     `[s3Storage] ${operation} failed: reason=${classification.code} ` +
       `providerCode=${providerCode} httpStatus=${httpStatus} ` +
-      `bucket=${bucket} endpoint=${describeS3Endpoint()} keyPrefix=${keyPrefix}`
+      `bucket=${safeBucket} endpoint=${describeS3Endpoint()} keyPrefix=${keyPrefix}`
   );
 
   return new S3OperationError(operation, classification, err);

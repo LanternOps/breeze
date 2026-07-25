@@ -444,6 +444,27 @@ describe('software routes', () => {
         expect(body.error).toMatch(/S3_ENDPOINT/);
       });
 
+      // `message` quotes the offending S3_ENDPOINT value (redacted at the
+      // source, but still server config). The 503 body must use
+      // `clientMessage`, which drops the value entirely — belt and braces, so
+      // a future S3ConfigError thrower can't leak through this route (#2794).
+      it('does not echo inline endpoint credentials in the 503 body', async () => {
+        vi.mocked(uploadBinary).mockRejectedValueOnce(
+          new S3ConfigError(
+            'Invalid S3_ENDPOINT env var: S3 endpoint "s3://AKIAIOSFODNN7EXAMPLE:sUp3r-s3cr3t@host" is not a valid URL.',
+            'The S3_ENDPOINT env var is not a valid URL.'
+          )
+        );
+
+        const res = await uploadOnce();
+        const body = await res.json();
+
+        expect(res.status).toBe(503);
+        expect(JSON.stringify(body)).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+        expect(JSON.stringify(body)).not.toMatch(/sUp3r-s3cr3t/);
+        expect(body.error).toMatch(/S3_ENDPOINT/);
+      });
+
       it('maps an unrecognized throw to 502 without echoing the raw error', async () => {
         vi.mocked(uploadBinary).mockRejectedValueOnce(
           new Error('ENOENT: open /tmp/breeze-uploads/secret-path.upload')
