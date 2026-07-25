@@ -142,6 +142,25 @@ jobs:
   }]);
 });
 
+test('rejects toJSON of the secrets context in a pull_request workflow', () => {
+  const text = `on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${pinnedCheckout}
+      - run: echo '\${{ toJSON(secrets) }}'
+`;
+
+  assert.equal(
+    inspectWorkflowText('all-secrets.yml', text)
+      .some(({ line, rule }) => (
+        line === 7 && rule === 'pr-workflow-must-be-secret-free'
+      )),
+    true,
+  );
+});
+
 test('accepts a secret-free pull_request workflow with checkout', () => {
   const violations = inspectWorkflowText(
     'safe-pr.yml',
@@ -202,6 +221,49 @@ jobs:
   assert.equal(
     inspectWorkflowText('named-target.yml', text)
       .some(({ line, rule }) => line === 9 && rule === 'pr-target-must-not-execute-head'),
+    true,
+  );
+});
+
+test('rejects pull_request_target head checkout performed by a run step', () => {
+  const text = `on: pull_request_target
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${pinnedCheckout}
+      - env:
+          HEAD_SHA: \${{ github.event.pull_request.head.sha }}
+          CRED: \${{ secrets.RELEASE_KEY }}
+        run: git fetch origin "$HEAD_SHA" && git checkout "$HEAD_SHA" && ./owned.sh
+`;
+
+  assert.equal(
+    inspectWorkflowText('run-checkout-target.yml', text)
+      .some(({ line, rule }) => (
+        line === 10 && rule === 'pr-target-must-not-execute-head'
+      )),
+    true,
+  );
+});
+
+test('rejects pull_request_target head reset performed by a run step', () => {
+  const text = `on: pull_request_target
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${pinnedCheckout}
+      - env:
+          HEAD_SHA: \${{ github.event.pull_request.head.sha }}
+        run: git fetch origin "$HEAD_SHA" && git reset --hard "$HEAD_SHA" && ./owned.sh
+`;
+
+  assert.equal(
+    inspectWorkflowText('run-reset-target.yml', text)
+      .some(({ line, rule }) => (
+        line === 9 && rule === 'pr-target-must-not-execute-head'
+      )),
     true,
   );
 });
@@ -620,6 +682,25 @@ test('rejects checkout in an Apple-secret developer signing job', () => {
   );
 });
 
+test('applies developer signing rules after the workflow is renamed', () => {
+  const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+      - uses: ${pinnedCheckout}
+      - name: Import certificate
+        env:
+          APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+        run: security import certificate.p12
+`);
+
+  assert.equal(
+    inspectWorkflowText('renamed-signing-workflow.yml', text)
+      .some(({ line, rule }) => (
+        line === 9 && rule === 'signing-job-must-not-build-source'
+      )),
+    true,
+  );
+});
+
 test('rejects source build commands in an Apple-secret developer signing job', () => {
   for (const command of [
     'go build ./cmd/breeze-agent',
@@ -689,15 +770,112 @@ test('accepts an Apple-secret developer signing job that only verifies and signs
   assert.deepEqual(inspectWorkflowText('dev-build-agent.yml', text), []);
 });
 
-test('does not apply the developer signing split rule to release workflows', () => {
-  const text = developerSigningWorkflow(`      - uses: ${pinnedCheckout}
+test('does not apply the developer signing split rule to tag release workflows', () => {
+  const text = `name: Release signing
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+jobs:
+  sign-release:
+    runs-on: macos-15
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: ${pinnedCheckout}
       - name: Build and sign release
         env:
           APPLE_ID: \${{ secrets.APPLE_ID }}
         run: go build ./cmd/breeze-agent
-`);
+`;
 
-  assert.deepEqual(inspectWorkflowText('release.yml', text), []);
+  assert.deepEqual(inspectWorkflowText('renamed-release.yml', text), []);
+});
+
+test('does not let a tag trigger exempt an ungated dispatch signing job', () => {
+  const text = `name: Signing bypass
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+jobs:
+  sign-release:
+    runs-on: macos-15
+    steps:
+      - uses: ${pinnedCheckout}
+      - name: Build and sign arbitrary source
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: go build ./cmd/breeze-agent
+`;
+
+  assert.equal(
+    inspectWorkflowText('fake-release.yml', text)
+      .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+    true,
+  );
+});
+
+test('does not exempt a signing job with an alternative dispatch condition', () => {
+  const text = `name: Signing gate bypass
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+jobs:
+  sign-release:
+    runs-on: macos-15
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+      || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: ${pinnedCheckout}
+      - name: Build and sign arbitrary source
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: go build ./cmd/breeze-agent
+`;
+
+  assert.equal(
+    inspectWorkflowText('or-gated-release.yml', text)
+      .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+    true,
+  );
+});
+
+test('does not exempt a signing job with a trailing dispatch alternative', () => {
+  const text = `name: Signing precedence bypass
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+jobs:
+  sign-release:
+    runs-on: macos-15
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+      && vars.ENABLE_MACOS_SIGNING == 'true'
+      || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: ${pinnedCheckout}
+      - name: Build and sign arbitrary source
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: go build ./cmd/breeze-agent
+`;
+
+  assert.equal(
+    inspectWorkflowText('precedence-gated-release.yml', text)
+      .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+    true,
+  );
 });
 
 test('rejects case-variant checkout in an Apple-secret developer signing job', () => {

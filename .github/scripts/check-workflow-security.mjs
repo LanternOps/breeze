@@ -411,11 +411,19 @@ function blockScalarValue(lines, lineIndex) {
   return content.join(' ');
 }
 
+function containsSecretReference(value) {
+  const normalized = normalizePropertyAccess(value);
+  return (
+    /\bsecrets\./u.test(normalized)
+    || /\btojson\(\s*secrets\s*\)/iu.test(normalized)
+  );
+}
+
 function secretReferenceLines(lines) {
   const lineNumbers = new Set();
 
   for (const [index, line] of lines.entries()) {
-    if (/\bsecrets\s*(?:\.|\[)/u.test(line.content)) {
+    if (containsSecretReference(line.content)) {
       lineNumbers.add(line.line);
     }
 
@@ -427,14 +435,14 @@ function secretReferenceLines(lines) {
     if (
       entry
       && /^[>|][0-9+-]*$/u.test(entry.value)
-      && /\bsecrets\s*(?:\.|\[)/u.test(blockScalarValue(lines, index))
+      && containsSecretReference(blockScalarValue(lines, index))
     ) {
       let scalarHasDirectMatch = false;
       for (let nestedIndex = index + 1; nestedIndex < lines.length; nestedIndex += 1) {
         if (!lines[nestedIndex].isBlockScalarContent) {
           break;
         }
-        if (/\bsecrets\s*(?:\.|\[)/u.test(lines[nestedIndex].content)) {
+        if (containsSecretReference(lines[nestedIndex].content)) {
           scalarHasDirectMatch = true;
           break;
         }
@@ -578,6 +586,68 @@ function checkoutHeadRefs(lines, checkoutEntries) {
   return violations;
 }
 
+function workflowSteps(lines) {
+  const steps = [];
+
+  for (const [index, line] of lines.entries()) {
+    if (
+      line.isBlockScalarContent
+      || !isSequenceItem(line)
+      || !isDirectChildOfMapping(lines, index, 'steps')
+    ) {
+      continue;
+    }
+
+    let endIndex = lines.length;
+    for (let nestedIndex = index + 1; nestedIndex < lines.length; nestedIndex += 1) {
+      if (lines[nestedIndex].indent <= line.indent) {
+        endIndex = nestedIndex;
+        break;
+      }
+    }
+
+    steps.push(lines.slice(index, endIndex));
+  }
+
+  return steps;
+}
+
+function runStepHeadRefs(lines) {
+  const violatingLineNumbers = new Set();
+  const checkoutCommand = (
+    /\bgit\s+(?:(?:checkout|switch)\b|reset\s+--hard\b|worktree\s+add\b)/u
+  );
+
+  for (const job of workflowJobs(lines)) {
+    const jobContent = job.lines.map(({ content }) => content).join('\n');
+    if (!isPullRequestHeadOrMergeRef(jobContent)) {
+      continue;
+    }
+
+    for (const step of workflowSteps(job.lines)) {
+      for (const [index, line] of step.entries()) {
+        if (line.isBlockScalarContent) {
+          continue;
+        }
+
+        const entry = mappingEntry(line.trimmed.replace(/^-\s*/u, ''));
+        if (entry?.key !== 'run') {
+          continue;
+        }
+
+        const command = /^[>|][0-9+-]*$/u.test(entry.value)
+          ? blockScalarValue(step, index)
+          : unquote(entry.value);
+        if (checkoutCommand.test(command)) {
+          violatingLineNumbers.add(line.line);
+        }
+      }
+    }
+  }
+
+  return lines.filter(({ line }) => violatingLineNumbers.has(line));
+}
+
 function workflowJobs(lines) {
   const jobs = [];
 
@@ -609,6 +679,189 @@ function workflowJobs(lines) {
   }
 
   return jobs;
+}
+
+function scalarListValues(value) {
+  const scalar = unquote(value);
+  if (!scalar.startsWith('[') || !scalar.endsWith(']')) {
+    return scalar === '' ? [] : [scalar];
+  }
+  return splitTopLevel(scalar.slice(1, -1), ',').map((item) => unquote(item));
+}
+
+function hasVersionTagPushTrigger(lines) {
+  for (const [onIndex, onLine] of lines.entries()) {
+    const onEntry = onLine.isBlockScalarContent
+      ? null
+      : mappingEntry(onLine.trimmed);
+    if (onLine.indent !== 0 || onEntry?.key !== 'on' || onEntry.value !== '') {
+      continue;
+    }
+
+    for (let pushIndex = onIndex + 1; pushIndex < lines.length; pushIndex += 1) {
+      const pushLine = lines[pushIndex];
+      if (pushLine.indent <= onLine.indent) {
+        break;
+      }
+      const pushEntry = pushLine.isBlockScalarContent
+        ? null
+        : mappingEntry(pushLine.trimmed);
+      if (
+        parentLineIndex(lines, pushIndex) !== onIndex
+        || pushEntry?.key !== 'push'
+        || pushEntry.value !== ''
+      ) {
+        continue;
+      }
+
+      for (let tagsIndex = pushIndex + 1; tagsIndex < lines.length; tagsIndex += 1) {
+        const tagsLine = lines[tagsIndex];
+        if (tagsLine.indent <= pushLine.indent) {
+          break;
+        }
+        const tagsEntry = tagsLine.isBlockScalarContent
+          ? null
+          : mappingEntry(tagsLine.trimmed);
+        if (
+          parentLineIndex(lines, tagsIndex) !== pushIndex
+          || tagsEntry?.key !== 'tags'
+        ) {
+          continue;
+        }
+
+        const patterns = scalarListValues(tagsEntry.value);
+        for (let patternIndex = tagsIndex + 1; patternIndex < lines.length; patternIndex += 1) {
+          const patternLine = lines[patternIndex];
+          if (patternLine.indent <= tagsLine.indent) {
+            break;
+          }
+          if (
+            parentLineIndex(lines, patternIndex) === tagsIndex
+            && isSequenceItem(patternLine)
+          ) {
+            patterns.push(unquote(patternLine.trimmed.slice(1).trim()));
+          }
+        }
+        if (patterns.includes('v*')) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function topLevelLogicalParts(value, operator) {
+  const parts = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  let parenthesisDepth = 0;
+  let squareDepth = 0;
+  let curlyDepth = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (quote === '"') {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (quote === "'") {
+      if (character === quote && value[index + 1] === quote) {
+        index += 1;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(') {
+      parenthesisDepth += 1;
+      continue;
+    }
+    if (character === ')') {
+      parenthesisDepth -= 1;
+      continue;
+    }
+    if (character === '[') {
+      squareDepth += 1;
+      continue;
+    }
+    if (character === ']') {
+      squareDepth -= 1;
+      continue;
+    }
+    if (character === '{') {
+      curlyDepth += 1;
+      continue;
+    }
+    if (character === '}') {
+      curlyDepth -= 1;
+      continue;
+    }
+    if (
+      character === operator[0]
+      && value[index + 1] === operator[1]
+      && parenthesisDepth === 0
+      && squareDepth === 0
+      && curlyDepth === 0
+    ) {
+      parts.push(value.slice(start, index));
+      index += 1;
+      start = index + 1;
+    }
+  }
+
+  parts.push(value.slice(start));
+  return parts;
+}
+
+function hasTrustedVersionTagJobGate(lines) {
+  for (const [index, line] of lines.entries()) {
+    if (
+      line.isBlockScalarContent
+      || parentLineIndex(lines, index) !== 0
+    ) {
+      continue;
+    }
+
+    const entry = mappingEntry(line.trimmed);
+    if (entry?.key !== 'if') {
+      continue;
+    }
+
+    let condition = normalizePropertyAccess(
+      /^[>|][0-9+-]*$/u.test(entry.value)
+        ? blockScalarValue(lines, index)
+        : unquote(entry.value),
+    );
+    if (condition.startsWith('${{') && condition.endsWith('}}')) {
+      condition = condition.slice(3, -2);
+    }
+    if (topLevelLogicalParts(condition, '||').length !== 1) {
+      return false;
+    }
+    const conjuncts = new Set(topLevelLogicalParts(condition, '&&'));
+    return (
+      conjuncts.has("github.ref_type=='tag'")
+      && conjuncts.has("startsWith(github.ref,'refs/tags/v')")
+    );
+  }
+
+  return false;
 }
 
 function appleSecretReferenceLines(lines) {
@@ -679,14 +932,14 @@ function forbiddenSigningSourceLines(lines) {
 }
 
 function developerSigningViolations(file, lines) {
-  if (path.basename(file) !== 'dev-build-agent.yml') {
-    return [];
-  }
-
   const violations = [];
+  const hasReleaseTrigger = hasVersionTagPushTrigger(lines);
   for (const job of workflowJobs(lines)) {
     const appleSecrets = appleSecretReferenceLines(job.lines);
     if (appleSecrets.length === 0) {
+      continue;
+    }
+    if (hasReleaseTrigger && hasTrustedVersionTagJobGate(job.lines)) {
       continue;
     }
 
@@ -779,7 +1032,11 @@ export function inspectWorkflowText(file, text) {
   }
 
   if (triggers.has('pull_request_target')) {
-    for (const line of checkoutHeadRefs(lines, checkoutEntries)) {
+    const headRefLines = new Map([
+      ...checkoutHeadRefs(lines, checkoutEntries),
+      ...runStepHeadRefs(lines),
+    ].map((line) => [line.line, line]));
+    for (const line of headRefLines.values()) {
       violations.push({
         file,
         line: line.line,
