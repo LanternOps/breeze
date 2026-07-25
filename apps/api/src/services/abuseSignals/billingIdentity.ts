@@ -53,7 +53,11 @@ export interface BillingIdentityAggregate {
   paymentMethodsFirstSeenAt: Date | null;
   paymentMethodsLastSeenAt: Date | null;
   failedAttempts: number;
-  /** When the billing service last refreshed this snapshot. Evidence only. */
+  /**
+   * When the billing service last refreshed this snapshot. Carried into
+   * card-testing evidence for triage; deliberately gates nothing — snapshot
+   * recency is not the same question as the accumulation span.
+   */
   identitySyncedAt: Date | null;
 }
 
@@ -341,6 +345,10 @@ export function computeBillingIdentitySignals(
           spanMinutes: Number((spanMs / 60_000).toFixed(1)),
           paymentMethodsFirstSeenAt: a.paymentMethodsFirstSeenAt?.toISOString() ?? null,
           paymentMethodsLastSeenAt: a.paymentMethodsLastSeenAt?.toISOString() ?? null,
+          // Snapshot age answers the operator's first triage question: is this
+          // burst happening now, or is it a stale row the billing service has
+          // not touched in weeks? It gates nothing — only the span does.
+          identitySyncedAt: a.identitySyncedAt?.toISOString() ?? null,
         },
       );
     }

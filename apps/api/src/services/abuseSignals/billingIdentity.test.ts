@@ -297,7 +297,23 @@ describe('billing.card_testing — span-based', () => {
       distinctPaymentMethods: 3,
       failedAttempts: 0,
       spanMinutes: 7,
+      paymentMethodsFirstSeenAt: burstStart.toISOString(),
+      paymentMethodsLastSeenAt: burstEnd.toISOString(),
+      identitySyncedAt: null,
     });
+  });
+
+  it('carries snapshot age into evidence without letting it gate the signal', () => {
+    // A stale snapshot still fires — only the span decides — but the operator
+    // gets to see how old the data is.
+    const signal = cardTesting({
+      distinctPaymentMethods: 3,
+      paymentMethodsFirstSeenAt: burstStart,
+      paymentMethodsLastSeenAt: burstEnd,
+      identitySyncedAt: new Date('2026-05-01T00:00:00Z'),
+    });
+    expect(signal).toBeDefined();
+    expect(signal!.evidence).toMatchObject({ identitySyncedAt: '2026-05-01T00:00:00.000Z' });
   });
 
   it('does NOT fire for 3 distinct methods spanning two years', () => {
