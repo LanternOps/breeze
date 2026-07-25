@@ -6,7 +6,7 @@ import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/Res
 export type Organization = {
   id: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'churned';
+  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding';
   deviceCount: number;
   createdAt: string;
 };
@@ -23,6 +23,7 @@ const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
   trial: 'organizationList.status.trial',
   suspended: 'organizationList.status.suspended',
   churned: 'organizationList.status.churned',
+  offboarding: 'organizationList.status.offboarding',
 };
 
 export default function OrganizationList({

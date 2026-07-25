@@ -8,7 +8,7 @@ import { getRedis, rateLimiter } from '../services';
 import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
-import { isAgentTenantActive } from '../services/tenantStatus';
+import { getAgentTenantState } from '../services/tenantStatus';
 
 export interface AgentAuthContext {
   deviceId: string;
@@ -30,6 +30,12 @@ export interface AgentAuthContext {
    * ALWAYS populates it, and rotate-token fails closed if it is ever absent.
    */
   authTokenHash?: string;
+  /**
+   * #2774 — true when the tenant is in the `offboarding` drain window. The
+   * middleware has already restricted the route surface; handlers that claim
+   * commands additionally narrow the claim to `self_uninstall` only.
+   */
+  tenantDraining?: boolean;
 }
 
 export type AgentCredentialRole = 'agent' | 'watchdog';
@@ -262,6 +268,31 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
 
 /**
+ * #2774 — the narrowed agent surface during an `offboarding` drain window.
+ * Only what self_uninstall delivery needs survives:
+ * - heartbeat: the primary command carrier (claims device_commands) + liveness
+ * - commands / commands/:id/result: the poll + ack pair
+ * - rotate-token (+ confirm): auth maintenance — blocking a mid-stage rotation
+ *   could strand the very credential the drain depends on
+ * - logs: post-mortem evidence for devices that never drain
+ * Everything else (inventory, patches, WS-adjacent, extension gateway) is
+ * refused with an explicit 403 so a departing customer's machines don't keep
+ * feeding a fully-capable RMM channel. The WS upgrade is refused outright in
+ * agentWs.validateAgentToken — its push path bypasses device_commands.
+ */
+function isDrainAllowedAgentPath(pathSegments: string[]): boolean {
+  const last = pathSegments[pathSegments.length - 1] ?? '';
+  const secondLast = pathSegments[pathSegments.length - 2] ?? '';
+  const thirdLast = pathSegments[pathSegments.length - 3] ?? '';
+  if (last === 'heartbeat' || last === 'commands' || last === 'logs' || last === 'rotate-token') {
+    return true;
+  }
+  if (last === 'confirm' && secondLast === 'rotate-token') return true;
+  if (last === 'result' && thirdLast === 'commands') return true;
+  return false;
+}
+
+/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
@@ -474,8 +505,21 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // fail closed. Runs after the rate limiters so a flood from an inactive
   // tenant can't drive uncached lookups, and returns the same opaque 401 as a
   // stale token so the agent cannot distinguish suspension from a bad token.
-  if (!(await isAgentTenantActive(device.orgId))) {
+  //
+  // #2774 — an `offboarding` tenant resolves to 'draining': still
+  // authenticated (that's the whole point — self_uninstall must be
+  // deliverable), but only on the narrowed drain surface. Blocked routes get
+  // an explicit 403 (distinct from the opaque 401: the tenant state is not a
+  // secret from its own fleet, and the agent must not treat this as an auth
+  // failure and back off its heartbeat).
+  const tenantState = await getAgentTenantState(device.orgId);
+  if (!tenantState) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
+  }
+
+  const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
+  if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments)) {
+    return c.json({ error: 'tenant_offboarding' }, 403);
   }
 
   if (match.tokenRotationRequired) {
@@ -498,6 +542,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // hash, but rotate-token rejects those before reaching any CAS, so callers
     // that mint credentials only ever see the current-token hash here.
     authTokenHash: tokenHash,
+    tenantDraining: tenantState === 'draining',
   });
 
   // #1105 — high-frequency, high-concurrency routes that self-manage their DB
@@ -506,7 +551,6 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // self-deadlocks the pool under a mass agent reconnect). These routes MUST
   // open withDbAccessContext themselves around their DB work. Everything else
   // keeps the convenient request-long wrap below.
-  const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
   const action = pathSegments[pathSegments.length - 1] ?? '';
   if (SELF_MANAGED_DB_CONTEXT_ACTIONS.has(action)) {
     await next();

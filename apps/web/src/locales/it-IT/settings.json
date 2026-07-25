@@ -2764,7 +2764,8 @@
       "active": "Attiva",
       "trial": "Trial",
       "suspended": "Sospesa",
-      "churned": "Persa"
+      "churned": "Persa",
+      "offboarding": "In dismissione"
     }
   },
   "organizationList": {
@@ -2776,7 +2777,8 @@
       "active": "Attiva",
       "trial": "Prova",
       "suspended": "Sospesa",
-      "churned": "Persa"
+      "churned": "Persa",
+      "offboarding": "In dismissione"
     },
     "columns": {
       "devices": "Dispositivi"
@@ -2807,7 +2809,8 @@
       "active": "Attiva",
       "trial": "Prova",
       "suspended": "Sospesa",
-      "churned": "Persa"
+      "churned": "Persa",
+      "offboarding": "In dismissione"
     },
     "deviceCount": "{{count}} dispositivi",
     "list": {

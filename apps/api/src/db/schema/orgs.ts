@@ -2,11 +2,14 @@ import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolea
 import { sql } from 'drizzle-orm';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
-export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned']);
+// `offboarding` (#2774) is the terminal-intent drain state: users locked out
+// immediately, agents kept authenticated in a narrowed self_uninstall-only
+// mode until the fleet drains or the window closes, then severed + `churned`.
+export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned', 'offboarding']);
 export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
 export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal']);
-export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned']);
+export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding']);
 
 export const partners = pgTable('partners', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -73,6 +76,9 @@ export const partners = pgTable('partners', {
   // surface gate on this; it is NOT in settings JSONB because that is
   // partner-writable and the partner must not be able to self-enable.
   aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
+  // #2774 — NULL = not offboarding. Set on drain entry, cleared on
+  // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
+  offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
 });
 
 export const organizations = pgTable('organizations', {
@@ -102,6 +108,9 @@ export const organizations = pgTable('organizations', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),
+  // #2774 — NULL = not offboarding. Set on drain entry, cleared on
+  // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
+  offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),

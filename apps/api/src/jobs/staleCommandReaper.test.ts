@@ -183,6 +183,32 @@ describe('stale command reaper', () => {
     expect(deviceCommandReturning).toHaveBeenCalledTimes(4);
     expect(restoreWhere).toHaveBeenCalledTimes(4);
   });
+
+  // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
+  // while (and only while) its tenant is `offboarding`. Pin that the SELECT's
+  // WHERE carries the offboarding-scoped exemption so a refactor can't
+  // silently drop it and resurrect the silent-expiry bug.
+  it('scopes the self_uninstall reap exemption to offboarding tenants', async () => {
+    const chain = selectChain([]);
+    selectMock.mockReturnValueOnce(chain);
+
+    await reapStaleDeviceCommands();
+
+    const whereArg = chain.where.mock.calls[0]?.[0];
+    const containsString = (root: unknown, needle: string): boolean => {
+      const seen = new WeakSet<object>();
+      const walk = (value: unknown): boolean => {
+        if (typeof value === 'string') return value.includes(needle);
+        if (!value || typeof value !== 'object') return false;
+        if (seen.has(value as object)) return false;
+        seen.add(value as object);
+        return Object.values(value as Record<string, unknown>).some(walk);
+      };
+      return walk(root);
+    };
+    expect(containsString(whereArg, 'self_uninstall')).toBe(true);
+    expect(containsString(whereArg, 'offboarding')).toBe(true);
+  });
 });
 
 describe('reapStaleBackupJobs', () => {

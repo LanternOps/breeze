@@ -180,31 +180,92 @@ export async function assertActiveTenantContext(
 // the source of truth, never fail open.
 const AGENT_TENANT_OK_CACHE_PREFIX = 'agent_tenant_ok:';
 const AGENT_TENANT_OK_CACHE_SECONDS = 60;
+// Cache values: '1' = fully active, 'drain' = offboarding drain mode.
+const AGENT_TENANT_CACHE_ACTIVE = '1';
+const AGENT_TENANT_CACHE_DRAINING = 'drain';
 
-export async function isAgentTenantActive(orgId: string): Promise<boolean> {
+/**
+ * Agent-facing tenant state (#2774):
+ * - 'active'   — org active/trial under an active partner: full agent surface.
+ * - 'draining' — org and/or partner is `offboarding`: the agent may still
+ *   authenticate, but only on the narrowed drain surface (heartbeat, command
+ *   poll/result filtered to self_uninstall, token rotation, log ship) so a
+ *   queued self_uninstall is deliverable while users are already locked out.
+ * - null       — everything else (suspended/churned/pending/soft-deleted):
+ *   agents fail closed exactly as before.
+ *
+ * This is deliberately a SEPARATE predicate from getActiveOrgTenant: the
+ * user/API-key/OAuth gates must keep rejecting `offboarding` — only the agent
+ * delivery path is allowed to see the drain window.
+ */
+export type AgentTenantState = 'active' | 'draining';
+
+export async function getAgentTenantState(orgId: string): Promise<AgentTenantState | null> {
   const cacheKey = `${AGENT_TENANT_OK_CACHE_PREFIX}${orgId}`;
   const redis = getRedis();
 
   if (redis) {
     try {
-      if ((await redis.get(cacheKey)) === '1') return true;
+      const cached = await redis.get(cacheKey);
+      if (cached === AGENT_TENANT_CACHE_ACTIVE) return 'active';
+      if (cached === AGENT_TENANT_CACHE_DRAINING) return 'draining';
     } catch {
       // Cache read failed — fall through to the authoritative DB check.
     }
   }
 
-  const tenant = await getActiveOrgTenant(orgId);
-  if (!tenant) return false;
+  const state = await readAsSystem(async (): Promise<AgentTenantState | null> => {
+    const [row] = await db
+      .select({
+        orgStatus: organizations.status,
+        partnerStatus: partners.status,
+        partnerDeletedAt: partners.deletedAt,
+      })
+      .from(organizations)
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .limit(1);
 
-  if (redis) {
+    if (!row || row.partnerDeletedAt) return null;
+
+    const orgUsable = isUsableOrgStatus(row.orgStatus);
+    if (orgUsable && row.partnerStatus === 'active') return 'active';
+
+    const orgDraining =
+      row.orgStatus === 'offboarding'
+      && (row.partnerStatus === 'active' || row.partnerStatus === 'offboarding');
+    const partnerDraining = row.partnerStatus === 'offboarding' && orgUsable;
+    if (orgDraining || partnerDraining) return 'draining';
+
+    return null;
+  });
+
+  if (state && redis) {
     try {
-      await redis.set(cacheKey, '1', 'EX', AGENT_TENANT_OK_CACHE_SECONDS);
+      await redis.set(
+        cacheKey,
+        state === 'active' ? AGENT_TENANT_CACHE_ACTIVE : AGENT_TENANT_CACHE_DRAINING,
+        'EX',
+        AGENT_TENANT_OK_CACHE_SECONDS
+      );
     } catch {
       // Best-effort cache write; correctness does not depend on it.
     }
   }
 
-  return true;
+  return state;
+}
+
+/**
+ * True when the agent may authenticate AT ALL — i.e. 'active' OR 'draining'.
+ * Callers that must distinguish full capability from the narrowed drain
+ * surface (agentAuth route allowlist, agentWs upgrade refusal) use
+ * getAgentTenantState directly; boolean callers where drain-mode access is
+ * intended (mTLS cert renewal — an agent quarantined mid-drain could never
+ * collect its uninstall) keep this wrapper.
+ */
+export async function isAgentTenantActive(orgId: string): Promise<boolean> {
+  return (await getAgentTenantState(orgId)) !== null;
 }
 
 /**

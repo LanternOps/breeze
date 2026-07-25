@@ -158,7 +158,7 @@ vi.mock('../services/auditEvents', () => ({
 }));
 
 vi.mock('../services/tenantStatus', () => ({
-  isAgentTenantActive: vi.fn(async () => true),
+  getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
 vi.mock('../services/commandDispatch', () => ({
@@ -202,7 +202,7 @@ import {
 import { isRedisAvailable } from '../services/redis';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
-import { isAgentTenantActive } from '../services/tenantStatus';
+import { getAgentTenantState } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
@@ -251,7 +251,7 @@ describe('validateAgentToken — tenant-status gate', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
   });
 
   it('accepts a valid agent token for an active tenant', async () => {
@@ -260,12 +260,24 @@ describe('validateAgentToken — tenant-status gate', () => {
     const result = await validateAgentToken('agent-1', TOKEN);
 
     expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', role: 'agent' } });
-    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+    expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
   it('refuses the upgrade when the device tenant is not active', async () => {
     queueDeviceSelect(deviceRow);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+    vi.mocked(getAgentTenantState).mockResolvedValue(null);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  // #2774 — a draining (offboarding) tenant keeps its REST drain surface but
+  // must NOT get a WS session: ~20 push call sites bypass device_commands, so
+  // any accepted socket is a fully-capable control channel.
+  it('refuses the upgrade for a draining (offboarding) tenant', async () => {
+    queueDeviceSelect(deviceRow);
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
 
     const result = await validateAgentToken('agent-1', TOKEN);
 

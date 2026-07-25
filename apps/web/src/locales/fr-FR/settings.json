@@ -2716,7 +2716,8 @@
       "active": "Active",
       "trial": "Procès",
       "suspended": "Suspendu",
-      "churned": "Tourné"
+      "churned": "Tourné",
+      "offboarding": "Départ en cours"
     }
   },
   "organizationList": {
@@ -2728,7 +2729,8 @@
       "active": "Active",
       "trial": "Procès",
       "suspended": "Suspendu",
-      "churned": "Tourné"
+      "churned": "Tourné",
+      "offboarding": "Départ en cours"
     },
     "columns": {
       "devices": "Dispositifs"
@@ -2759,7 +2761,8 @@
       "active": "Active",
       "trial": "Procès",
       "suspended": "Suspendu",
-      "churned": "Tourné"
+      "churned": "Tourné",
+      "offboarding": "Départ en cours"
     },
     "deviceCount": "{{count}} dispositifs",
     "list": {

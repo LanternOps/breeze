@@ -14,6 +14,9 @@ vi.mock('./tenantLifecycle', () => ({
   revokeOrganizationTenantAccess: vi.fn(async () => undefined),
   restoreOrganizationTenantAccess: vi.fn(async () => undefined),
 }));
+vi.mock('./tenantOffboarding', () => ({
+  abortOrganizationOffboarding: vi.fn(async () => ({ aborted: false, uninstallsCancelled: 0 })),
+}));
 
 import { and, eq, ilike, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';

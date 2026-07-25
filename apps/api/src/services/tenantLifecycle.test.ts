@@ -213,4 +213,45 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(updateLog.some((u) => u.table === devices)).toBe(true);
     expect(result.agentTokensRestored).toBe(3);
   });
+
+  // #2774 — the offboarding drain must lock users out WITHOUT suspending
+  // agent tokens, or the queued self_uninstall is undeliverable by
+  // construction (the exact bug the drain state exists to fix).
+  describe('agentChannel: drain', () => {
+    it('revokeOrganizationTenantAccess keeps agent tokens but expires enrollment keys', async () => {
+      queueSelect([{ userId: 'u1' }]); // organizationUsers
+
+      const result = await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+      // No devices UPDATE: agent tokens stay valid for the drain window.
+      expect(updateLog.some((u) => u.table === devices)).toBe(false);
+      // Enrollment keys still expire — no NEW devices during a drain.
+      expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(true);
+      expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1']);
+      expect(result.agentTokensSuspended).toBe(0);
+      expect(result.enrollmentKeysInvalidated).toBe(1);
+    });
+
+    it('drain mode still severs live WS sockets (interactive channel must not survive)', async () => {
+      queueSelect([{ userId: 'u1' }]); // organizationUsers
+      queueSelect([{ agentId: 'agent-live' }]); // devices in org
+      vi.mocked(getConnectedAgentIds).mockReturnValueOnce(['agent-live']);
+
+      await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+      expect(disconnectAgent).toHaveBeenCalledWith('agent-live', 4001, 'Tenant offboarding');
+    });
+
+    it('revokePartnerTenantAccess drain mode keeps agent tokens across partner orgs', async () => {
+      queueSelect([{ id: 'org-1' }, { id: 'org-2' }]); // organizations under partner
+      queueSelect([{ userId: 'pu1' }]); // partnerUsers
+      queueSelect([{ userId: 'ou1' }]); // org memberships
+
+      const result = await revokePartnerTenantAccess('partner-1', { agentChannel: 'drain' });
+
+      expect(updateLog.some((u) => u.table === devices)).toBe(false);
+      expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(true);
+      expect(result.agentTokensSuspended).toBe(0);
+    });
+  });
 });

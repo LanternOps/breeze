@@ -32,16 +32,124 @@ vi.mock('./redis', () => ({
 
 import { db } from '../db';
 import { getRedis } from './redis';
-import { isAgentTenantActive, invalidateAgentTenantCache } from './tenantStatus';
+import { getAgentTenantState, isAgentTenantActive, invalidateAgentTenantCache } from './tenantStatus';
 
-function queueSelect(rows: unknown[]) {
+// getAgentTenantState runs a single org⋈partner join:
+// select().from().innerJoin().where().limit()
+function queueJoinedSelect(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(rows) })) })),
+    from: vi.fn(() => ({
+      innerJoin: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(rows) })),
+      })),
+    })),
   } as any);
 }
 
-const ACTIVE_ORG = { orgId: 'org-1', orgStatus: 'active', orgDeletedAt: null, partnerId: 'partner-1' };
-const ACTIVE_PARTNER = { id: 'partner-1', status: 'active', deletedAt: null };
+function tenantRow(orgStatus: string, partnerStatus: string, partnerDeletedAt: Date | null = null) {
+  return { orgStatus, partnerStatus, partnerDeletedAt };
+}
+
+describe('getAgentTenantState', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue({ get: redisGet, set: redisSet, del: redisDel } as any);
+    redisGet.mockResolvedValue(null);
+    redisSet.mockResolvedValue('OK');
+    redisDel.mockResolvedValue(1);
+  });
+
+  it('returns active and short-circuits the DB on a "1" cache hit', async () => {
+    redisGet.mockResolvedValueOnce('1');
+
+    expect(await getAgentTenantState('org-1')).toBe('active');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('returns draining and short-circuits the DB on a "drain" cache hit', async () => {
+    redisGet.mockResolvedValueOnce('drain');
+
+    expect(await getAgentTenantState('org-1')).toBe('draining');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('resolves active for an active org under an active partner and caches "1"', async () => {
+    queueJoinedSelect([tenantRow('active', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('active');
+    expect(redisSet).toHaveBeenCalledWith('agent_tenant_ok:org-1', '1', 'EX', 60);
+  });
+
+  it('resolves active for a trial org under an active partner', async () => {
+    queueJoinedSelect([tenantRow('trial', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('active');
+  });
+
+  it('resolves draining for an offboarding org under an active partner and caches "drain"', async () => {
+    queueJoinedSelect([tenantRow('offboarding', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('draining');
+    expect(redisSet).toHaveBeenCalledWith('agent_tenant_ok:org-1', 'drain', 'EX', 60);
+  });
+
+  it('resolves draining for an active org under an offboarding partner', async () => {
+    queueJoinedSelect([tenantRow('active', 'offboarding')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('draining');
+  });
+
+  it('resolves draining when both org and partner are offboarding', async () => {
+    queueJoinedSelect([tenantRow('offboarding', 'offboarding')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('draining');
+  });
+
+  it('returns null (no cache write) for a suspended org', async () => {
+    queueJoinedSelect([tenantRow('suspended', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBeNull();
+    expect(redisSet).not.toHaveBeenCalled();
+  });
+
+  it('returns null for an offboarding org under a suspended partner (abuse lockout wins)', async () => {
+    queueJoinedSelect([tenantRow('offboarding', 'suspended')]);
+
+    expect(await getAgentTenantState('org-1')).toBeNull();
+  });
+
+  it('returns null for a churned org under an offboarding partner', async () => {
+    queueJoinedSelect([tenantRow('churned', 'offboarding')]);
+
+    expect(await getAgentTenantState('org-1')).toBeNull();
+  });
+
+  it('returns null when the org is soft-deleted (filtered out by the query)', async () => {
+    queueJoinedSelect([]);
+
+    expect(await getAgentTenantState('org-1')).toBeNull();
+  });
+
+  it('returns null when the partner is soft-deleted', async () => {
+    queueJoinedSelect([tenantRow('active', 'active', new Date())]);
+
+    expect(await getAgentTenantState('org-1')).toBeNull();
+  });
+
+  it('falls through to the authoritative DB check when Redis is unavailable', async () => {
+    vi.mocked(getRedis).mockReturnValue(null);
+    queueJoinedSelect([tenantRow('active', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('active');
+  });
+
+  it('fails to the DB check (never fail-open) when the cache read throws', async () => {
+    redisGet.mockRejectedValueOnce(new Error('redis down'));
+    queueJoinedSelect([tenantRow('active', 'active')]);
+
+    expect(await getAgentTenantState('org-1')).toBe('active');
+  });
+});
 
 describe('isAgentTenantActive', () => {
   beforeEach(() => {
@@ -52,56 +160,28 @@ describe('isAgentTenantActive', () => {
     redisDel.mockResolvedValue(1);
   });
 
-  it('returns true and short-circuits the DB on a cache hit', async () => {
-    redisGet.mockResolvedValueOnce('1');
+  it('returns true for a fully active tenant', async () => {
+    queueJoinedSelect([tenantRow('active', 'active')]);
 
     expect(await isAgentTenantActive('org-1')).toBe(true);
-    expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('checks the DB and caches the positive result on a cache miss', async () => {
-    queueSelect([ACTIVE_ORG]);
-    queueSelect([ACTIVE_PARTNER]);
+  it('returns true for a draining tenant (mTLS renewal path must stay open mid-drain)', async () => {
+    queueJoinedSelect([tenantRow('offboarding', 'active')]);
 
     expect(await isAgentTenantActive('org-1')).toBe(true);
-    expect(db.select).toHaveBeenCalledTimes(2);
-    expect(redisSet).toHaveBeenCalledWith('agent_tenant_ok:org-1', '1', 'EX', 60);
   });
 
-  it('returns false and does NOT cache when the org is suspended', async () => {
-    queueSelect([{ ...ACTIVE_ORG, orgStatus: 'suspended' }]);
-
-    expect(await isAgentTenantActive('org-1')).toBe(false);
-    expect(redisSet).not.toHaveBeenCalled();
-  });
-
-  it('returns false when the org is soft-deleted (filtered out by the query)', async () => {
-    queueSelect([]);
+  it('returns false when the org is suspended', async () => {
+    queueJoinedSelect([tenantRow('suspended', 'active')]);
 
     expect(await isAgentTenantActive('org-1')).toBe(false);
   });
 
-  it('returns false when the partner is not active', async () => {
-    queueSelect([ACTIVE_ORG]);
-    queueSelect([{ ...ACTIVE_PARTNER, status: 'churned' }]);
+  it('returns false when the partner is churned', async () => {
+    queueJoinedSelect([tenantRow('active', 'churned')]);
 
     expect(await isAgentTenantActive('org-1')).toBe(false);
-  });
-
-  it('falls through to the authoritative DB check when Redis is unavailable', async () => {
-    vi.mocked(getRedis).mockReturnValue(null);
-    queueSelect([ACTIVE_ORG]);
-    queueSelect([ACTIVE_PARTNER]);
-
-    expect(await isAgentTenantActive('org-1')).toBe(true);
-  });
-
-  it('fails to the DB check (never fail-open) when the cache read throws', async () => {
-    redisGet.mockRejectedValueOnce(new Error('redis down'));
-    queueSelect([ACTIVE_ORG]);
-    queueSelect([ACTIVE_PARTNER]);
-
-    expect(await isAgentTenantActive('org-1')).toBe(true);
   });
 });
 

@@ -362,8 +362,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
-    // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery)
-    const watchdogCommands = await claimPendingCommandsForDevice(device.id, 10, 'watchdog');
+    // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery).
+    // #2774 — during an offboarding drain the claim narrows to self_uninstall
+    // (targetRole 'agent' only carries it, so the watchdog claims nothing).
+    const watchdogCommands = await claimPendingCommandsForDevice(
+      device.id,
+      10,
+      'watchdog',
+      agent?.tenantDraining ? ['self_uninstall'] : undefined
+    );
 
     // Check for watchdog upgrade. Honors the tenant's watchdog pin (issue
     // #2124) via the same resolver as the main path; fail-closed to no upgrade
@@ -789,7 +796,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  const commands = await claimPendingCommandsForDevice(device.id, 10);
+  // #2774 — during an offboarding drain, the heartbeat (the primary command
+  // carrier) only delivers self_uninstall; everything else stays unclaimed.
+  const commands = await claimPendingCommandsForDevice(
+    device.id,
+    10,
+    'agent',
+    agent?.tenantDraining ? ['self_uninstall'] : undefined
+  );
 
   // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT
   // built here: partner-wide compliance policies (org_id NULL, #2129) are

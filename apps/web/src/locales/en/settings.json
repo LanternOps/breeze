@@ -2769,7 +2769,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     }
   },
   "organizationList": {
@@ -2781,7 +2782,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     },
     "columns": {
       "devices": "Devices"
@@ -2812,7 +2814,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     },
     "deviceCount": "{{count}} devices",
     "list": {

@@ -23,7 +23,7 @@ const createOrganizationSchema = (t: (key: string) => string) => z
       .min(2, t('organizationForm.validation.slugRequired'))
       .regex(/^[a-z0-9-]+$/, t('organizationForm.validation.slugFormat')),
     type: z.enum(['customer', 'internal']),
-    status: z.enum(['active', 'trial', 'suspended', 'churned']),
+    status: z.enum(['active', 'trial', 'suspended', 'churned', 'offboarding']),
     maxDevices: z.coerce
       .number({ error: t('organizationForm.validation.maxDevicesRequired') })
       .int(t('organizationForm.validation.maxDevicesInteger'))
@@ -64,7 +64,10 @@ const statusOptions = [
   { value: 'active', labelKey: 'organizationForm.status.active' },
   { value: 'trial', labelKey: 'organizationForm.status.trial' },
   { value: 'suspended', labelKey: 'organizationForm.status.suspended' },
-  { value: 'churned', labelKey: 'organizationForm.status.churned' }
+  { value: 'churned', labelKey: 'organizationForm.status.churned' },
+  // #2774 — terminal drain: users out immediately, agents kept alive just
+  // long enough to collect self_uninstall, then auto-churned.
+  { value: 'offboarding', labelKey: 'organizationForm.status.offboarding' }
 ];
 
 export default function OrganizationForm({

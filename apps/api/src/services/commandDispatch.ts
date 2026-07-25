@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands } from '../db/schema';
 
@@ -62,6 +62,10 @@ export async function claimPendingCommandsForDevice(
   deviceId: string,
   limit: number = 10,
   targetRole: 'agent' | 'watchdog' = 'agent',
+  // #2774 — when set (offboarding drain window), only commands of these types
+  // are claimable; anything else stays `pending` and is reaped/cancelled by
+  // the normal lifecycle. The drain callers pass ['self_uninstall'].
+  typeAllowlist?: readonly string[],
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
   // WebSocket never embeds command batches in frames (#2407 removed the
@@ -76,6 +80,7 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.deviceId, deviceId),
           eq(deviceCommands.status, 'pending'),
           eq(deviceCommands.targetRole, targetRole),
+          ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
         ),
       )
       .orderBy(deviceCommands.createdAt)

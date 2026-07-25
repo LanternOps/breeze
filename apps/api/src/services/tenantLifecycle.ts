@@ -28,6 +28,62 @@ export interface TenantRestorationResult {
 const TENANT_SUSPENDED_TOKEN_REASON = AGENT_TOKEN_SUSPEND_REASON.tenantSuspended;
 
 /**
+ * Expire enrollment keys for the orgs so a still-valid key can't (re-)mint a
+ * fleet. Safe ordering relative to the cache drop because the enroll path
+ * checks getActiveOrgTenant directly (uncached, see enrollment.ts), so it
+ * never admits via a stale positive cache during this window; only keys not
+ * already expired are touched.
+ */
+async function expireEnrollmentKeysForOrgIds(orgIds: string[], now: Date): Promise<number> {
+  const invalidatedKeys = await db
+    .update(enrollmentKeys)
+    .set({ expiresAt: now })
+    .where(
+      and(
+        inArray(enrollmentKeys.orgId, orgIds),
+        or(isNull(enrollmentKeys.expiresAt), gt(enrollmentKeys.expiresAt, now))
+      )
+    )
+    .returning({ id: enrollmentKeys.id });
+  return invalidatedKeys.length;
+}
+
+/**
+ * Finding #3(b): flipping status / suspending tokens only fails the NEXT auth
+ * gate — an already-established agent WS keeps its captured authorization
+ * until it happens to reconnect. Sever live sockets for devices in the
+ * affected orgs so containment is immediate, not eventual.
+ *
+ * agentWs is imported dynamically (not statically): `routes/agentWs` pulls in
+ * a large graph of services, and a static service→route edge here risks an
+ * import cycle. Dynamic import at call time is the established de-cycling
+ * pattern in this repo (agentWs itself dynamically imports its result
+ * handlers). Best-effort: socket teardown must NEVER fail the credential
+ * revocation, which is the load-bearing containment step.
+ */
+export async function disconnectLiveAgentSocketsForOrgIds(orgIds: string[], reason: string): Promise<void> {
+  if (orgIds.length === 0) return;
+  try {
+    const { disconnectAgent, getConnectedAgentIds } = await import('../routes/agentWs');
+    const connected = getConnectedAgentIds();
+    if (connected.length > 0) {
+      const connectedSet = new Set(connected);
+      const deviceRows = await db
+        .select({ agentId: devices.agentId })
+        .from(devices)
+        .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
+      for (const row of deviceRows) {
+        if (row.agentId && connectedSet.has(row.agentId)) {
+          disconnectAgent(row.agentId, 4001, reason);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[tenantLifecycle] Failed to sever live agent sockets after credential cutoff:', err);
+  }
+}
+
+/**
  * Sever the live agent fleet for a set of orgs: suspend agent tokens (so the
  * agent REST + WS auth gates fail closed immediately — ahead of the cached
  * tenant cascade) and expire enrollment keys (so a still-valid key can't
@@ -36,10 +92,14 @@ const TENANT_SUSPENDED_TOKEN_REASON = AGENT_TOKEN_SUSPEND_REASON.tenantSuspended
  * We deliberately do NOT queue `self_uninstall` here: a status change may be
  * reversible (e.g. a billing suspension), and self_uninstall is both
  * irreversible and — once the auth gate has locked the agent out — undeliverable.
+ * Deliverable remote uninstall goes through the `offboarding` drain state
+ * (services/tenantOffboarding.ts, #2774), which keeps the agent gate open in
+ * a narrowed mode and calls this only after the fleet drains or the window
+ * closes. Exported for exactly that deferred-sever path.
  * Only devices that are not already suspended are touched, so this never
  * clobbers an existing probe-suspension's reason.
  */
-async function severAgentCredentialsForOrgIds(
+export async function severAgentCredentialsForOrgIds(
   orgIds: string[]
 ): Promise<{ agentTokensSuspended: number; enrollmentKeysInvalidated: number }> {
   if (orgIds.length === 0) {
@@ -59,55 +119,39 @@ async function severAgentCredentialsForOrgIds(
     .where(and(inArray(devices.orgId, orgIds), isNull(devices.agentTokenSuspendedAt)))
     .returning({ id: devices.id });
 
-  // Expire enrollment keys after the cache drop + token suspension. Safe
-  // ordering because the enroll path checks getActiveOrgTenant directly
-  // (uncached, see enrollment.ts), so it never admits via a stale positive
-  // cache during this window; only keys not already expired are touched.
-  const invalidatedKeys = await db
-    .update(enrollmentKeys)
-    .set({ expiresAt: now })
-    .where(
-      and(
-        inArray(enrollmentKeys.orgId, orgIds),
-        or(isNull(enrollmentKeys.expiresAt), gt(enrollmentKeys.expiresAt, now))
-      )
-    )
-    .returning({ id: enrollmentKeys.id });
+  const enrollmentKeysInvalidated = await expireEnrollmentKeysForOrgIds(orgIds, now);
 
-  // Finding #3(b): suspending the token + invalidating the cache only fails the
-  // NEXT auth gate — an already-established agent WS keeps its captured
-  // authorization until it happens to reconnect. Sever live sockets for devices
-  // in the affected orgs so containment is immediate, not eventual.
-  //
-  // agentWs is imported dynamically (not statically): `routes/agentWs` pulls in
-  // a large graph of services, and a static service→route edge here risks an
-  // import cycle. Dynamic import at call time is the established de-cycling
-  // pattern in this repo (agentWs itself dynamically imports its result
-  // handlers). Best-effort: socket teardown must NEVER fail the credential
-  // revocation, which is the load-bearing containment step.
-  try {
-    const { disconnectAgent, getConnectedAgentIds } = await import('../routes/agentWs');
-    const connected = getConnectedAgentIds();
-    if (connected.length > 0) {
-      const connectedSet = new Set(connected);
-      const deviceRows = await db
-        .select({ agentId: devices.agentId })
-        .from(devices)
-        .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
-      for (const row of deviceRows) {
-        if (row.agentId && connectedSet.has(row.agentId)) {
-          disconnectAgent(row.agentId, 4001, 'Tenant suspended');
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[tenantLifecycle] Failed to sever live agent sockets after credential cutoff:', err);
-  }
+  await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant suspended');
 
   return {
     agentTokensSuspended: suspended.length,
-    enrollmentKeysInvalidated: invalidatedKeys.length,
+    enrollmentKeysInvalidated,
   };
+}
+
+/**
+ * Drain-mode counterpart of severAgentCredentialsForOrgIds (#2774): close the
+ * fleet's ATTACK surface without closing its DELIVERY surface. Expires
+ * enrollment keys (no new devices during a drain), drops the tenant cache (so
+ * the agent gate re-reads the new `offboarding` status and starts narrowing
+ * within the 60s cache TTL), and severs live WS sockets (the WS channel
+ * carries desktop/terminal/tunnel pushes that bypass device_commands — a
+ * draining tenant must not keep an interactive control channel). Agent tokens
+ * are deliberately left untouched: they are the delivery path for the queued
+ * self_uninstall.
+ */
+export async function prepareAgentDrainForOrgIds(
+  orgIds: string[]
+): Promise<{ enrollmentKeysInvalidated: number }> {
+  if (orgIds.length === 0) {
+    return { enrollmentKeysInvalidated: 0 };
+  }
+
+  await invalidateAgentTenantCache(orgIds);
+  const enrollmentKeysInvalidated = await expireEnrollmentKeysForOrgIds(orgIds, new Date());
+  await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
+
+  return { enrollmentKeysInvalidated };
 }
 
 /**
@@ -153,7 +197,22 @@ async function revokeUsers(userIds: string[]): Promise<number> {
   return uniqueUserIds.length;
 }
 
-export async function revokeOrganizationTenantAccess(orgId: string): Promise<TenantRevocationResult> {
+/**
+ * `agentChannel` (#2774): 'sever' (default) suspends agent tokens immediately
+ * — the abuse/suspension/deletion behavior. 'drain' keeps agent tokens alive
+ * (narrowed by the `offboarding` tenant state) so a queued self_uninstall is
+ * deliverable; enrollment keys still expire and live WS sockets still drop in
+ * both modes.
+ */
+export interface TenantRevocationOptions {
+  agentChannel?: 'sever' | 'drain';
+}
+
+export async function revokeOrganizationTenantAccess(
+  orgId: string,
+  options: TenantRevocationOptions = {}
+): Promise<TenantRevocationResult> {
+  const agentChannel = options.agentChannel ?? 'sever';
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgUsers = await db
@@ -165,7 +224,12 @@ export async function revokeOrganizationTenantAccess(orgId: string): Promise<Ten
         revokeApiKeysForOrgIds([orgId]),
         revokeUsers(orgUsers.map((row) => row.userId)),
         revokeAllOrgOauthArtifacts(orgId),
-        severAgentCredentialsForOrgIds([orgId]),
+        agentChannel === 'sever'
+          ? severAgentCredentialsForOrgIds([orgId])
+          : prepareAgentDrainForOrgIds([orgId]).then((drain) => ({
+            agentTokensSuspended: 0,
+            enrollmentKeysInvalidated: drain.enrollmentKeysInvalidated,
+          })),
       ]);
 
       return {
@@ -180,7 +244,11 @@ export async function revokeOrganizationTenantAccess(orgId: string): Promise<Ten
   );
 }
 
-export async function revokePartnerTenantAccess(partnerId: string): Promise<TenantRevocationResult> {
+export async function revokePartnerTenantAccess(
+  partnerId: string,
+  options: TenantRevocationOptions = {}
+): Promise<TenantRevocationResult> {
+  const agentChannel = options.agentChannel ?? 'sever';
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgRows = await db
@@ -208,7 +276,12 @@ export async function revokePartnerTenantAccess(partnerId: string): Promise<Tena
           ...orgMemberships.map((row) => row.userId),
         ]),
         revokeAllPartnerOauthArtifacts(partnerId),
-        severAgentCredentialsForOrgIds(orgIds),
+        agentChannel === 'sever'
+          ? severAgentCredentialsForOrgIds(orgIds)
+          : prepareAgentDrainForOrgIds(orgIds).then((drain) => ({
+            agentTokensSuspended: 0,
+            enrollmentKeysInvalidated: drain.enrollmentKeysInvalidated,
+          })),
       ]);
 
       return {
