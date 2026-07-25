@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -274,6 +275,17 @@ function envInt(name: string, fallback: number): number {
 const ENROLL_TOKEN_MAX_COUNT = 1000;
 const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
 
+// `count` keeps its existing ad-hoc coercion + clamp behaviour below —
+// existing clients rely on an out-of-range or non-numeric count being
+// silently floored/clamped rather than rejected (devices.test.ts:353+).
+// `ttlMinutes` is schema-validated and REJECTED when out of range: a
+// silently reduced expiry is the exact failure mode #2775/#2777 were filed
+// for, so it gets no such leniency.
+const onboardingTokenSchema = z.object({
+  count: z.unknown().optional(),
+  ttlMinutes: z.number().int().min(1).max(ENROLL_TOKEN_MAX_TTL_MINUTES).optional(),
+}).strict();
+
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
 // shared secret; otherwise the short-lived key stands on its own.
@@ -282,6 +294,7 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('json', onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');
@@ -322,16 +335,13 @@ coreRoutes.post(
     // without these the historical hard-coded single-use token failed on every
     // machine after the first. Defaults preserve the old single-use, 60-min
     // behaviour for callers that send no body.
-    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-    const rawCount = Number((body as { count?: unknown }).count);
+    const data = c.req.valid('json');
+    const rawCount = Number((data as { count?: unknown }).count);
     const maxUsage = Number.isFinite(rawCount)
       ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
       : 1;
-    const rawTtl = Number((body as { ttlMinutes?: unknown }).ttlMinutes);
-    const defaultTtlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
-    const ttlMinutes = Number.isFinite(rawTtl)
-      ? Math.min(ENROLL_TOKEN_MAX_TTL_MINUTES, Math.max(1, Math.trunc(rawTtl)))
-      : defaultTtlMinutes;
+    const ttlMinutes = data.ttlMinutes
+      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);

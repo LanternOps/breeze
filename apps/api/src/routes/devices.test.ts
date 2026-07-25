@@ -442,15 +442,61 @@ describe('device routes', () => {
       expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(1439);
       expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(1441);
 
-      // Over-cap → clamped to 365 days.
-      valuesMock = captureExpiry();
+      // Over-cap ttlMinutes is now REJECTED rather than clamped (#2777) — a
+      // silently reduced expiry is exactly the failure mode #2775 was filed
+      // for. (This sub-case used to assert a 200 with the value clamped to
+      // 525_600; that behaviour is precisely what this fix removes.)
+      captureExpiry();
       res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlMinutes: 99_999_999 })
       });
+      expect(res.status).toBe(400);
+    });
+
+    it('honours ttlMinutes from the request body', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 1, ttlMinutes: 10080 })
+      });
       expect(res.status).toBe(200);
-      expect(expiryMinutesFrom(valuesMock)).toBe(525_600);
+      const body = await res.json();
+      const ttlMs = new Date(body.expiresAt).getTime() - Date.now();
+      // 7 days, allowing 60s of test-execution drift
+      expect(ttlMs).toBeGreaterThan(10080 * 60 * 1000 - 60_000);
+      expect(ttlMs).toBeLessThan(10080 * 60 * 1000 + 60_000);
+    });
+
+    it('rejects ttlMinutes above the 525_600 cap', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 525_601 })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-numeric ttlMinutes instead of silently defaulting', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 'forever' })
+      });
+      expect(res.status).toBe(400);
     });
   });
 
