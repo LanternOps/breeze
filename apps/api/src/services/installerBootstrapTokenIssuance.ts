@@ -19,6 +19,12 @@ export interface IssueBootstrapTokenInput {
   createdByUserId: string | null;
   maxUsage?: number;
   installerPlatform?: "windows" | "macos";
+  /**
+   * Absolute lifetime for this token, in minutes, as chosen by the admin in
+   * the Add Device modal. Omitted → the 24h base from bootstrapTokenExpiresAt().
+   * Bounds are enforced upstream by the route Zod schemas (1..525_600).
+   */
+  ttlMinutes?: number;
 }
 
 export interface IssuedBootstrapToken {
@@ -67,15 +73,23 @@ export async function issueBootstrapTokenForKey(
   }
 
   const token = generateBootstrapToken();
-  // Bound the token's TTL by the parent's remaining lifetime. Without this
-  // cap, a token could be valid for 24h on paper while the parent expires
-  // 30s later — recipients would click an "active" link and get 404
-  // (parent_already_expired). Bound conservatively so consume reflects the
-  // real usable window.
-  const baseTokenExpiry = bootstrapTokenExpiresAt();
-  const expiresAt = parent.expiresAt && new Date(parent.expiresAt) < baseTokenExpiry
-    ? new Date(parent.expiresAt)
-    : baseTokenExpiry;
+  // The token gets a fresh, independent lifetime — it is NOT bounded by the
+  // parent's remaining life. The parent created by the Add Device modal is a
+  // deliberately transient 60-minute container (PR #739 review finding #1),
+  // so capping to it made every installer die in an hour whatever the admin
+  // picked (#2775). This mirrors the identical correction already made for
+  // child enrollment keys — see CHILD_ENROLLMENT_KEY_TTL_MINUTES in
+  // routes/enrollmentKeys.ts.
+  //
+  // Revocation does NOT depend on this cap: installer_bootstrap_tokens
+  // .parent_enrollment_key_id is ON DELETE CASCADE, so deleting the parent
+  // key still destroys every outstanding token immediately.
+  //
+  // Freshness at ISSUE time is still enforced by the caller via
+  // parentKeyTooCloseToExpiry().
+  const expiresAt = input.ttlMinutes !== undefined
+    ? new Date(Date.now() + input.ttlMinutes * 60 * 1000)
+    : bootstrapTokenExpiresAt();
 
   const [row] = await db.insert(installerBootstrapTokens).values({
     token,
