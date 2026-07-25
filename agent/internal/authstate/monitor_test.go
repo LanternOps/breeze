@@ -74,17 +74,24 @@ func TestMonitor_BackoffProgression(t *testing.T) {
 	}
 }
 
-func TestMonitor_BackoffCapsAt30s(t *testing.T) {
+// Derived from maxBackoff rather than a literal: the cap is tuned against the
+// heartbeat interval (see monitor.go), so pinning a number here just means this
+// test has to be edited every time the cap moves, which is how it ends up
+// asserting a stale value.
+func TestMonitor_BackoffCapsAtMaxBackoff(t *testing.T) {
 	m := NewMonitor(1)
 	for i := 0; i < 20; i++ {
 		m.RecordAuthFailure()
 	}
 	d := m.BackoffDuration()
-	if d > 36*time.Second {
-		t.Fatalf("expected backoff capped near 30s, got %v", d)
+	// BackoffDuration applies +/- jitterFrac jitter around the base.
+	upper := time.Duration(float64(maxBackoff) * (1 + jitterFrac))
+	lower := time.Duration(float64(maxBackoff) * (1 - jitterFrac))
+	if d > upper {
+		t.Fatalf("expected backoff capped at ~%v (max %v with jitter), got %v", maxBackoff, upper, d)
 	}
-	if d < 24*time.Second {
-		t.Fatalf("expected backoff near 30s cap (>=24s with jitter), got %v", d)
+	if d < lower {
+		t.Fatalf("expected backoff near the %v cap (min %v with jitter), got %v", maxBackoff, lower, d)
 	}
 }
 

@@ -9,9 +9,23 @@ import (
 
 const (
 	initialBackoff = 1 * time.Second
-	maxBackoff     = 30 * time.Second
-	backoffFactor  = 2.0
-	jitterFrac     = 0.2
+	// maxBackoff MUST stay above the heartbeat interval (default 60s, see
+	// config.HeartbeatIntervalSeconds). ShouldSkip() is evaluated once per tick
+	// and compares elapsed-since-last-failure against the backoff, so a cap at
+	// or below the tick interval means the window has always expired by the next
+	// tick and not one request is ever suppressed. At the old 30s cap the
+	// machinery ran, logged itself as backing off, and removed nothing: a
+	// permanently deauthorized agent still sent the full 1440 heartbeats/day.
+	//
+	// 30 minutes takes roughly an hour of sustained failure to reach by
+	// doubling, so a transient rejection (a deploy or restore blip) only
+	// escalates to ~60s and self-heals immediately, while a genuinely stranded
+	// agent decays to ~48 requests/day. That distinction is load-bearing: an
+	// agent whose tenant has been offboarded can no longer fetch an update, so
+	// the shipped backoff curve is the only thing that will ever throttle it.
+	maxBackoff    = 30 * time.Minute
+	backoffFactor = 2.0
+	jitterFrac    = 0.2
 )
 
 // Monitor tracks consecutive HTTP 401 responses across all agent HTTP
