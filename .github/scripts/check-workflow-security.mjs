@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 const EXTERNAL_USES_RULE = 'external-uses-must-be-sha';
 const PR_SECRET_RULE = 'pr-workflow-must-be-secret-free';
 const PR_TARGET_HEAD_RULE = 'pr-target-must-not-execute-head';
+const SIGNING_BUILD_RULE = 'signing-job-must-not-build-source';
+const SIGNING_VERIFY_RULE = 'signing-job-must-verify-artifact-before-secrets';
 const UNSUPPORTED_SYNTAX_RULE = 'unsupported-workflow-syntax';
 const PINNED_EXTERNAL_USES = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$/u;
 
@@ -576,6 +578,160 @@ function checkoutHeadRefs(lines, checkoutEntries) {
   return violations;
 }
 
+function workflowJobs(lines) {
+  const jobs = [];
+
+  for (const [index, line] of lines.entries()) {
+    if (
+      line.isBlockScalarContent
+      || !isDirectChildOfMapping(lines, index, 'jobs')
+    ) {
+      continue;
+    }
+
+    const entry = mappingEntry(line.trimmed);
+    if (!entry || entry.value !== '') {
+      continue;
+    }
+
+    let endIndex = lines.length;
+    for (let nestedIndex = index + 1; nestedIndex < lines.length; nestedIndex += 1) {
+      if (lines[nestedIndex].indent <= line.indent) {
+        endIndex = nestedIndex;
+        break;
+      }
+    }
+
+    jobs.push({
+      lines: lines.slice(index, endIndex),
+      name: entry.key,
+    });
+  }
+
+  return jobs;
+}
+
+function appleSecretReferenceLines(lines) {
+  return lines.filter((line, index) => {
+    const scalar = line.isBlockScalarContent
+      ? line.content
+      : `${line.content} ${blockScalarValue(lines, index)}`;
+    return /\bsecrets\.APPLE_[A-Za-z0-9_]+\b/u.test(
+      normalizePropertyAccess(scalar),
+    );
+  });
+}
+
+function normalizedActionName(value) {
+  const atIndex = value.lastIndexOf('@');
+  return (atIndex === -1 ? value : value.slice(0, atIndex)).toLowerCase();
+}
+
+function collapseShellContinuations(lines) {
+  const collapsed = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const firstLine = lines[index];
+    let content = firstLine.content;
+
+    while (
+      firstLine.isBlockScalarContent
+      && content.trimEnd().endsWith('\\')
+      && lines[index + 1]?.isBlockScalarContent
+      && lines[index + 1].line === lines[index].line + 1
+    ) {
+      content = (
+        `${content.trimEnd().slice(0, -1)} ${lines[index + 1].trimmed}`
+      );
+      index += 1;
+    }
+
+    collapsed.push({
+      ...firstLine,
+      content,
+      trimmed: content.trim(),
+    });
+  }
+
+  return collapsed;
+}
+
+function forbiddenSigningSourceLines(lines) {
+  const forbidden = new Map();
+
+  for (const checkout of usesEntries(lines).filter(({ value }) => (
+    normalizedActionName(value) === 'actions/checkout'
+  ))) {
+    forbidden.set(checkout.line, checkout);
+  }
+
+  const buildCommand = /\b(?:go\s+build|cargo\s+build|npm\s+run\s+build|pnpm\s+build)\b/u;
+  for (const line of collapseShellContinuations(lines)) {
+    if (
+      !line.trimmed.startsWith('#')
+      && buildCommand.test(line.content)
+    ) {
+      forbidden.set(line.line, line);
+    }
+  }
+
+  return [...forbidden.values()].sort((left, right) => left.line - right.line);
+}
+
+function developerSigningViolations(file, lines) {
+  if (path.basename(file) !== 'dev-build-agent.yml') {
+    return [];
+  }
+
+  const violations = [];
+  for (const job of workflowJobs(lines)) {
+    const appleSecrets = appleSecretReferenceLines(job.lines);
+    if (appleSecrets.length === 0) {
+      continue;
+    }
+
+    for (const line of forbiddenSigningSourceLines(job.lines)) {
+      violations.push({
+        file,
+        line: line.line,
+        rule: SIGNING_BUILD_RULE,
+        message: `developer signing job "${job.name}" must not check out or build source`,
+      });
+    }
+
+    const firstSecretLine = Math.min(...appleSecrets.map(({ line }) => line));
+    const verificationName = job.lines.find((line) => {
+      const entry = line.isBlockScalarContent
+        ? null
+        : mappingEntry(line.trimmed.replace(/^-\s*/u, ''));
+      return (
+        entry?.key === 'name'
+        && unquote(entry.value) === 'Verify unsigned artifact before secrets'
+      );
+    });
+    const checksumVerification = job.lines.find((line) => (
+      !line.trimmed.startsWith('#')
+      && line.trimmed === 'shasum -a 256 -c SHA256SUMS'
+    ));
+
+    if (
+      !verificationName
+      || !checksumVerification
+      || verificationName.line >= firstSecretLine
+      || checksumVerification.line >= firstSecretLine
+    ) {
+      violations.push({
+        file,
+        line: firstSecretLine,
+        rule: SIGNING_VERIFY_RULE,
+        message: `developer signing job "${job.name}" must verify artifact checksums before referencing Apple secrets`,
+      });
+    }
+  }
+
+  return violations;
+}
+
 function compareViolations(left, right) {
   return codePointCompare(left.file, right.file)
     || left.line - right.line
@@ -632,6 +788,8 @@ export function inspectWorkflowText(file, text) {
       });
     }
   }
+
+  violations.push(...developerSigningViolations(file, lines));
 
   return violations.sort(compareViolations);
 }

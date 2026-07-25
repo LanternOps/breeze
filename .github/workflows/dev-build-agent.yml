@@ -1,10 +1,10 @@
-name: Dev Build Agent (Signed)
+name: Dev Build Agent (Unsigned + Protected Signing)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to build from'
+        description: 'Branch, tag, or commit to build'
         required: true
         default: 'main'
       platform:
@@ -16,13 +16,10 @@ on:
           - darwin-amd64
           - all-darwin
       version:
-        description: 'Version string (e.g. dev-jit-vnc)'
+        description: 'Version label (letters, numbers, dot, plus, underscore, hyphen)'
         required: true
         default: 'dev'
 
-# Default least-privilege: this workflow only reads the repo. Per-job
-# permissions can opt into write scopes (e.g. id-token: write for
-# signing) when they actually need them.
 permissions:
   contents: read
 
@@ -30,202 +27,614 @@ env:
   GO_VERSION: '1.25.12'
 
 jobs:
-  build-arm64:
-    name: Build Agent (arm64)
-    if: inputs.platform == 'darwin-arm64' || inputs.platform == 'all-darwin'
-    runs-on: macos-latest
+  resolve:
+    name: Resolve immutable source
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      source_label: ${{ steps.resolve.outputs.source_label }}
+      main_ancestry: ${{ steps.resolve.outputs.main_ancestry }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      version: ${{ steps.resolve.outputs.version }}
+      workflow_definition_sha: ${{ steps.resolve.outputs.workflow_definition_sha }}
     steps:
-      - name: Checkout
+      - name: Resolve and validate requested source
+        id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          REQUESTED_REF: ${{ inputs.branch }}
+          REQUESTED_PLATFORM: ${{ inputs.platform }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          WORKFLOW_DEFINITION_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const requestedRef = process.env.REQUESTED_REF ?? '';
+            const requestedPlatform = process.env.REQUESTED_PLATFORM ?? '';
+            const requestedVersion = process.env.REQUESTED_VERSION ?? '';
+            const workflowDefinitionSha = process.env.WORKFLOW_DEFINITION_SHA ?? '';
+            const hasControlCharacters = (value) => [...value].some((character) => {
+              const codePoint = character.codePointAt(0);
+              return codePoint < 32 || codePoint === 127;
+            });
+            const validRefCharacters = /^[A-Za-z0-9][A-Za-z0-9._+/@-]{0,254}$/u;
+            const validVersion = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u;
+            const invalidRefShape = (
+              requestedRef.includes('..')
+              || requestedRef.includes('@{')
+              || requestedRef.includes('//')
+              || requestedRef.endsWith('/')
+              || requestedRef.endsWith('.')
+              || requestedRef.endsWith('.lock')
+            );
+
+            if (
+              hasControlCharacters(requestedRef)
+              || !validRefCharacters.test(requestedRef)
+              || invalidRefShape
+            ) {
+              core.setFailed('Requested ref contains unsupported characters or structure');
+              return;
+            }
+            if (
+              hasControlCharacters(requestedVersion)
+              || !validVersion.test(requestedVersion)
+            ) {
+              core.setFailed('Requested version must be 1-64 safe label characters');
+              return;
+            }
+            if (!['darwin-arm64', 'darwin-amd64', 'all-darwin'].includes(requestedPlatform)) {
+              core.setFailed('Requested platform is unsupported');
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/u.test(workflowDefinitionSha)) {
+              core.setFailed('Workflow definition did not resolve to an immutable commit SHA');
+              return;
+            }
+
+            const response = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: requestedRef,
+            });
+            const sourceSha = response.data.sha;
+            if (!/^[0-9a-f]{40}$/u.test(sourceSha)) {
+              core.setFailed('Requested ref did not resolve to an immutable commit SHA');
+              return;
+            }
+
+            let mainAncestry = 'unknown';
+            try {
+              const comparison = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: sourceSha,
+                head: context.payload.repository.default_branch,
+              });
+              mainAncestry = ['ahead', 'identical'].includes(comparison.data.status)
+                ? 'ancestor_or_equal'
+                : 'not_ancestor';
+            } catch (error) {
+              core.warning(`Unable to establish protected-main ancestry: ${error.message}`);
+            }
+
+            const sourceLabel = requestedRef
+              .toLowerCase()
+              .replace(/[^a-z0-9._-]+/gu, '-')
+              .replace(/^-+|-+$/gu, '')
+              .slice(0, 48) || 'source';
+            const allArchitectures = [
+              { arch: 'arm64', runner: 'macos-15' },
+              { arch: 'amd64', runner: 'macos-15-intel' },
+            ];
+            const include = requestedPlatform === 'all-darwin'
+              ? allArchitectures
+              : allArchitectures.filter(({ arch }) => requestedPlatform === `darwin-${arch}`);
+
+            core.setOutput('source_sha', sourceSha);
+            core.setOutput('source_label', sourceLabel);
+            core.setOutput('main_ancestry', mainAncestry);
+            core.setOutput('matrix', JSON.stringify({ include }));
+            core.setOutput('version', requestedVersion);
+            core.setOutput('workflow_definition_sha', workflowDefinitionSha);
+
+  build-unsigned:
+    name: Build unsigned agent (${{ matrix.arch }})
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - name: Checkout immutable source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 1
 
-      - name: Setup Go
+      - name: Verify checked-out commit
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "::error::Checked-out commit does not match the resolved source SHA"
+            exit 1
+          fi
+
+      - name: Setup Go without shared caches
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
 
       - name: Download Go dependencies
         working-directory: agent
         run: go mod download
 
-      - name: Build Agent
+      - name: Build fixed unsigned binary
         working-directory: agent
         env:
-          GOOS: darwin
-          GOARCH: arm64
+          BUILD_VERSION: ${{ needs.resolve.outputs.version }}
           CGO_ENABLED: '1'
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-          BUILD_VERSION: ${{ inputs.version }}
+          GOARCH: ${{ matrix.arch }}
+          GOOS: darwin
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o breeze-agent-darwin-arm64 \
+          set -euo pipefail
+          go build \
+            -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
+            -o "breeze-agent-darwin-${GOARCH}" \
             ./cmd/breeze-agent
 
-      - name: Import certificate into keychain
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
+      - name: Package unsigned artifact with strict provenance
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          ARTIFACT_ARCH: ${{ matrix.arch }}
+          ARTIFACT_VERSION: ${{ needs.resolve.outputs.version }}
+          MAIN_ANCESTRY: ${{ needs.resolve.outputs.main_ancestry }}
+          SOURCE_LABEL: ${{ needs.resolve.outputs.source_label }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WORKFLOW_DEFINITION_SHA: ${{ needs.resolve.outputs.workflow_definition_sha }}
         run: |
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          set -euo pipefail
+          umask 077
+          artifact_dir="$RUNNER_TEMP/unsigned-artifact"
+          binary_name="breeze-agent-darwin-${ARTIFACT_ARCH}"
+          mkdir "$artifact_dir"
+          install -m 0755 "agent/$binary_name" "$artifact_dir/$binary_name"
+          install -m 0644 \
+            agent/entitlements/agent-macos.entitlements.plist \
+            "$artifact_dir/agent-macos.entitlements.plist"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          export ARTIFACT_DIR="$artifact_dir"
+          export BINARY_NAME="$binary_name"
+          export BINARY_SHA256
+          export BINARY_SIZE
+          export ENTITLEMENTS_SHA256
+          export ENTITLEMENTS_SIZE
+          BINARY_SHA256="$(shasum -a 256 "$artifact_dir/$binary_name" | awk '{print $1}')"
+          BINARY_SIZE="$(stat -f '%z' "$artifact_dir/$binary_name")"
+          ENTITLEMENTS_SHA256="$(
+            shasum -a 256 "$artifact_dir/agent-macos.entitlements.plist" | awk '{print $1}'
+          )"
+          ENTITLEMENTS_SIZE="$(stat -f '%z' "$artifact_dir/agent-macos.entitlements.plist")"
 
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | tr -d '"')
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-          rm -f "$CERT_PATH"
+          const provenance = {
+            schemaVersion: 1,
+            repository: process.env.GITHUB_REPOSITORY,
+            workflow: 'dev-build-agent.yml',
+            workflowDefinitionSha: process.env.WORKFLOW_DEFINITION_SHA,
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            sourceSha: process.env.SOURCE_SHA,
+            sourceLabel: process.env.SOURCE_LABEL,
+            mainAncestry: process.env.MAIN_ANCESTRY,
+            architecture: process.env.ARTIFACT_ARCH,
+            version: process.env.ARTIFACT_VERSION,
+            files: {
+              binary: {
+                name: process.env.BINARY_NAME,
+                sha256: process.env.BINARY_SHA256,
+                size: Number(process.env.BINARY_SIZE),
+              },
+              entitlements: {
+                name: 'agent-macos.entitlements.plist',
+                sha256: process.env.ENTITLEMENTS_SHA256,
+                size: Number(process.env.ENTITLEMENTS_SIZE),
+              },
+            },
+          };
+          fs.writeFileSync(
+            path.join(process.env.ARTIFACT_DIR, 'provenance.json'),
+            `${JSON.stringify(provenance, null, 2)}\n`,
+            { mode: 0o644 },
+          );
+          NODE
 
-      - name: Sign binary
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        working-directory: agent
-        run: |
-          codesign --force --options runtime \
-            --entitlements entitlements/agent-macos.entitlements.plist \
-            --sign "$APPLE_SIGNING_IDENTITY" --timestamp breeze-agent-darwin-arm64
-          codesign --verify --verbose breeze-agent-darwin-arm64
-          echo "Signed: breeze-agent-darwin-arm64"
+          (
+            cd "$artifact_dir"
+            shasum -a 256 \
+              "$binary_name" \
+              agent-macos.entitlements.plist \
+              provenance.json > SHA256SUMS
+            chmod 0644 SHA256SUMS
+          )
 
-      - name: Notarize binary
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        working-directory: agent
-        run: |
-          ditto -c -k --keepParent breeze-agent-darwin-arm64 breeze-agent-darwin-arm64.zip
-
-          echo "Submitting for notarization..."
-          xcrun notarytool submit breeze-agent-darwin-arm64.zip \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
-
-          rm -f breeze-agent-darwin-arm64.zip
-          echo "Notarized: breeze-agent-darwin-arm64"
-
-      - name: Upload artifact
+      - name: Upload immutable unsigned artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: breeze-agent-darwin-arm64
-          path: agent/breeze-agent-darwin-arm64
+          name: unsigned-breeze-agent-${{ matrix.arch }}-${{ needs.resolve.outputs.source_sha }}
+          path: ${{ runner.temp }}/unsigned-artifact/
+          if-no-files-found: error
           retention-days: 7
 
-      - name: Cleanup keychain
-        if: always() && vars.ENABLE_MACOS_SIGNING == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
-
-  build-amd64:
-    name: Build Agent (amd64)
-    if: inputs.platform == 'darwin-amd64' || inputs.platform == 'all-darwin'
-    runs-on: macos-latest
+  sign-notarize:
+    name: Sign and notarize agent (${{ matrix.arch }})
+    needs: [resolve, build-unsigned]
+    # The global incident kill switch and the developer-workflow opt-in must
+    # both be explicitly enabled. Absence or false on either keeps signing off.
+    if: >-
+      ${{
+        vars.ENABLE_MACOS_SIGNING == 'true' &&
+        vars.ENABLE_DEV_MACOS_SIGNING == 'true' &&
+        github.ref == 'refs/heads/main' &&
+        needs.resolve.outputs.main_ancestry == 'ancestor_or_equal'
+      }}
+    environment: macos-signing
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download exact unsigned artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          ref: ${{ inputs.branch }}
+          name: unsigned-breeze-agent-${{ matrix.arch }}-${{ needs.resolve.outputs.source_sha }}
+          path: ${{ runner.temp }}/unsigned-artifact
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
-
-      - name: Download Go dependencies
-        working-directory: agent
-        run: go mod download
-
-      - name: Build Agent
-        working-directory: agent
+      - name: Verify unsigned artifact before secrets
+        id: verify
+        working-directory: ${{ runner.temp }}/unsigned-artifact
         env:
-          GOOS: darwin
-          GOARCH: amd64
-          CGO_ENABLED: '1'
-          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-          BUILD_VERSION: ${{ inputs.version }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_ANCESTRY: ${{ needs.resolve.outputs.main_ancestry }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SOURCE_LABEL: ${{ needs.resolve.outputs.source_label }}
+          EXPECTED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+          EXPECTED_WORKFLOW_DEFINITION_SHA: ${{ needs.resolve.outputs.workflow_definition_sha }}
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o breeze-agent-darwin-amd64 \
-            ./cmd/breeze-agent
+          set -euo pipefail
+          umask 077
+          binary_name="breeze-agent-darwin-${EXPECTED_ARCH}"
+          expected_files="$RUNNER_TEMP/expected-files-${EXPECTED_ARCH}.txt"
+          actual_files="$RUNNER_TEMP/actual-files-${EXPECTED_ARCH}.txt"
+          printf '%s\n' \
+            SHA256SUMS \
+            agent-macos.entitlements.plist \
+            "$binary_name" \
+            provenance.json \
+            | LC_ALL=C sort > "$expected_files"
 
-      - name: Import certificate into keychain
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
+          if find . -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "::error::Unsigned artifact contains a symlink, directory, or special file"
+            exit 1
+          fi
+          find . -mindepth 1 -maxdepth 1 -type f -exec basename {} \; \
+            | LC_ALL=C sort > "$actual_files"
+          if ! cmp -s "$expected_files" "$actual_files"; then
+            echo "::error::Unsigned artifact has missing or unexpected files"
+            diff -u "$expected_files" "$actual_files" || true
+            exit 1
+          fi
+
+          for required_file in \
+            "$binary_name" \
+            agent-macos.entitlements.plist \
+            provenance.json \
+            SHA256SUMS
+          do
+            if [[ ! -s "$required_file" ]]; then
+              echo "::error::Unsigned artifact file is missing or empty: $required_file"
+              exit 1
+            fi
+          done
+
+          binary_size="$(stat -f '%z' "$binary_name")"
+          entitlements_size="$(stat -f '%z' agent-macos.entitlements.plist)"
+          provenance_size="$(stat -f '%z' provenance.json)"
+          checksums_size="$(stat -f '%z' SHA256SUMS)"
+          if (( binary_size < 1000000 || binary_size > 209715200 )); then
+            echo "::error::Unsigned binary size is outside the allowed range"
+            exit 1
+          fi
+          if (( entitlements_size < 64 || entitlements_size > 65536 )); then
+            echo "::error::Entitlements size is outside the allowed range"
+            exit 1
+          fi
+          if (( provenance_size < 128 || provenance_size > 65536 )); then
+            echo "::error::Provenance size is outside the allowed range"
+            exit 1
+          fi
+          if (( checksums_size < 128 || checksums_size > 4096 )); then
+            echo "::error::Checksum manifest size is outside the allowed range"
+            exit 1
+          fi
+
+          export BINARY_NAME="$binary_name"
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+
+          function fail(message) {
+            throw new Error(message);
+          }
+          function exactKeys(value, expected, label) {
+            const actual = Object.keys(value).sort();
+            const wanted = [...expected].sort();
+            if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
+              fail(`${label} contains missing or unexpected fields`);
+            }
+          }
+          function digest(file) {
+            return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          }
+
+          const manifestText = fs.readFileSync('SHA256SUMS', 'utf8');
+          if (!manifestText.endsWith('\n')) {
+            fail('SHA256SUMS must end with exactly one complete line');
+          }
+          const manifestLines = manifestText.slice(0, -1).split('\n');
+          if (manifestLines.length !== 3) {
+            fail('SHA256SUMS must contain exactly three entries');
+          }
+          const expectedNames = [
+            process.env.BINARY_NAME,
+            'agent-macos.entitlements.plist',
+            'provenance.json',
+          ];
+          const checksums = new Map();
+          for (const [index, line] of manifestLines.entries()) {
+            const match = /^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$/u.exec(line);
+            if (!match || match[2] !== expectedNames[index] || checksums.has(match[2])) {
+              fail('SHA256SUMS contains an invalid, duplicate, or out-of-order entry');
+            }
+            checksums.set(match[2], match[1]);
+          }
+          for (const file of expectedNames) {
+            if (checksums.get(file) !== digest(file)) {
+              fail(`Checksum mismatch for ${file}`);
+            }
+          }
+          NODE
+
+          shasum -a 256 -c SHA256SUMS
+
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+
+          function fail(message) {
+            throw new Error(message);
+          }
+          function exactKeys(value, expected, label) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              fail(`${label} must be an object`);
+            }
+            const actual = Object.keys(value).sort();
+            const wanted = [...expected].sort();
+            if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
+              fail(`${label} contains missing or unexpected fields`);
+            }
+          }
+          function digest(file) {
+            return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          }
+
+          const provenance = JSON.parse(fs.readFileSync('provenance.json', 'utf8'));
+          exactKeys(provenance, [
+            'architecture',
+            'files',
+            'mainAncestry',
+            'repository',
+            'runAttempt',
+            'runId',
+            'schemaVersion',
+            'sourceLabel',
+            'sourceSha',
+            'version',
+            'workflow',
+            'workflowDefinitionSha',
+          ], 'provenance');
+          const expectedValues = {
+            architecture: process.env.EXPECTED_ARCH,
+            mainAncestry: process.env.EXPECTED_ANCESTRY,
+            repository: process.env.EXPECTED_REPOSITORY,
+            runAttempt: process.env.EXPECTED_RUN_ATTEMPT,
+            runId: process.env.EXPECTED_RUN_ID,
+            sourceLabel: process.env.EXPECTED_SOURCE_LABEL,
+            sourceSha: process.env.EXPECTED_SOURCE_SHA,
+            version: process.env.EXPECTED_VERSION,
+            workflowDefinitionSha: process.env.EXPECTED_WORKFLOW_DEFINITION_SHA,
+          };
+          if (provenance.schemaVersion !== 1 || provenance.workflow !== 'dev-build-agent.yml') {
+            fail('Provenance schema or workflow identity is invalid');
+          }
+          for (const [field, expected] of Object.entries(expectedValues)) {
+            if (provenance[field] !== expected) {
+              fail(`Provenance ${field} does not match this workflow run`);
+            }
+          }
+          if (provenance.mainAncestry !== 'ancestor_or_equal') {
+            fail('Signing requires protected-main ancestor_or_equal provenance');
+          }
+
+          exactKeys(provenance.files, ['binary', 'entitlements'], 'provenance files');
+          const expectedFiles = {
+            binary: process.env.BINARY_NAME,
+            entitlements: 'agent-macos.entitlements.plist',
+          };
+          for (const [kind, name] of Object.entries(expectedFiles)) {
+            const descriptor = provenance.files[kind];
+            exactKeys(descriptor, ['name', 'sha256', 'size'], `${kind} descriptor`);
+            if (
+              descriptor.name !== name
+              || descriptor.sha256 !== digest(name)
+              || descriptor.size !== fs.statSync(name).size
+            ) {
+              fail(`Provenance ${kind} digest, size, or name is invalid`);
+            }
+          }
+          NODE
+
+          plutil -lint agent-macos.entitlements.plist
+          if ! file "$binary_name" | grep -q 'Mach-O'; then
+            echo "::error::Unsigned artifact is not a Mach-O binary"
+            exit 1
+          fi
+          expected_macho_arch="$EXPECTED_ARCH"
+          if [[ "$expected_macho_arch" == 'amd64' ]]; then
+            expected_macho_arch='x86_64'
+          fi
+          lipo -verify_arch "$expected_macho_arch" "$binary_name"
+          echo 'verified=true' >> "$GITHUB_OUTPUT"
+
+      - name: Import certificate into ephemeral keychain
+        if: steps.verify.outputs.verified == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          set -euo pipefail
+          umask 077
+          cert_path="$RUNNER_TEMP/dev-signing-certificate.p12"
+          keychain_path="$RUNNER_TEMP/dev-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          rm -f "$cert_path"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | tr -d '"')
-
-          rm -f "$CERT_PATH"
-
-      - name: Sign binary
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
+      - name: Sign verified binary in place
+        if: steps.verify.outputs.verified == 'true'
+        working-directory: ${{ runner.temp }}/unsigned-artifact
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        working-directory: agent
+          SIGNING_ARCH: ${{ matrix.arch }}
         run: |
-          codesign --force --options runtime \
-            --entitlements entitlements/agent-macos.entitlements.plist \
-            --sign "$APPLE_SIGNING_IDENTITY" --timestamp breeze-agent-darwin-amd64
-          codesign --verify --verbose breeze-agent-darwin-amd64
-          echo "Signed: breeze-agent-darwin-amd64"
+          set -euo pipefail
+          binary_name="breeze-agent-darwin-${SIGNING_ARCH}"
+          mv SHA256SUMS UNSIGNED_SHA256SUMS
+          codesign \
+            --force \
+            --options runtime \
+            --entitlements agent-macos.entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --timestamp \
+            "$binary_name"
+          codesign --verify --strict --verbose=2 "$binary_name"
 
-      - name: Notarize binary
-        if: vars.ENABLE_MACOS_SIGNING == 'true'
+      - name: Notarize and require Accepted status
+        if: steps.verify.outputs.verified == 'true'
+        working-directory: ${{ runner.temp }}/unsigned-artifact
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        working-directory: agent
+          SIGNING_ARCH: ${{ matrix.arch }}
         run: |
-          ditto -c -k --keepParent breeze-agent-darwin-amd64 breeze-agent-darwin-amd64.zip
-
-          echo "Submitting for notarization..."
-          xcrun notarytool submit breeze-agent-darwin-amd64.zip \
+          set -euo pipefail
+          binary_name="breeze-agent-darwin-${SIGNING_ARCH}"
+          zip_path="$RUNNER_TEMP/${binary_name}.zip"
+          ditto -c -k --keepParent "$binary_name" "$zip_path"
+          xcrun notarytool submit "$zip_path" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 30m
+            --wait \
+            --timeout 30m \
+            --output-format json > notarization.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const result = JSON.parse(fs.readFileSync('notarization.json', 'utf8'));
+          if (result.status !== 'Accepted') {
+            throw new Error(`Apple notarization was not accepted: ${result.status ?? 'missing'}`);
+          }
+          NODE
+          rm -f "$zip_path"
 
-          rm -f breeze-agent-darwin-amd64.zip
-          echo "Notarized: breeze-agent-darwin-amd64"
+      - name: Write signed checksums and notarization metadata
+        if: steps.verify.outputs.verified == 'true'
+        working-directory: ${{ runner.temp }}/unsigned-artifact
+        env:
+          SIGNING_ARCH: ${{ matrix.arch }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          binary_name="breeze-agent-darwin-${SIGNING_ARCH}"
+          shasum -a 256 "$binary_name" > SIGNED_SHA256SUMS
+          export BINARY_NAME="$binary_name"
+          export SIGNED_SHA256
+          SIGNED_SHA256="$(awk '{print $1}' SIGNED_SHA256SUMS)"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const notarization = JSON.parse(fs.readFileSync('notarization.json', 'utf8'));
+          const metadata = {
+            schemaVersion: 1,
+            sourceSha: process.env.SOURCE_SHA,
+            architecture: process.env.SIGNING_ARCH,
+            binary: process.env.BINARY_NAME,
+            signedSha256: process.env.SIGNED_SHA256,
+            notarization: {
+              id: notarization.id,
+              status: notarization.status,
+            },
+          };
+          fs.writeFileSync(
+            'signed-provenance.json',
+            `${JSON.stringify(metadata, null, 2)}\n`,
+            { mode: 0o644 },
+          );
+          NODE
 
-      - name: Upload artifact
+      - name: Upload immutable signed artifact
+        if: steps.verify.outputs.verified == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: breeze-agent-darwin-amd64
-          path: agent/breeze-agent-darwin-amd64
+          name: signed-breeze-agent-${{ matrix.arch }}-${{ needs.resolve.outputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/unsigned-artifact/breeze-agent-darwin-${{ matrix.arch }}
+            ${{ runner.temp }}/unsigned-artifact/agent-macos.entitlements.plist
+            ${{ runner.temp }}/unsigned-artifact/provenance.json
+            ${{ runner.temp }}/unsigned-artifact/UNSIGNED_SHA256SUMS
+            ${{ runner.temp }}/unsigned-artifact/SIGNED_SHA256SUMS
+            ${{ runner.temp }}/unsigned-artifact/notarization.json
+            ${{ runner.temp }}/unsigned-artifact/signed-provenance.json
+          if-no-files-found: error
           retention-days: 7
 
-      - name: Cleanup keychain
-        if: always() && vars.ENABLE_MACOS_SIGNING == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+      - name: Cleanup ephemeral signing material
+        if: always()
+        env:
+          CLEANUP_ARCH: ${{ matrix.arch }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/dev-signing.keychain-db" || true
+          rm -f \
+            "$RUNNER_TEMP/dev-signing-certificate.p12" \
+            "$RUNNER_TEMP/breeze-agent-darwin-${CLEANUP_ARCH}.zip"

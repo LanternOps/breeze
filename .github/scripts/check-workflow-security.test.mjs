@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -586,4 +587,183 @@ jobs:
       .some(({ rule }) => rule === 'pr-target-must-not-execute-head'),
     true,
   );
+});
+
+function developerSigningWorkflow(signingSteps) {
+  return `name: Developer signing
+on: workflow_dispatch
+jobs:
+  sign-notarize:
+    runs-on: macos-15
+    steps:
+${signingSteps}
+`;
+}
+
+test('rejects checkout in an Apple-secret developer signing job', () => {
+  const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+      - uses: ${pinnedCheckout}
+      - name: Import certificate
+        env:
+          APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+        run: security import certificate.p12
+`);
+
+  const violations = inspectWorkflowText('dev-build-agent.yml', text);
+
+  assert.equal(
+    violations.some(({ line, rule }) => (
+      line === 9 && rule === 'signing-job-must-not-build-source'
+    )),
+    true,
+  );
+});
+
+test('rejects source build commands in an Apple-secret developer signing job', () => {
+  for (const command of [
+    'go build ./cmd/breeze-agent',
+    'cargo build --release',
+    'npm run build',
+    'pnpm build',
+  ]) {
+    const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+      - name: Build source
+        run: ${command}
+      - name: Import certificate
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: echo signing
+`);
+
+    assert.equal(
+      inspectWorkflowText('dev-build-agent.yml', text)
+        .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+      true,
+      command,
+    );
+  }
+});
+
+test('requires checksum verification before the first Apple secret reference', () => {
+  const missingVerification = developerSigningWorkflow(`      - name: Import certificate
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: echo signing
+`);
+  const lateVerification = developerSigningWorkflow(`      - name: Import certificate
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: echo signing
+      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+`);
+
+  for (const text of [missingVerification, lateVerification]) {
+    assert.equal(
+      inspectWorkflowText('dev-build-agent.yml', text)
+        .some(({ rule }) => (
+          rule === 'signing-job-must-verify-artifact-before-secrets'
+        )),
+      true,
+    );
+  }
+});
+
+test('accepts an Apple-secret developer signing job that only verifies and signs', () => {
+  const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: |
+          shasum -a 256 -c SHA256SUMS
+          plutil -lint agent-macos.entitlements.plist
+      - name: Import certificate
+        env:
+          APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+        run: security import certificate.p12
+      - name: Sign binary
+        env:
+          APPLE_SIGNING_IDENTITY: \${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: codesign --sign "$APPLE_SIGNING_IDENTITY" breeze-agent
+`);
+
+  assert.deepEqual(inspectWorkflowText('dev-build-agent.yml', text), []);
+});
+
+test('does not apply the developer signing split rule to release workflows', () => {
+  const text = developerSigningWorkflow(`      - uses: ${pinnedCheckout}
+      - name: Build and sign release
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: go build ./cmd/breeze-agent
+`);
+
+  assert.deepEqual(inspectWorkflowText('release.yml', text), []);
+});
+
+test('rejects case-variant checkout in an Apple-secret developer signing job', () => {
+  const caseVariantCheckout = pinnedCheckout.replace(
+    'actions/checkout',
+    'Actions/Checkout',
+  );
+  const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+      - uses: ${caseVariantCheckout}
+      - name: Import certificate
+        env:
+          APPLE_CERTIFICATE: \${{ secrets.APPLE_CERTIFICATE }}
+        run: security import certificate.p12
+`);
+
+  assert.equal(
+    inspectWorkflowText('dev-build-agent.yml', text)
+      .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+    true,
+  );
+});
+
+test('rejects shell-continuation build commands in developer signing jobs', () => {
+  const commands = [
+    `go \\
+            build ./cmd/breeze-agent`,
+    `cargo \\
+            build --release`,
+    `npm run \\
+            build`,
+    `pnpm \\
+            build`,
+  ];
+
+  for (const command of commands) {
+    const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
+        run: shasum -a 256 -c SHA256SUMS
+      - name: Hidden build
+        run: |
+          ${command}
+      - name: Import certificate
+        env:
+          APPLE_ID: \${{ secrets.APPLE_ID }}
+        run: echo signing
+`);
+
+    assert.equal(
+      inspectWorkflowText('dev-build-agent.yml', text)
+        .some(({ rule }) => rule === 'signing-job-must-not-build-source'),
+      true,
+      command,
+    );
+  }
+});
+
+test('developer signing requires global and developer-specific kill switches', () => {
+  const workflowText = readFileSync(
+    new URL('../workflows/dev-build-agent.yml', import.meta.url),
+    'utf8',
+  );
+  const signingCondition = workflowText.slice(
+    workflowText.indexOf('  sign-notarize:'),
+    workflowText.indexOf('    environment: macos-signing'),
+  );
+
+  assert.match(signingCondition, /vars\.ENABLE_MACOS_SIGNING == 'true'/u);
+  assert.match(signingCondition, /vars\.ENABLE_DEV_MACOS_SIGNING == 'true'/u);
 });
