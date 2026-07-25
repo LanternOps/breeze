@@ -15,7 +15,14 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { resolveEdrInstaller, type ResolvedInstaller } from '../services/edrInstallerResolver';
-import { uploadBinary, getPresignedUrl, isS3Configured, isS3NotFound } from '../services/s3Storage';
+import {
+  uploadBinary,
+  getPresignedUrl,
+  isS3Configured,
+  isS3NotFound,
+  S3ConfigError,
+  S3OperationError,
+} from '../services/s3Storage';
 import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import {
   parseStreamingMultipart,
@@ -893,8 +900,33 @@ softwareRoutes.post(
       const versionId = randomUUID();
       const s3Key = `software/${orgId}/${catalogId}/${versionId}/${originalFileName}`;
 
-      // Upload to S3
-      await uploadBinary(tempPath, s3Key, checksum);
+      // Upload to S3. Previously a bare call, so any storage fault (bad
+      // credentials, missing bucket, unreachable endpoint, MinIO TLS mismatch,
+      // region mismatch) reached the global handler as an opaque
+      // `500 Internal Server Error` and a self-hoster had no path from the
+      // symptom to a cause (#2794). Map it to a status that says whose problem
+      // it is, carrying the operator-actionable hint.
+      try {
+        await uploadBinary(tempPath, s3Key, checksum);
+      } catch (err) {
+        captureException(err, c);
+        // Misconfigured env => 503, matching the isS3Configured() gate above.
+        if (err instanceof S3ConfigError) {
+          return c.json({ error: err.message }, 503);
+        }
+        // Storage reachable-ish but failing => 502. The message is curated in
+        // classifyS3Failure and never echoes raw provider output.
+        if (err instanceof S3OperationError) {
+          return c.json({ error: err.message, storageFailure: err.failureCode }, 502);
+        }
+        return c.json(
+          {
+            error:
+              'Upload to object storage failed before the request was sent. Check the API server logs for details.',
+          },
+          502
+        );
+      }
 
       const versionRecord = await insertLatestSoftwareVersion(catalogId, {
         id: versionId,
