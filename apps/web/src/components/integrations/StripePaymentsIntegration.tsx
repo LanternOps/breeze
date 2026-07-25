@@ -157,8 +157,9 @@ export default function StripePaymentsIntegration() {
                   className="text-muted-foreground"
                   data-testid="stripe-connect-key-last4"
                 >
-                  {t("stripePaymentsIntegration.key")}
-                  {state.last4}
+                  {t("stripePaymentsIntegration.key", {
+                    last4: state.last4,
+                  })}
                 </span>
               ) : null}
               <span

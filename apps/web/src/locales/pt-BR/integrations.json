@@ -95,7 +95,7 @@
     "slack": "Folga",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Conecte um espaço de trabalho com OAuth e publique alertas nos canais. ",
     "workspace": "Espaço de trabalho",
-    "workspaceID": "ID do espaço de trabalho: ",
+    "workspaceID": "ID do espaço de trabalho: {{id}}",
     "connectWorkspace": "Conectar espaço de trabalho ",
     "oauthRedirectStartsWhenYouConnectASlack": "O redirecionamento OAuth começa quando você conecta um workspace do Slack. ",
     "defaultChannel": "Canal padrão",
@@ -265,10 +265,7 @@
     "unmap": "Desmapear ",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "Nenhuma organização de Caçadoras foi descoberta ainda. Salve as credenciais e execute Sincronizar agora. ",
     "noOrganizationsMatchTheCurrentFilter": "Nenhuma organização corresponde ao filtro atual. ",
-    "showing": "Mostrando ",
-    "of": "de ",
     "previous": "Anterior ",
-    "page": "Página ",
     "next": "Próximo ",
     "recentIncidents": "Incidentes recentes",
     "liveStatusError": "Não foi possível carregar completamente o status atual do Huntress. Os dados de cobertura e incidentes abaixo podem estar incompletos ou desatualizados.",
@@ -307,7 +304,9 @@
     "update": "Atualizar",
     "saveAndConnect": "Salvar e conectar",
     "unknownTime": "Horário desconhecido",
-    "askAdminToConnect": "O Huntress é configurado uma única vez no nível do parceiro e compartilhado com todas as organizações. Peça ao administrador do seu MSP para conectá-lo."
+    "askAdminToConnect": "O Huntress é configurado uma única vez no nível do parceiro e compartilhado com todas as organizações. Peça ao administrador do seu MSP para conectá-lo.",
+    "showingRange": "Mostrando {{start}}–{{end}} de {{total}}",
+    "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -728,7 +727,7 @@
     "stripeDashboard": "Painel de listras ",
     "loadingStripeConnection": "Carregando conexão Stripe…",
     "couldNotLoadStripeConnection": "Não foi possível carregar a conexão Stripe.",
-    "key": "chave •••• ",
+    "key": "chave •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_… ou rk_live_…",
     "connected": "Conectado",
     "live": "Produção",
@@ -878,15 +877,14 @@
     "loadingWebhooks": "Carregando webhooks...",
     "tryAgain": "Tente novamente ",
     "webhooks": "Webhooks",
-    "endpoints": "pontos finais, ",
-    "averageSuccessRate": "% taxa média de sucesso ",
     "addWebhook": "Adicionar webhook ",
     "events": "Eventos",
     "lastTriggered": "Último acionado",
     "successRate": "Taxa de sucesso",
     "anErrorOccurred": "Ocorreu um erro",
     "justNow": "Agora mesmo",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} pontos finais, {{successRate}}% taxa média de sucesso"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "Falha ao buscar o histórico de testes",

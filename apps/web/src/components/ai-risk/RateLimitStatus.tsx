@@ -148,8 +148,7 @@ function RateLimitCategoryGroup({
                       <span
                         className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${TIER_BADGE[cfg.tier]}`}
                       >
-                        {t("aiRiskRateLimitStatus.t")}
-                        {cfg.tier}
+                        {t("aiRiskRateLimitStatus.t", { tier: cfg.tier })}
                       </span>
                     </td>
                     <td className="py-2 font-mono text-muted-foreground">

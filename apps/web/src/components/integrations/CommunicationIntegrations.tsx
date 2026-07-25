@@ -555,8 +555,9 @@ export default function CommunicationIntegrations() {
                     {slackWorkspaceName ? slackWorkspaceName : "Not connected"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {t("communicationIntegrations.workspaceID")}
-                    {slackWorkspaceId || "Pending connection"}
+                    {t("communicationIntegrations.workspaceID", {
+                      id: slackWorkspaceId || "Pending connection",
+                    })}
                   </p>
                 </div>
                 <button

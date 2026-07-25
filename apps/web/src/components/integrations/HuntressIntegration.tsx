@@ -1276,14 +1276,14 @@ export default function HuntressIntegration() {
           {filteredOrgs.length > MAPPING_PAGE_SIZE && (
             <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
               <span>
-                {t("huntressIntegration.showing")}
-                {safePage * MAPPING_PAGE_SIZE + 1}–
-                {Math.min(
-                  (safePage + 1) * MAPPING_PAGE_SIZE,
-                  filteredOrgs.length,
-                )}{" "}
-                {t("huntressIntegration.of")}
-                {filteredOrgs.length}
+                {t("huntressIntegration.showingRange", {
+                  start: safePage * MAPPING_PAGE_SIZE + 1,
+                  end: Math.min(
+                    (safePage + 1) * MAPPING_PAGE_SIZE,
+                    filteredOrgs.length,
+                  ),
+                  total: filteredOrgs.length,
+                })}
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -1297,9 +1297,10 @@ export default function HuntressIntegration() {
                   {t("huntressIntegration.previous")}
                 </button>
                 <span className="text-foreground">
-                  {t("huntressIntegration.page")}
-                  {safePage + 1} {t("huntressIntegration.of")}
-                  {pageCount}
+                  {t("huntressIntegration.pageOf", {
+                    current: safePage + 1,
+                    total: pageCount,
+                  })}
                 </span>
                 <button
                   type="button"
