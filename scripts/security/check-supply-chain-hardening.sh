@@ -461,4 +461,21 @@ require_grep 'not\.toContain.*AGENT_BINARY_DIR' apps/api/src/routes/agents/downl
 require_grep 'not\.toContain.*VIEWER_BINARY_DIR' apps/api/src/routes/viewers/download.test.ts \
   "viewer public 404 tests must assert VIEWER_BINARY_DIR is not disclosed"
 
+# The ~50 transitive pins in `pnpm.overrides` are hand-maintained and rot
+# silently: a stale pin is indistinguishable from real coverage by inspection,
+# so the tell-tale has been Trivy re-redding months later (#704, #2694, #2699,
+# #2714, #2783). This asserts the pins still bind against the resolutions in
+# pnpm-lock.yaml; it does not replace the advisory scanners (osv-scanner,
+# Trivy), which are the only things that know a version is vulnerable.
+# Run from here rather than as its own CI step so the guard travels with every
+# caller of this script. See issue #2716.
+command -v node >/dev/null 2>&1 || fail "node is required to audit pnpm.overrides floors"
+# Drift check first: it prints the per-class diagnosis, so it should be the
+# failure a maintainer sees rather than the guard's own unit suite (which also
+# audits the live files, and would otherwise trip first on the same drift).
+node scripts/security/check-override-floors.mjs ||
+  fail "pnpm.overrides contains stale or dead pins (detail: node scripts/security/check-override-floors.mjs --report)"
+node --test scripts/security/check-override-floors.test.mjs >/dev/null ||
+  fail "pnpm.overrides floor guard has failing unit tests (run: pnpm test:override-floors)"
+
 echo "Supply-chain hardening checks passed."
