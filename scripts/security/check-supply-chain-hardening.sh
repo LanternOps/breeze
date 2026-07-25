@@ -429,6 +429,14 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile; do
   require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$dockerfile" \
     "$dockerfile must digest-pin the production Node runner image while retaining the tag for Dependabot refreshes"
 done
+for dockerfile in docker/Dockerfile.api docker/Dockerfile.web; do
+  require_grep '/usr/local/lib/node_modules/pnpm' "$dockerfile" \
+    "$dockerfile must remove unused pnpm dependencies from the production runner"
+  require_grep '/usr/local/bin/pnpm' "$dockerfile" \
+    "$dockerfile must remove the unused pnpm binary from the production runner"
+  require_grep '/usr/local/bin/pnpx' "$dockerfile" \
+    "$dockerfile must remove the unused pnpx binary from the production runner"
+done
 
 require_grep '/run/secrets/metrics_scrape_token' monitoring/prometheus.yml \
   "Prometheus config must read metrics scrape token from a secret file"

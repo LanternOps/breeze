@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -782,4 +782,68 @@ test('pull requests run the confidential pattern scan without repository secrets
   assert.match(jobText, /bash scripts\/security\/scan-confidential\.sh --all/u);
   assert.doesNotMatch(jobText, /\bsecrets(?:\.|\[)/u);
   assert.doesNotMatch(jobText, /CONFIDENTIAL_DENYLIST/u);
+});
+
+test('all repository checkout steps disable credential persistence', () => {
+  const workflowDirectory = new URL('../workflows/', import.meta.url);
+  const failures = [];
+
+  for (const filename of readdirSync(workflowDirectory).filter((name) => (
+    /\.ya?ml$/u.test(name)
+  ))) {
+    const sourceLines = readFileSync(
+      new URL(filename, workflowDirectory),
+      'utf8',
+    ).split(/\r?\n/u);
+
+    for (const [checkoutIndex, checkoutLine] of sourceLines.entries()) {
+      if (!/\buses:\s*actions\/checkout@/u.test(checkoutLine)) {
+        continue;
+      }
+
+      const checkoutIndent = checkoutLine.match(/^\s*/u)[0].length;
+      let stepStart = checkoutIndex;
+      while (
+        stepStart > 0
+        && !(
+          sourceLines[stepStart].trimStart().startsWith('-')
+          && sourceLines[stepStart].match(/^\s*/u)[0].length <= checkoutIndent
+        )
+      ) {
+        stepStart -= 1;
+      }
+      const stepIndent = sourceLines[stepStart].match(/^\s*/u)[0].length;
+      let stepEnd = checkoutIndex + 1;
+      while (
+        stepEnd < sourceLines.length
+        && !(
+          sourceLines[stepEnd].trimStart().startsWith('-')
+          && sourceLines[stepEnd].match(/^\s*/u)[0].length === stepIndent
+        )
+      ) {
+        stepEnd += 1;
+      }
+
+      if (!/persist-credentials:\s*false/u.test(
+        sourceLines.slice(stepStart, stepEnd).join('\n'),
+      )) {
+        failures.push(`${filename}:${checkoutIndex + 1}`);
+      }
+    }
+  }
+
+  assert.deepEqual(failures, []);
+});
+
+test('community README push uses an ephemeral credential helper', () => {
+  const workflowText = readFileSync(
+    new URL('../workflows/update-community-readme.yml', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(
+    workflowText,
+    /git -c credential\.helper= -c 'credential\.helper=!f\(\).*push origin HEAD:main/su,
+  );
+  assert.doesNotMatch(workflowText, /persist-credentials:\s*true/u);
 });
