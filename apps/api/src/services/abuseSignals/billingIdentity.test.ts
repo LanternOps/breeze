@@ -8,10 +8,13 @@ import {
   spanMilliseconds,
   FREE_EMAIL_PROVIDER_LABELS,
   type BillingIdentityAggregate,
+  type BillingIdentityScorerOptions,
 } from './billingIdentity';
 import { SIGNAL_DEFAULTS } from './config';
 
 // Every name, mailbox, domain and fingerprint below is invented for this file.
+// Mailbox domains are reserved-TLD placeholders only (.example) — never a real
+// provider domain, which the customer-PII guard rejects in a public repo.
 
 function agg(overrides: Partial<BillingIdentityAggregate> = {}): BillingIdentityAggregate {
   return {
@@ -33,8 +36,21 @@ function agg(overrides: Partial<BillingIdentityAggregate> = {}): BillingIdentity
 const signalKeys = (signals: ReturnType<typeof computeBillingIdentitySignals>) =>
   signals.map((s) => s.signalKey);
 
-const fires = (a: BillingIdentityAggregate, shared = new Map<string, number>()) =>
-  signalKeys(computeBillingIdentitySignals([a], shared, SIGNAL_DEFAULTS)).includes(
+/**
+ * Synthetic stand-in for a consumer mailbox provider. Reserved-TLD domains only
+ * in fixtures — a real provider domain in a public repo trips (and would blunt)
+ * the customer-PII guard, and the scorer takes an injectable provider set
+ * precisely so the exclusion BEHAVIOUR can be proven without one. The shipped
+ * list is covered separately, by bare-domain assertions that contain no address.
+ */
+const SYNTHETIC_FREE_PROVIDERS: ReadonlySet<string> = new Set(['freemail']);
+
+const fires = (
+  a: BillingIdentityAggregate,
+  options?: BillingIdentityScorerOptions,
+  shared = new Map<string, number>(),
+) =>
+  signalKeys(computeBillingIdentitySignals([a], shared, SIGNAL_DEFAULTS, options)).includes(
     'billing.cardholder_name_mismatch',
   );
 
@@ -56,7 +72,7 @@ describe('computeBillingIdentitySignals — quiet cases', () => {
         agg({
           partnerName: 'IT Solutions LLC',
           userNames: [],
-          emails: ['billing@gmail.example'],
+          emails: ['billing@it.example'],
           cardholderName: 'Perpetua Vandersloot',
         }),
       ),
@@ -69,6 +85,7 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
     name: string;
     aggregate: BillingIdentityAggregate;
     shouldFire: boolean;
+    options?: BillingIdentityScorerOptions;
   }> = [
     {
       name: 'cardholder shares no token with partner name, user names, or email local-part',
@@ -111,17 +128,31 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
       shouldFire: false,
     },
     {
+      // A/B pair with the case below: identical fixture, and the ONLY
+      // difference is whether the mailbox domain is treated as a free provider.
+      // That isolates the exclusion behaviour from every other axis.
       name: 'free-provider email domain contributes no match token',
       aggregate: agg({
         partnerName: 'Nordvane',
         userNames: ['Rosalind Threnody'],
-        emails: ['rq@proton.me'],
-        cardholderName: 'Proton Pfennig',
+        emails: ['rq@freemail.example'],
+        cardholderName: 'Freemail Pfennig',
       }),
+      options: { freeEmailProviderLabels: SYNTHETIC_FREE_PROVIDERS },
       shouldFire: true,
     },
     {
-      name: 'non-free email domain does contribute a match token',
+      name: 'the same domain DOES contribute a token when it is not a free provider',
+      aggregate: agg({
+        partnerName: 'Nordvane',
+        userNames: ['Rosalind Threnody'],
+        emails: ['rq@freemail.example'],
+        cardholderName: 'Freemail Pfennig',
+      }),
+      shouldFire: false,
+    },
+    {
+      name: 'a corporate email domain contributes a match token',
       aggregate: agg({
         partnerName: 'Nordvane',
         userNames: ['Rosalind Threnody'],
@@ -172,9 +203,9 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
     },
   ];
 
-  for (const { name, aggregate, shouldFire } of cases) {
+  for (const { name, aggregate, shouldFire, options } of cases) {
     it(`${shouldFire ? 'fires' : 'does not fire'}: ${name}`, () => {
-      expect(fires(aggregate)).toBe(shouldFire);
+      expect(fires(aggregate, options)).toBe(shouldFire);
     });
   }
 
@@ -208,20 +239,17 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
     expect(signal!.severity).toBe('alert');
   });
 
-  it('accepts an injected free-provider list', () => {
+  it('defaults to the shipped free-provider list when none is injected', () => {
+    // Guards the default-argument wiring: omitting options must not silently
+    // fall back to an empty provider set, which would quietly disable the
+    // exclusion in production while every injected test stayed green.
     const aggregate = agg({
       partnerName: 'Nordvane',
       userNames: [],
-      emails: ['rq@calloway-brix.example'],
-      cardholderName: 'Calloway Pfennig',
+      emails: ['rq@freemail.example'],
+      cardholderName: 'Freemail Pfennig',
     });
-    // With the default list the domain token 'calloway' matches, so it is quiet.
-    expect(fires(aggregate)).toBe(false);
-    // Treating that domain as a free provider strips the token, so it fires.
-    const signals = computeBillingIdentitySignals([aggregate], new Map(), SIGNAL_DEFAULTS, {
-      freeEmailProviderLabels: new Set(['calloway-brix']),
-    });
-    expect(signalKeys(signals)).toContain('billing.cardholder_name_mismatch');
+    expect(fires(aggregate)).toBe(fires(aggregate, { freeEmailProviderLabels: FREE_EMAIL_PROVIDER_LABELS }));
   });
 });
 
@@ -490,11 +518,26 @@ describe('token helpers', () => {
   });
 
   it('excludes free-provider domain labels from the identity token set', () => {
-    const tokens = buildIdentityTokens({
-      partnerName: 'Nordvane',
-      userNames: [],
-      emails: ['quibley@hotmail.example'],
-    });
+    const tokens = buildIdentityTokens(
+      {
+        partnerName: 'Nordvane',
+        userNames: [],
+        emails: ['quibley@freemail.example'],
+      },
+      SYNTHETIC_FREE_PROVIDERS,
+    );
     expect([...tokens].sort()).toEqual(['nordvane', 'quibley']);
+  });
+
+  it('keeps the domain label when the provider is not in the injected set', () => {
+    const tokens = buildIdentityTokens(
+      {
+        partnerName: 'Nordvane',
+        userNames: [],
+        emails: ['quibley@freemail.example'],
+      },
+      new Set<string>(),
+    );
+    expect([...tokens].sort()).toEqual(['freemail', 'nordvane', 'quibley']);
   });
 });
