@@ -267,6 +267,9 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  */
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
 
+/** Single-segment actions allowed during a drain: `/agents/<agentId>/<action>`. */
+const DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
+
 /**
  * #2774 — the narrowed agent surface during an `offboarding` drain window.
  * Only what self_uninstall delivery needs survives:
@@ -279,16 +282,44 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'co
  * refused with an explicit 403 so a departing customer's machines don't keep
  * feeding a fully-capable RMM channel. The WS upgrade is refused outright in
  * agentWs.validateAgentToken — its push path bypasses device_commands.
+ *
+ * Every match is ANCHORED on the exact `agents/<agentId>/<action>` shape,
+ * mirroring `shouldSkipAgentAuth` (routes/agents/index.ts). A
+ * trailing-segment-only match would be a hole, not a shortcut: this
+ * middleware also serves the extension gateway, which mounts agent routes at
+ * `<prefix>/agent/<id>/*` (singular — see extensions/gateway.ts). Anchoring on
+ * the core `/agents` mount segment means no extension route can join the drain
+ * surface whatever it names its endpoints, and a nested path under a real
+ * route (`.../winget-bootstrap/file/heartbeat`) can't either. Fails closed: if
+ * the core mount ever moves, drain mode blocks rather than admits.
  */
-function isDrainAllowedAgentPath(pathSegments: string[]): boolean {
-  const last = pathSegments[pathSegments.length - 1] ?? '';
-  const secondLast = pathSegments[pathSegments.length - 2] ?? '';
-  const thirdLast = pathSegments[pathSegments.length - 3] ?? '';
-  if (last === 'heartbeat' || last === 'commands' || last === 'logs' || last === 'rotate-token') {
+const AGENTS_MOUNT_SEGMENT = 'agents';
+
+function isDrainAllowedAgentPath(pathSegments: string[], agentId: string): boolean {
+  const at = (fromEnd: number) => pathSegments[pathSegments.length - fromEnd] ?? '';
+  const last = at(1);
+  // agents/<agentId>/<action>
+  if (at(3) === AGENTS_MOUNT_SEGMENT && at(2) === agentId && DRAIN_ALLOWED_ACTIONS.has(last)) {
     return true;
   }
-  if (last === 'confirm' && secondLast === 'rotate-token') return true;
-  if (last === 'result' && thirdLast === 'commands') return true;
+  // agents/<agentId>/rotate-token/confirm
+  if (
+    last === 'confirm'
+    && at(2) === 'rotate-token'
+    && at(3) === agentId
+    && at(4) === AGENTS_MOUNT_SEGMENT
+  ) {
+    return true;
+  }
+  // agents/<agentId>/commands/<commandId>/result
+  if (
+    last === 'result'
+    && at(3) === 'commands'
+    && at(4) === agentId
+    && at(5) === AGENTS_MOUNT_SEGMENT
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -518,7 +549,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   }
 
   const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
-  if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments)) {
+  if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments, agentId)) {
     return c.json({ error: 'tenant_offboarding' }, 403);
   }
 

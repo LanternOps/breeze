@@ -1,5 +1,4 @@
 import { Job, Queue, Worker } from 'bullmq';
-import * as dbModule from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { sweepOffboardingTenants } from '../services/tenantOffboarding';
@@ -23,16 +22,6 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 type ReaperJobData = { type: typeof JOB_NAME; queuedAt: string };
 
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  if (typeof withSystem !== 'function') {
-    throw new Error(
-      '[OffboardingDrainReaper] withSystemDbAccessContext not available — reaper cannot run without system DB access',
-    );
-  }
-  return withSystem(fn);
-};
-
 let reaperQueue: Queue<ReaperJobData> | null = null;
 let reaperWorker: Worker<ReaperJobData> | null = null;
 
@@ -50,10 +39,13 @@ function createWorker(): Worker<ReaperJobData> {
     QUEUE_NAME,
     async (_job: Job<ReaperJobData>) => {
       try {
-        const result = await runWithSystemDbAccess(() => sweepOffboardingTenants());
-        if (result.orgsFinalized > 0 || result.partnersFinalized > 0) {
+        // The sweep opens a system DB context PER TENANT rather than one for
+        // the whole pass — socket teardown must not run while holding a
+        // pooled connection idle-in-transaction (#1105).
+        const result = await sweepOffboardingTenants();
+        if (result.orgsFinalized > 0 || result.partnersFinalized > 0 || result.failures > 0) {
           console.log(
-            `[OffboardingDrainReaper] Finalized ${result.orgsFinalized} org(s), ${result.partnersFinalized} partner(s)`,
+            `[OffboardingDrainReaper] Finalized ${result.orgsFinalized} org(s), ${result.partnersFinalized} partner(s), ${result.failures} failure(s)`,
           );
         }
         return result;

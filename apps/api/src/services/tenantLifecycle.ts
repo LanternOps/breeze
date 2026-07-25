@@ -150,6 +150,15 @@ export async function prepareAgentDrainForOrgIds(
   await invalidateAgentTenantCache(orgIds);
   const enrollmentKeysInvalidated = await expireEnrollmentKeysForOrgIds(orgIds, new Date());
   await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
+  // Invalidate a SECOND time, after the teardown. In sever mode the cache is
+  // only an optimization (agentTokenSuspendedAt is the real-time cutoff), but
+  // in drain mode tokens stay alive, so this cache IS the gate: a read that
+  // started before the status commit can land its positive `active` entry
+  // after the first invalidation and keep the tenant fully capable — long
+  // enough to win a WS upgrade — for the 60s TTL. Dropping it again once the
+  // sockets are down closes the common ordering; the drain reaper's periodic
+  // socket re-sweep bounds whatever still slips through.
+  await invalidateAgentTenantCache(orgIds);
 
   return { enrollmentKeysInvalidated };
 }

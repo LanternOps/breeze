@@ -1,8 +1,11 @@
-import { and, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
+import { captureException } from './sentry';
 import {
+  disconnectLiveAgentSocketsForOrgIds,
+  prepareAgentDrainForOrgIds,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
@@ -58,77 +61,86 @@ export interface OffboardingFinalizeReport {
   windowHours: number;
 }
 
-async function nonDecommissionedDeviceIdsForOrgIds(orgIds: string[]): Promise<string[]> {
-  if (orgIds.length === 0) return [];
-  const rows = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(inArray(devices.orgId, orgIds), ne(devices.status, 'decommissioned')));
-  return rows.map((row) => row.id);
-}
-
 /**
  * Cancel every other pending/sent command (they will never be user-visible
  * again and must not race the uninstall), then queue `self_uninstall` to each
- * device that doesn't already have one in flight — re-entry safe, so a
- * repeated PATCH to `offboarding` can't double-queue.
+ * device that doesn't already have one in flight.
+ *
+ * The whole read-then-insert runs in ONE transaction with the device rows
+ * locked `FOR UPDATE`: without the lock, two concurrent entries (a repeated
+ * PATCH, or a PATCH racing the reaper's entry repair) both observe an empty
+ * in-flight set and both insert. The duplicate could never complete, so it
+ * would force a deadline finalize and report a phantom never-drained device.
+ * Locking `devices` rather than adding a unique index on `device_commands`
+ * keeps the abuse-suspension bulk insert (routes/admin/abuse.ts) unaffected.
  */
 async function queueDrainUninstalls(
   orgIds: string[],
   createdBy: string | null
 ): Promise<{ devicesTargeted: number; uninstallsQueued: number; otherCommandsCancelled: number }> {
-  const deviceIds = await nonDecommissionedDeviceIdsForOrgIds(orgIds);
-  if (deviceIds.length === 0) {
+  if (orgIds.length === 0) {
     return { devicesTargeted: 0, uninstallsQueued: 0, otherCommandsCancelled: 0 };
   }
 
-  const cancelled = await db
-    .update(deviceCommands)
-    .set({
-      status: 'cancelled',
-      completedAt: new Date(),
-      result: { reason: 'tenant_offboarding' },
-    })
-    .where(
-      and(
-        inArray(deviceCommands.deviceId, deviceIds),
-        ne(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+  return db.transaction(async (tx) => {
+    const deviceRows = await tx
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(inArray(devices.orgId, orgIds), ne(devices.status, 'decommissioned')))
+      .for('update');
+    const deviceIds = deviceRows.map((row) => row.id);
+    if (deviceIds.length === 0) {
+      return { devicesTargeted: 0, uninstallsQueued: 0, otherCommandsCancelled: 0 };
+    }
+
+    const cancelled = await tx
+      .update(deviceCommands)
+      .set({
+        status: 'cancelled',
+        completedAt: new Date(),
+        result: { reason: 'tenant_offboarding' },
+      })
+      .where(
+        and(
+          inArray(deviceCommands.deviceId, deviceIds),
+          ne(deviceCommands.type, 'self_uninstall'),
+          inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+        )
       )
-    )
-    .returning({ id: deviceCommands.id });
+      .returning({ id: deviceCommands.id });
 
-  const existing = await db
-    .select({ deviceId: deviceCommands.deviceId })
-    .from(deviceCommands)
-    .where(
-      and(
-        inArray(deviceCommands.deviceId, deviceIds),
-        eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
-      )
-    );
-  const alreadyQueued = new Set(existing.map((row) => row.deviceId));
-  const toQueue = deviceIds.filter((id) => !alreadyQueued.has(id));
+    const existing = await tx
+      .select({ deviceId: deviceCommands.deviceId })
+      .from(deviceCommands)
+      .where(
+        and(
+          inArray(deviceCommands.deviceId, deviceIds),
+          eq(deviceCommands.type, 'self_uninstall'),
+          inArray(deviceCommands.status, [...NON_TERMINAL_COMMAND_STATUSES])
+        )
+      );
+    const alreadyQueued = new Set(existing.map((row) => row.deviceId));
+    const toQueue = deviceIds.filter((id) => !alreadyQueued.has(id));
 
-  if (toQueue.length > 0) {
-    await db.insert(deviceCommands).values(
-      toQueue.map((deviceId) => ({
-        deviceId,
-        type: 'self_uninstall',
-        payload: { removeConfig: true },
-        status: 'pending',
-        targetRole: 'agent',
-        createdBy,
-      }))
-    );
-  }
+    if (toQueue.length > 0) {
+      await tx.insert(deviceCommands).values(
+        toQueue.map((deviceId) => ({
+          deviceId,
+          type: 'self_uninstall',
+          payload: { removeConfig: true },
+          status: 'pending',
+          targetRole: 'agent',
+          createdBy,
+        }))
+      );
+    }
 
-  return {
-    devicesTargeted: deviceIds.length,
-    uninstallsQueued: toQueue.length,
-    otherCommandsCancelled: cancelled.length,
-  };
+    return {
+      devicesTargeted: deviceIds.length,
+      uninstallsQueued: toQueue.length,
+      otherCommandsCancelled: cancelled.length,
+    };
+  });
 }
 
 export async function beginOrganizationOffboarding(
@@ -215,6 +227,13 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
  * no commands) when the org was not offboarding — keyed on the
  * offboarding_started_at stamp, so e.g. an abuse-suspension's queued
  * uninstalls are never cancelled by an unrelated org status write.
+ *
+ * Deliberate exception: during a PARTNER-level drain only
+ * `partners.offboarding_started_at` is set, so reactivating a single org under
+ * a still-offboarding partner is a no-op here and its queued uninstalls stay
+ * deliverable — correct, because `getAgentTenantState` still resolves
+ * `draining` for that org via the partner axis and the partner is still
+ * churning. Reactivate the PARTNER to abort a partner-level drain.
  */
 export async function abortOrganizationOffboarding(orgId: string): Promise<OffboardingAbortResult> {
   return runOutsideDbContext(() =>
@@ -285,7 +304,14 @@ async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
  * an explicit result — the "never drained" signal the old flow lacked (#2774:
  * silently-expired commands looked like a cleaned fleet).
  */
-async function collectAndCancelOutstanding(orgIds: string[]): Promise<{
+async function collectAndCancelOutstanding(
+  orgIds: string[],
+  // Start of the drain window. Terminal counts are scoped to commands created
+  // at/after it so a tenant's historical one-off remote uninstalls can't
+  // inflate this drain's completion count in a permanent audit record. Null
+  // (stamp already cleared / never written) falls back to counting all.
+  drainStartedAt: Date | null
+): Promise<{
   uninstallsCompleted: number;
   uninstallsFailed: number;
   neverDelivered: Array<{ deviceId: string; hostname: string | null }>;
@@ -303,7 +329,8 @@ async function collectAndCancelOutstanding(orgIds: string[]): Promise<{
       and(
         inArray(devices.orgId, orgIds),
         eq(deviceCommands.type, 'self_uninstall'),
-        inArray(deviceCommands.status, ['completed', 'failed'])
+        inArray(deviceCommands.status, ['completed', 'failed']),
+        ...(drainStartedAt ? [gte(deviceCommands.createdAt, drainStartedAt)] : [])
       )
     );
   const uninstallsCompleted = terminalRows.filter((row) => row.status === 'completed').length;
@@ -383,6 +410,32 @@ function writeOffboardingReportAudit(report: OffboardingFinalizeReport, orgIdFor
 }
 
 /**
+ * The status CAS protects the flip, but NOT the sever that follows it. An
+ * operator reactivating a tenant in that gap would otherwise end up `active`
+ * with the whole fleet's tokens suspended (the reaper's sever landing after
+ * the route's restore). Re-read immediately before severing and skip if our
+ * `churned` no longer stands — the sever is only correct for a tenant that is
+ * still terminal.
+ */
+async function orgIsStillChurned(orgId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ status: organizations.status })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return row?.status === 'churned';
+}
+
+async function partnerIsStillChurned(partnerId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ status: partners.status })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  return row?.status === 'churned';
+}
+
+/**
  * Finalize an org drain: CAS the status offboarding→churned FIRST (losing the
  * CAS means an operator aborted or forced another transition concurrently —
  * do nothing), then cancel leftovers with the never-drained report, write the
@@ -392,6 +445,14 @@ export async function finalizeOrganizationOffboarding(
   orgId: string,
   options: { forcedByDeadline: boolean }
 ): Promise<OffboardingFinalizeReport | null> {
+  // Read the drain start BEFORE the CAS clears it — it scopes the report's
+  // terminal counts to this drain window.
+  const [before] = await db
+    .select({ startedAt: organizations.offboardingStartedAt })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
   const flipped = await db
     .update(organizations)
     .set({ status: 'churned', offboardingStartedAt: null, updatedAt: new Date() })
@@ -399,7 +460,7 @@ export async function finalizeOrganizationOffboarding(
     .returning({ id: organizations.id });
   if (flipped.length === 0) return null;
 
-  const outcome = await collectAndCancelOutstanding([orgId]);
+  const outcome = await collectAndCancelOutstanding([orgId], before?.startedAt ?? null);
   const report: OffboardingFinalizeReport = {
     scopeType: 'organization',
     scopeId: orgId,
@@ -410,7 +471,13 @@ export async function finalizeOrganizationOffboarding(
   };
   writeOffboardingReportAudit(report, orgId);
 
-  await severAgentCredentialsForOrgIds([orgId]);
+  if (await orgIsStillChurned(orgId)) {
+    await severAgentCredentialsForOrgIds([orgId]);
+  } else {
+    console.warn(
+      `[tenantOffboarding] org ${orgId} left churned during finalize — skipping credential sever`
+    );
+  }
   return report;
 }
 
@@ -418,6 +485,12 @@ export async function finalizePartnerOffboarding(
   partnerId: string,
   options: { forcedByDeadline: boolean }
 ): Promise<OffboardingFinalizeReport | null> {
+  const [before] = await db
+    .select({ startedAt: partners.offboardingStartedAt })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
   const flipped = await db
     .update(partners)
     .set({ status: 'churned', offboardingStartedAt: null, updatedAt: new Date() })
@@ -431,7 +504,7 @@ export async function finalizePartnerOffboarding(
     .where(eq(organizations.partnerId, partnerId));
   const orgIds = orgRows.map((row) => row.id);
 
-  const outcome = await collectAndCancelOutstanding(orgIds);
+  const outcome = await collectAndCancelOutstanding(orgIds, before?.startedAt ?? null);
   const report: OffboardingFinalizeReport = {
     scopeType: 'partner',
     scopeId: partnerId,
@@ -442,73 +515,164 @@ export async function finalizePartnerOffboarding(
   };
   writeOffboardingReportAudit(report, null);
 
-  await severAgentCredentialsForOrgIds(orgIds);
+  if (await partnerIsStillChurned(partnerId)) {
+    await severAgentCredentialsForOrgIds(orgIds);
+  } else {
+    console.warn(
+      `[tenantOffboarding] partner ${partnerId} left churned during finalize — skipping credential sever`
+    );
+  }
   return report;
 }
 
 /**
- * One sweep pass, run by jobs/offboardingDrainReaper.ts under a system DB
- * context. A tenant finalizes when its drain uninstalls are all terminal or
- * its window (offboarding_started_at + OFFBOARDING_DRAIN_WINDOW_HOURS) has
- * closed. A missing stamp is self-healed to `now` rather than treated as an
- * instantly-expired window.
+ * Repair an entry that committed the status but not the drain work. The route
+ * writes `status='offboarding'` before calling begin*Offboarding, so a throw
+ * in between leaves a tenant whose users are (maybe) revoked and whose fleet
+ * has NO queued uninstall. Without this the next sweep would see zero
+ * outstanding commands, finalize immediately, and emit an empty report
+ * indistinguishable from a clean drain — reintroducing the exact false
+ * confidence #2774 exists to remove.
+ *
+ * Queueing is idempotent (dedupes against in-flight uninstalls), so re-running
+ * it is safe; the stamp write is the marker that the entry is now complete.
+ */
+async function repairIncompleteEntry(
+  scope: 'organization' | 'partner',
+  scopeId: string,
+  orgIds: string[],
+  now: Date
+): Promise<void> {
+  console.warn(
+    `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
+  );
+  const queued = await queueDrainUninstalls(orgIds, null);
+  await prepareAgentDrainForOrgIds(orgIds);
+
+  if (scope === 'organization') {
+    await db
+      .update(organizations)
+      .set({ offboardingStartedAt: now, updatedAt: now })
+      .where(and(eq(organizations.id, scopeId), isNull(organizations.offboardingStartedAt)));
+  } else {
+    await db
+      .update(partners)
+      .set({ offboardingStartedAt: now, updatedAt: now })
+      .where(and(eq(partners.id, scopeId), isNull(partners.offboardingStartedAt)));
+  }
+
+  writeAuditEvent(requestLikeFromSnapshot({}), {
+    orgId: scope === 'organization' ? scopeId : null,
+    action: `${scope}.offboarding_entry_repaired`,
+    resourceType: scope,
+    resourceId: scopeId,
+    actorType: 'system',
+    actorId: null,
+    result: 'success',
+    details: { uninstallsQueued: queued.uninstallsQueued, devicesTargeted: queued.devicesTargeted },
+  });
+}
+
+/**
+ * One sweep pass, run by jobs/offboardingDrainReaper.ts. A tenant finalizes
+ * when its drain uninstalls are all terminal, or when its window
+ * (offboarding_started_at + OFFBOARDING_DRAIN_WINDOW_HOURS) has closed.
+ *
+ * Each tenant is processed in its OWN system-context block and its own
+ * try/catch: one tenant that throws (e.g. a sever failure) must not starve
+ * every other draining tenant's finalization — they would sit past their
+ * window with live credentials. The candidate lists are read first and the
+ * per-tenant work is NOT wrapped in a single outer transaction, so socket
+ * teardown never runs while pinning a pooled connection idle-in-transaction
+ * (#1105).
  */
 export async function sweepOffboardingTenants(
   now: Date = new Date()
-): Promise<{ orgsFinalized: number; partnersFinalized: number }> {
+): Promise<{ orgsFinalized: number; partnersFinalized: number; failures: number }> {
   const windowMs = OFFBOARDING_DRAIN_WINDOW_HOURS * 60 * 60 * 1000;
   let orgsFinalized = 0;
   let partnersFinalized = 0;
+  let failures = 0;
 
-  const offboardingOrgs = await db
-    .select({ id: organizations.id, startedAt: organizations.offboardingStartedAt })
-    .from(organizations)
-    .where(and(eq(organizations.status, 'offboarding'), isNull(organizations.deletedAt)));
+  const [offboardingOrgs, offboardingPartners] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const orgs = await db
+        .select({ id: organizations.id, startedAt: organizations.offboardingStartedAt })
+        .from(organizations)
+        .where(and(eq(organizations.status, 'offboarding'), isNull(organizations.deletedAt)));
+      const ptrs = await db
+        .select({ id: partners.id, startedAt: partners.offboardingStartedAt })
+        .from(partners)
+        .where(and(eq(partners.status, 'offboarding'), isNull(partners.deletedAt)));
+      return [orgs, ptrs] as const;
+    })
+  );
 
   for (const org of offboardingOrgs) {
-    if (!org.startedAt) {
-      await db
-        .update(organizations)
-        .set({ offboardingStartedAt: now, updatedAt: now })
-        .where(and(eq(organizations.id, org.id), isNull(organizations.offboardingStartedAt)));
-      continue;
-    }
-    const outstanding = await countOutstandingUninstalls([org.id]);
-    const deadlinePassed = now.getTime() >= org.startedAt.getTime() + windowMs;
-    if (outstanding === 0 || deadlinePassed) {
-      const report = await finalizeOrganizationOffboarding(org.id, {
-        forcedByDeadline: outstanding > 0,
-      });
-      if (report) orgsFinalized++;
+    try {
+      const finalized = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          if (!org.startedAt) {
+            await repairIncompleteEntry('organization', org.id, [org.id], now);
+            return false;
+          }
+          // Belt-and-braces: kill any socket that was established in the race
+          // between the status commit and the entry's teardown. A WS session
+          // is authorized once at upgrade and never re-checked, so without
+          // this re-sweep a single racing connect would hold a fully-capable
+          // channel (terminal/desktop/tunnel pushes bypass device_commands)
+          // for the whole drain window instead of at most one sweep interval.
+          await disconnectLiveAgentSocketsForOrgIds([org.id], 'Tenant offboarding');
+
+          const outstanding = await countOutstandingUninstalls([org.id]);
+          const deadlinePassed = now.getTime() >= org.startedAt.getTime() + windowMs;
+          if (outstanding > 0 && !deadlinePassed) return false;
+
+          return Boolean(
+            await finalizeOrganizationOffboarding(org.id, { forcedByDeadline: outstanding > 0 })
+          );
+        })
+      );
+      if (finalized) orgsFinalized++;
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to sweep offboarding org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
-
-  const offboardingPartners = await db
-    .select({ id: partners.id, startedAt: partners.offboardingStartedAt })
-    .from(partners)
-    .where(and(eq(partners.status, 'offboarding'), isNull(partners.deletedAt)));
 
   for (const partner of offboardingPartners) {
-    if (!partner.startedAt) {
-      await db
-        .update(partners)
-        .set({ offboardingStartedAt: now, updatedAt: now })
-        .where(and(eq(partners.id, partner.id), isNull(partners.offboardingStartedAt)));
-      continue;
-    }
-    const orgRows = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partner.id));
-    const outstanding = await countOutstandingUninstalls(orgRows.map((row) => row.id));
-    const deadlinePassed = now.getTime() >= partner.startedAt.getTime() + windowMs;
-    if (outstanding === 0 || deadlinePassed) {
-      const report = await finalizePartnerOffboarding(partner.id, {
-        forcedByDeadline: outstanding > 0,
-      });
-      if (report) partnersFinalized++;
+    try {
+      const finalized = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          const orgRows = await db
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.partnerId, partner.id));
+          const orgIds = orgRows.map((row) => row.id);
+
+          if (!partner.startedAt) {
+            await repairIncompleteEntry('partner', partner.id, orgIds, now);
+            return false;
+          }
+          await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
+
+          const outstanding = await countOutstandingUninstalls(orgIds);
+          const deadlinePassed = now.getTime() >= partner.startedAt.getTime() + windowMs;
+          if (outstanding > 0 && !deadlinePassed) return false;
+
+          return Boolean(
+            await finalizePartnerOffboarding(partner.id, { forcedByDeadline: outstanding > 0 })
+          );
+        })
+      );
+      if (finalized) partnersFinalized++;
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to sweep offboarding partner ${partner.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
-  return { orgsFinalized, partnersFinalized };
+  return { orgsFinalized, partnersFinalized, failures };
 }

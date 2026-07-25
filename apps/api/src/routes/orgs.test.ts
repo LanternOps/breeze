@@ -631,6 +631,26 @@ describe('org routes', () => {
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
+    it('aborts a partner drain on reactivation so in-flight uninstalls cannot fire later', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'active', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+    });
+
     it('does not sever the fleet on a transient active->pending transition (preserves enrollment keys)', async () => {
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({

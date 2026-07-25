@@ -254,6 +254,25 @@ function buildWatchdogApp(): Hono {
   return app;
 }
 
+// #2774 — an offboarding tenant's agent authenticates but is narrowed to
+// self_uninstall delivery. agentAuthMiddleware sets `tenantDraining`.
+function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', {
+      deviceId: 'device-1',
+      agentId: 'agent-1',
+      orgId: 'org-1',
+      siteId: 'site-1',
+      role,
+      tenantDraining: true,
+    });
+    await next();
+  });
+  app.route('/agents', heartbeatRoutes);
+  return app;
+}
+
 const minimalHeartbeatBody = {
   agentVersion: '0.65.10',
   metrics: {
@@ -2734,6 +2753,70 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  // #2774 — the heartbeat is the PRIMARY command carrier (the GET poll is
+  // watchdog-failover only), so this is the filter that actually stops a
+  // departing customer's machines from executing scripts/automations queued
+  // by workers AFTER drain entry cancelled the then-pending set.
+  it('agent path: narrows the claim to self_uninstall when the tenant is draining', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const resp = await buildDrainingApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+      'self_uninstall',
+    ]);
+  });
+
+  it('watchdog path: narrows the claim to self_uninstall when the tenant is draining', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          lastSeenAt: new Date(),
+          mainAgentSilentSince: null,
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const resp = await buildDrainingApp('watchdog').request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentVersion: '0.65.15', role: 'watchdog', watchdogState: 'MONITORING' }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', [
+      'self_uninstall',
+    ]);
   });
 });
 

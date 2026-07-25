@@ -422,6 +422,21 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
     '/api/v1/agents/agent-1/monitoring-results',
     '/api/v1/agents/agent-1/patches',
     '/api/v1/agents/agent-1/eventlogs',
+    // This middleware also serves the extension gateway
+    // (extensions/gateway.ts mounts /ext/<name>/agent/:id/* — singular
+    // "agent"). Matching on the trailing segment alone would admit every
+    // extension route whose last segment happens to be an allowed action, so
+    // the allowlist is anchored on the core `agents/<id>/<action>` shape. An
+    // extension route may NOT join the drain surface even by mimicking a core
+    // action name exactly.
+    '/api/v1/ext/acme/agent/agent-1/heartbeat',
+    '/api/v1/ext/acme/agent/agent-1/commands',
+    '/api/v1/ext/acme/agent/agent-1/commands/cmd-1/result',
+    '/api/v1/ext/acme/agent/agent-1/rotate-token/confirm',
+    '/api/v1/ext/acme/agent/agent-1/extra/heartbeat',
+    // Nested path under a real agent route with an attacker-chosen final
+    // segment (winget-bootstrap/file/:name).
+    '/api/v1/agents/agent-1/winget-bootstrap/file/heartbeat',
   ];
 
   for (const path of blockedPaths) {

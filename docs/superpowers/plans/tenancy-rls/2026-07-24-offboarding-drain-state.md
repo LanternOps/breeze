@@ -63,6 +63,16 @@ finish:
 uninstalled stay gone — abort is best-effort, documented as such. Forcing
 `suspended`/`churned` mid-drain takes the existing immediate-sever path.
 
+Abort keys on the *own-axis* stamp. Reactivating one org under a still-offboarding partner
+is therefore a no-op: that org is still `draining` via the partner axis, so its uninstalls
+stay deliverable. Aborting a partner-level drain means reactivating the partner.
+
+**Entry repair.** The route commits the status before running the drain work, so a failure
+in between would leave a tenant with no queued uninstalls whose next sweep would finalize
+instantly on a zero-outstanding count — an empty report indistinguishable from a clean
+drain. The sweep detects the missing stamp, completes the entry (queue + narrow), audits
+`*.offboarding_entry_repaired`, and only then lets the window run.
+
 **Stale-reaper exemption:** `staleCommandReaper` skips `self_uninstall` rows whose device's
 org (or org's partner) is currently `offboarding`. Deliberately **not** a blanket
 `self_uninstall` exemption: abuse-queued uninstalls must keep expiring, otherwise an abuse

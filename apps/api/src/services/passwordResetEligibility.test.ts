@@ -176,6 +176,35 @@ describe('getPasswordResetEligibility', () => {
     expect(result.detail).toBe('org:suspended');
   });
 
+  // #2774 — the org branch is an ALLOWLIST for exactly this reason: a
+  // denylist silently admits every status added later, and `offboarding` is a
+  // terminal drain whose users have already been revoked.
+  it('blocks reset for org-scope user under an offboarding org', async () => {
+    setupSelects(
+      [{ id: 'u-1', email: 'orgu@acme.com', status: 'active', partnerId: 'p-1', orgId: 'o-1' }],
+      [{ status: 'active', deletedAt: null }],
+      [{ status: 'offboarding', deletedAt: null }],
+    );
+
+    const result = await getPasswordResetEligibility('orgu@acme.com');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('tenant_inactive');
+    expect(result.detail).toBe('org:offboarding');
+  });
+
+  it('allows reset for org-scope user under a trial org', async () => {
+    setupSelects(
+      [{ id: 'u-1', email: 'trialu@acme.com', status: 'active', partnerId: 'p-1', orgId: 'o-1' }],
+      [{ status: 'active', deletedAt: null }],
+      [{ status: 'trial', deletedAt: null }],
+    );
+
+    const result = await getPasswordResetEligibility('trialu@acme.com');
+
+    expect(result.allowed).toBe(true);
+  });
+
   it('blocks reset for SSO-enforced org users', async () => {
     setupSelects(
       [{ id: 'u-1', email: 'sso@acme.com', status: 'active', partnerId: 'p-1', orgId: 'o-1' }],
