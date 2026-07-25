@@ -556,7 +556,24 @@ Every rollback starts by closing/probing the external barrier, including `/api/v
 
 ## Task Execution Order (corrected 2026-07-25 — read before starting any task)
 
-**Execute in this order, NOT in numeric order:** 1 → 2 → 3 → **7** → 6 → 4 → 5 → 8 → 9 → 10.
+**Execute in this order, NOT in numeric order:** 1 → 2 → 3 → **5** → **6** → **7** → **4** → 8 → 9 → 10.
+
+Dependency evidence (each edge verified against this document, not inferred):
+
+| Edge | Evidence |
+|---|---|
+| 5 before 7 | Task 5 **Creates** `desktopSessionFinalization.ts` and `desktopSessionOrphanRecovery.ts` (+ their tests); Task 7 lists the same four files as **Modify**. They do not exist in `HEAD`. |
+| 5 before 6 | Task 6's `Consumes` line names "desktop lifecycle"; Task 5's `Produces` line supplies `closeDesktopSessionLifecycle` / `ensureDesktopStreamStopped` / `finalizeDesktopSessionOnce`. |
+| 6 before 7 | Task 7 also modifies `desktopWs.ts` and `tunnelWs.ts`, which Task 6 binds to exact ownership. Running 6 first avoids rewriting those routes twice. |
+| 7 before 4 | Task 4 requires the lease to be acquired before the `101` upgrade; the pre-upgrade validate-and-reserve seam (`remoteWsUpgrade.ts`) is created by Task 7. |
+
+A previous revision of this note ordered Task 7 before 5 and 6. That was wrong: it left Task 7
+modifying files that no task had yet created. The 5 → 6 → 7 → 4 chain is the only order in which
+every task's declared inputs exist when it runs.
+
+Note that Task 5 spans the Go agent (`agent/internal/heartbeat/`,
+`agent/internal/remote/desktop/`) as well as the API, so it must also satisfy
+`cd agent && go test -race ./...`.
 
 Task numbering is retained so every existing cross-reference stays valid; only the execution sequence
 changes.
