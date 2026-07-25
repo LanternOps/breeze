@@ -542,6 +542,29 @@ Keep the invariant intact across the merged slice: a generator that omits scope 
 or fail a test — never silently return unscoped data. The scheduler must fail closed BEFORE
 generation or delivery, not after.
 
+### Scope expansion: the AI tools layer is a SECOND READER (approved 2026-07-25)
+
+`apps/api/src/services/aiToolsFleet.ts` is in scope for the combined slice, along with its
+site-scope tests, `securityComplianceReport.integration.test.ts`, and
+`reportGenerationService.execSummary.test.ts`.
+
+This is not a convenience exception — it is required for the wave to actually close
+`TENANT-SITE-REPORT-001`. `aiToolsFleet.ts` calls `siteScopeRequestAllowed` at four sites and
+directly reads, inserts into, deletes from, and lists `reportRuns`. It is a full second reader of
+report data that bypasses the report routes entirely. Removing `siteScopeRequestAllowed` and making
+authority mandatory without updating it leaves two outcomes, both unacceptable: a broken build, or —
+if a compatibility path were added — the AI tool path still running the weak check this wave exists
+to delete, while the routes look fixed.
+
+CLAUDE.md states the rule directly: sweep ALL call sites repo-wide before calling it done, because
+hidden second readers (agent config delivery, **AI tools**, alert bridges, stats endpoints) are how
+features get missed. Treat this as a mechanical grep
+(`grep -rn 'siteScopeRequestAllowed\|reportRuns' apps/api/src --include='*.ts'`), not a judgement
+call, and re-run it before declaring the slice complete.
+
+The AI tool paths must consume the same `ReportExecutionAuthority` as the routes. Do not give them a
+parallel or weaker scope derivation.
+
 ---
 
 ### Task 5: Make run creation, visibility, download, and baselines scope-safe
