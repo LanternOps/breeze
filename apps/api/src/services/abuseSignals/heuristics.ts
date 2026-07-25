@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { scoreToSeverity, youngWeight, type SignalConfig } from './config';
@@ -18,6 +19,8 @@ export interface PartnerAggregates {
   enrollmentDenied24h: number;
   commands24h: number;
   scriptExecutions24h: number;
+  /** last_seen_ip of the partner's non-decommissioned devices (bounded per partner; nulls excluded). */
+  lastSeenIps: string[];
 }
 
 // Default Windows hostnames (DESKTOP-XXXXXXX / LAPTOP-XXXXXXX) mark unmanaged
@@ -123,6 +126,21 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       FROM script_executions se JOIN organizations o ON o.id = se.org_id
       WHERE se.created_at > now() - interval '24 hours'
       GROUP BY o.partner_id
+    ),
+    ips AS (
+      -- Raw last-seen IPs per partner, bounded per partner. Prefix grouping
+      -- (IPv4 /24, IPv6 /64 — incl. compressed-form canonicalization) happens
+      -- in TS (ipPrefixGroup) where it is pure and unit-testable.
+      SELECT partner_id, array_agg(ip) AS last_seen_ips
+      FROM (
+        SELECT o.partner_id, d.last_seen_ip AS ip,
+          row_number() OVER (PARTITION BY o.partner_id ORDER BY d.id) AS rn
+        FROM devices d JOIN organizations o ON o.id = d.org_id
+        WHERE d.status NOT IN ('decommissioned', 'quarantined')
+          AND d.last_seen_ip IS NOT NULL
+      ) bounded
+      WHERE rn <= 5000
+      GROUP BY partner_id
     )
     SELECT s.id, s.name, s.created_at,
       COALESCE(dev.device_count, 0) AS device_count,
@@ -135,7 +153,8 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       COALESCE(logins.failed_24h, 0) AS failed_24h,
       COALESCE(denied.denied_24h, 0) AS denied_24h,
       COALESCE(cmds.commands_24h, 0) AS commands_24h,
-      COALESCE(scripts.scripts_24h, 0) AS scripts_24h
+      COALESCE(scripts.scripts_24h, 0) AS scripts_24h,
+      COALESCE(ips.last_seen_ips, '{}') AS last_seen_ips
     FROM scoped s
     LEFT JOIN dev ON dev.partner_id = s.id
     LEFT JOIN sess ON sess.partner_id = s.id
@@ -143,6 +162,7 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
     LEFT JOIN denied ON denied.partner_id = s.id
     LEFT JOIN cmds ON cmds.partner_id = s.id
     LEFT JOIN scripts ON scripts.partner_id = s.id
+    LEFT JOIN ips ON ips.partner_id = s.id
   `))) as unknown as Array<Record<string, unknown>>;
 
   return rows.map((r) => ({
@@ -160,7 +180,62 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
     enrollmentDenied24h: Number(r.denied_24h),
     commands24h: Number(r.commands_24h),
     scriptExecutions24h: Number(r.scripts_24h),
+    lastSeenIps: Array.isArray(r.last_seen_ips) ? (r.last_seen_ips as unknown[]).map(String) : [],
   }));
+}
+
+/**
+ * Canonical network-prefix bucket for an IP: IPv4 → /24, IPv6 → /64.
+ *
+ * Raw distinct addresses would misread legitimate fleets: a dual-stack office
+ * hands every device a DIFFERENT IPv6 address inside one delegated /64, so
+ * counting addresses instead of prefixes scores a single site as full
+ * scatter. Compressed and expanded IPv6 forms (and mixed case / leading
+ * zeros) canonicalize to the same bucket. IPv4-mapped IPv6 groups as the
+ * embedded IPv4 /24. Returns null for unparseable input.
+ */
+export function ipPrefixGroup(raw: string): string | null {
+  const ip = raw.trim();
+  const version = isIP(ip);
+  if (version === 4) {
+    const [a, b, c] = ip.split('.');
+    return `v4:${a}.${b}.${c}`;
+  }
+  if (version === 6) {
+    // IPv4-mapped (::ffff:a.b.c.d) → bucket with the embedded IPv4 /24.
+    const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/i.exec(ip);
+    if (mapped) return `v4:${mapped[1]}`;
+    const hextets = expandIpv6(ip);
+    if (!hextets) return null;
+    return `v6:${hextets.slice(0, 4).join(':')}`;
+  }
+  return null;
+}
+
+/** Expand a (possibly ::-compressed) IPv6 address to 8 canonical hextets (lowercase, no leading zeros). */
+function expandIpv6(ip: string): string[] | null {
+  let s = ip;
+  // Rewrite a trailing embedded IPv4 (e.g. `::ffff:0:1.2.3.4`) as two hextets.
+  const v4 = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s);
+  if (v4) {
+    const octets = v4[1].split('.').map(Number);
+    if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o > 255)) return null;
+    s = `${s.slice(0, -v4[1].length)}${(((octets[0] << 8) | octets[1]) >>> 0).toString(16)}:${(((octets[2] << 8) | octets[3]) >>> 0).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 2 ? fill < 1 : head.length !== 8) return null;
+  const groups = [...head, ...(halves.length === 2 ? Array<string>(fill).fill('0') : []), ...tail];
+  if (groups.length !== 8) return null;
+  const canonical: string[] = [];
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    canonical.push(parseInt(g, 16).toString(16));
+  }
+  return canonical;
 }
 
 /** Pure scoring: no I/O, unit-testable. Scores are 0-100 pre-weighting. */
@@ -227,6 +302,33 @@ export function computeHeuristicSignals(
           devicesEnrolled30d: a.devicesEnrolled30d,
           distinctEnrollmentIps30d: a.distinctEnrollmentIps30d,
         });
+      }
+    }
+
+    // rmm.device_ip_scatter — every managed device on a different network is
+    // the victim-fleet signature (one device per residential prefix); a real
+    // client site has several devices behind one egress. Grouped by IPv4 /24
+    // and IPv6 /64 — never raw addresses — so a dual-stack office's distinct
+    // per-device IPv6 addresses inside one /64 don't read as scatter. Current
+    // fleet shape is evidence independent of account age, so it never decays;
+    // and it is weighted evidence, not proof (a small MSP managing remote/home
+    // workers also scatters), so it caps at watch — always below
+    // severity.alert_score — on its own.
+    const devicesWithIp = a.lastSeenIps.length;
+    if (devicesWithIp >= cfg['rmm.device_ip_scatter.min_devices']) {
+      const prefixes = new Set<string>();
+      for (const ip of a.lastSeenIps) {
+        const group = ipPrefixGroup(ip);
+        if (group) prefixes.add(group);
+      }
+      const scatterRatio = prefixes.size / devicesWithIp;
+      if (scatterRatio >= cfg['rmm.device_ip_scatter.watch_ratio']) {
+        push('rmm.device_ip_scatter', scatterRatio >= cfg['rmm.device_ip_scatter.high_ratio'] ? 55 : 45, {
+          deviceCount: a.deviceCount,
+          devicesWithIp,
+          distinctPrefixes: prefixes.size,
+          scatterRatio: Number(scatterRatio.toFixed(2)),
+        }, false);
       }
     }
 

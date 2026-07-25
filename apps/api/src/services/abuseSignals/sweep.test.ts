@@ -62,6 +62,7 @@ function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
     enrollmentDenied24h: 0,
     commands24h: 0,
     scriptExecutions24h: 0,
+    lastSeenIps: [],
     ...overrides,
   };
 }

@@ -38,7 +38,7 @@ function consumerHostname(index: number): string {
   return `DESKTOP-AAAA${String(index).padStart(3, '0')}`;
 }
 
-async function seedDevice(opts: { orgId: string; siteId: string; hostname: string; enrollmentIp: string; enrolledAt: Date }) {
+async function seedDevice(opts: { orgId: string; siteId: string; hostname: string; enrollmentIp: string; lastSeenIp?: string; enrolledAt: Date }) {
   const testDb = getTestDb();
   const [device] = await testDb
     .insert(devices)
@@ -53,6 +53,7 @@ async function seedDevice(opts: { orgId: string; siteId: string; hostname: strin
       agentVersion: '0.0.0-test',
       status: 'offline',
       enrollmentIp: opts.enrollmentIp,
+      lastSeenIp: opts.lastSeenIp,
       enrolledAt: opts.enrolledAt,
     })
     .returning({ id: devices.id });
@@ -84,6 +85,7 @@ describe('loadPartnerAggregates (real DB)', () => {
         siteId: site.id,
         hostname: consumerHostname(i),
         enrollmentIp: `10.0.0.${i}`,
+        lastSeenIp: `10.${i}.0.1`,
         enrolledAt: now,
       });
     }
@@ -123,6 +125,11 @@ describe('loadPartnerAggregates (real DB)', () => {
     expect(row!.enrolled24h).toBe(6);
     expect(row!.distinctEnrollmentIps30d).toBe(6);
     expect(row!.failedLogins24h).toBe(2);
+    // last_seen_ip values surface for the device_ip_scatter heuristic
+    // (prefix grouping itself is pure TS, unit-tested in heuristics.test.ts).
+    expect([...row!.lastSeenIps].sort()).toEqual(
+      [1, 2, 3, 4, 5, 6].map((i) => `10.${i}.0.1`).sort(),
+    );
   });
 
   it("includes an old partner with no recent enrollments when it has an OPEN partner_abuse_signals row (scoped CTE's third OR arm)", async () => {
