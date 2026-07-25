@@ -143,6 +143,21 @@ export interface DbAccessContext {
    * apply.
    */
   currentPartnerId?: string | null;
+  /**
+   * Short, low-cardinality name for the code path that opened this context,
+   * e.g. `agentWs.heartbeat`. Purely diagnostic — it grants nothing and is
+   * never sent to Postgres. Emitted as the `dbContextLabel` Sentry tag on the
+   * #1105 held-connection warning so a recurring hold can be broken down by
+   * source instead of arriving as one opaque bucket.
+   *
+   * Why this exists: BREEZE-A accumulated ~7k held-context warnings from the
+   * agent WebSocket that were impossible to act on, because all 12 contexts
+   * there funnel through ONE helper closure and every production frame minifies
+   * to an anonymous arrow inside `onMessage`. The stack alone cannot tell
+   * `heartbeat` from `command_result`. Set this wherever several distinct paths
+   * share a context helper.
+   */
+  label?: string;
 }
 
 export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
@@ -289,8 +304,14 @@ export async function withDbAccessContext<T>(
         if (warnMs > 0) {
           const heldMs = Date.now() - startedAt;
           if (heldMs >= warnMs) {
+            // The label goes in the MESSAGE, not just the tag: Sentry groups by
+            // message, so including it splits one bucket into per-source issues
+            // that can be resolved independently. Unlabelled callers keep the
+            // exact previous message text, so their existing grouping is not
+            // disturbed by this change.
+            const labelPart = context.label ? ` [${context.label}]` : '';
             const message =
-              `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
+              `withDbAccessContext (scope=${context.scope})${labelPart} held a pooled connection in an open `
               + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
               + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
               + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
@@ -307,7 +328,7 @@ export async function withDbAccessContext<T>(
                 // dropping a field silently is worse than an extra one.
                 openedAt: opener?.stack,
                 stack: new Error().stack,
-              });
+              }, context.label ? { dbContextLabel: context.label } : undefined);
             }
           }
         }

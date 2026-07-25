@@ -18,18 +18,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // vi.spyOn on the module object does not intercept it. Mock the module so the
 // held-context capture is observable. Only the attribution test asserts on it;
 // every other test here observes console.warn, which is untouched.
-const capturedMessages: Array<{ message: string; extra?: Record<string, unknown> }> = [];
+const capturedMessages: Array<{
+  message: string;
+  extra?: Record<string, unknown>;
+  tags?: Record<string, string>;
+}> = [];
 vi.mock('../../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sentry')>();
   return {
     ...actual,
-    captureMessage: (message: string, _level?: unknown, extra?: Record<string, unknown>) => {
-      capturedMessages.push({ message, extra });
+    captureMessage: (
+      message: string,
+      _level?: unknown,
+      extra?: Record<string, unknown>,
+      tags?: Record<string, string>,
+    ) => {
+      capturedMessages.push({ message, extra, tags });
     },
   };
 });
 
 import {
+  withDbAccessContext,
   withSystemDbAccessContext,
   runOutsideDbContext,
   assertOutsideHeldDbContext,
@@ -144,6 +154,53 @@ describe('#1105 DB-context tripwires', () => {
       // The opener's own frame must be present. Before the fix this field did
       // not exist and `stack` contained only the await trampoline.
       expect(String(extra?.openedAt)).toContain('theCulpritThatHoldsTheConnection');
+    });
+
+    it('emits the context label as a Sentry TAG and in the message (BREEZE-A triage fix)', async () => {
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      await withDbAccessContext(
+        {
+          scope: 'organization',
+          orgId: null,
+          accessibleOrgIds: [],
+          accessiblePartnerIds: [],
+          currentPartnerId: null,
+          label: 'agentWs.heartbeat',
+        },
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        },
+      );
+
+      expect(capturedMessages).toHaveLength(1);
+      // The TAG is the load-bearing part: extras are only visible inside a
+      // single event, so an unfilterable bucket (BREEZE-A, ~7k events) stays
+      // unfilterable if the label only lands in `extra`.
+      expect(capturedMessages[0]!.tags).toEqual({ dbContextLabel: 'agentWs.heartbeat' });
+      // Also in the message, because Sentry groups by message — that is what
+      // splits one bucket into per-handler issues.
+      expect(capturedMessages[0]!.message).toContain('[agentWs.heartbeat]');
+    });
+
+    it('omits the tag entirely for an unlabelled context, leaving the message text unchanged', async () => {
+      // Grouping stability: every existing caller is unlabelled, so their
+      // message must be byte-identical to before this change or their Sentry
+      // history splits into a new issue for no reason.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      await withSystemDbAccessContext(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      });
+
+      expect(capturedMessages).toHaveLength(1);
+      expect(capturedMessages[0]!.tags).toBeUndefined();
+      expect(capturedMessages[0]!.message).toContain('withDbAccessContext (scope=system) held');
+      expect(capturedMessages[0]!.message).not.toContain('[');
     });
 
     it('still warns when fn THROWS after holding the context too long (the finally path)', async () => {

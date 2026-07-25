@@ -10,13 +10,22 @@ const flushMock = vi.fn().mockResolvedValue(true);
 const setTagMock = vi.fn();
 const setUserMock = vi.fn();
 const moduleSetTagMock = vi.fn();
+const captureMessageMock = vi.fn();
+const setLevelMock = vi.fn();
+const setExtrasMock = vi.fn();
 const withScopeMock = vi.fn((cb: (scope: unknown) => void) =>
-  cb({ setTag: setTagMock, setContext: vi.fn() }),
+  cb({
+    setTag: setTagMock,
+    setContext: vi.fn(),
+    setLevel: setLevelMock,
+    setExtras: setExtrasMock,
+  }),
 );
 
 vi.mock('@sentry/node', () => ({
   init: (...args: unknown[]) => initMock(...args),
   captureException: (...args: unknown[]) => captureMock(...args),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...args),
   flush: (...args: unknown[]) => flushMock(...args),
   withScope: (cb: (scope: unknown) => void) => withScopeMock(cb),
   setUser: (...args: unknown[]) => setUserMock(...args),
@@ -33,6 +42,9 @@ describe('sentry service', () => {
     flushMock.mockClear();
     setTagMock.mockClear();
     withScopeMock.mockClear();
+    captureMessageMock.mockClear();
+    setLevelMock.mockClear();
+    setExtrasMock.mockClear();
     process.env = { ...ORIGINAL_ENV };
   });
 
@@ -55,6 +67,35 @@ describe('sentry service', () => {
     const initArg = initMock.mock.calls[0]![0] as { release?: string; dsn?: string };
     expect(initArg.release).toBe('9.9.9-test');
     expect(initArg.release).not.toBe('0.64.1');
+  });
+
+  it('captureMessage applies tags to the scope so recurring warnings are filterable', async () => {
+    // Tags, unlike extras, drive Sentry's search and "break down by" UI. This is
+    // what makes a recurring held-context warning attributable to one handler
+    // instead of arriving as a single opaque bucket (BREEZE-A).
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('held a pooled connection', 'warning', { heldMs: 12000 }, {
+      dbContextLabel: 'agentWs.heartbeat',
+    });
+
+    expect(captureMessageMock).toHaveBeenCalledWith('held a pooled connection');
+    expect(setTagMock).toHaveBeenCalledWith('dbContextLabel', 'agentWs.heartbeat');
+    expect(setLevelMock).toHaveBeenCalledWith('warning');
+    expect(setExtrasMock).toHaveBeenCalledWith({ heldMs: 12000 });
+  });
+
+  it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('plain warning');
+
+    expect(captureMessageMock).toHaveBeenCalledWith('plain warning');
+    expect(setTagMock).not.toHaveBeenCalled();
   });
 
   it('does not initialize the SDK when no DSN is configured', async () => {
