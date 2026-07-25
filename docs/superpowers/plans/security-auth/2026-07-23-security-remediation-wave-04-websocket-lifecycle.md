@@ -575,6 +575,34 @@ Note that Task 5 spans the Go agent (`agent/internal/heartbeat/`,
 `agent/internal/remote/desktop/`) as well as the API, so it must also satisfy
 `cd agent && go test -race ./...`.
 
+## Coordinator Decisions (2026-07-25) — both APPROVED, implement as written
+
+**D1 — Legacy stop-command compatibility is REQUIRED, not optional.** Strict `finalizationId`
+validation would make a new agent reject the current API's legacy `{sessionId}` stop command,
+breaking the mixed old/new fleet. The program's global constraints already mandate maintaining the
+documented old/new API and agent compatibility window and draining old instances before declaring
+enforcement complete, so a compatibility branch is obligatory here.
+
+Implement: accept and execute a legacy stop command when `finalizationId` is ABSENT, but reserve
+durable stop proof exclusively for exact ID-bound results. A legacy stop may terminate the stream;
+it may never satisfy `ensureDesktopStreamStopped`'s durable-proof requirement or stand in for exact
+acknowledgement. Cover both branches with tests, and make the legacy branch's non-proof explicit in
+an assertion rather than implied.
+
+**D2 — Fix the success-audit-before-denial defect in `platformAdminMiddleware`; the file-list
+exception is APPROVED.** `apps/api/src/middleware/platformAdmin.ts` calls `createAuditLogAsync({...
+result: 'success' })` before `await next()`, so a downstream denial (route-level MFA enforcement)
+is recorded as a SUCCESSFUL platform-admin action. This violates the global invariant that a denied
+request performs no mutation, queue submission, system-context transition, external call, snapshot,
+email, or success audit.
+
+Implement: record the success audit only after downstream authorization actually succeeds. Do not
+drop the denial from the record — a denied attempt should still be auditable, but never as
+`result: 'success'`. Add a regression test proving a downstream 403 does not emit a success audit.
+
+`platformAdmin.ts` is assigned to WAVE 4 for this fix. Wave 7 must not modify that file, to avoid a
+cross-wave merge conflict on a security-audit path.
+
 Task numbering is retained so every existing cross-reference stays valid; only the execution sequence
 changes.
 
