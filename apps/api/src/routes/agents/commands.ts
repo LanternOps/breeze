@@ -136,7 +136,13 @@ commandsRoutes.get('/:id/commands', async (c) => {
 
   const commands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(agent.deviceId, 10, agent.role)
+      claimPendingCommandsForDevice(
+        agent.deviceId,
+        10,
+        agent.role,
+        // #2774 — offboarding drain: only self_uninstall is deliverable.
+        agent.tenantDraining ? ['self_uninstall'] : undefined
+      )
     )
   );
 

@@ -51,8 +51,12 @@ const RESET_ALLOWED_PARTNER_STATUSES = new Set<string>(['active', 'pending']);
 // be reactivated via the public reset flow — an admin must restore them.
 const RESET_BLOCKED_USER_STATUSES = new Set<string>(['disabled']);
 
-// Organization statuses that block password reset for org-scoped users.
-const RESET_BLOCKED_ORG_STATUSES = new Set<string>(['suspended', 'churned']);
+// Organization statuses that PERMIT password reset for org-scoped users.
+// Deliberately an allowlist, mirroring `isUsableOrgStatus` in `tenantStatus.ts`
+// (and the partner set above): a denylist silently admits every status added
+// later, which is exactly how `offboarding` (#2774) — a terminal drain where
+// users are already revoked — initially kept a live reset path.
+const RESET_ALLOWED_ORG_STATUSES = new Set<string>(['active', 'trial']);
 
 /**
  * Single source of truth for "can this email reset its password right now?".
@@ -150,7 +154,7 @@ async function evaluateEligibility(user: UserLookupRow): Promise<ResetEligibilit
       .where(eq(organizations.id, user.orgId))
       .limit(1);
 
-    if (!org || org.deletedAt || RESET_BLOCKED_ORG_STATUSES.has(org.status as string)) {
+    if (!org || org.deletedAt || !RESET_ALLOWED_ORG_STATUSES.has(org.status as string)) {
       const detail = !org || org.deletedAt
         ? 'org:missing'
         : `org:${org.status}`;

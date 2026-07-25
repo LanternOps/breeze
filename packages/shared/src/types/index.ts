@@ -11,7 +11,9 @@ export * from './auth';
 export type PartnerType = 'msp' | 'enterprise' | 'internal';
 export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
 export type OrgType = 'customer' | 'internal';
-export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned';
+// `offboarding` (#2774): terminal-intent drain state — users locked out, agents
+// kept authenticated (self_uninstall-only) until drained, then auto-`churned`.
+export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned' | 'offboarding';
 export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE' | 'it-IT';
 
 export interface Partner {

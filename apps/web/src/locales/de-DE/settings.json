@@ -2716,7 +2716,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     }
   },
   "organizationList": {
@@ -2728,7 +2729,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     },
     "columns": {
       "devices": "Geräte"
@@ -2759,7 +2761,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     },
     "deviceCount": "{{count}} Geräte",
     "list": {

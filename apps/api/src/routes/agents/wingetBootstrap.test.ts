@@ -61,6 +61,10 @@ vi.mock('../../services/clientIp', () => ({
 }));
 
 vi.mock('../../services/tenantStatus', () => ({
+  // agentAuthMiddleware gates on getAgentTenantState (#2774); isAgentTenantActive
+  // remains for the mTLS path. This suite exercises the real middleware, so the
+  // mock must carry the export the middleware actually calls.
+  getAgentTenantState: vi.fn(async () => 'active'),
   isAgentTenantActive: vi.fn(async () => true),
 }));
 

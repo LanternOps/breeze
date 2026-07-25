@@ -169,7 +169,7 @@ describe('agent commands routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent');
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', undefined);
     await expect(res.json()).resolves.toEqual({
       commands: [
         {
@@ -179,6 +179,35 @@ describe('agent commands routes', () => {
         },
       ],
     });
+  });
+
+  // #2774 — during an offboarding drain the poll claims self_uninstall only.
+  it('narrows the claim to self_uninstall when the tenant is draining', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const drainApp = new Hono();
+    drainApp.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: 'device-1',
+        agentId: 'agent-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        role: 'agent',
+        tenantDraining: true,
+      });
+      await next();
+    });
+    drainApp.route('/agents', commandsRoutes);
+
+    const res = await drainApp.request(`/agents/${agentId}/commands`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1',
+      10,
+      'agent',
+      ['self_uninstall']
+    );
   });
 
   // A complete, well-formed PEM private-key block (header + base64 body +

@@ -17,6 +17,12 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
+import {
+  abortOrganizationOffboarding,
+  abortPartnerOffboarding,
+  beginOrganizationOffboarding,
+  beginPartnerOffboarding,
+} from '../services/tenantOffboarding';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -131,7 +137,8 @@ function settingsAllowlistEntriesValid(settings: unknown): boolean {
 }
 
 const updatePartnerSchema = createPartnerSchema.partial().extend({
-  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  // `offboarding` (#2774): terminal-intent drain — see services/tenantOffboarding.ts.
+  status: z.enum(['pending', 'active', 'suspended', 'churned', 'offboarding']).optional(),
   // Operator-only per-partner AI for Office entitlement. Settable here (system
   // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
   aiForOfficeEnabled: z.boolean().optional(),
@@ -178,7 +185,12 @@ const createOrganizationSchema = z.object({
   billingContact: z.any().optional()
 });
 
-const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true });
+// Update (not create) additionally accepts `offboarding` (#2774) — the
+// terminal-intent drain state. Creating an org directly in `offboarding`
+// makes no sense, so the create schema keeps the original set.
+const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
+  status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
+});
 
 const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
@@ -903,10 +915,20 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // (signup/billing limbo) and is already blocked for agents by the live
   // tenant cascade (getActivePartner is strict) — severing here would expire
   // enrollment keys irreversibly on a transient state.
-  if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
+  if ('status' in data && data.status === 'offboarding') {
+    // #2774 — terminal-intent drain across every org under the partner:
+    // users out now, agents narrowed to self_uninstall delivery until the
+    // drain reaper severs and flips to churned.
+    await beginPartnerOffboarding(partner.id, auth.user?.id ?? null);
+  } else if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
+    // Cancel in-flight drain uninstalls first (no-op unless offboarding) —
+    // an uncollected self_uninstall must not survive into a later
+    // reactivation of a suspended partner.
+    await abortPartnerOffboarding(partner.id);
     await revokePartnerTenantAccess(partner.id);
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
+    await abortPartnerOffboarding(partner.id);
     await restorePartnerTenantAccess(partner.id);
   }
 
@@ -941,6 +963,9 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  await abortPartnerOffboarding(partner.id);
   await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -1365,10 +1390,22 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+  if (data.status === 'offboarding') {
+    // #2774 — terminal-intent drain: users/API keys/OAuth out now, agents kept
+    // authenticated (narrowed to self_uninstall delivery) until the fleet
+    // drains or the window closes; the offboarding drain reaper then severs
+    // and flips to churned with a never-drained report.
+    await beginOrganizationOffboarding(organization.id, auth.user?.id ?? null);
+  } else if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+    // Leaving a drain for suspended/churned must not leave uncollected
+    // self_uninstalls behind: a later reactivation would deliver them to the
+    // reinstated fleet. No-op when the org wasn't offboarding.
+    await abortOrganizationOffboarding(organization.id);
     await revokeOrganizationTenantAccess(organization.id);
   } else if (data.status === 'active' || data.status === 'trial') {
-    // Reactivation: restore agent tokens this org's revoke suspended.
+    // Reactivation: cancel any in-flight drain uninstalls (see above), then
+    // restore agent tokens this org's revoke suspended.
+    await abortOrganizationOffboarding(organization.id);
     await restoreOrganizationTenantAccess(organization.id);
   }
 
@@ -1414,6 +1451,9 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  await abortOrganizationOffboarding(organization.id);
   await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {

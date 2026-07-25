@@ -2769,7 +2769,8 @@
       "active": "Ativo",
       "trial": "Avaliação",
       "suspended": "Suspenso",
-      "churned": "Cancelado"
+      "churned": "Cancelado",
+      "offboarding": "Em desligamento"
     }
   },
   "organizationList": {
@@ -2781,7 +2782,8 @@
       "active": "Ativo",
       "trial": "Avaliação",
       "suspended": "Suspenso",
-      "churned": "Cancelado"
+      "churned": "Cancelado",
+      "offboarding": "Em desligamento"
     },
     "columns": {
       "devices": "Dispositivos"
@@ -2812,7 +2814,8 @@
       "active": "Ativo",
       "trial": "Avaliação",
       "suspended": "Suspenso",
-      "churned": "Cancelado"
+      "churned": "Cancelado",
+      "offboarding": "Em desligamento"
     },
     "deviceCount": "Dispositivos {{count}}",
     "list": {

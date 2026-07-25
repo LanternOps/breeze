@@ -14,6 +14,8 @@ import {
   restoreJobs,
   backupJobs,
   devices,
+  organizations,
+  partners,
   STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
@@ -164,6 +166,29 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       )})`,
     );
   }
+
+  // #2774 — a drain-window self_uninstall must outlive the 30-minute command
+  // timeout: the whole point of the `offboarding` state is waiting (up to
+  // OFFBOARDING_DRAIN_WINDOW_HOURS) for offline devices to come collect it.
+  // Scoped to tenants CURRENTLY offboarding, deliberately NOT a blanket
+  // self_uninstall exemption: abuse-queued uninstalls (partner `suspended`)
+  // must keep expiring, or an abuse suspension reversed days later would
+  // deliver stale uninstalls to a reinstated fleet. The offboarding drain
+  // reaper cancels these rows itself (with a never-drained report) when the
+  // window closes, so they cannot linger past the drain either.
+  whereConditions.push(
+    sql`NOT (
+      ${deviceCommands.type} = 'self_uninstall'
+      AND EXISTS (
+        SELECT 1
+        FROM ${devices}
+        JOIN ${organizations} ON ${organizations.id} = ${devices.orgId}
+        JOIN ${partners} ON ${partners.id} = ${organizations.partnerId}
+        WHERE ${devices.id} = ${deviceCommands.deviceId}
+          AND (${organizations.status} = 'offboarding' OR ${partners.status} = 'offboarding')
+      )
+    )`,
+  );
 
   const staleCommands = await db
     .select({

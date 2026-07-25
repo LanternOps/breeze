@@ -220,7 +220,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           name: { type: 'string' },
           slug: { type: 'string' },
           type: { type: 'string', enum: ['customer', 'internal'] },
-          status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned'] },
+          status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned', 'offboarding'] },
           maxDevices: { type: 'integer', nullable: true },
           contractStart: { type: 'string', format: 'date-time', nullable: true },
           contractEnd: { type: 'string', format: 'date-time', nullable: true },
@@ -1850,7 +1850,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   name: { type: 'string', minLength: 1 },
                   slug: { type: 'string', minLength: 1, maxLength: 100 },
                   type: { type: 'string', enum: ['customer', 'internal'] },
-                  status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned'] },
+                  status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned', 'offboarding'] },
                   maxDevices: { type: 'integer', nullable: true },
                   contractStart: { type: 'string', format: 'date-time', nullable: true },
                   contractEnd: { type: 'string', format: 'date-time', nullable: true }

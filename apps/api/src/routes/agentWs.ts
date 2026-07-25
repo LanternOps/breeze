@@ -34,7 +34,7 @@ import {
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
-import { isAgentTenantActive } from '../services/tenantStatus';
+import { getAgentTenantState } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
@@ -946,7 +946,14 @@ export async function validateAgentToken(agentId: string, token: string): Promis
   // Tenant-status gate (mirror of the REST agent-auth path): refuse the WS
   // upgrade for a suspended/churned/soft-deleted org or partner before we
   // accept the persistent control channel.
-  if (!(await isAgentTenantActive(device.orgId))) {
+  //
+  // #2774 — 'draining' (offboarding) is refused here too, even though the
+  // REST drain surface stays open: ~20 call sites (terminal, desktop, tunnel,
+  // software installs, workers) push commands over this socket WITHOUT a
+  // device_commands row, so any WS session is a fully-capable control channel
+  // that the drain-mode command filtering can't see. The agent falls back to
+  // heartbeat polling, which is the actual self_uninstall delivery path.
+  if ((await getAgentTenantState(device.orgId)) !== 'active') {
     return { ok: false, reason: 'unauthorized' };
   }
 

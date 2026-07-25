@@ -259,6 +259,7 @@ import {
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
+import { initializeOffboardingDrainReaper, shutdownOffboardingDrainReaper } from './jobs/offboardingDrainReaper';
 import { initializeIntentOutboxPublisher, shutdownIntentOutboxPublisher } from './jobs/intentOutboxPublisher';
 import { initializeIntentExpiryReaper, shutdownIntentExpiryReaper } from './jobs/intentExpiryReaper';
 import { initializeIntentReleaseWorker, shutdownIntentReleaseWorker } from './jobs/intentReleaseWorker';
@@ -1269,6 +1270,7 @@ async function initializeWorkers(): Promise<void> {
     ['staleCommandReaper', initializeStaleCommandReaper],
     ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
+    ['offboardingDrainReaper', initializeOffboardingDrainReaper],
     ['intentOutboxPublisher', initializeIntentOutboxPublisher],
     ['intentExpiryReaper', initializeIntentExpiryReaper],
     ['intentReleaseWorker', initializeIntentReleaseWorker],
@@ -1451,6 +1453,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownStaleCommandReaper,
     shutdownPamJobs,
     shutdownApprovalExpiryReaper,
+    shutdownOffboardingDrainReaper,
     shutdownIntentOutboxPublisher,
     shutdownIntentExpiryReaper,
     shutdownIntentReleaseWorker,

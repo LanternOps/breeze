@@ -43,7 +43,7 @@ vi.mock('../services/clientIp', () => ({
 }));
 
 vi.mock('../services/tenantStatus', () => ({
-  isAgentTenantActive: vi.fn(async () => true),
+  getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -59,7 +59,7 @@ import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
-import { isAgentTenantActive } from '../services/tenantStatus';
+import { getAgentTenantState } from '../services/tenantStatus';
 import {
   agentAuthMiddleware,
   isAgentTokenRotationDue,
@@ -288,7 +288,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     vi.mocked(getRedis).mockReturnValue({} as any);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
     vi.mocked(rateLimiter).mockResolvedValue({
       allowed: true,
       remaining: 100,
@@ -298,7 +298,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
 
   it('rejects with an opaque 401 when the device org/partner tenant is not active', async () => {
     buildSelectMock([makeDevice()]);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(false);
+    vi.mocked(getAgentTenantState).mockResolvedValue(null);
 
     const c = createContext({ token: VALID_TOKEN });
     const next = vi.fn();
@@ -308,12 +308,12 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
       message: 'Invalid agent credentials',
     });
     expect(next).not.toHaveBeenCalled();
-    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+    expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
   it('proceeds to next() when the device tenant is active', async () => {
     buildSelectMock([makeDevice()]);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
 
     const c = createContext({ token: VALID_TOKEN });
     const next = vi.fn().mockResolvedValue(undefined);
@@ -321,7 +321,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     await agentAuthMiddleware(c, next);
 
     expect(next).toHaveBeenCalledTimes(1);
-    expect(isAgentTenantActive).toHaveBeenCalledWith('org-1');
+    expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
   // #1105 — the reliability ingest route self-manages a short org-scoped
@@ -330,7 +330,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   // request-long org transaction for this route.
   it('skips the request-long org wrap for the self-managed reliability route', async () => {
     buildSelectMock([makeDevice()]);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
 
     const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/reliability' });
     const next = vi.fn().mockResolvedValue(undefined);
@@ -348,7 +348,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   // outage, 2026-07-24), so the middleware must NOT add the request-long wrap.
   it('skips the request-long org wrap for the self-managed commands poll route', async () => {
     buildSelectMock([makeDevice()]);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
 
     const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/commands' });
     const next = vi.fn().mockResolvedValue(undefined);
@@ -363,7 +363,7 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   // the request-long org wrap.
   it('keeps the request-long org wrap for the command result route', async () => {
     buildSelectMock([makeDevice()]);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
 
     const c = createContext({
       token: VALID_TOKEN,
@@ -378,12 +378,113 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   });
 });
 
+// #2774 — during an `offboarding` drain the agent stays authenticated, but
+// only on the surface self_uninstall delivery needs. Everything else 403s.
+describe('agentAuthMiddleware - offboarding drain mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  const allowedPaths = [
+    '/api/v1/agents/agent-1/heartbeat',
+    '/api/v1/agents/agent-1/commands',
+    '/api/v1/agents/agent-1/commands/cmd-1/result',
+    '/api/v1/agents/agent-1/rotate-token',
+    '/api/v1/agents/agent-1/rotate-token/confirm',
+    '/api/v1/agents/agent-1/logs',
+  ];
+
+  for (const path of allowedPaths) {
+    it(`allows ${path} while draining`, async () => {
+      buildSelectMock([makeDevice()]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await agentAuthMiddleware(c, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  const blockedPaths = [
+    '/api/v1/agents/agent-1/hardware',
+    '/api/v1/agents/agent-1/software',
+    '/api/v1/agents/agent-1/config',
+    '/api/v1/agents/agent-1/monitoring-results',
+    '/api/v1/agents/agent-1/patches',
+    '/api/v1/agents/agent-1/eventlogs',
+    // This middleware also serves the extension gateway
+    // (extensions/gateway.ts mounts /ext/<name>/agent/:id/* — singular
+    // "agent"). Matching on the trailing segment alone would admit every
+    // extension route whose last segment happens to be an allowed action, so
+    // the allowlist is anchored on the core `agents/<id>/<action>` shape. An
+    // extension route may NOT join the drain surface even by mimicking a core
+    // action name exactly.
+    '/api/v1/ext/acme/agent/agent-1/heartbeat',
+    '/api/v1/ext/acme/agent/agent-1/commands',
+    '/api/v1/ext/acme/agent/agent-1/commands/cmd-1/result',
+    '/api/v1/ext/acme/agent/agent-1/rotate-token/confirm',
+    '/api/v1/ext/acme/agent/agent-1/extra/heartbeat',
+    // Nested path under a real agent route with an attacker-chosen final
+    // segment (winget-bootstrap/file/:name).
+    '/api/v1/agents/agent-1/winget-bootstrap/file/heartbeat',
+  ];
+
+  for (const path of blockedPaths) {
+    it(`blocks ${path} with 403 tenant_offboarding while draining`, async () => {
+      buildSelectMock([makeDevice()]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn();
+
+      const result = await agentAuthMiddleware(c, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect((result as any).status).toBe(403);
+      expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+    });
+  }
+
+  it('sets tenantDraining on the agent context while draining', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect((c.get('agent') as { tenantDraining?: boolean }).tenantDraining).toBe(true);
+  });
+
+  it('leaves tenantDraining false for a fully active tenant', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect((c.get('agent') as { tenantDraining?: boolean }).tenantDraining).toBe(false);
+  });
+});
+
 describe('agentAuthMiddleware - per-org rate limit', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     vi.mocked(getRedis).mockReturnValue({} as any);
-    vi.mocked(isAgentTenantActive).mockResolvedValue(true);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
   });
 
   it('returns 429 with org_rate_limit_exceeded body and Retry-After:60 when org limit is exceeded', async () => {
@@ -413,7 +514,7 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
     // Ordering invariant: the tenant-status gate runs AFTER the rate limiters,
     // so an org-limit-exceeded request short-circuits to 429 WITHOUT driving an
     // (uncached) tenant lookup. Pins the DoS-hardening order.
-    expect(isAgentTenantActive).not.toHaveBeenCalled();
+    expect(getAgentTenantState).not.toHaveBeenCalled();
   });
 
   it('honors AGENT_ORG_RATE_LIMIT_PER_MIN env override', async () => {

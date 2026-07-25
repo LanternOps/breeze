@@ -2716,7 +2716,8 @@
       "active": "Activo",
       "trial": "Prueba",
       "suspended": "Suspendido",
-      "churned": "Dado de baja"
+      "churned": "Dado de baja",
+      "offboarding": "En proceso de baja"
     }
   },
   "organizationList": {
@@ -2728,7 +2729,8 @@
       "active": "Activo",
       "trial": "Prueba",
       "suspended": "Suspendido",
-      "churned": "Dado de baja"
+      "churned": "Dado de baja",
+      "offboarding": "En proceso de baja"
     },
     "columns": {
       "devices": "Dispositivos"
@@ -2759,7 +2761,8 @@
       "active": "Activo",
       "trial": "Prueba",
       "suspended": "Suspendido",
-      "churned": "Dado de baja"
+      "churned": "Dado de baja",
+      "offboarding": "En proceso de baja"
     },
     "deviceCount": "dispositivos {{count}}",
     "list": {

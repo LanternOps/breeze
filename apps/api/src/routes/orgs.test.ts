@@ -40,6 +40,37 @@ vi.mock('../services/tenantLifecycle', () => ({
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
 }));
 
+vi.mock('../services/tenantOffboarding', () => ({
+  beginOrganizationOffboarding: vi.fn().mockResolvedValue({
+    revocation: {
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0
+    },
+    devicesTargeted: 0,
+    uninstallsQueued: 0,
+    otherCommandsCancelled: 0
+  }),
+  beginPartnerOffboarding: vi.fn().mockResolvedValue({
+    revocation: {
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0
+    },
+    devicesTargeted: 0,
+    uninstallsQueued: 0,
+    otherCommandsCancelled: 0
+  }),
+  abortOrganizationOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 }),
+  abortPartnerOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 })
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -163,6 +194,12 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
+import {
+  abortOrganizationOffboarding,
+  abortPartnerOffboarding,
+  beginOrganizationOffboarding,
+  beginPartnerOffboarding,
+} from '../services/tenantOffboarding';
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 
@@ -550,6 +587,68 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
       expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    // #2774 — partner offboarding drains rather than severs.
+    it('begins the partner offboarding drain when status is set to offboarding', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'offboarding', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'offboarding' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(beginPartnerOffboarding).toHaveBeenCalledWith('partner-1', expect.anything());
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+      expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('aborts a partner drain before severing when forced to suspended', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'suspended', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+    });
+
+    it('aborts a partner drain on reactivation so in-flight uninstalls cannot fire later', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'active', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
     it('does not sever the fleet on a transient active->pending transition (preserves enrollment keys)', async () => {
@@ -1547,6 +1646,73 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
       expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    // #2774 — offboarding is the drain entry: users out via
+    // beginOrganizationOffboarding (agent channel kept), NOT the immediate
+    // sever of revokeOrganizationTenantAccess.
+    it('begins the offboarding drain (not an immediate sever) when status is set to offboarding', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'offboarding' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'offboarding' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-1', expect.anything());
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+      expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('aborts a drain before severing when an org is forced to suspended', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'suspended' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+    });
+
+    it('aborts a drain on reactivation so in-flight uninstalls cannot fire later', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'active' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
     });
 
     it('should return 404 when organization not found', async () => {
