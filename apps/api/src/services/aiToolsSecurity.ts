@@ -168,7 +168,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_security_posture',
-      description: 'Get fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations.',
+      description: 'Get fleet-wide or device-level security posture scores with factor breakdowns and prioritized recommendations. Posture is a scored summary of security CONTROLS (AV, firewall, encryption, patch currency) — it does NOT list CVEs or vulnerability findings. For CVEs, vulnerable software, or vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (one device).',
       input_schema: {
         type: 'object' as const,
         properties: {
