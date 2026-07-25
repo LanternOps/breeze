@@ -42,6 +42,21 @@ export const SIGNAL_DEFAULTS = {
   'rmm.shared_installer_host.min_partners': 2,
   'rmm.shared_installer_host.base_score': 60,
   'rmm.shared_installer_host.per_extra_partner': 20,
+  // Billing-identity detector (billingIdentity.ts). Like the script-content
+  // detector, NONE of these are age-decayed — a cardholder name that matches
+  // nothing about the account is evidence regardless of how old the account is.
+  // A name mismatch alone caps below alert: legitimate operators do pay with a
+  // spouse's or a parent company's card.
+  'billing.cardholder_name_mismatch.score': 55,
+  'billing.cardholder_name_mismatch.failed_attempt_bonus': 5,
+  'billing.shared_card_fingerprint.min_partners': 2,
+  'billing.shared_card_fingerprint.base_score': 70,
+  'billing.shared_card_fingerprint.per_extra_partner': 15,
+  'billing.card_testing.distinct_methods': 3,
+  'billing.card_testing.window_days': 7,
+  'billing.card_testing.base_score': 50,
+  'billing.card_testing.per_extra_method': 15,
+  'billing.card_testing.per_failed_attempt': 5,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;

@@ -58,5 +58,41 @@ export async function computeInvariantSignals(): Promise<ComputedSignal[]> {
     });
   }
 
+  // A partner we took out of 'active' is still being billed. Lives here rather
+  // than in heuristics.ts for two structural reasons: the heuristics `scoped`
+  // CTE filters p.status = 'active', so it can never see a suspended partner,
+  // and its push() age-decays — a suspended account's live subscription is a
+  // breach at any account age. Pure SQL against the snapshot the billing
+  // service writes; the sweep NEVER calls the payment provider.
+  //
+  // Detection only. Cancelling the subscription is a money-affecting external
+  // write (refund-vs-leave is a business decision) and is deliberately out of
+  // scope for the sweep.
+  const suspendedButSubscribed = (await db.execute(sql`
+    SELECT id, name, status, billing_subscription_status FROM partners
+    WHERE status <> 'active'
+      AND billing_subscription_status IN ('active', 'past_due')
+      -- Intentionally omit deleted_at IS NULL: a soft-deleted partner still
+      -- carrying a live subscription is itself the anomaly.
+  `)) as unknown as Array<{
+    id: string;
+    name: string;
+    status: string;
+    billing_subscription_status: string;
+  }>;
+  for (const p of suspendedButSubscribed) {
+    signals.push({
+      partnerId: p.id,
+      signalKey: 'invariant.suspended_partner_active_subscription',
+      score: 100,
+      severity: 'alert',
+      evidence: {
+        partnerName: p.name,
+        partnerStatus: p.status,
+        subscriptionStatus: p.billing_subscription_status,
+      },
+    });
+  }
+
   return signals;
 }

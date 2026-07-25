@@ -44,6 +44,19 @@ export const partners = pgTable('partners', {
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),
+  // Billing identity snapshot, written ONLY by the separate billing service
+  // from its payment-provider webhooks and read only by the abuse sweep
+  // (services/abuseSignals/billingIdentity.ts). Internal columns — never add
+  // any of these to partnerPublicColumns() in routes/orgs.ts.
+  // billingCardFingerprint is NULL for wallet/Link-style payments that expose
+  // no fingerprint, so readers must treat NULL as "unknown", never as a match.
+  billingCardholderName: text('billing_cardholder_name'),
+  billingCardCountry: char('billing_card_country', { length: 2 }),
+  billingCardFingerprint: text('billing_card_fingerprint'),
+  billingDistinctPaymentMethods: integer('billing_distinct_payment_methods').notNull().default(0),
+  billingFailedAttempts: integer('billing_failed_attempts').notNull().default(0),
+  billingIdentitySyncedAt: timestamp('billing_identity_synced_at', { withTimezone: true }),
+  billingSubscriptionStatus: text('billing_subscription_status'),
   currencyCode: char('currency_code', { length: 3 }).notNull().default('USD'),
   defaultTaxRate: numeric('default_tax_rate', { precision: 8, scale: 5 }),
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),

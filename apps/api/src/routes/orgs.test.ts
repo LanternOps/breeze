@@ -295,7 +295,10 @@ describe('org routes', () => {
       expect(keys).toContain('id');
       expect(keys).toContain('name');
       expect(keys).toContain('status');
-      for (const internal of ['signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp']) {
+      for (const internal of [
+        'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
+        'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+      ]) {
         expect(keys).not.toContain(internal);
       }
     });
@@ -387,7 +390,10 @@ describe('org routes', () => {
       const keys = Object.keys(projection!);
       expect(keys).toContain('id');
       expect(keys).toContain('settings');
-      for (const internal of ['signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp']) {
+      for (const internal of [
+        'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
+        'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+      ]) {
         expect(keys).not.toContain(internal);
       }
     });
@@ -2835,6 +2841,12 @@ describe('org routes', () => {
       for (const internal of [
         'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
         'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+        // Billing identity snapshot (written by the billing service, read by
+        // the abuse sweep). Cardholder name and card fingerprint must never be
+        // served to a partner-scoped token.
+        'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
+        'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingIdentitySyncedAt', 'billingSubscriptionStatus',
       ]) {
         expect(keys).not.toContain(internal);
       }
@@ -2972,6 +2984,12 @@ describe('org routes', () => {
       for (const internal of [
         'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
         'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+        // Billing identity snapshot (written by the billing service, read by
+        // the abuse sweep). Cardholder name and card fingerprint must never be
+        // served to a partner-scoped token.
+        'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
+        'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingIdentitySyncedAt', 'billingSubscriptionStatus',
       ]) {
         expect(keys).not.toContain(internal);
       }
