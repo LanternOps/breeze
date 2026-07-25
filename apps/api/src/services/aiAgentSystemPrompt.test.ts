@@ -33,6 +33,15 @@ describe('AI_SYSTEM_PROMPT_BASE vulnerability tool routing (#2605)', () => {
     expect(AI_SYSTEM_PROMPT_BASE).toMatch(/get_security_posture returns \*\*control scores\*\*/);
     expect(AI_SYSTEM_PROMPT_BASE).toMatch(/manage_patches returns the \*\*patch\/KB inventory/);
   });
+
+  // Correlation coverage is incomplete (e.g. #2291 — no Windows OS-level CVE
+  // correlation), so an empty report must not be reported as "no
+  // vulnerabilities". Without this the "THE tool"/"ONLY tools" framing above
+  // turns a coverage gap into a confident all-clear.
+  it('forbids reading an empty vulnerability report as an all-clear', () => {
+    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/never state that a device or the fleet has no vulnerabilities/);
+    expect(AI_SYSTEM_PROMPT_BASE).toMatch(/no findings are currently correlated/);
+  });
 });
 
 describe('AI_SYSTEM_PROMPT_BASE in-product-only rules', () => {

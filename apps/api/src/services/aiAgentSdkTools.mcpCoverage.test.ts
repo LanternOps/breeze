@@ -29,7 +29,9 @@ const SOURCE = readFileSync(new URL('./aiAgentSdkTools.ts', import.meta.url), 'u
 
 /** Tool names declared via `tool('<name>', ...)` anywhere in the SDK tool file. */
 function declaredToolNames(): Set<string> {
-  return new Set(Array.from(SOURCE.matchAll(/\btool\(\s*'([a-z0-9_]+)'/g), (m) => m[1]));
+  // `m[1]` is typed `string | undefined` because capture groups are optional in
+  // general; group 1 is non-optional in this pattern, so a match always has it.
+  return new Set(Array.from(SOURCE.matchAll(/\btool\(\s*'([a-z0-9_]+)'/g), (m) => m[1]!));
 }
 
 /** The description literal passed as the second argument of `tool('<name>', '<description>')`. */
