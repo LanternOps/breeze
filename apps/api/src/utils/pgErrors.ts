@@ -47,3 +47,60 @@ export function pgErrorCode(err: unknown): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * 40P01 = deadlock_detected, 40001 = serialization_failure. Both mean "you lost
+ * a lock race, the work was not applied, try again" — never "the request was
+ * invalid". Postgres picks a victim and the winner finishes immediately after,
+ * so the retry almost always succeeds.
+ */
+export function isTransientLockError(err: unknown): boolean {
+  const code = pgErrorCode(err);
+  return code === '40P01' || code === '40001';
+}
+
+/**
+ * Re-run `fn` when it fails with a transient lock error (see
+ * {@link isTransientLockError}). Anything else propagates untouched on the
+ * first throw.
+ *
+ * Why this exists: the agent software-inventory ingest dropped ~4k reports in
+ * six days because a deadlock (BREEZE-3) propagated straight to the global
+ * error handler as a 500 and the whole report was discarded. Correct lock
+ * ordering is the primary fix; this is the belt-and-braces for the remaining
+ * writers of the same rows, because losing a lock race should cost a retry,
+ * not an entire inventory report.
+ *
+ * IMPORTANT — only wrap a NESTED drizzle transaction (one running inside a
+ * request-long `withDbAccessContext`, which drizzle emits as a SAVEPOINT).
+ * Retrying a statement that aborted the OUTER transaction cannot work: every
+ * follow-up fails with 25P02 until the outer transaction ends. A nested
+ * transaction rolls back to its savepoint and leaves the outer usable — see
+ * dbSavepointErrorIsolation.integration.test.ts for the isolation proof.
+ */
+export async function retryOnTransientLockError<T>(
+  label: string,
+  fn: () => Promise<T>,
+  options: { attempts?: number } = {},
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? 3);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (!isTransientLockError(error)) throw error;
+      lastError = error;
+      // Log every lost race, including the final one. A silent retry would hide
+      // a lock-ordering regression: the symptom would shrink to added latency
+      // with nothing in Sentry to explain it.
+      console.warn(
+        `[${label}] transient lock error ${pgErrorCode(error)} on attempt ${attempt}/${attempts}`
+        + (attempt < attempts ? ' — retrying' : ' — giving up'),
+      );
+    }
+  }
+
+  throw lastError;
+}

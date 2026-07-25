@@ -144,10 +144,35 @@ eventsRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // Find audit logs where resourceId matches the device, OR the device is
-    // referenced inside the JSONB details (agent-submitted events use
-    // details.deviceId).
+    // Scope to the device's org FIRST. This is a performance fix, not just
+    // defense-in-depth (BREEZE-B: 25s holds, 5 users).
+    //
+    // The `details->>'deviceId'` arm below cannot use its index when RLS is
+    // enforced: `jsonb_object_field_text` (`->>`) is NOT leakproof
+    // (pg_proc.proleakproof = false), so Postgres may not evaluate it before the
+    // RLS security qual, which means it can never become an index condition.
+    // audit_logs_details_device_id_idx therefore exists and is simply ignored on
+    // the app's connection. Measured on 800k rows as breeze_app: 11,938ms
+    // (Parallel Seq Scan, 266k rows filtered per worker). The SAME query as a
+    // superuser, where RLS does not apply, uses the index and runs in 0.044ms —
+    // so this is an RLS interaction, not a missing index. `uuid_eq` IS
+    // leakproof, which is why the resource_id arm alone indexes fine (3.9ms).
+    //
+    // An org_id equality is leakproof and indexable, so it bounds the scan to
+    // one org via audit_logs_org_timestamp_idx: 11,938ms -> 178ms (~67x).
+    //
+    // Safe on visibility: breeze_has_org_access(NULL) returns FALSE, so audit
+    // rows written with a null org_id (e.g. writeAuditEvent with `orgId ?? null`
+    // on some agent paths) are ALREADY invisible to every org- and
+    // partner-scope caller — this predicate hides nothing they could see. It
+    // does narrow system-scope callers, which previously saw null-org rows; a
+    // device's activity feed showing only that device's org is the intended
+    // semantics.
     const conditions: SQL[] = [
+      eq(auditLogs.orgId, device.orgId),
+      // Find audit logs where resourceId matches the device, OR the device is
+      // referenced inside the JSONB details (agent-submitted events use
+      // details.deviceId).
       or(
         eq(auditLogs.resourceId, deviceId),
         sql`${auditLogs.details}->>'deviceId' = ${deviceId}`

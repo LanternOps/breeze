@@ -13,10 +13,27 @@
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// db/index.ts imports `captureMessage` as a bound ESM named import, so
+// vi.spyOn on the module object does not intercept it. Mock the module so the
+// held-context capture is observable. Only the attribution test asserts on it;
+// every other test here observes console.warn, which is untouched.
+const capturedMessages: Array<{ message: string; extra?: Record<string, unknown> }> = [];
+vi.mock('../../services/sentry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/sentry')>();
+  return {
+    ...actual,
+    captureMessage: (message: string, _level?: unknown, extra?: Record<string, unknown>) => {
+      capturedMessages.push({ message, extra });
+    },
+  };
+});
+
 import {
   withSystemDbAccessContext,
   runOutsideDbContext,
   assertOutsideHeldDbContext,
+  __resetHeldContextCaptureThrottleForTests,
 } from '../../db';
 
 const HELD = 'held a pooled connection';
@@ -30,12 +47,15 @@ describe('#1105 DB-context tripwires', () => {
 
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    capturedMessages.length = 0;
   });
 
   afterEach(() => {
     warnSpy.mockRestore();
     delete process.env.DB_CONTEXT_TRIPWIRE_STRICT;
     delete process.env.DB_CONTEXT_HELD_WARN_MS;
+    delete process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS;
+    __resetHeldContextCaptureThrottleForTests();
   });
 
   describe('assertOutsideHeldDbContext', () => {
@@ -93,6 +113,37 @@ describe('#1105 DB-context tripwires', () => {
       expect(hits).toHaveLength(1);
       expect(String(hits[0]![0])).toContain('#1105');
       expect(String(hits[0]![0])).toContain('scope=system');
+    });
+
+    it('attributes the hold to the OPENER, not to the emitter (BREEZE-9 triage fix)', async () => {
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+
+      // Named so the frame is identifiable in the captured trace. The whole
+      // point: ~12k BREEZE-9 events were unactionable because the stack was
+      // built in the `finally` — after `await`, when the opener's frames are
+      // already gone — so every event pointed at db/index.ts instead of at the
+      // code actually holding the connection.
+      async function theCulpritThatHoldsTheConnection(): Promise<void> {
+        await withSystemDbAccessContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        });
+      }
+
+      // Defeat the per-scope capture throttle so this asserts on a real event
+      // rather than conditionally skipping and passing vacuously.
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      await theCulpritThatHoldsTheConnection();
+
+      expect(heldWarns()).toHaveLength(1);
+      expect(capturedMessages).toHaveLength(1);
+
+      const extra = capturedMessages[0]!.extra;
+      expect(typeof extra?.openedAt).toBe('string');
+      // The opener's own frame must be present. Before the fix this field did
+      // not exist and `stack` contained only the await trampoline.
+      expect(String(extra?.openedAt)).toContain('theCulpritThatHoldsTheConnection');
     });
 
     it('still warns when fn THROWS after holding the context too long (the finally path)', async () => {

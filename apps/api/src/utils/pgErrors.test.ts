@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { isPgUniqueViolation, pgErrorCode } from './pgErrors';
+import { describe, it, expect, vi } from 'vitest';
+import { isPgUniqueViolation, isTransientLockError, pgErrorCode, retryOnTransientLockError } from './pgErrors';
 
 // postgres.js surfaces the index as `constraint_name` (the real shape we hit in prod)
 const pgErr = (constraint?: string) =>
@@ -87,5 +87,66 @@ describe('pgErrorCode', () => {
     expect(pgErrorCode(null)).toBeUndefined();
     expect(pgErrorCode('boom')).toBeUndefined();
     expect(pgErrorCode(undefined)).toBeUndefined();
+  });
+});
+
+describe('isTransientLockError', () => {
+  it('matches deadlock_detected and serialization_failure, including Drizzle-wrapped', () => {
+    expect(isTransientLockError(Object.assign(new Error('deadlock detected'), { code: '40P01' }))).toBe(true);
+    expect(isTransientLockError(Object.assign(new Error('could not serialize'), { code: '40001' }))).toBe(true);
+    // The shape that actually reaches route code: DrizzleQueryError wrapper
+    // whose own .code is undefined and the real code on .cause.
+    const wrapped = Object.assign(new Error('Failed query: delete from "software_inventory"'), {
+      cause: Object.assign(new Error('deadlock detected'), { code: '40P01' }),
+    });
+    expect(isTransientLockError(wrapped)).toBe(true);
+  });
+
+  it('does not match errors that a retry cannot fix', () => {
+    // 25P02 is the SYMPTOM of an already-aborted transaction, not a lost race —
+    // retrying it in place would loop until the budget ran out.
+    for (const code of ['23505', '23502', '23503', '42501', '25P02', '40002']) {
+      expect(isTransientLockError(Object.assign(new Error('x'), { code }))).toBe(false);
+    }
+    expect(isTransientLockError(new Error('plain'))).toBe(false);
+    expect(isTransientLockError(null)).toBe(false);
+  });
+});
+
+describe('retryOnTransientLockError', () => {
+  it('returns the first successful result without retrying', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    await expect(retryOnTransientLockError('t', fn)).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a deadlock and succeeds on a later attempt', async () => {
+    const deadlock = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    const fn = vi.fn()
+      .mockRejectedValueOnce(deadlock)
+      .mockRejectedValueOnce(deadlock)
+      .mockResolvedValue('ok');
+    await expect(retryOnTransientLockError('t', fn)).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('exhausts the budget and rethrows the last lock error', async () => {
+    const deadlock = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    const fn = vi.fn().mockRejectedValue(deadlock);
+    await expect(retryOnTransientLockError('t', fn, { attempts: 2 })).rejects.toBe(deadlock);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows a non-lock error immediately without burning retries', async () => {
+    const notALock = Object.assign(new Error('not-null violation'), { code: '23502' });
+    const fn = vi.fn().mockRejectedValue(notALock);
+    await expect(retryOnTransientLockError('t', fn)).rejects.toBe(notALock);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats attempts < 1 as a single attempt rather than skipping the work', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    await expect(retryOnTransientLockError('t', fn, { attempts: 0 })).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 });

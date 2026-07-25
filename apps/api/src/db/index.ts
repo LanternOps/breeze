@@ -260,6 +260,22 @@ export async function withDbAccessContext<T>(
 
     const warnMs = getHeldContextWarnMs();
     const startedAt = warnMs > 0 ? Date.now() : 0;
+    // Capture the OPENER's stack here, synchronously, while the call chain that
+    // opened this context is still on the stack.
+    //
+    // The warning below used to build its stack inside the `finally`, which runs
+    // after `await` — by then the synchronous frames are gone and all that
+    // remains is the microtask trampoline plus whatever host loop is at the
+    // bottom (`processTicksAndRejections` / `sql.begin` / bullmq's worker.js).
+    // That is why BREEZE-9 accumulated ~12k events that name nothing
+    // actionable: every one pointed at this emitter instead of at the code
+    // holding the connection. Allocating the Error here records the real opener.
+    //
+    // Cost: `new Error()` captures the structured trace but V8 only formats it
+    // on first `.stack` access, which we do ONLY when a hold actually breaches
+    // the threshold. So the hot path pays one small allocation, not stack
+    // serialization, and only when the tripwire is armed at all.
+    const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
     try {
       return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
         dbContextMetaStorage.run(context, fn),
@@ -282,7 +298,16 @@ export async function withDbAccessContext<T>(
             // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
             // so a recurring conn-hold can't flood the org's event quota.
             if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
-              captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+              captureMessage(message, 'warning', {
+                heldMs,
+                scope: context.scope,
+                // `openedAt` is the actionable one — it names the caller that
+                // opened the context. `stack` is kept (emitter-side, i.e. the
+                // await trampoline) only because the previous shape had it and
+                // dropping a field silently is worse than an extra one.
+                openedAt: opener?.stack,
+                stack: new Error().stack,
+              });
             }
           }
         }
