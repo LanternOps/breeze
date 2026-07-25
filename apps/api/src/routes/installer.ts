@@ -24,7 +24,15 @@ const CHILD_TTL_MIN = Number(
  *
  * Revocation is unaffected: installer_bootstrap_tokens.parent_enrollment_key_id
  * is ON DELETE CASCADE, so deleting the parent destroys outstanding tokens
- * before they can ever reach this function.
+ * before they can ever reach this function. A deliberate admin delete is the
+ * ONLY thing that does this — the scheduled `enrollmentKeyCleanup` sweep job
+ * (jobs/enrollmentKeyCleanup.ts) that hard-purges long-expired enrollment
+ * keys is NOT a second silent ceiling on this TTL: it explicitly exempts any
+ * parent key that still has a live, unexhausted bootstrap token, so a
+ * 30-day/1-year token cannot be cascade-deleted out from under itself by
+ * that job before its own expiry (or full consumption). If you're reading
+ * this because you found that job and are wondering whether it re-clamps
+ * this TTL, it doesn't — see its header comment for the exemption predicate.
  */
 function freshChildExpiresAt(): Date {
   return new Date(Date.now() + CHILD_TTL_MIN * 60 * 1000);
