@@ -438,7 +438,26 @@ git commit -m "fix(reports): snapshot and reauthorize report scope"
 
 **Interfaces:**
 - Consumes: live `users.status`/`isPlatformAdmin`, `organization_users.role_id`/`site_ids`, `partner_users.role_id`/`org_access`/`org_ids`, the organization's partner, role permissions, and request `AuthContext`.
-- Produces: `resolveLiveReportAuthority(userId, orgId)`, `resolveRequestReportAuthority(auth, orgId)`, and batch `resolveRequestReportAuthorityMap(auth, orgIds)` with one shared exact-organization algorithm.
+- Produces: `resolveLiveReportAuthority(userId, orgId, action)`, `resolveRequestReportAuthority(auth, orgId, action)`, and batch `resolveRequestReportAuthorityMap(auth, orgIds, action)` with one shared exact-organization algorithm.
+
+**Report action contract (added 2026-07-25).** Breeze has four distinct report grants —
+`reports:read`, `reports:write`, `reports:export`, and `reports:delete`. An earlier revision of this
+plan said only "the reports permission", which is ambiguous: a single fixed check would either
+broaden privilege (accepting `reports:read` for a destructive path) or wrongly deny (demanding
+`reports:write` for a viewer). Every resolver therefore takes a REQUIRED
+`action: 'read' | 'write' | 'export' | 'delete'` parameter and checks exactly the matching
+`reports:<action>` grant — never a superset, never a hardcoded default. There is no default value;
+omitting it must be a type error.
+
+Caller mapping:
+
+| Caller | `action` |
+|---|---|
+| definition read / list | `read` |
+| definition create, update, explicit reauthorization (Task 3) | `write` |
+| scheduled execution and run creation (Tasks 4, 5, 7) | `read` — a schedule renders an existing definition; it must not require or confer write |
+| run download / export delivery (Task 5) | `export` |
+| definition or run deletion | `delete` |
 
 - [ ] **Step 1: Add failing live-authority tests**
 

@@ -177,8 +177,21 @@ export type ExportTablePlan = {
 
 export async function buildTenantExportPlan(
   tables: readonly string[],
+  registry: TenantExportPolicyRegistry,
 ): Promise<readonly ExportTablePlan[]>;
 ```
+
+**Registry injection (added 2026-07-25 — resolves a Task 3/Task 4 cycle).** An earlier revision
+declared `buildTenantExportPlan(tables)` with no registry source: the concrete registry module is
+created by Task 4, but Task 4 forbids modifying `tenantExportPolicy.ts`, so Task 3 could not be
+implemented without an unapproved temporary API, an unresolved import, or an always-deny stub.
+
+The registry is therefore an explicit REQUIRED parameter. Task 3 owns the pure, deny-default
+classifier and takes the registry as data — it imports no registry module and hardcodes no table.
+Task 3's tests supply small fixture registries directly, which is what makes the missing-policy,
+extra-column, and unreviewed-container cases testable in isolation. Task 4 then creates the real
+`tenantExportPolicyRegistry.ts` and is the only task that wires it into the `buildOrgExportZip`
+call site. Deny-default still holds: a table absent from the supplied registry fails the preflight.
 
 `buildTenantExportPlan` performs one `information_schema.columns` query for the full cascade set before any tenant table is read. For each existing table:
 
