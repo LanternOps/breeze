@@ -199,12 +199,16 @@ export function ipPrefixGroup(raw: string): string | null {
   const version = isIP(ip);
   if (version === 4) {
     const [a, b, c] = ip.split('.');
+    // isIP already guarantees four octets; the explicit check keeps the
+    // undefined case out of the returned key rather than baking the string
+    // "undefined" into a prefix bucket.
+    if (a === undefined || b === undefined || c === undefined) return null;
     return `v4:${a}.${b}.${c}`;
   }
   if (version === 6) {
     // IPv4-mapped (::ffff:a.b.c.d) → bucket with the embedded IPv4 /24.
-    const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/i.exec(ip);
-    if (mapped) return `v4:${mapped[1]}`;
+    const mappedV4 = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/i.exec(ip)?.[1];
+    if (mappedV4 !== undefined) return `v4:${mappedV4}`;
     const hextets = expandIpv6(ip);
     if (!hextets) return null;
     return `v6:${hextets.slice(0, 4).join(':')}`;
@@ -216,11 +220,14 @@ export function ipPrefixGroup(raw: string): string | null {
 function expandIpv6(ip: string): string[] | null {
   let s = ip;
   // Rewrite a trailing embedded IPv4 (e.g. `::ffff:0:1.2.3.4`) as two hextets.
-  const v4 = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s);
-  if (v4) {
-    const octets = v4[1].split('.').map(Number);
-    if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o > 255)) return null;
-    s = `${s.slice(0, -v4[1].length)}${(((octets[0] << 8) | octets[1]) >>> 0).toString(16)}:${(((octets[2] << 8) | octets[3]) >>> 0).toString(16)}`;
+  const embeddedV4 = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s)?.[1];
+  if (embeddedV4 !== undefined) {
+    const [o0, o1, o2, o3] = embeddedV4.split('.').map(Number);
+    if (o0 === undefined || o1 === undefined || o2 === undefined || o3 === undefined) return null;
+    if ([o0, o1, o2, o3].some((o) => !Number.isInteger(o) || o > 255)) return null;
+    const high = (((o0 << 8) | o1) >>> 0).toString(16);
+    const low = (((o2 << 8) | o3) >>> 0).toString(16);
+    s = `${s.slice(0, -embeddedV4.length)}${high}:${low}`;
   }
   const halves = s.split('::');
   if (halves.length > 2) return null;
@@ -314,13 +321,19 @@ export function computeHeuristicSignals(
     // and it is weighted evidence, not proof (a small MSP managing remote/home
     // workers also scatters), so it caps at watch — always below
     // severity.alert_score — on its own.
-    const devicesWithIp = a.lastSeenIps.length;
+    // An IP that doesn't parse is dropped from BOTH the numerator and the
+    // denominator — it is a device we cannot place on a network, not a device
+    // sharing a network. Counting it in the denominator only would dilute the
+    // ratio toward "not scattered" and let a fleet hide behind junk values.
+    const prefixes = new Set<string>();
+    let devicesWithIp = 0;
+    for (const ip of a.lastSeenIps) {
+      const group = ipPrefixGroup(ip);
+      if (group === null) continue;
+      prefixes.add(group);
+      devicesWithIp += 1;
+    }
     if (devicesWithIp >= cfg['rmm.device_ip_scatter.min_devices']) {
-      const prefixes = new Set<string>();
-      for (const ip of a.lastSeenIps) {
-        const group = ipPrefixGroup(ip);
-        if (group) prefixes.add(group);
-      }
       const scatterRatio = prefixes.size / devicesWithIp;
       if (scatterRatio >= cfg['rmm.device_ip_scatter.watch_ratio']) {
         push('rmm.device_ip_scatter', scatterRatio >= cfg['rmm.device_ip_scatter.high_ratio'] ? 55 : 45, {

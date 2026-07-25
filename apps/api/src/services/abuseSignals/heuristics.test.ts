@@ -191,6 +191,39 @@ describe('computeHeuristicSignals', () => {
     expect(signals.some((x) => x.signalKey === 'rmm.device_ip_scatter')).toBe(false);
   });
 
+  it('drops unparseable IPs from both the numerator and denominator of device_ip_scatter', () => {
+    // 9 scattered /24s + 3 junk values: the junk must not appear as prefixes
+    // NOR pad devicesWithIp (which would dilute the ratio to 9/12 = 0.75 and
+    // let a scattered fleet hide behind malformed values).
+    const ips = [
+      ...Array.from({ length: 9 }, (_, i) => `10.${i}.0.1`),
+      'not-an-ip',
+      '',
+      '999.1.1.1',
+    ];
+    const signals = computeHeuristicSignals(
+      [agg({ deviceCount: 12, lastSeenIps: ips })],
+      SIGNAL_DEFAULTS,
+      now,
+    );
+    const s = signals.find((x) => x.signalKey === 'rmm.device_ip_scatter');
+    expect(s).toBeDefined();
+    expect(s!.evidence).toMatchObject({ devicesWithIp: 9, distinctPrefixes: 9, scatterRatio: 1 });
+  });
+
+  it('does not fire device_ip_scatter when junk IPs leave fewer than min_devices parseable', () => {
+    const ips = [
+      ...Array.from({ length: 5 }, (_, i) => `10.${i}.0.1`),
+      ...Array.from({ length: 5 }, () => 'not-an-ip'),
+    ];
+    const signals = computeHeuristicSignals(
+      [agg({ deviceCount: 10, lastSeenIps: ips })],
+      SIGNAL_DEFAULTS,
+      now,
+    );
+    expect(signals.some((x) => x.signalKey === 'rmm.device_ip_scatter')).toBe(false);
+  });
+
   it('does not age-decay device_ip_scatter (fleet shape is age-independent evidence)', () => {
     const ips = Array.from({ length: 10 }, (_, i) => `10.${i}.0.1`);
     const signals = computeHeuristicSignals(
