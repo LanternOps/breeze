@@ -382,17 +382,39 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	if h.isService || h.isHeadless {
-		// No WS stream running in headless mode — return success as a no-op.
-		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
-	}
 	sessionID, errResult := requireValidatedDesktopSessionID(cmd.Payload)
 	if errResult != nil {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
-	h.wsDesktopMgr.StopSession(sessionID)
-	return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+
+	rawFinalizationID, hasFinalizationID := cmd.Payload["finalizationId"]
+	if !hasFinalizationID {
+		// Compatibility for pre-Wave-4 API instances. This executes the stop,
+		// but intentionally returns no ID-bound outcome and therefore can never
+		// satisfy the API's durable-proof parser.
+		h.wsDesktopMgr.StopSession(sessionID)
+		return tools.NewSuccessResult(map[string]any{"stopped": true}, time.Since(start).Milliseconds())
+	}
+
+	finalizationID, ok := rawFinalizationID.(string)
+	if !ok || finalizationID == "" || finalizationID != cmd.ID {
+		return tools.CommandResult{
+			Status:     "failed",
+			Error:      "invalid finalizationId",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	outcome := "already_absent"
+	if h.wsDesktopMgr.StopSession(sessionID) {
+		outcome = "stopped"
+	}
+	return tools.NewSuccessResult(map[string]any{
+		"sessionId":      sessionID,
+		"finalizationId": finalizationID,
+		"outcome":        outcome,
+	}, time.Since(start).Milliseconds())
 }
 
 func handleDesktopInput(h *Heartbeat, cmd Command) tools.CommandResult {
