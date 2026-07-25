@@ -26,23 +26,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.25.12'
           cache-dependency-path: agent/go.sum
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           languages: ${{ matrix.language }}
 
       - name: Autobuild JavaScript/TypeScript
         if: matrix.language == 'javascript-typescript'
-        uses: github/codeql-action/autobuild@v4
+        uses: github/codeql-action/autobuild@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
 
       - name: Build Go agent for CodeQL
         if: matrix.language == 'go'
@@ -52,4 +52,4 @@ jobs:
           CGO_ENABLED=0 go build ./...
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4

@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -39,7 +39,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -51,7 +51,7 @@ jobs:
         run: pnpm build --filter=@breeze/api
 
       - name: Upload API artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: api-dist
           path: apps/api/dist
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -70,7 +70,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -88,7 +88,7 @@ jobs:
         run: pnpm build --filter=@breeze/web
 
       - name: Upload Web artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: web-dist
           path: apps/web/dist
@@ -129,10 +129,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -163,7 +163,7 @@ jobs:
             ./cmd/breeze-agent
 
       - name: Upload Agent artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -183,7 +183,7 @@ jobs:
             ./cmd/breeze-backup
 
       - name: Upload breeze-backup artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -202,7 +202,7 @@ jobs:
             ./cmd/breeze-watchdog
 
       - name: Upload breeze-watchdog artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -224,7 +224,7 @@ jobs:
 
       - name: Upload breeze-desktop-helper artifact
         if: matrix.goos == 'darwin'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -242,10 +242,10 @@ jobs:
       name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: agent/go.sum
@@ -256,7 +256,7 @@ jobs:
         run: go mod download
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '8.0.x'
 
@@ -589,7 +589,7 @@ jobs:
           }
 
       - name: Upload signed Windows EXE artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-windows-amd64
           path: dist/breeze-agent-windows-amd64.exe
@@ -603,7 +603,7 @@ jobs:
       # and the HelperLifecycleManager fell through to a
       # `breeze-agent.exe user-helper` fallback every ~30s.
       - name: Upload signed Windows user-helper EXE artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-user-helper-windows-amd64
           path: dist/breeze-user-helper-windows-amd64.exe
@@ -611,14 +611,14 @@ jobs:
           retention-days: 30
 
       - name: Upload Windows MSI artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-windows-msi
           path: dist/breeze-agent.msi
           retention-days: 30
 
       - name: Upload signed backup EXE artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-backup-windows-amd64
           path: dist/breeze-backup-windows-amd64.exe
@@ -626,7 +626,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed watchdog EXE artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-watchdog-windows-amd64
           path: dist/breeze-watchdog-windows-amd64.exe
@@ -639,52 +639,52 @@ jobs:
     needs: [build-agent]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download darwin/amd64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-agent-darwin-amd64
           path: staging/
 
       - name: Download darwin/arm64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-agent-darwin-arm64
           path: staging/
 
       - name: Download backup darwin/amd64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-backup-darwin-amd64
           path: staging/
 
       - name: Download backup darwin/arm64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-backup-darwin-arm64
           path: staging/
 
       - name: Download desktop-helper darwin/amd64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-desktop-helper-darwin-amd64
           path: staging/
 
       - name: Download desktop-helper darwin/arm64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-desktop-helper-darwin-arm64
           path: staging/
 
       - name: Download watchdog darwin/amd64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-watchdog-darwin-amd64
           path: staging/
 
       - name: Download watchdog darwin/arm64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-watchdog-darwin-arm64
           path: staging/
@@ -746,7 +746,7 @@ jobs:
           done
 
       - name: Upload signed darwin/amd64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-darwin-amd64
           path: staging/breeze-agent-darwin-amd64
@@ -754,7 +754,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed darwin/arm64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-darwin-arm64
           path: staging/breeze-agent-darwin-arm64
@@ -762,7 +762,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed backup darwin/amd64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-backup-darwin-amd64
           path: staging/breeze-backup-darwin-amd64
@@ -770,7 +770,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed backup darwin/arm64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-backup-darwin-arm64
           path: staging/breeze-backup-darwin-arm64
@@ -778,7 +778,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed desktop-helper darwin/amd64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-desktop-helper-darwin-amd64
           path: staging/breeze-desktop-helper-darwin-amd64
@@ -786,7 +786,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed desktop-helper darwin/arm64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-desktop-helper-darwin-arm64
           path: staging/breeze-desktop-helper-darwin-arm64
@@ -794,7 +794,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed watchdog darwin/amd64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-watchdog-darwin-amd64
           path: staging/breeze-watchdog-darwin-amd64
@@ -802,7 +802,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed watchdog darwin/arm64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-watchdog-darwin-arm64
           path: staging/breeze-watchdog-darwin-arm64
@@ -911,14 +911,14 @@ jobs:
           done
 
       - name: Upload .pkg darwin/amd64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-darwin-amd64-pkg
           path: staging/breeze-agent-darwin-amd64.pkg
           retention-days: 30
 
       - name: Upload .pkg darwin/arm64
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-darwin-arm64-pkg
           path: staging/breeze-agent-darwin-arm64.pkg
@@ -935,16 +935,16 @@ jobs:
     if: vars.ENABLE_MACOS_SIGNING == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download .pkg darwin/amd64
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-agent-darwin-amd64-pkg
           path: installer-pkgs/
 
       - name: Download .pkg darwin/arm64
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-agent-darwin-arm64-pkg
           path: installer-pkgs/
@@ -1010,7 +1010,7 @@ jobs:
           ls -lh build/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-installer-app
           path: build/Breeze Installer.app.zip
@@ -1037,7 +1037,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Linux dependencies
         if: contains(matrix.platform, 'ubuntu')
@@ -1071,7 +1071,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1166,7 +1166,7 @@ jobs:
           cp "$sig_file" breeze-viewer-linux.AppImage.sig
 
       - name: Upload Viewer artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.asset_name }}
           path: apps/viewer/${{ matrix.asset_name }}
@@ -1174,7 +1174,7 @@ jobs:
 
       - name: Upload Viewer Linux updater bundle
         if: matrix.platform == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-viewer-linux-updater
           path: |
@@ -1199,7 +1199,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Linux dependencies
         if: contains(matrix.platform, 'ubuntu')
@@ -1233,7 +1233,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1300,7 +1300,7 @@ jobs:
           echo "path=${{ matrix.asset_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Helper artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.asset_name }}
           path: apps/helper/${{ matrix.asset_name }}
@@ -1311,7 +1311,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -1319,7 +1319,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1423,14 +1423,14 @@ jobs:
           cp "$sig_file" breeze-viewer-macos.app.tar.gz.sig
 
       - name: Upload Viewer macOS artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-viewer-macos.dmg
           path: apps/viewer/breeze-viewer-macos.dmg
           retention-days: 30
 
       - name: Upload Viewer macOS updater bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-viewer-macos-updater
           path: |
@@ -1443,7 +1443,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -1451,7 +1451,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1528,7 +1528,7 @@ jobs:
           xcrun stapler validate breeze-helper-macos.dmg
 
       - name: Upload Helper macOS artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-helper-macos.dmg
           path: apps/helper/breeze-helper-macos.dmg
@@ -1546,13 +1546,13 @@ jobs:
       name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Download viewer Windows MSI
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
 
       - name: Download helper Windows MSI
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-helper-windows.msi
           path: staging/
@@ -1646,7 +1646,7 @@ jobs:
           }
 
       - name: Upload signed viewer MSI
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-viewer-windows.msi
           path: staging/breeze-viewer-windows.msi
@@ -1654,7 +1654,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed helper MSI
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-helper-windows.msi
           path: staging/breeze-helper-windows.msi
@@ -1668,7 +1668,7 @@ jobs:
     needs: [sign-windows-tauri]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -1676,7 +1676,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1685,7 +1685,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download signed viewer MSI
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
@@ -1718,7 +1718,7 @@ jobs:
           fi
 
       - name: Upload Windows updater bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-viewer-windows-updater
           path: |
@@ -1737,7 +1737,7 @@ jobs:
       && (needs.package-windows-updater.result == 'success' || needs.package-windows-updater.result == 'skipped')
     steps:
       - name: Download viewer updater bundles
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: updater-bundles
           pattern: 'breeze-viewer-*-updater'
@@ -1823,7 +1823,7 @@ jobs:
           cat latest.json
 
       - name: Upload generated manifest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: viewer-latest-json
           path: latest.json
@@ -1904,10 +1904,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json}'
@@ -2241,27 +2241,27 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Create staging directory
         run: mkdir -p staging/agent staging/viewer staging/helper
 
       - name: Download agent artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: staging/agent
           pattern: 'breeze-agent-*'
           merge-multiple: true
 
       - name: Download viewer artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: staging/viewer
           pattern: 'breeze-viewer-*'
           merge-multiple: true
 
       - name: Download helper artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: staging/helper
           pattern: 'breeze-helper-*'
@@ -2321,10 +2321,10 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download API artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: api-dist
           path: apps/api/dist
@@ -2383,7 +2383,7 @@ jobs:
       executor-image-digest: ${{ steps.push-executor-digest.outputs.digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
@@ -2455,7 +2455,7 @@ jobs:
           printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-graph-read-executor-image-digest.txt
 
       - name: Upload executor digest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: m365-graph-read-executor-image-digest
           path: m365-graph-read-executor-image-digest.txt
@@ -2474,10 +2474,10 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download Web artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: web-dist
           path: apps/web/dist
@@ -2533,7 +2533,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
