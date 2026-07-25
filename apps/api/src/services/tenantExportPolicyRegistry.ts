@@ -1,19 +1,40 @@
 import { getExtensionOrgExportColumns } from '../extensions/tenancyRegistry';
 import type { ExportColumnDecision, TenantExportPolicyRegistry, TenantExportTablePolicy } from './tenantExportPolicy';
 
-type ColumnGroups = Readonly<{ included: readonly string[]; reviewedIncluded: readonly string[]; excludedSensitive: readonly string[]; excludedOpen: readonly string[] }>;
+type ColumnGroups = Readonly<{
+  included: readonly string[];
+  reviewedIncluded: readonly string[];
+  excludedSensitive: readonly string[];
+  excludedOpen: readonly string[];
+  specific?: Readonly<Record<string, ExportColumnDecision>>;
+}>;
 
 const INCLUDED: ExportColumnDecision = { decision: 'include', rationale: 'Customer-owned tenant data included in the portable export contract.' };
 const REVIEWED_INCLUDED: ExportColumnDecision = { decision: 'include', rationale: 'Security-adjacent operational identifier, status, timestamp, count, or integrity value reviewed as non-secret.', reviewedSensitiveName: true };
 const EXCLUDED_SENSITIVE: ExportColumnDecision = { decision: 'exclude', rationale: 'Authentication, credential, capability, private-key, or verifier material is prohibited from tenant exports.', reviewedSensitiveName: true, openContainerReviewed: true };
 const EXCLUDED_OPEN: ExportColumnDecision = { decision: 'exclude', rationale: 'Open-ended container content is excluded after review because it may embed credentials or capabilities.', reviewedSensitiveName: true, openContainerReviewed: true };
 
-function tablePolicy(organizationKey: 'id' | 'org_id', groups: ColumnGroups): TenantExportTablePolicy {
+export function tablePolicy(
+  organizationKey: 'id' | 'org_id',
+  groups: ColumnGroups,
+): TenantExportTablePolicy {
   const columns: Record<string, ExportColumnDecision> = {};
-  for (const column of groups.included) columns[column] = INCLUDED;
-  for (const column of groups.reviewedIncluded) columns[column] = REVIEWED_INCLUDED;
-  for (const column of groups.excludedSensitive) columns[column] = EXCLUDED_SENSITIVE;
-  for (const column of groups.excludedOpen) columns[column] = EXCLUDED_OPEN;
+  const assign = (column: string, decision: ExportColumnDecision) => {
+    if (Object.prototype.hasOwnProperty.call(columns, column)) {
+      throw new Error(
+        `[tenantExport] duplicate classification for column "${column}"`,
+      );
+    }
+    columns[column] = decision;
+  };
+
+  for (const column of groups.included) assign(column, INCLUDED);
+  for (const column of groups.reviewedIncluded) assign(column, REVIEWED_INCLUDED);
+  for (const column of groups.excludedSensitive) assign(column, EXCLUDED_SENSITIVE);
+  for (const column of groups.excludedOpen) assign(column, EXCLUDED_OPEN);
+  for (const [column, decision] of Object.entries(groups.specific ?? {})) {
+    assign(column, decision);
+  }
   return { organizationKey, columns };
 }
 
@@ -95,7 +116,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "device_config_state": tablePolicy("org_id", {"included":["device_id","org_id","file_path","config_key","collected_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["config_value"],"excludedOpen":[]}),
   "device_connections": tablePolicy("org_id", {"included":["id","device_id","org_id","protocol","local_addr","local_port","remote_addr","remote_port","state","pid","process_name","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "device_event_logs": tablePolicy("org_id", {"included":["id","device_id","org_id","timestamp","level","category","source","event_id","message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
+  "device_event_logs": tablePolicy("org_id", {"included":["id","device_id","org_id","timestamp","level","category","source","event_id","message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"],"specific":{"search_vector":{"decision":"exclude","rationale":"PostgreSQL tsvector search-index data is derived from event content and is not needed in a portable tenant export."}}}),
   "device_filesystem_cleanup_runs": tablePolicy("org_id", {"included":["id","device_id","org_id","requested_by","requested_at","approved_at","bytes_reclaimed","status","error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["plan","executed_actions"]}),
   "device_filesystem_scan_state": tablePolicy("org_id", {"included":["device_id","org_id","last_run_mode","last_baseline_completed_at","last_disk_used_percent","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["checkpoint","aggregate","hot_directories"]}),
   "device_filesystem_snapshots": tablePolicy("org_id", {"included":["id","device_id","org_id","captured_at","trigger","partial","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary","largest_files","largest_dirs","temp_accumulation","old_downloads","unrotated_logs","trash_usage","duplicate_candidates","cleanup_candidates","errors","raw_payload"]}),
@@ -209,7 +230,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "remediation_suggestions": tablePolicy("org_id", {"included":["id","org_id","source_type","source_id","device_id","alert_id","anomaly_id","correlation_group_id","rca_id","target_type","script_id","script_template_id","playbook_id","title","rationale","expected_action","risk_tier","status","confidence","target_device_ids","elevation_request_id","tool_execution_id","script_execution_id","playbook_execution_id","edited_by","accepted_by","rejected_by","executed_by","failure_message","created_by","created_at","updated_at","accepted_at","rejected_at","executed_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence","parameters"]}),
   "remote_sessions": tablePolicy("org_id", {"included":["id","device_id","org_id","user_id","type","status","webrtc_offer","webrtc_answer","started_at","ended_at","duration_seconds","bytes_transferred","recording_url","error_message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["ice_candidates"]}),
   "reports": tablePolicy("org_id", {"included":["id","org_id","name","type","schedule","format","last_generated_at","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
-  "restore_jobs": tablePolicy("org_id", {"included":["id","org_id","snapshot_id","device_id","restore_type","target_path","status","started_at","completed_at","restored_size","restored_files","initiated_by","command_id","created_at","updated_at"],"reviewedIncluded":["recovery_token_id"],"excludedSensitive":[],"excludedOpen":["selected_paths","target_config"]}),
+  "restore_jobs": tablePolicy("org_id", {"included":["id","org_id","snapshot_id","device_id","restore_type","target_path","status","started_at","completed_at","restored_size","restored_files","initiated_by","command_id","created_at","updated_at"],"reviewedIncluded":["recovery_token_id"],"excludedSensitive":[],"excludedOpen":["selected_paths","target_config"],"specific":{"restore_type_v2":{"decision":"include","rationale":"Versioned restore-type discriminator describes the tenant-owned restore operation and is required to interpret exported restore-job records."}}}),
   "roles": tablePolicy("org_id", {"included":["id","partner_id","org_id","parent_role_id","scope","name","description","is_system","created_at","updated_at"],"reviewedIncluded":["force_mfa"],"excludedSensitive":[],"excludedOpen":[]}),
   "s1_actions": tablePolicy("org_id", {"included":["id","org_id","device_id","requested_by","action","status","provider_action_id","requested_at","completed_at","error"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "s1_agents": tablePolicy("org_id", {"included":["id","org_id","integration_id","s1_agent_id","device_id","status","infected","threat_count","policy_name","last_seen_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["metadata"]}),

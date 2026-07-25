@@ -17,10 +17,15 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
+import { findTenantExportPolicyIssues } from '../../scripts/check-tenant-export-policy';
 import {
   buildTenantExportPlan,
   type TenantExportPolicyRegistry,
 } from './tenantExportPolicy';
+import {
+  CORE_TENANT_EXPORT_POLICY,
+  tablePolicy,
+} from './tenantExportPolicyRegistry';
 
 function column(
   tableName: string,
@@ -259,6 +264,75 @@ describe('buildTenantExportPlan', () => {
         organizationKey: 'id',
         includedColumns: ['id'],
       },
+    ]);
+  });
+});
+
+describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('rejects a column classified in both a shared group and a specific decision', () => {
+    expect(() =>
+      tablePolicy('org_id', {
+        included: ['search_vector'],
+        reviewedIncluded: [],
+        excludedSensitive: [],
+        excludedOpen: [],
+        specific: {
+          search_vector: {
+            decision: 'exclude',
+            rationale: 'Derived search data is excluded.',
+          },
+        },
+      }),
+    ).toThrow(/duplicate classification.*search_vector/i);
+  });
+
+  it('classifies derived search vectors and versioned discriminator columns explicitly', () => {
+    const tables = ['device_event_logs', 'restore_jobs'] as const;
+    const liveColumns = tables.flatMap((tableName) => [
+      ...Object.keys(CORE_TENANT_EXPORT_POLICY[tableName]!.columns).map(
+        (columnName) => ({ tableName, columnName }),
+      ),
+      {
+        tableName,
+        columnName:
+          tableName === 'device_event_logs'
+            ? 'search_vector'
+            : 'restore_type_v2',
+      },
+    ]);
+
+    expect(
+      findTenantExportPolicyIssues(
+        tables,
+        liveColumns,
+        CORE_TENANT_EXPORT_POLICY,
+      ),
+    ).toEqual([]);
+    expect(
+      CORE_TENANT_EXPORT_POLICY.device_event_logs!.columns.search_vector,
+    ).toMatchObject({ decision: 'exclude' });
+    expect(
+      CORE_TENANT_EXPORT_POLICY.restore_jobs!.columns.restore_type_v2,
+    ).toMatchObject({ decision: 'include' });
+  });
+
+  it('fails closed for a future neutral derived column', () => {
+    const tableName = 'device_event_logs';
+    const liveColumns = [
+      ...Object.keys(CORE_TENANT_EXPORT_POLICY[tableName]!.columns).map(
+        (columnName) => ({ tableName, columnName }),
+      ),
+      { tableName, columnName: 'future_derived_projection' },
+    ];
+
+    expect(
+      findTenantExportPolicyIssues(
+        [tableName],
+        liveColumns,
+        CORE_TENANT_EXPORT_POLICY,
+      ),
+    ).toEqual([
+      'device_event_logs.future_derived_projection: unclassified',
     ]);
   });
 });
