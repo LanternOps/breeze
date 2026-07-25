@@ -1450,6 +1450,16 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    if (parentKeyTooCloseToExpiry(parent.expiresAt)) {
+      return c.json(
+        {
+          error:
+            "Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL",
+        },
+        410,
+      );
+    }
+
     try {
       const {
         id: tokenId,
@@ -1805,6 +1815,14 @@ async function serveInstaller(
   if (keyRow.maxUsage !== null && keyRow.usageCount >= keyRow.maxUsage) {
     return c.json(
       { error: "This download link has been used the maximum number of times" },
+      410,
+    );
+  }
+  if (parentKeyTooCloseToExpiry(keyRow.expiresAt)) {
+    // Public/unauthenticated path — no parent-key detail (name, id) in the
+    // response, matching the other rejection messages in this function.
+    return c.json(
+      { error: "This download link is expiring too soon to build an installer" },
       410,
     );
   }
