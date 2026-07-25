@@ -1433,6 +1433,55 @@ describe("POST /:id/bootstrap-token", () => {
     expect(body.error).toContain("expires too soon");
     expect(insertValues).not.toHaveBeenCalled();
   });
+
+  it("honours ttlMinutes on the bootstrap-token route (#2775)", async () => {
+    const parent = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValue({
+        id: "token-row-uuid-2",
+        token: "ABCDE12345",
+        expiresAt: new Date(Date.now() + 129_600 * 60 * 1000),
+        parentKeyName: "Test Key",
+      } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 3, ttlMinutes: 129_600 }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ ttlMinutes: 129_600 }),
+    );
+
+    issueSpy.mockRestore();
+  });
+
+  it("rejects ttlMinutes above the cap on the bootstrap-token route (#2775)", async () => {
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ttlMinutes: 525_601 }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+  });
 });
 
 // ============================================================
@@ -1519,6 +1568,35 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
           },
         ],
       }),
+    );
+  });
+
+  it("passes the ttlMinutes query param through to the bootstrap token (macos app bundle) (#2775)", async () => {
+    const parentRow = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+      Buffer.from("renamed-app-zip"),
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=2&ttlMinutes=10080`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ maxUsage: 2, ttlMinutes: 10080 }),
     );
   });
 
