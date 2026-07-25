@@ -738,6 +738,7 @@
     "title": "Default settings",
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
+    "managedByPartner": "Managed by partner",
     "policies": {
       "title": "Default policies",
       "fields": {

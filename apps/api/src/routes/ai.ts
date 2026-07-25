@@ -1040,10 +1040,11 @@ aiRoutes.put(
 
     const body = c.req.valid('json');
 
-    // Enforce partner locks on AI budget fields
-    const budgetFields = Object.keys(body);
-    if (budgetFields.length > 0) {
-      await assertNotLocked(orgId, 'aiBudgets', budgetFields);
+    // Enforce partner locks on AI budget fields. Submitted values are passed so a
+    // field the partner enforces only 403s when the org actually changes it
+    // (issue #2752); re-sending the enforced value is an allowed no-op.
+    if (Object.keys(body).length > 0) {
+      await assertNotLocked(orgId, 'aiBudgets', body);
     }
 
     await updateBudget(orgId, body);

@@ -738,6 +738,7 @@
     "title": "Impostazioni predefinite",
     "description": "Regola i criteri predefiniti e il comportamento di registrazione per {{organization}}.",
     "save": "Salva predefiniti",
+    "managedByPartner": "Gestito dal partner",
     "policies": {
       "title": "Criteri predefiniti",
       "fields": {

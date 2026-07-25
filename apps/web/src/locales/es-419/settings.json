@@ -738,6 +738,7 @@
     "title": "Configuración predeterminada",
     "description": "Ajuste las políticas predeterminadas y el comportamiento de inscripción para {{organization}}.",
     "save": "Guardar valores predeterminados",
+    "managedByPartner": "Gestionado por socio",
     "policies": {
       "title": "Políticas predeterminadas",
       "fields": {

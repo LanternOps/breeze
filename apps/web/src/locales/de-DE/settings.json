@@ -738,6 +738,7 @@
     "title": "Standardeinstellungen",
     "description": "Optimieren Sie die Standardrichtlinien und das Registrierungsverhalten für {{organization}}.",
     "save": "Standardeinstellungen speichern",
+    "managedByPartner": "Verwaltet durch Partner",
     "policies": {
       "title": "Standardrichtlinien",
       "fields": {

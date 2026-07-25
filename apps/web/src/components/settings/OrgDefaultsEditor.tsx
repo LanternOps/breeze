@@ -62,12 +62,31 @@ type OrgDefaultsEditorProps = {
   // there is no lock — an org pin always overrides the partner default.
   pinnableVersions?: PinnableVersions | null;
   partnerPins?: AgentVersionPinsValue;
-  // Partner-locked field paths (`defaults.<field>`) from GET effective-settings.
+  // Issue #2752: dot-path fields the partner has locked (e.g. "defaults.deviceGroup"),
+  // straight from GET /organizations/:id/effective-settings, plus the merged
+  // `defaults` category those locks resolve to. This editor was the only org
+  // settings editor with no lock awareness, which is why a partner-set field
+  // 403'd every save in this category.
   locked?: string[];
+  effectiveDefaults?: DefaultsData;
   // Issue #2776: the partner's enrollment-link lifetime cap, shown read-only.
   // The cap is partner-only — an org can never edit it here (see below).
   partnerMaxEnrollmentTtlMinutes?: number;
 };
+
+// Lockable `defaults` fields. `agentVersionPins` is deliberately absent: it is
+// INHERIT-WITH-OVERRIDE, not partner-locked (issue #2124), even though the
+// `locked` array still advertises it when the partner has pinned a version.
+const LOCKABLE_FIELDS = [
+  'policyDefaults',
+  'deviceGroup',
+  'alertThreshold',
+  'autoEnrollment',
+  'agentUpdatePolicy',
+  'maintenanceWindow',
+] as const;
+
+type LockableField = (typeof LOCKABLE_FIELDS)[number];
 
 const defaultValues: DefaultsData = {
   policyDefaults: {
@@ -130,11 +149,27 @@ export default function OrgDefaultsEditor({
   pinnableVersions,
   partnerPins,
   locked,
+  effectiveDefaults,
   partnerMaxEnrollmentTtlMinutes,
 }: OrgDefaultsEditorProps) {
   const { t } = useTranslation('settings');
-  const isLocked = (field: string) => locked?.includes(`defaults.${field}`) ?? false;
-  const initialData = { ...defaultValues, ...defaults };
+  // Matches the isLocked helper in OrgSecuritySettings / OrgNotificationSettings /
+  // OrgEventLogSettings / OrgBrandingEditor (issue #2752 — this editor was missed).
+  const isLocked = (field: LockableField) => locked?.includes(`defaults.${field}`) ?? false;
+
+  // A locked field's effective value IS the partner's, so seed the control from it
+  // rather than from the org's own (inert) value or the hard-coded default. That
+  // way the disabled control shows what is actually in force.
+  const lockedSeed: DefaultsData = {};
+  if (effectiveDefaults) {
+    if (isLocked('policyDefaults') && effectiveDefaults.policyDefaults) lockedSeed.policyDefaults = effectiveDefaults.policyDefaults;
+    if (isLocked('deviceGroup') && effectiveDefaults.deviceGroup !== undefined) lockedSeed.deviceGroup = effectiveDefaults.deviceGroup;
+    if (isLocked('alertThreshold') && effectiveDefaults.alertThreshold !== undefined) lockedSeed.alertThreshold = effectiveDefaults.alertThreshold;
+    if (isLocked('autoEnrollment') && effectiveDefaults.autoEnrollment) lockedSeed.autoEnrollment = effectiveDefaults.autoEnrollment;
+    if (isLocked('agentUpdatePolicy') && effectiveDefaults.agentUpdatePolicy !== undefined) lockedSeed.agentUpdatePolicy = effectiveDefaults.agentUpdatePolicy;
+    if (isLocked('maintenanceWindow') && effectiveDefaults.maintenanceWindow !== undefined) lockedSeed.maintenanceWindow = effectiveDefaults.maintenanceWindow;
+  }
+  const initialData = { ...defaultValues, ...defaults, ...lockedSeed };
   // Version pins are inherit-with-override (issue #2124): the org can always set
   // its own, which overrides the partner default. No lock.
   const [agentVersionPins, setAgentVersionPins] = useState<AgentVersionPinsValue>(
@@ -248,6 +283,18 @@ export default function OrgDefaultsEditor({
       // org PATCH rejects it with 403 once the partner has set one. Omitting it
       // both drops any stale org-stored cap and keeps Save from 403ing.
     };
+    // Partner-locked fields are enforced server-side and inert on the org row, so
+    // echo the partner's value back verbatim. That keeps the write a permitted
+    // no-op (issue #2752) and sidesteps any client-side canonicalisation — the
+    // maintenance-window round-trip, say — reading as a real change and 403ing
+    // the whole category.
+    if (effectiveDefaults) {
+      for (const field of LOCKABLE_FIELDS) {
+        if (isLocked(field) && field in effectiveDefaults) {
+          (data as Record<string, unknown>)[field] = (effectiveDefaults as Record<string, unknown>)[field];
+        }
+      }
+    }
     onSave?.(data);
   };
 
@@ -283,6 +330,7 @@ export default function OrgDefaultsEditor({
               <span className="font-medium">{t(/* i18n-dynamic */ policy.labelKey)}</span>
               <select
                 value={policyDefaults[policy.id as keyof typeof policyDefaults]}
+                disabled={isLocked('policyDefaults')}
                 onChange={event => {
                   setPolicyDefaults(prev => ({
                     ...prev,
@@ -290,7 +338,7 @@ export default function OrgDefaultsEditor({
                   }));
                   markDirty();
                 }}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('policyDefaults') ? 'opacity-60' : ''}`}
               >
                 {policyOptions.map(option => (
                   <option key={option.value} value={option.value}>
@@ -298,6 +346,9 @@ export default function OrgDefaultsEditor({
                   </option>
                 ))}
               </select>
+              {isLocked('policyDefaults') && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
+              )}
             </label>
           ))}
         </div>
@@ -311,11 +362,13 @@ export default function OrgDefaultsEditor({
           </div>
           <select
             value={deviceGroup}
+            disabled={isLocked('deviceGroup')}
+            data-testid="default-device-group"
             onChange={event => {
               setDeviceGroup(event.target.value);
               markDirty();
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('deviceGroup') ? 'opacity-60' : ''}`}
           >
             {groupOptions.map(option => (
               <option key={option.value} value={option.value}>
@@ -323,6 +376,9 @@ export default function OrgDefaultsEditor({
               </option>
             ))}
           </select>
+          {isLocked('deviceGroup') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
+          )}
           <p className="text-xs text-muted-foreground">
             {t('orgDefaultsEditor.deviceGroup.description')}
           </p>
@@ -335,11 +391,12 @@ export default function OrgDefaultsEditor({
           </div>
           <select
             value={alertThreshold}
+            disabled={isLocked('alertThreshold')}
             onChange={event => {
               setAlertThreshold(event.target.value);
               markDirty();
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('alertThreshold') ? 'opacity-60' : ''}`}
           >
             {alertThresholds.map(option => (
               <option key={option.value} value={option.value}>
@@ -347,6 +404,9 @@ export default function OrgDefaultsEditor({
               </option>
             ))}
           </select>
+          {isLocked('alertThreshold') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
+          )}
           <p className="text-xs text-muted-foreground">
             {t('orgDefaultsEditor.alertSeverity.description')}
           </p>
@@ -359,42 +419,53 @@ export default function OrgDefaultsEditor({
             <Sparkles className="h-4 w-4" />
             {t('orgDefaultsEditor.autoEnrollment.title')}
           </div>
-          <label className="flex items-center justify-between gap-4 text-sm">
+          <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('autoEnrollment') ? 'opacity-60' : ''}`}>
             <span>{t('orgDefaultsEditor.autoEnrollment.enable')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.enabled}
+              disabled={isLocked('autoEnrollment')}
               onChange={event => {
                 setAutoEnrollment(prev => ({ ...prev, enabled: event.target.checked }));
                 markDirty();
               }}
+              data-testid="auto-enrollment-enabled"
               className="h-4 w-4"
             />
           </label>
-          <label className="flex items-center justify-between gap-4 text-sm">
+          <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('autoEnrollment') ? 'opacity-60' : ''}`}>
             <span>{t('orgDefaultsEditor.autoEnrollment.requireApproval')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.requireApproval}
+              disabled={isLocked('autoEnrollment')}
               onChange={event => {
                 setAutoEnrollment(prev => ({ ...prev, requireApproval: event.target.checked }));
                 markDirty();
               }}
+              data-testid="auto-enrollment-require-approval"
               className="h-4 w-4"
             />
           </label>
-          <label className="flex items-center justify-between gap-4 text-sm">
+          <label className={`flex items-center justify-between gap-4 text-sm ${isLocked('autoEnrollment') ? 'opacity-60' : ''}`}>
             <span>{t('orgDefaultsEditor.autoEnrollment.sendWelcome')}</span>
             <input
               type="checkbox"
               checked={autoEnrollment.sendWelcome}
+              disabled={isLocked('autoEnrollment')}
               onChange={event => {
                 setAutoEnrollment(prev => ({ ...prev, sendWelcome: event.target.checked }));
                 markDirty();
               }}
+              data-testid="auto-enrollment-send-welcome"
               className="h-4 w-4"
             />
           </label>
+          {isLocked('autoEnrollment') && (
+            <span data-testid="auto-enrollment-locked" className="text-xs text-amber-600 dark:text-amber-400 italic">
+              {t('orgDefaultsEditor.managedByPartner')}
+            </span>
+          )}
         </div>
 
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
@@ -404,15 +475,19 @@ export default function OrgDefaultsEditor({
           </div>
           <select
             value={agentUpdatePolicy}
+            disabled={isLocked('agentUpdatePolicy')}
             onChange={event => {
               setAgentUpdatePolicy(event.target.value);
               markDirty();
             }}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('agentUpdatePolicy') ? 'opacity-60' : ''}`}
           >
             <option value="auto">{t('orgDefaultsEditor.agentUpdates.automatic')}</option>
             <option value="manual">{t('orgDefaultsEditor.agentUpdates.manual')}</option>
           </select>
+          {isLocked('agentUpdatePolicy') && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
+          )}
           <p className="text-xs text-muted-foreground">
             <Trans
               i18nKey="orgDefaultsEditor.agentUpdates.description"
@@ -436,6 +511,7 @@ export default function OrgDefaultsEditor({
                   name="maintenanceWindowMode"
                   value="always"
                   checked={windowMode === 'always'}
+                  disabled={isLocked('maintenanceWindow')}
                   onChange={() => {
                     setWindowMode('always');
                     markDirty();
@@ -451,6 +527,7 @@ export default function OrgDefaultsEditor({
                   name="maintenanceWindowMode"
                   value="window"
                   checked={windowMode === 'window'}
+                  disabled={isLocked('maintenanceWindow')}
                   onChange={() => {
                     setWindowMode('window');
                     markDirty();
@@ -461,6 +538,9 @@ export default function OrgDefaultsEditor({
                 <span>{t('orgDefaultsEditor.maintenance.windowOnly')}</span>
               </label>
             </div>
+            {isLocked('maintenanceWindow') && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
+            )}
 
             {windowMode === 'window' && (
               <div className="space-y-2 rounded-md border bg-background/60 p-3">
@@ -473,6 +553,7 @@ export default function OrgDefaultsEditor({
                         setWindowDay(event.target.value);
                         markDirty();
                       }}
+                      disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-day"
                       className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                     >
@@ -493,6 +574,7 @@ export default function OrgDefaultsEditor({
                         setWindowStart(event.target.value);
                         markDirty();
                       }}
+                      disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-start"
                       className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                     />
@@ -506,6 +588,7 @@ export default function OrgDefaultsEditor({
                         setWindowEnd(event.target.value);
                         markDirty();
                       }}
+                      disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-end"
                       className="h-9 w-full rounded-md border bg-background px-2 text-sm"
                     />

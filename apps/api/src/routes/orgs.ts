@@ -1421,7 +1421,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     // Enforce partner locks on settings categories (after auth check).
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
-        let fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+        // Pass the submitted VALUES, not just the field names: assertNotLocked
+        // only rejects a locked field whose value actually diverges from the
+        // partner's, so re-submitting the enforced value is a permitted no-op
+        // (issue #2752 — this handler receives the org's whole settings blob on
+        // every save, so a name-only check 403'd untouched categories).
+        let fields = settingsObj[category] as Record<string, unknown>;
         // Issue #2124: `agentVersionPins` is INHERIT-WITH-OVERRIDE, not partner-
         // locked — an org may override the partner's pinned version (that's what
         // lets a partner pilot a new version on one org). So it is deliberately
@@ -1435,11 +1440,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
         // (maxEnrollmentLinkTtlMinutes) is deliberately NOT exempt: a ceiling
         // an org can raise is not a ceiling.
         if (category === 'defaults') {
-          fields = fields.filter((f) =>
-            f !== 'agentVersionPins' &&
-            f !== 'defaultEnrollmentTtlMinutes' &&
-            f !== 'defaultEnrollmentDeviceCount',
-          );
+          fields = { ...fields };
+          delete fields.agentVersionPins;
+          delete fields.defaultEnrollmentTtlMinutes;
+          delete fields.defaultEnrollmentDeviceCount;
         }
         await assertNotLocked(id, category, fields);
       }

@@ -257,6 +257,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
   // notice in the defaults editor. Partner-only — the org never edits it.
   const [partnerMaxEnrollmentTtl, setPartnerMaxEnrollmentTtl] = useState<number | undefined>(undefined);
+  // Issue #2752: the merged `defaults` category. OrgDefaultsEditor seeds its
+  // partner-locked fields from this so a disabled control shows the value that is
+  // actually in force (and re-posts it unchanged, which the API accepts).
+  const [effectiveDefaults, setEffectiveDefaults] = useState<Record<string, unknown> | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
@@ -296,6 +300,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         const effData = await effRes.json();
         const lockedList: string[] = effData.locked || [];
         setLocked(lockedList);
+        setEffectiveDefaults(effData.effective?.defaults);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
         // assertNotLocked exemption in the org PATCH). But `locked` still carries
         // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
@@ -724,6 +729,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               partnerPins={partnerPins}
               locked={locked}
               partnerMaxEnrollmentTtlMinutes={partnerMaxEnrollmentTtl}
+              effectiveDefaults={effectiveDefaults}
             />
           </div>
         );

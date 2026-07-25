@@ -738,6 +738,7 @@
     "title": "Réglages par défaut",
     "description": "Ajustez les politiques par défaut et le comportement d’inscription pour {{organization}}.",
     "save": "Enregistrer les paramètres par défaut",
+    "managedByPartner": "Géré par un partenaire",
     "policies": {
       "title": "Politiques par défaut",
       "fields": {

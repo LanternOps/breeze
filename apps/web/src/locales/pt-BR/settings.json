@@ -738,6 +738,7 @@
     "title": "Configurações padrão",
     "description": "Ajuste as políticas padrão e o comportamento de cadastro para {{organization}}.",
     "save": "Salvar padrões",
+    "managedByPartner": "Gerenciado pelo parceiro",
     "policies": {
       "title": "Políticas padrão",
       "fields": {
