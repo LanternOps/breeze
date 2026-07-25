@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getRedis } from './redis';
-
-// TTL matches viewer JWT TTL (jwt.ts VIEWER_ACCESS_TOKEN_EXPIRY) so revoke
-// keys auto-expire around the time the tokens they invalidate do.
-const REVOKE_TTL_SECONDS = 2 * 60 * 60;
+import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 
 function identifierFingerprint(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
@@ -17,7 +14,12 @@ export async function revokeViewerJti(jti: string): Promise<void> {
     });
     return;
   }
-  await redis.set(`viewer-jti-revoked:${jti}`, '1', 'EX', REVOKE_TTL_SECONDS);
+  await redis.set(
+    `viewer-jti-revoked:${jti}`,
+    '1',
+    'EX',
+    VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+  );
 }
 
 export async function isViewerJtiRevoked(jti: string): Promise<boolean> {
@@ -37,7 +39,12 @@ export async function revokeViewerSession(sessionId: string): Promise<void> {
     });
     return;
   }
-  await redis.set(`viewer-session-revoked:${sessionId}`, '1', 'EX', REVOKE_TTL_SECONDS);
+  await redis.set(
+    `viewer-session-revoked:${sessionId}`,
+    '1',
+    'EX',
+    VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+  );
 }
 
 export async function isViewerSessionRevoked(sessionId: string): Promise<boolean> {

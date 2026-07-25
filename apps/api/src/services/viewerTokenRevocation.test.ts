@@ -6,6 +6,7 @@ vi.mock('./redis', () => ({
 }));
 
 import { getRedis } from './redis';
+import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 import { isViewerJtiRevoked, revokeViewerJti, revokeViewerSession } from './viewerTokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
@@ -78,7 +79,21 @@ describe('viewerTokenRevocation', () => {
       'viewer-jti-revoked:test-jti',
       '1',
       'EX',
-      expect.any(Number),
+      VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+    );
+  });
+
+  it('uses the signed viewer lifetime for session revocation too', async () => {
+    const fakeRedis = makeRedisStore();
+    mockGetRedis.mockReturnValue(fakeRedis as any);
+
+    await revokeViewerSession('test-session');
+
+    expect(fakeRedis.set).toHaveBeenCalledWith(
+      'viewer-session-revoked:test-session',
+      '1',
+      'EX',
+      VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
     );
   });
 });

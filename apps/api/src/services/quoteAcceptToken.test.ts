@@ -14,7 +14,7 @@ describe('quote-accept token', () => {
   });
   it('rejects a viewer-purpose token (wrong audience/purpose)', async () => {
     const { createViewerAccessToken } = await import('./jwt');
-    const viewer = await createViewerAccessToken({ sub: 'u1', email: 'a@b.com', sessionId: 's1' });
+    const viewer = await createViewerAccessToken({ sub: 'u1', email: 'a@b.com', sessionId: 's1', mfaSatisfied: true });
     expect(await verifyQuoteAcceptToken(viewer)).toBeNull();
   });
   it('honors a future expiresAt (quote expiry_date in the future)', async () => {
