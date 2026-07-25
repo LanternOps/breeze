@@ -29,6 +29,12 @@ The watchdog runs as a separate system service (`breeze-watchdog` on Linux, `Bre
 
 When a check fails, the watchdog transitions through escalating states — from monitoring to recovery to failover — to bring the agent back to a healthy state.
 
+:::note[Heartbeat freshness uses two independent sources]
+The agent records its last successful heartbeat to a state file on disk, and also reports it to the watchdog over IPC. The freshness check uses **whichever of the two is more recent**.
+
+This matters on endpoints where antivirus or endpoint-security software blocks writes to the agent's data directory. There, the state file is missing or frozen while the agent is demonstrably healthy and still checking in — a blocked *writer*, not a dead agent. Because the live IPC value outranks a stale file, the watchdog will not restart an agent that is still reporting in. Similarly, IPC connectivity counts **any** message received from the agent as evidence of life, not just a reply to the watchdog's own ping, so an agent busy with heavy collection work is not mistaken for a hung one.
+:::
+
 ---
 
 ## States
