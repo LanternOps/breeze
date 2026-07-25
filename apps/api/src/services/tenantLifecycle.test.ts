@@ -317,6 +317,7 @@ describe('tenantLifecycle — agent fleet severance', () => {
         // (vi.clearAllMocks in beforeEach clears calls, not implementations).
         vi.mocked(disconnectAgent).mockImplementationOnce(() => {
           order.push('disconnect');
+          return 'closed';
         });
         const recordInvalidate = async () => {
           order.push('invalidate');
