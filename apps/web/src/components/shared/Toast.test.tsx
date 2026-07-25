@@ -184,4 +184,61 @@ describe('ToastContainer', () => {
       vi.useRealTimers();
     }
   });
+
+  // These two run LAST on purpose: they call vi.resetModules(), which perturbs the
+  // module registry for the remainder of the file. Keeping them at the end means
+  // no other case can inherit a re-evaluated module copy.
+  it('delivers a toast when showToast and ToastContainer come from DUPLICATED copies of this module (#2014 Astro-island module graphs)', async () => {
+    // Reproduces the dev-server failure mode directly: `vi.resetModules()` clears
+    // the module registry, so the dynamic import below re-evaluates Toast.tsx and
+    // hands back a genuinely separate module instance — the same split Astro 7 /
+    // Vite 8 dev produces when two islands each get their own module graph.
+    // Pre-fix, the container registered into copy B's module-scope `addToastFn`
+    // while showToast pushed into copy A's `pendingToasts`, and nothing ever
+    // drained it: the toast was silently swallowed. The globalThis-keyed bus makes
+    // both copies talk to the same emitter slot.
+    vi.resetModules();
+    const duplicate = await import('./Toast');
+
+    // Guard the guard: if the re-import ever starts returning the cached instance
+    // this test would pass vacuously and stop protecting anything.
+    expect(duplicate.default).not.toBe(ToastContainer);
+
+    const DuplicatedContainer = duplicate.default;
+    render(<DuplicatedContainer />);
+
+    act(() => {
+      // Emitter from the ORIGINAL copy; container from the duplicate.
+      showToast({ type: 'success', message: 'cross-module-emit' });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('cross-module-emit')).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId('toast')).toHaveLength(1);
+
+    // The duplicate's reset must clear the same shared bus the original sees.
+    duplicate._resetToastQueueForTests();
+  });
+
+  it('drains a pre-mount queued toast across duplicated module copies (#2014 queue half of the split)', async () => {
+    // The other half of the same split: the toast is queued BEFORE any container
+    // exists, then the container mounts from a different module copy. Pre-fix the
+    // queue and the drain lived in two different arrays, so the drain found
+    // nothing.
+    showToast({ type: 'error', message: 'queued-across-copies' });
+
+    vi.resetModules();
+    const duplicate = await import('./Toast');
+    const DuplicatedContainer = duplicate.default;
+
+    render(<DuplicatedContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByText('queued-across-copies')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('toast')).toHaveAttribute('role', 'alert');
+
+    duplicate._resetToastQueueForTests();
+  });
 });
