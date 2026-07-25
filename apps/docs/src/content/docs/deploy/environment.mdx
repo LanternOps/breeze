@@ -46,6 +46,7 @@ In production, Breeze runs request handlers as an unprivileged, row-level-securi
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `JWT_SECRET` | — | Yes | JWT signing key (min 32 chars). Generate: `openssl rand -base64 64` |
+| `PARTNER_API_CURSOR_SIGNING_KEY` | — | Yes (prod) | Dedicated key that signs the pagination cursors returned by the Partner Export API. Must be **canonical (standard) base64** — not base64url or hex — decoding to at least 32 bytes, and must not reuse `JWT_SECRET`. Generate: `openssl rand -base64 32`. **The API refuses to start in production without it.** |
 | `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
 | `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
 | `APP_ENCRYPTION_KEY_ID` | — | | Optional identifier for the active encryption key (letters, digits, `.`/`_`/`-`). Setting it enables versioned, context-bound ciphertext for newly stored secrets and is **required for the Microsoft 365 reset-password one-time credential reveal** — without it the reset still succeeds but the temporary password is deliberately discarded rather than stored. Not present in the stock compose file: add it to `.env` **and** to the `api` service `environment:` block. |
