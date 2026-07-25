@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { formatZodError, zValidator } from './validation';
+import { formatZodError, optionalJsonValidator, zValidator } from './validation';
 
 describe('zValidator wrapper (issue #2201)', () => {
   const schema = z
@@ -245,5 +245,125 @@ describe('formatZodError', () => {
     });
     expect(result.details.fieldErrors).toEqual({ value: ['Too small'] });
     expect(result.error).toBe('value: Too small');
+  });
+});
+
+describe('optionalJsonValidator (#2777)', () => {
+  const schema = z
+    .object({
+      count: z.unknown().optional(),
+      ttlMinutes: z.number().int().min(1).max(525_600).optional(),
+    })
+    .strict();
+
+  function makeApp() {
+    const app = new Hono();
+    app.post('/tokens', optionalJsonValidator(schema), (c) => {
+      const body = c.req.valid('json');
+      return c.json({ ok: true, ttlMinutes: body.ttlMinutes ?? 60 });
+    });
+    return app;
+  }
+
+  // The regression this helper exists for: fetchWithAuth sets
+  // `Content-Type: application/json` on EVERY request, so a bodyless POST
+  // (first-run guided setup) hits Hono's json validator with an empty body
+  // and gets a plain-text 400 "Malformed JSON in request body".
+  it('treats a bodyless POST with a JSON content-type as {}', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ttlMinutes: 60 });
+  });
+
+  it('treats an empty-string body as {}', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ttlMinutes: 60 });
+  });
+
+  it('treats a whitespace-only body as {}', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '   \n ',
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('parses and validates a real body', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttlMinutes: 1440 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ttlMinutes: 1440 });
+  });
+
+  it('still rejects a schema violation with the readable string-first body', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttlMinutes: 525_601 }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(typeof body.error).toBe('string');
+    expect(body.details.fieldErrors.ttlMinutes).toBeDefined();
+  });
+
+  it('still rejects unrecognized keys from a strict schema', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nope: 1 }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('nope');
+  });
+
+  // Hono's own validator throws HTTPException here, whose response is
+  // text/plain — a client doing `await res.json()` on the error path gets a
+  // SyntaxError instead of the reason. Ours stays JSON.
+  it('rejects a genuinely malformed body with a JSON (not text/plain) 400', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not json',
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const body = await res.json();
+    expect(body.error).toBe('Malformed JSON in request body');
+    expect(body.details.formErrors).toEqual(['Malformed JSON in request body']);
+  });
+
+  // Mirrors Hono's gate: a non-JSON content-type means the json target simply
+  // isn't populated (no error), so the schema's defaults apply.
+  it('ignores a body sent under a non-JSON content-type', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'ttlMinutes=9',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ttlMinutes: 60 });
+  });
+
+  it('accepts a charset-qualified JSON content-type', async () => {
+    const res = await makeApp().request('/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ ttlMinutes: 30 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ttlMinutes: 30 });
   });
 });

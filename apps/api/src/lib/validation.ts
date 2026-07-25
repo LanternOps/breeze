@@ -37,7 +37,7 @@
  */
 import { zValidator as baseZValidator } from '@hono/zod-validator';
 import type { Hook } from '@hono/zod-validator';
-import type { Context, Env, ValidationTargets } from 'hono';
+import type { Context, Env, MiddlewareHandler, ValidationTargets } from 'hono';
 import type { z } from 'zod';
 
 export type ValidationErrorBody = {
@@ -149,3 +149,63 @@ export const zValidator = <
       }
     }
   );
+
+const JSON_CONTENT_TYPE = /^application\/([a-z\-.]+\+)?json(;\s*[a-zA-Z0-9\-]+=([^;]+))*$/i;
+
+/**
+ * `zValidator('json', schema)` for routes whose body is genuinely OPTIONAL.
+ *
+ * Two behaviours differ from the plain json validator, both of which bit us:
+ *
+ * 1. **An absent/empty body is `{}`, not a 400.** Hono's json validator calls
+ *    `c.req.json()` whenever the Content-Type is JSON and throws
+ *    `HTTPException(400, 'Malformed JSON in request body')` when the body is
+ *    empty. Plenty of clients POST with no body at all while still sending
+ *    `Content-Type: application/json` — the web app's `fetchWithAuth` sets that
+ *    header unconditionally (stores/auth.ts), and hand-rolled curl/script
+ *    clients do the same. Those callers used to work against a hand-parsed
+ *    `c.req.json().catch(() => ({}))` route, and must keep working: the
+ *    schema's own `.optional()` fields are what define "no body is fine".
+ * 2. **The rejection body is JSON**, matching {@link formatZodError}'s
+ *    string-first `{error, details}` contract. `HTTPException`'s response is
+ *    `text/plain`, so a client doing `await res.json()` on the failure path
+ *    throws a SyntaxError and loses the real reason.
+ *
+ * Use this only where the body really is optional. A route with required
+ * fields should keep `zValidator('json', ...)` so a missing body is reported
+ * as the missing-field error it is.
+ */
+export const optionalJsonValidator = <T extends z.ZodType>(
+  schema: T
+): MiddlewareHandler<Env, string, { in: { json: z.input<T> }; out: { json: z.output<T> } }> =>
+  async (c, next) => {
+    const contentType = c.req.header('Content-Type');
+    let raw: unknown = {};
+
+    // Mirror Hono's own gate: a non-JSON (or absent) Content-Type means the
+    // json target simply isn't populated, rather than being an error.
+    if (contentType && JSON_CONTENT_TYPE.test(contentType)) {
+      const text = await c.req.text();
+      if (text.trim() !== '') {
+        try {
+          raw = JSON.parse(text);
+        } catch {
+          return c.json(
+            {
+              error: 'Malformed JSON in request body',
+              details: { formErrors: ['Malformed JSON in request body'], fieldErrors: {} },
+            } satisfies ValidationErrorBody,
+            400
+          );
+        }
+      }
+    }
+
+    const result = await schema.safeParseAsync(raw);
+    if (!result.success) {
+      return c.json(formatZodError(result.error as ZodErrorLike), 400);
+    }
+
+    c.req.addValidatedData('json', result.data as Record<string, unknown>);
+    await next();
+  };

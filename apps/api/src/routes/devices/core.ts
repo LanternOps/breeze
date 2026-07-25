@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '../../lib/validation';
+import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
@@ -281,6 +281,14 @@ const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
 // `ttlMinutes` is schema-validated and REJECTED when out of range: a
 // silently reduced expiry is the exact failure mode #2775/#2777 were filed
 // for, so it gets no such leniency.
+//
+// Every field is optional because a BODYLESS POST is a supported call shape
+// here — first-run guided setup (web setup/EnrollDeviceStep.tsx) and script
+// clients both POST with no body while `fetchWithAuth` still sends
+// `Content-Type: application/json`. That is why the route uses
+// `optionalJsonValidator`, not `zValidator('json', ...)`: the latter 400s
+// ("Malformed JSON in request body") on an empty body with a JSON
+// content-type, which the previous `c.req.json().catch(() => ({}))` did not.
 const onboardingTokenSchema = z.object({
   count: z.unknown().optional(),
   ttlMinutes: z.number().int().min(1).max(ENROLL_TOKEN_MAX_TTL_MINUTES).optional(),
@@ -294,7 +302,7 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('json', onboardingTokenSchema),
+  optionalJsonValidator(onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');

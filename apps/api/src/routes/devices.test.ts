@@ -498,6 +498,82 @@ describe('device routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    // Regression (#2777): first-run guided setup (web setup/EnrollDeviceStep)
+    // POSTs with NO body, while fetchWithAuth still sets
+    // `Content-Type: application/json` unconditionally. Under a plain
+    // zValidator('json', ...) that combination 400s with a plain-text
+    // "Malformed JSON in request body" and onboarding dies at the last step.
+    // The route must still mint a default 60-minute single-use token.
+    it('accepts a bodyless POST that still carries a JSON content-type (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toContain('enroll_');
+      const { expiresAt, maxUsage } = valuesMock.mock.calls[0]![0] as {
+        expiresAt: Date;
+        maxUsage: number;
+      };
+      expect(maxUsage).toBe(1);
+      const minutes = Math.round((expiresAt.getTime() - Date.now()) / 60000);
+      expect(minutes).toBeGreaterThanOrEqual(59);
+      expect(minutes).toBeLessThanOrEqual(61);
+    });
+
+    // Same shape, but with an explicitly empty string body (what a
+    // `curl -X POST -H 'Content-Type: application/json'` script client sends).
+    it('accepts an empty-string body with a JSON content-type (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: ''
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    // A body that is present but genuinely malformed must still 400 — and the
+    // failure body must be JSON, not Hono's plain-text HTTPException text, so
+    // `await res.json()` in the client's error path doesn't throw.
+    it('returns a JSON 400 for a genuinely malformed body (#2777)', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: '{not json'
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      const body = await res.json();
+      expect(body.error).toContain('Malformed JSON');
+    });
   });
 
   describe('GET /devices', () => {
