@@ -93,6 +93,24 @@ func TestMonitor_BackoffCapsAtMaxBackoff(t *testing.T) {
 	if d < lower {
 		t.Fatalf("expected backoff near the %v cap (min %v with jitter), got %v", maxBackoff, lower, d)
 	}
+
+	// BackoffDuration() is REPORTED (one caller: a Debug log field). The value
+	// that actually decides whether a request is sent is the raw, unjittered
+	// m.backoff read by ShouldSkip(), so assert the gate too — otherwise this
+	// test reads as coverage of the cap's real behaviour when it only covers the
+	// number we print. Note the consequence: jitter never reaches the gate, so a
+	// fleet deauthorized at the same instant retries on one unjittered grid.
+	now := time.Unix(6_000_000, 0)
+	m.now = func() time.Time { return now }
+	m.RecordAuthFailure() // re-stamp lastFailure against the injected clock
+	now = now.Add(maxBackoff - time.Second)
+	if !m.ShouldSkip() {
+		t.Fatalf("expected ShouldSkip()=true just inside the %v cap", maxBackoff)
+	}
+	now = now.Add(2 * time.Second)
+	if m.ShouldSkip() {
+		t.Fatalf("expected ShouldSkip()=false just past the %v cap", maxBackoff)
+	}
 }
 
 func TestMonitor_SuccessResetsBackoff(t *testing.T) {

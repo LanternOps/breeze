@@ -3,6 +3,8 @@ package authstate
 import (
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
 )
 
 // trip drives the monitor to the auth-dead state using a controllable clock.
@@ -95,7 +97,9 @@ func TestMonitor_FailedRetryLengthensBackoff(t *testing.T) {
 // deauthorized devices in US prod keep heartbeating at full cadence (#2774
 // follow-up): the machinery ran, reported itself as backing off, and cost
 // nothing.
-const defaultHeartbeatInterval = 60 * time.Second
+// Read from config rather than copied, so raising the heartbeat default fails
+// this test instead of silently invalidating the invariant it documents.
+var defaultHeartbeatInterval = time.Duration(config.DefaultHeartbeatIntervalSeconds) * time.Second
 
 func TestMonitor_MaxBackoffSuppressesTicksAtDefaultCadence(t *testing.T) {
 	if maxBackoff <= defaultHeartbeatInterval {
