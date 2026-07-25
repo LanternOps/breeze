@@ -207,6 +207,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Setup Node
+        uses: actions/setup-node@v7 # temporary resolver input; Task 2 pins it before push
+        with:
+          node-version: '22.19.0'
+
+      - name: Run workflow security policy
+        run: |
+          node --test \
+            .github/scripts/check-workflow-security.test.mjs \
+            scripts/security/pin-github-actions.test.mjs
+          node .github/scripts/check-workflow-security.mjs
+
       - name: Install actionlint (pinned + checksum-verified)
         run: |
           curl -sSfL -o actionlint.tar.gz \
