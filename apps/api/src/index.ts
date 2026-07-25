@@ -515,6 +515,7 @@ const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
   '/agent-ws',      // WebSocket upgrade (not HTTP mutations)
   '/desktop-ws',    // WebSocket upgrade
   '/dev',           // local dev-only push routes
+  '/time-entries',  // explicit per-entry audit ownership in route handlers
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
