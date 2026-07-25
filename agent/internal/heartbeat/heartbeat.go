@@ -836,6 +836,11 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		}
 	case backupipc.TypeBackupProgress:
 		if h.wsClient == nil {
+			// The only progress-drop path that produced no record at all: a
+			// backup still running while the WS is down loses every keepalive,
+			// and server-side that is indistinguishable from an agent that
+			// stopped reporting. The send failure below is already logged.
+			log.Warn("dropping backup progress, no websocket client")
 			return
 		}
 		var progress backupipc.BackupProgress
