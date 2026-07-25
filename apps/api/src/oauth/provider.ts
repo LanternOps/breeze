@@ -11,7 +11,10 @@ import {
 import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from './adapter';
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
-import { revokeJti } from './revocationCache';
+import {
+  writeOAuthRevocationMarkerDurably,
+  type OAuthRevocationMarkerResult,
+} from './revocationRetry';
 import { ALL_MCP_SCOPES, computeEffectiveMcpScopes, resolveGrantContext } from './effectiveScopes';
 import { isSentryEnabled } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -358,27 +361,43 @@ export async function resolveMcpResourceServerScope(
 
 export async function handleRevocationSuccess(
   ctx: any,
-  token: { jti?: string; exp?: number },
-  deps: { revokeJti: (jti: string, ttl: number) => Promise<void>; now?: () => number } = { revokeJti },
+  token: { sub?: string; accountId?: string; jti?: string; exp?: number },
+  deps: {
+    writeMarker?: typeof writeOAuthRevocationMarkerDurably;
+    now?: () => number;
+  } = {},
 ): Promise<void> {
   if (!token.jti || !token.exp) return;
   const nowMs = deps.now?.() ?? Date.now();
   const ttl = Math.max(token.exp - Math.floor(nowMs / 1000), 1);
-  // Await the cache write and rethrow on failure so oidc-provider returns
-  // a 5xx — fire-and-forget swallowed Redis outages, leaving the operator
-  // with no signal that revocation had stopped working.
-  try {
-    await deps.revokeJti(token.jti, ttl);
-  } catch (err) {
+  const userId = token.sub ?? token.accountId;
+  if (!userId) {
+    throw new Error('OAuth revocation marker owner is unavailable');
+  }
+  const writeMarker = deps.writeMarker ?? writeOAuthRevocationMarkerDurably;
+  const result = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      writeMarker(db, {
+        userId,
+        markerType: 'jti',
+        markerId: token.jti!,
+        expiresAt: new Date((Math.floor(nowMs / 1000) + ttl) * 1000),
+      }),
+    ),
+  ) as OAuthRevocationMarkerResult;
+  if (result.status === 'retry_queued') {
     const clientId = (ctx?.oidc?.client?.clientId as string | undefined)
       ?? (ctx?.oidc?.entities?.Client?.clientId as string | undefined);
     logOauthError({
       errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-      message: 'Revocation cache write failed in handleRevocationSuccess',
-      err,
-      context: { jti: token.jti, clientId },
+      message: 'Revocation marker queued in handleRevocationSuccess',
+      context: {
+        markerType: 'jti',
+        errorCode: result.errorCode,
+        clientIdPresent: Boolean(clientId),
+      },
     });
-    throw err;
+    throw new Error('OAuth revocation cache unavailable; durable retry queued');
   }
 }
 

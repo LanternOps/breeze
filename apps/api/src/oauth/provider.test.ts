@@ -286,65 +286,90 @@ describe('buildExtraTokenClaims', () => {
 
 describe('handleRevocationSuccess', () => {
   it('does nothing when token.jti is missing', async () => {
-    const revokeJti = vi.fn(async () => undefined);
+    const writeMarker = vi.fn(async () => ({ status: 'written' as const }));
 
-    await handleRevocationSuccess({}, { exp: 1_774_000_100 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { sub: 'user-1', exp: 1_774_000_100 }, { writeMarker, now: () => 1_774_000_000_000 });
 
-    expect(revokeJti).not.toHaveBeenCalled();
+    expect(writeMarker).not.toHaveBeenCalled();
   });
 
   it('does nothing when token.exp is missing', async () => {
-    const revokeJti = vi.fn(async () => undefined);
+    const writeMarker = vi.fn(async () => ({ status: 'written' as const }));
 
-    await handleRevocationSuccess({}, { jti: 'jti-1' }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess({}, { sub: 'user-1', jti: 'jti-1' }, { writeMarker, now: () => 1_774_000_000_000 });
 
-    expect(revokeJti).not.toHaveBeenCalled();
+    expect(writeMarker).not.toHaveBeenCalled();
   });
 
   it('revokes the jti with the remaining token ttl', async () => {
-    const revokeJti = vi.fn(async () => undefined);
+    const writeMarker = vi.fn(async () => ({ status: 'written' as const }));
 
-    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_120 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess(
+      {},
+      { sub: 'user-1', jti: 'jti-1', exp: 1_774_000_120 },
+      { writeMarker, now: () => 1_774_000_000_000 },
+    );
 
-    expect(revokeJti).toHaveBeenCalledOnce();
-    expect(revokeJti).toHaveBeenCalledWith('jti-1', 120);
+    expect(writeMarker).toHaveBeenCalledOnce();
+    expect(writeMarker).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        userId: 'user-1',
+        markerType: 'jti',
+        markerId: 'jti-1',
+        expiresAt: new Date(1_774_000_120_000),
+      }),
+    );
   });
 
   it('clamps a past token ttl to one second', async () => {
-    const revokeJti = vi.fn(async () => undefined);
+    const writeMarker = vi.fn(async () => ({ status: 'written' as const }));
 
-    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_773_999_999 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess(
+      {},
+      { sub: 'user-1', jti: 'jti-1', exp: 1_773_999_999 },
+      { writeMarker, now: () => 1_774_000_000_000 },
+    );
 
-    expect(revokeJti).toHaveBeenCalledWith('jti-1', 1);
+    expect(writeMarker).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ expiresAt: new Date(1_774_000_001_000) }),
+    );
   });
 
   it('clamps a zero token ttl to one second', async () => {
-    const revokeJti = vi.fn(async () => undefined);
+    const writeMarker = vi.fn(async () => ({ status: 'written' as const }));
 
-    await handleRevocationSuccess({}, { jti: 'jti-1', exp: 1_774_000_000 }, { revokeJti, now: () => 1_774_000_000_000 });
+    await handleRevocationSuccess(
+      {},
+      { sub: 'user-1', jti: 'jti-1', exp: 1_774_000_000 },
+      { writeMarker, now: () => 1_774_000_000_000 },
+    );
 
-    expect(revokeJti).toHaveBeenCalledWith('jti-1', 1);
+    expect(writeMarker).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ expiresAt: new Date(1_774_000_001_000) }),
+    );
   });
 
-  it('logs and rethrows when the revocation cache write rejects (operator-visible 5xx)', async () => {
-    const err = new Error('redis down');
-    const revokeJti = vi.fn(async () => {
-      throw err;
-    });
+  it('fails closed only after the durable helper queues a retry', async () => {
+    const writeMarker = vi.fn(async () => ({
+      status: 'retry_queued' as const,
+      errorCode: 'redis_unavailable' as const,
+    }));
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(
       handleRevocationSuccess(
         { oidc: { client: { clientId: 'client-z' } } },
-        { jti: 'jti-1', exp: 1_774_000_120 },
-        { revokeJti, now: () => 1_774_000_000_000 },
+        { sub: 'user-1', jti: 'jti-1', exp: 1_774_000_120 },
+        { writeMarker, now: () => 1_774_000_000_000 },
       ),
-    ).rejects.toBe(err);
+    ).rejects.toThrow(/revocation cache unavailable/i);
 
-    expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining('OAUTH_REVOCATION_CACHE_WRITE_FAILED'),
-      expect.objectContaining({ jti: 'jti-1', clientId: 'client-z' }),
-    );
+    expect(writeMarker).toHaveBeenCalledOnce();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('jti-1');
   });
 });
 
