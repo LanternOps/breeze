@@ -556,7 +556,7 @@ Every rollback starts by closing/probing the external barrier, including `/api/v
 
 ## Task Execution Order (corrected 2026-07-25 — read before starting any task)
 
-**Execute in this order, NOT in numeric order:** 1 → 2 → 3 → **5** → **6** → **7** → **4** → 8 → 9 → 10.
+**Execute in this order, NOT in numeric order:** 1 → 2 → 3 → **[5+6 as ONE combined slice]** → **7** → **4** → 8 → 9 → 10.
 
 Dependency evidence (each edge verified against this document, not inferred):
 
@@ -615,8 +615,30 @@ queue submission, or reservation — or leave acquisition after upgrade, which i
 wave exists to close. Task 7 also modifies `terminalWs.ts` and `desktopWs.ts`, the same files Tasks
 4 and 6 own, so running it first avoids re-litigating those routes twice.
 
-Task 5 (desktop teardown) additionally depends on an exact desktop shared owner, whose fields and
-acquisition are introduced by Tasks 6 and 7. It therefore runs after both.
+**Tasks 5 and 6 are ONE combined execution slice — implement them together.** An earlier revision of
+this note said Task 5 "runs after both" 6 and 7 while the order line put 5 first. That was a
+self-contradiction, and resolving it exposed a genuine cycle rather than a wrong sequence:
+
+- Task 5 **creates** `desktopSessionFinalization.ts` / `desktopSessionOrphanRecovery.ts`, which
+  Task 7 **modifies** — so 5 precedes 7.
+- Task 6's `Consumes` names the desktop lifecycle that Task 5 **produces** — so 5 precedes 6.
+- But Task 5's `beginClose` and write-ahead-before-detach require an exact desktop shared owner, and
+  `apps/api/src/routes/desktopWs.ts` today has NO shared lease claim and NO owner acquisition
+  (verified: zero references to the lease manager). Task 6 introduces that — so 6 precedes 5.
+
+5 and 6 are therefore mutually dependent. Splitting them requires inventing a weaker interim
+ownership design, which is forbidden. Implement the desktop ownership binding and the desktop
+teardown lifecycle in a single slice, satisfying both tasks' step lists and both tasks' red-green
+gates. Effective order: 1 → 2 → 3 → **[5+6 together]** → 7 → 4 → 8 → 9 → 10.
+
+**File-list exceptions APPROVED for the combined 5+6 slice** (each is required by the slice and
+belongs to no other in-flight wave):
+
+- `apps/api/src/services/remoteWsSharedLease.ts` (+ its test) — safe intent observation.
+- `apps/api/src/services/viewerTokenRevocation.ts` (+ its test) — fail-closed viewer revocation.
+
+Keep the delete-last and idempotency guarantees intact across the merged slice; a combined slice is
+not licence to relax either.
 
 Two scope corrections, folded into Task 4:
 
