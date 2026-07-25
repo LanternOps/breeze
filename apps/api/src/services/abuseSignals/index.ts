@@ -6,6 +6,7 @@ import { loadSignalConfig } from './config';
 import { computeInvariantSignals } from './invariants';
 import { loadPartnerAggregates, computeHeuristicSignals } from './heuristics';
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
+import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
 
@@ -46,10 +47,11 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates, scriptFindings } = await runSystemDbCompute(async () => ({
+  const { invariants, aggregates, scriptFindings, billingIdentity } = await runSystemDbCompute(async () => ({
     invariants: await computeInvariantSignals(),
     aggregates: await loadPartnerAggregates(),
     scriptFindings: await loadScriptFindings(now),
+    billingIdentity: await loadBillingIdentityAggregates(),
   }));
 
   const computed = [
@@ -59,12 +61,20 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // no partner age at all) — a malicious installer is malicious regardless
     // of account age.
     ...computeScriptSignals(scriptFindings.findings, scriptFindings.sharedHosts, cfg, loadScriptIndicators()),
+    // Identity signals are likewise never age-decayed — a cardholder name that
+    // matches nothing about the account is evidence at any account age. The
+    // scorer takes no clock at all; card-testing is scored on the span the
+    // billing service recorded, not on how recently the sweep ran.
+    ...computeBillingIdentitySignals(billingIdentity.aggregates, billingIdentity.sharedFingerprints, cfg),
   ];
-  // Script-scanned partners join the evaluated set so open script-signal rows
-  // stale-resolve when the evidence disappears (script edited/deleted).
+  // Script-scanned and billing-scanned partners join the evaluated set so open
+  // rows for those detectors stale-resolve when the evidence disappears
+  // (script edited/deleted, cardholder name corrected). persistSignals only
+  // auto-resolves `invariant.*` rows or rows whose partner is in this set.
   const evaluatedPartnerIds = new Set([
     ...aggregates.map((a) => a.partnerId),
     ...scriptFindings.scannedPartnerIds,
+    ...billingIdentity.scannedPartnerIds,
   ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 

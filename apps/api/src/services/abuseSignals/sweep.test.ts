@@ -9,6 +9,8 @@ const {
   loadScriptFindings,
   computeScriptSignals,
   loadScriptIndicators,
+  loadBillingIdentityAggregates,
+  computeBillingIdentitySignals,
   persistSignals,
   markDelivered,
   sendOpsAlert,
@@ -20,6 +22,8 @@ const {
   loadScriptFindings: vi.fn(),
   computeScriptSignals: vi.fn(),
   loadScriptIndicators: vi.fn(),
+  loadBillingIdentityAggregates: vi.fn(),
+  computeBillingIdentitySignals: vi.fn(),
   persistSignals: vi.fn(),
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
@@ -40,6 +44,7 @@ vi.mock('../../db', () => ({
 vi.mock('./invariants', () => ({ computeInvariantSignals }));
 vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals }));
 vi.mock('./scriptContent', () => ({ loadScriptFindings, computeScriptSignals, loadScriptIndicators }));
+vi.mock('./billingIdentity', () => ({ loadBillingIdentityAggregates, computeBillingIdentitySignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
@@ -86,6 +91,12 @@ beforeEach(() => {
   loadScriptFindings.mockResolvedValue({ findings: [], sharedHosts: new Map(), scannedPartnerIds: [] });
   computeScriptSignals.mockReturnValue([]);
   loadScriptIndicators.mockReturnValue({ tlds: [], hosts: [] });
+  loadBillingIdentityAggregates.mockResolvedValue({
+    aggregates: [],
+    sharedFingerprints: new Map(),
+    scannedPartnerIds: [],
+  });
+  computeBillingIdentitySignals.mockReturnValue([]);
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
 });
@@ -151,6 +162,37 @@ describe('runAbuseSweep', () => {
 
     const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
     expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pScript']);
+  });
+
+  it('unions billing-scanned partner ids into evaluatedPartnerIds so billing signals can stale-resolve', async () => {
+    loadPartnerAggregates.mockResolvedValue([agg({ partnerId: 'pA' })]);
+    loadBillingIdentityAggregates.mockResolvedValue({
+      aggregates: [],
+      sharedFingerprints: new Map(),
+      scannedPartnerIds: ['pA', 'pBilling'],
+    });
+
+    await runAbuseSweep();
+
+    const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
+    expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pBilling']);
+  });
+
+  it('includes computeBillingIdentitySignals output in the persisted signal set', async () => {
+    const billingSignal: ComputedSignal = {
+      partnerId: 'pB',
+      signalKey: 'billing.shared_card_fingerprint',
+      score: 70,
+      severity: 'alert',
+      evidence: {},
+    };
+    computeBillingIdentitySignals.mockReturnValue([billingSignal]);
+
+    const result = await runAbuseSweep();
+
+    expect(result.fired).toBe(1);
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted).toContainEqual(billingSignal);
   });
 
   it('includes computeScriptSignals output in the persisted signal set', async () => {
