@@ -7,6 +7,7 @@ export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
   'scripts:read',
   'backup-configuration:read',
   'custom-fields:read',
+  'enrollment-keys:write',
 ] as const);
 
 export type PartnerServicePrincipalScope =
