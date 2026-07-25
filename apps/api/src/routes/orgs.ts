@@ -288,6 +288,55 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 
 // --- Partners (system admins) ---
 
+// Explicit wire shape for partner rows. Every handler that serializes a partner
+// row (the /partners list/create/get/patch handlers and GET/PATCH /partners/me)
+// must project through this map instead of returning the whole `partners` row,
+// so internal/operational columns never reach API clients — and a column added
+// to the schema later does not silently start appearing in responses until it
+// is deliberately added here. Intentionally excluded: signupIp,
+// signupUserAgent, mcpOrigin, mcpOriginIp, mcpOriginUserAgent (signup
+// attribution), emailVerifiedAt (activation-gate bookkeeping read by
+// middleware), paymentMethodAttachedAt, stripeCustomerId (billing-provider
+// linkage), ssoConfig (may carry IdP secrets; managed via dedicated SSO
+// routes), deletedAt (soft-delete bookkeeping — these handlers already filter
+// deleted rows out).
+const partnerPublicColumns = {
+  id: partners.id,
+  name: partners.name,
+  slug: partners.slug,
+  inboundLocalPart: partners.inboundLocalPart,
+  type: partners.type,
+  plan: partners.plan,
+  status: partners.status,
+  maxOrganizations: partners.maxOrganizations,
+  maxDevices: partners.maxDevices,
+  timezone: partners.timezone,
+  settings: partners.settings,
+  billingEmail: partners.billingEmail,
+  emailSignature: partners.emailSignature,
+  currencyCode: partners.currencyCode,
+  defaultTaxRate: partners.defaultTaxRate,
+  invoiceNumberPrefix: partners.invoiceNumberPrefix,
+  invoiceTermsDays: partners.invoiceTermsDays,
+  invoiceFooter: partners.invoiceFooter,
+  billingCompanyName: partners.billingCompanyName,
+  billingPhone: partners.billingPhone,
+  billingWebsite: partners.billingWebsite,
+  billingAddressLine1: partners.billingAddressLine1,
+  billingAddressLine2: partners.billingAddressLine2,
+  billingAddressCity: partners.billingAddressCity,
+  billingAddressRegion: partners.billingAddressRegion,
+  billingAddressPostalCode: partners.billingAddressPostalCode,
+  billingAddressCountry: partners.billingAddressCountry,
+  billingTermsAndConditions: partners.billingTermsAndConditions,
+  defaultMarkupPercent: partners.defaultMarkupPercent,
+  autoTaxHardware: partners.autoTaxHardware,
+  catalogAiStyle: partners.catalogAiStyle,
+  aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  createdAt: partners.createdAt,
+  updatedAt: partners.updatedAt,
+};
+
 orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('query', paginationSchema), async (c) => {
   const { page, limit, offset } = getPagination(c.req.valid('query'));
 
@@ -299,7 +348,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
   const count = countResult[0]?.count ?? 0;
 
   const data = await db
-    .select()
+    .select(partnerPublicColumns)
     .from(partners)
     .where(conditions)
     .limit(limit)
@@ -344,7 +393,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         settings: data.settings,
         billingEmail: data.billingEmail
       })
-      .returning();
+      .returning(partnerPublicColumns);
     if (newPartner) {
       await seedSystemTicketStatuses(tx, newPartner.id);
     }
@@ -572,7 +621,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   const auth = c.get('auth');
 
   const [partner] = await db
-    .select()
+    .select(partnerPublicColumns)
     .from(partners)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
     .limit(1);
@@ -755,7 +804,7 @@ orgRoutes.patch(
     .update(partners)
     .set(updateData)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
-    .returning();
+    .returning(partnerPublicColumns);
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -786,7 +835,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
   const id = c.req.param('id')!;
 
   const [partner] = await db
-    .select()
+    .select(partnerPublicColumns)
     .from(partners)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
     .limit(1);
@@ -886,7 +935,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     .update(partners)
     .set(updates)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+    .returning(partnerPublicColumns);
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
