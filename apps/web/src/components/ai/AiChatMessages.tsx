@@ -158,9 +158,15 @@ export default function AiChatMessages({
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
         <Bot className="h-10 w-10 text-muted-foreground" />
-        <h3 className="mt-3 text-sm font-medium text-foreground">
+        {/*
+          h2 (not h3) so the drawer heading follows the page <h1> without
+          skipping a level — screen-reader outline navigation depends on it.
+          Styling is intentionally unchanged; the visual size comes from the
+          text-sm/font-medium classes, not the tag. See issue #2381.
+        */}
+        <h2 className="mt-3 text-sm font-medium text-foreground">
           {t("aiChatMessages.title")}
-        </h3>
+        </h2>
         <p className="mt-1 text-xs text-muted-foreground">
           {t("aiChatMessages.description")}
         </p>

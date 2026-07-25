@@ -641,7 +641,7 @@
       }
     },
     "search": {
-      "prompt": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen",
+      "prompt": "Breeze durchsuchen",
       "placeholder": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen…",
       "searching": "Wird gesucht…",
       "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen zu durchsuchen.",
