@@ -11,6 +11,16 @@ import {
 import { GRANT_REVOCATION_TTL_SECONDS } from './adapter';
 import { GRANT_REVOCATION_TTL_SECONDS as REVOCATION_SERVICE_GRANT_TTL_SECONDS } from './revocationService';
 import { GrantTenancyError } from './effectiveScopes';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { users } from '../db/schema';
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(),
+  },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
 
 // Mock the tenant-status assertion so provider tests stay hermetic — the
 // real implementation issues `getActivePartner`/`getActiveOrgTenant` Drizzle
@@ -48,6 +58,24 @@ vi.mock('./effectiveScopes', async () => {
 const effectiveScopes = await import('./effectiveScopes');
 const resolveGrantContextMock = vi.mocked(effectiveScopes.resolveGrantContext);
 const computeEffectiveMcpScopesMock = vi.mocked(effectiveScopes.computeEffectiveMcpScopes);
+const selectMock = vi.mocked(db.select);
+
+function mockSelectRows(rows: unknown[]) {
+  const limit = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  selectMock.mockReturnValueOnce({ from } as unknown as ReturnType<typeof db.select>);
+  return { from, where, limit };
+}
+
+function mockSelectError(error: unknown) {
+  const limit = vi.fn(async () => {
+    throw error;
+  });
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  selectMock.mockReturnValueOnce({ from } as unknown as ReturnType<typeof db.select>);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -82,41 +110,155 @@ describe('OAuth token TTL policy', () => {
 });
 
 describe('buildExtraTokenClaims', () => {
-  it('returns null tenant claims when the Grant is missing', async () => {
-    await expect(buildExtraTokenClaims({ oidc: { entities: {} } }, {})).resolves.toEqual({
-      partner_id: null,
-      org_id: null,
-      grant_id: null,
-    });
+  it('denies minting when the Grant is missing', async () => {
+    await expect(buildExtraTokenClaims({ oidc: { entities: {} } }, {})).rejects.toThrow(
+      /authoritative OAuth grant/i,
+    );
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
-  it('returns null tenant claims when grant.breeze is missing', async () => {
-    await expect(buildExtraTokenClaims({ oidc: { entities: { Grant: {} } } }, {})).resolves.toEqual({
-      partner_id: null,
-      org_id: null,
-      grant_id: null,
-    });
-  });
-
-  it('returns tenant claims from grant.breeze and the grant id from grant.jti', async () => {
+  it('denies minting when the Grant has no authoritative account', async () => {
     await expect(
       buildExtraTokenClaims(
-        { oidc: { entities: { Grant: { jti: 'grant-1', breeze: { partner_id: 'p1', org_id: 'o1' } } } } },
+        { oidc: { entities: { Grant: { jti: 'grant-no-account', breeze: { partner_id: 'p1' } } } } },
         {},
       ),
-    ).resolves.toEqual({ partner_id: 'p1', org_id: 'o1', grant_id: 'grant-1' });
+    ).rejects.toThrow(/authoritative account/i);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
-  it('returns null for missing partial tenant claims (still surfaces grant_id)', async () => {
+  it('includes the active user auth epoch and preserves partner, org, and grant claims', async () => {
+    const query = mockSelectRows([{ id: 'user-1', status: 'active', authEpoch: 7 }]);
+
     await expect(
-      buildExtraTokenClaims({ oidc: { entities: { Grant: { jti: 'grant-2', breeze: { partner_id: 'p1' } } } } }, {}),
-    ).resolves.toEqual({ partner_id: 'p1', org_id: null, grant_id: 'grant-2' });
+      buildExtraTokenClaims(
+        {
+          oidc: {
+            entities: {
+              Grant: {
+                jti: 'grant-1',
+                accountId: 'user-1',
+                breeze: { partner_id: 'p1', org_id: 'o1' },
+              },
+            },
+          },
+        },
+        { accountId: 'user-1' },
+      ),
+    ).resolves.toEqual({
+      partner_id: 'p1',
+      org_id: 'o1',
+      grant_id: 'grant-1',
+      auth_epoch: 7,
+    });
+    expect(selectMock).toHaveBeenCalledWith({
+      id: users.id,
+      status: users.status,
+      authEpoch: users.authEpoch,
+    });
+    expect(query.limit).toHaveBeenCalledWith(1);
+    expect(runOutsideDbContext).toHaveBeenCalledOnce();
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
   });
 
-  it('does not project any other grant fields beyond partner_id, org_id, grant_id', async () => {
+  it('preserves a null organization claim for a partner-scoped grant', async () => {
+    mockSelectRows([{ id: 'user-1', status: 'active', authEpoch: 3 }]);
+
+    await expect(
+      buildExtraTokenClaims(
+        {
+          oidc: {
+            entities: {
+              Grant: {
+                jti: 'grant-2',
+                accountId: 'user-1',
+                breeze: { partner_id: 'p1' },
+              },
+            },
+          },
+        },
+        { accountId: 'user-1' },
+      ),
+    ).resolves.toEqual({
+      partner_id: 'p1',
+      org_id: null,
+      grant_id: 'grant-2',
+      auth_epoch: 3,
+    });
+  });
+
+  it('denies a grant/token account mismatch before any database lookup', async () => {
+    await expect(
+      buildExtraTokenClaims(
+        {
+          oidc: {
+            entities: {
+              Grant: {
+                jti: 'grant-mismatch',
+                accountId: 'user-authoritative',
+                breeze: { partner_id: 'p1' },
+              },
+            },
+          },
+        },
+        { accountId: 'user-other' },
+      ),
+    ).rejects.toThrow(/account mismatch/i);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', []],
+    ['inactive', [{ id: 'user-1', status: 'disabled', authEpoch: 9 }]],
+  ])('denies minting when the authoritative user is %s', async (_case, rows) => {
+    mockSelectRows(rows);
+
+    await expect(
+      buildExtraTokenClaims(
+        {
+          oidc: {
+            entities: {
+              Grant: {
+                jti: `grant-${_case}`,
+                accountId: 'user-1',
+                breeze: { partner_id: 'p1' },
+              },
+            },
+          },
+        },
+        { accountId: 'user-1' },
+      ),
+    ).rejects.toThrow(/active OAuth user/i);
+  });
+
+  it('propagates database failure so oidc-provider returns server_error', async () => {
+    const databaseError = new Error('database unavailable');
+    mockSelectError(databaseError);
+
+    await expect(
+      buildExtraTokenClaims(
+        {
+          oidc: {
+            entities: {
+              Grant: {
+                jti: 'grant-db-failure',
+                accountId: 'user-1',
+                breeze: { partner_id: 'p1' },
+              },
+            },
+          },
+        },
+        { accountId: 'user-1' },
+      ),
+    ).rejects.toBe(databaseError);
+  });
+
+  it('does not project any other grant fields beyond the canonical access claims', async () => {
     // grant_id is now also surfaced (added 2026-04-24 so bearer middleware can
     // check the grant-revocation cache and reject every access JWT minted
     // under a revoked grant). Aside from that the projection stays narrow.
+    mockSelectRows([{ id: 'user-1', status: 'active', authEpoch: 11 }]);
     const claims = await buildExtraTokenClaims(
       {
         oidc: {
@@ -129,11 +271,16 @@ describe('buildExtraTokenClaims', () => {
           },
         },
       },
-      {},
+      { accountId: 'user-1' },
     );
 
-    expect(claims).toEqual({ partner_id: 'p1', org_id: 'o1', grant_id: 'grant-3' });
-    expect(Object.keys(claims).sort()).toEqual(['grant_id', 'org_id', 'partner_id']);
+    expect(claims).toEqual({
+      partner_id: 'p1',
+      org_id: 'o1',
+      grant_id: 'grant-3',
+      auth_epoch: 11,
+    });
+    expect(Object.keys(claims).sort()).toEqual(['auth_epoch', 'grant_id', 'org_id', 'partner_id']);
   });
 });
 

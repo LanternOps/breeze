@@ -14,7 +14,7 @@ import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
 import { ALL_MCP_SCOPES, computeEffectiveMcpScopes, resolveGrantContext } from './effectiveScopes';
 import { isSentryEnabled } from '../services/sentry';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
   oauthClientPartnerGrants,
@@ -23,8 +23,9 @@ import {
   oauthInteractions,
   oauthRefreshTokens,
   oauthSessions,
+  users,
 } from '../db/schema';
-import { isNull, lt, sql, and as drizzleAnd } from 'drizzle-orm';
+import { eq, isNull, lt, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
@@ -179,12 +180,21 @@ export async function cleanupExpiredOauthLifecycleRows(
   };
 }
 
+export interface OAuthAccessClaims extends Record<string, unknown> {
+  partner_id: string | null;
+  org_id: string | null;
+  grant_id: string | null;
+  auth_epoch: number;
+}
+
 export async function buildExtraTokenClaims(
   ctx: any,
-  _token: any,
-): Promise<{ partner_id: string | null; org_id: string | null; grant_id: string | null }> {
+  token: any,
+): Promise<OAuthAccessClaims> {
   const grant: any = ctx.oidc?.entities?.Grant;
-  if (!grant) return { partner_id: null, org_id: null, grant_id: null };
+  if (!grant) {
+    throw new Error('Could not resolve authoritative OAuth Grant for access token mint');
+  }
   // The Grant instance's id is on `.jti` (oidc-provider's BaseToken sets jti
   // on every persisted entity). We can't read meta off `grant.breeze` because
   // Grant.IN_PAYLOAD doesn't include `breeze`, so unknown fields are dropped
@@ -194,6 +204,19 @@ export async function buildExtraTokenClaims(
   // First try the in-memory cache (warm path: same process as consent), then
   // fall back to the DB row for refresh-token grants that span an API
   // restart between consent and the next token exchange.
+  const accountId = typeof grant.accountId === 'string' && grant.accountId.length > 0
+    ? grant.accountId
+    : null;
+  if (!accountId) {
+    throw new Error('OAuth Grant has no authoritative account for access token mint');
+  }
+  const tokenAccountId = typeof token?.accountId === 'string' && token.accountId.length > 0
+    ? token.accountId
+    : null;
+  if (tokenAccountId && tokenAccountId !== accountId) {
+    throw new Error('OAuth Grant and access token account mismatch');
+  }
+
   const cached = getGrantBreezeMeta(grantId);
   const meta = cached ?? grant.breeze ?? (await getGrantBreezeMetaAsync(grantId));
   // Invariant: no null-claim JWT EVER leaves the server. If a grant_id is
@@ -214,6 +237,29 @@ export async function buildExtraTokenClaims(
     });
     throw err;
   }
+
+  // The persisted Grant account is the authoritative user identity for the
+  // mint. Resolve its live row under an explicit system context because the
+  // oidc-provider callback does not carry the API request's user DB context
+  // and users is protected by forced RLS. The primary-key lookup is mandatory:
+  // no cache or claim may replace current status/auth_epoch proof.
+  const [liveUser] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          id: users.id,
+          status: users.status,
+          authEpoch: users.authEpoch,
+        })
+        .from(users)
+        .where(eq(users.id, accountId))
+        .limit(1),
+    ),
+  );
+  if (!liveUser || liveUser.status !== 'active') {
+    throw new Error('Could not prove an active OAuth user for access token mint');
+  }
+
   if (meta?.partner_id) {
     await assertActiveTenantContext({
       scope: meta.org_id ? 'organization' : 'partner',
@@ -229,6 +275,7 @@ export async function buildExtraTokenClaims(
     // refresh token (or deleting a connected app) would not invalidate the
     // ~10-minute access tokens already minted from the same grant.
     grant_id: grantId ?? null,
+    auth_epoch: liveUser.authEpoch,
   };
 }
 
