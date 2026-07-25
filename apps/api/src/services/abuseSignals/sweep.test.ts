@@ -6,6 +6,9 @@ const {
   computeInvariantSignals,
   loadPartnerAggregates,
   computeHeuristicSignals,
+  loadScriptFindings,
+  computeScriptSignals,
+  loadScriptIndicators,
   persistSignals,
   markDelivered,
   sendOpsAlert,
@@ -14,6 +17,9 @@ const {
   computeInvariantSignals: vi.fn(),
   loadPartnerAggregates: vi.fn(),
   computeHeuristicSignals: vi.fn(),
+  loadScriptFindings: vi.fn(),
+  computeScriptSignals: vi.fn(),
+  loadScriptIndicators: vi.fn(),
   persistSignals: vi.fn(),
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
@@ -33,6 +39,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('./invariants', () => ({ computeInvariantSignals }));
 vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals }));
+vi.mock('./scriptContent', () => ({ loadScriptFindings, computeScriptSignals, loadScriptIndicators }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
@@ -75,6 +82,9 @@ beforeEach(() => {
   computeInvariantSignals.mockResolvedValue([]);
   loadPartnerAggregates.mockResolvedValue([agg({})]);
   computeHeuristicSignals.mockReturnValue([]);
+  loadScriptFindings.mockResolvedValue({ findings: [], sharedHosts: new Map(), scannedPartnerIds: [] });
+  computeScriptSignals.mockReturnValue([]);
+  loadScriptIndicators.mockReturnValue({ tlds: [], hosts: [] });
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
 });
@@ -126,5 +136,36 @@ describe('runAbuseSweep', () => {
     const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
     expect(evaluatedPartnerIds).toBeInstanceOf(Set);
     expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pB']);
+  });
+
+  it('unions script-scanned partner ids into evaluatedPartnerIds so script signals can stale-resolve', async () => {
+    loadPartnerAggregates.mockResolvedValue([agg({ partnerId: 'pA' })]);
+    loadScriptFindings.mockResolvedValue({
+      findings: [],
+      sharedHosts: new Map(),
+      scannedPartnerIds: ['pA', 'pScript'],
+    });
+
+    await runAbuseSweep();
+
+    const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
+    expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pScript']);
+  });
+
+  it('includes computeScriptSignals output in the persisted signal set', async () => {
+    const scriptSignal: ComputedSignal = {
+      partnerId: 'pS',
+      signalKey: 'rmm.remote_access_installer',
+      score: 90,
+      severity: 'alert',
+      evidence: {},
+    };
+    computeScriptSignals.mockReturnValue([scriptSignal]);
+
+    const result = await runAbuseSweep();
+
+    expect(result.fired).toBe(1);
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted).toContainEqual(scriptSignal);
   });
 });
