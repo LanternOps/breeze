@@ -111,6 +111,45 @@ export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
+
+export interface OAuthAuthEpochDeadlineOptions {
+  oauthEnabled: boolean;
+  nodeEnv: string | undefined;
+}
+
+export function parseOAuthAuthEpochEnforceAfter(
+  raw: string | undefined,
+  options: OAuthAuthEpochDeadlineOptions,
+): Date | null {
+  const value = raw?.trim() ?? '';
+  const strictEnvironment = options.nodeEnv === 'production' || options.nodeEnv === 'staging';
+  if (!value) {
+    if (options.oauthEnabled && strictEnvironment) {
+      throw new Error(
+        'OAUTH_AUTH_EPOCH_ENFORCE_AFTER is required when MCP OAuth is enabled in production or staging',
+      );
+    }
+    return null;
+  }
+
+  // Require a complete timestamp and an explicit UTC/offset suffix. A local
+  // timestamp would move the compatibility boundary with host timezone.
+  const absoluteIso =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+  const timestamp = Date.parse(value);
+  if (!absoluteIso.test(value) || !Number.isFinite(timestamp)) {
+    throw new Error('OAUTH_AUTH_EPOCH_ENFORCE_AFTER must be a valid absolute ISO timestamp');
+  }
+  return new Date(timestamp);
+}
+
+export const OAUTH_AUTH_EPOCH_ENFORCE_AFTER = parseOAuthAuthEpochEnforceAfter(
+  process.env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
+  {
+    oauthEnabled: MCP_OAUTH_ENABLED,
+    nodeEnv: process.env.NODE_ENV,
+  },
+);
 // Optional override for the consent UI base. Defaults to '' (relative path)
 // — in prod the API and web share the same origin behind Caddy, so a
 // relative redirect works. In local dev where API and web run on different

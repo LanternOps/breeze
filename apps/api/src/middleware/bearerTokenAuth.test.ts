@@ -8,6 +8,7 @@ const jwksState = vi.hoisted(() => ({
 const envState = vi.hoisted(() => ({
   issuer: 'https://issuer.test',
   resourceUrl: 'https://issuer.test/mcp/server',
+  authEpochEnforceAfter: new Date('2099-01-01T00:00:00.000Z'),
 }));
 
 vi.mock('../config/env', () => ({
@@ -16,6 +17,9 @@ vi.mock('../config/env', () => ({
   },
   get OAUTH_RESOURCE_URL() {
     return envState.resourceUrl;
+  },
+  get OAUTH_AUTH_EPOCH_ENFORCE_AFTER() {
+    return envState.authEpochEnforceAfter;
   },
 }));
 
@@ -28,16 +32,21 @@ vi.mock('../config/env', () => ({
 const dbState = vi.hoisted(() => ({
   rows: [] as unknown[][],
   wherePredicates: [] as unknown[],
+  liveUserRows: [] as unknown[],
+  liveUserError: null as unknown,
 }));
 
 vi.mock('../db', () => {
-  function makeChain(rows: unknown[]) {
+  function makeChain(rows: unknown[], error?: unknown, collectPredicate = true) {
     // The production code may end a query at either `.limit(1)` (partner_users
     // lookup) OR `.where(...)` alone (organizations enumeration). Both must
     // be thenable/iterable to the same row list for the mock to be correct.
-    const limit = vi.fn(async () => rows);
+    const limit = vi.fn(async () => {
+      if (error) throw error;
+      return rows;
+    });
     const where = vi.fn((predicate: unknown) => {
-      dbState.wherePredicates.push(predicate);
+      if (collectPredicate) dbState.wherePredicates.push(predicate);
       const thenable = Promise.resolve(rows) as Promise<unknown[]> & { limit: typeof limit };
       thenable.limit = limit;
       return thenable;
@@ -46,10 +55,14 @@ vi.mock('../db', () => {
     return { from };
   }
   return {
+    runOutsideDbContext: vi.fn((fn) => fn()),
     withDbAccessContext: vi.fn(async (_context, fn) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn) => fn()),
     db: {
-      select: vi.fn(() => {
+      select: vi.fn((selection?: Record<string, unknown>) => {
+        if (selection && 'authEpoch' in selection) {
+          return makeChain(dbState.liveUserRows, dbState.liveUserError, false);
+        }
         const next = dbState.rows.shift() ?? [];
         return makeChain(next);
       }),
@@ -67,6 +80,16 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
 }));
 
+const sentryMetricsState = vi.hoisted(() => ({
+  count: vi.fn(),
+}));
+
+vi.mock('@sentry/node', () => ({
+  metrics: {
+    count: sentryMetricsState.count,
+  },
+}));
+
 vi.mock('jose', async () => {
   const actual = await vi.importActual<typeof import('jose')>('jose');
   return {
@@ -79,11 +102,15 @@ vi.mock('jose', async () => {
 });
 
 import { importJWK, jwtVerify, type JWK } from 'jose';
-import { withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { generateTestKeypair, signTestJwt, type TestKeypair } from '../oauth/testHelpers';
-import { _resetJwksCacheForTests, bearerTokenAuthMiddleware } from './bearerTokenAuth';
+import {
+  _resetJwksCacheForTests,
+  assertLiveOAuthUser,
+  bearerTokenAuthMiddleware,
+} from './bearerTokenAuth';
 
 type TestContext = Context & {
   get: (key: string) => unknown;
@@ -167,9 +194,12 @@ describe('bearerTokenAuthMiddleware', () => {
     vi.clearAllMocks();
     dbState.rows = [];
     dbState.wherePredicates = [];
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1 }];
+    dbState.liveUserError = null;
     _resetJwksCacheForTests();
     envState.issuer = issuer;
     envState.resourceUrl = audience;
+    envState.authEpochEnforceAfter = new Date('2099-01-01T00:00:00.000Z');
     vi.mocked(isJtiRevoked).mockResolvedValue(false);
     vi.mocked(isGrantRevoked).mockResolvedValue(false);
     vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
@@ -272,9 +302,116 @@ describe('bearerTokenAuthMiddleware', () => {
     errorSpy.mockRestore();
   });
 
+  it('authorizes a matching live auth epoch before consulting Redis', async () => {
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 6 }];
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      auth_epoch: 6,
+      jti: 'matching-epoch-jti',
+    });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(createContext({ Authorization: `Bearer ${token}` }), next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(vi.mocked(isJtiRevoked).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder[0]!,
+    );
+    expect(sentryMetricsState.count).toHaveBeenCalledWith(
+      'breeze.oauth.live_authorization',
+      1,
+      { attributes: { reason: 'authorized', legacyClaim: false } },
+    );
+  });
+
+  it.each([
+    ['missing', [], 4, 'user_missing'],
+    ['inactive', [{ id: userId, status: 'disabled', authEpoch: 4 }], 4, 'user_inactive'],
+    ['epoch-mismatched', [{ id: userId, status: 'active', authEpoch: 5 }], 4, 'auth_epoch_mismatch'],
+  ])('denies an %s live user before any Redis lookup', async (_case, rows, tokenEpoch, reason) => {
+    dbState.liveUserRows = rows;
+    vi.mocked(isJtiRevoked).mockRejectedValue(new Error('redis unavailable'));
+    vi.mocked(isGrantRevoked).mockRejectedValue(new Error('redis unavailable'));
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      auth_epoch: tokenEpoch,
+      jti: 'must-not-reach-redis-jti',
+      grant_id: 'must-not-reach-redis-grant',
+    });
+    const next = vi.fn();
+
+    await expectUnauthorized(
+      createContext({ Authorization: `Bearer ${token}` }),
+      `oauth live authorization denied: ${reason}`,
+      next,
+    );
+    expect(isJtiRevoked).not.toHaveBeenCalled();
+    expect(isGrantRevoked).not.toHaveBeenCalled();
+    expect(assertActiveTenantContext).not.toHaveBeenCalled();
+  });
+
+  it('accepts a claimless compatibility token before the deadline only after an active live lookup', async () => {
+    envState.authEpochEnforceAfter = new Date('2099-01-01T00:00:00.000Z');
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12 }];
+    const result = await assertLiveOAuthUser(
+      { sub: userId },
+      new Date('2098-12-31T23:59:59.999Z'),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      userId,
+      authEpoch: 12,
+      legacyClaim: true,
+    });
+    expect(vi.mocked(db.select)).toHaveBeenCalled();
+  });
+
+  it('rejects a claimless token exactly at and after the compatibility deadline', async () => {
+    envState.authEpochEnforceAfter = new Date('2026-08-06T00:30:00.000Z');
+    dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 12 }];
+
+    await expect(
+      assertLiveOAuthUser({ sub: userId }, new Date('2026-08-06T00:30:00.000Z')),
+    ).resolves.toEqual({
+      ok: false,
+      status: 401,
+      reason: 'legacy_claim_expired',
+    });
+    await expect(
+      assertLiveOAuthUser({ sub: userId }, new Date('2026-08-06T00:30:00.001Z')),
+    ).resolves.toEqual({
+      ok: false,
+      status: 401,
+      reason: 'legacy_claim_expired',
+    });
+  });
+
+  it('returns a retryable 503 result when live database state is unavailable', async () => {
+    dbState.liveUserError = new Error('database unavailable');
+
+    await expect(
+      assertLiveOAuthUser({ sub: userId, auth_epoch: 1 }, new Date()),
+    ).resolves.toEqual({
+      ok: false,
+      status: 503,
+      reason: 'live_state_unavailable',
+    });
+  });
+
   it('rejects a valid token with a revoked jti', async () => {
     vi.mocked(isJtiRevoked).mockResolvedValue(true);
-    const token = await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, jti: 'revoked-jti' });
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: orgId,
+      auth_epoch: 1,
+      jti: 'revoked-jti',
+    });
 
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token revoked');
     expect(isJtiRevoked).toHaveBeenCalledWith('revoked-jti');
@@ -291,6 +428,7 @@ describe('bearerTokenAuthMiddleware', () => {
       sub: userId,
       partner_id: partnerId,
       org_id: orgId,
+      auth_epoch: 1,
       jti: 'still-valid-jti',
       grant_id: 'revoked-grant',
     });
@@ -309,6 +447,9 @@ describe('bearerTokenAuthMiddleware', () => {
     const token = await mintToken({ partner_id: partnerId, org_id: orgId });
 
     await expectUnauthorized(createContext({ Authorization: `Bearer ${token}` }), 'token missing required claims');
+    expect(db).toBeDefined();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+    expect(isJtiRevoked).not.toHaveBeenCalled();
   });
 
   it('rejects OAuth bearer tokens for inactive or deleted tenant contexts', async () => {
@@ -644,5 +785,64 @@ describe('bearerTokenAuthMiddleware', () => {
       }),
       expect.any(Function)
     );
+  });
+});
+
+describe('OAUTH_AUTH_EPOCH_ENFORCE_AFTER parsing', () => {
+  it('accepts an absolute ISO timestamp and normalizes it to a Date', async () => {
+    const actualEnv = await vi.importActual<typeof import('../config/env')>('../config/env');
+
+    expect(
+      actualEnv.parseOAuthAuthEpochEnforceAfter('2026-08-06T00:30:00Z', {
+        oauthEnabled: true,
+        nodeEnv: 'production',
+      }),
+    ).toEqual(new Date('2026-08-06T00:30:00.000Z'));
+  });
+
+  it.each([
+    '2026-08-06',
+    '2026-08-06T00:30:00',
+    'not-a-date',
+  ])('rejects non-absolute deadline %j', async (value) => {
+    const actualEnv = await vi.importActual<typeof import('../config/env')>('../config/env');
+
+    expect(() =>
+      actualEnv.parseOAuthAuthEpochEnforceAfter(value, {
+        oauthEnabled: true,
+        nodeEnv: 'production',
+      }),
+    ).toThrow(/absolute ISO timestamp/i);
+  });
+
+  it.each(['production', 'staging'])(
+    'requires the deadline when OAuth is enabled in %s',
+    async (nodeEnv) => {
+      const actualEnv = await vi.importActual<typeof import('../config/env')>('../config/env');
+
+      expect(() =>
+        actualEnv.parseOAuthAuthEpochEnforceAfter('', {
+          oauthEnabled: true,
+          nodeEnv,
+        }),
+      ).toThrow(/OAUTH_AUTH_EPOCH_ENFORCE_AFTER is required/i);
+    },
+  );
+
+  it('allows an unset deadline when OAuth is disabled or outside production/staging', async () => {
+    const actualEnv = await vi.importActual<typeof import('../config/env')>('../config/env');
+
+    expect(
+      actualEnv.parseOAuthAuthEpochEnforceAfter('', {
+        oauthEnabled: false,
+        nodeEnv: 'production',
+      }),
+    ).toBeNull();
+    expect(
+      actualEnv.parseOAuthAuthEpochEnforceAfter('', {
+        oauthEnabled: true,
+        nodeEnv: 'test',
+      }),
+    ).toBeNull();
   });
 });
