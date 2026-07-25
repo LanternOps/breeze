@@ -697,6 +697,7 @@ sessionRoutes.post(
         sessionId: session.id,
         sessionType: session.type,
         userId: auth.user.id,
+        mfaSatisfied: true,
         // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
         // ticket can't be redeemed from a different network position.
         ip: getTrustedClientIp(c),

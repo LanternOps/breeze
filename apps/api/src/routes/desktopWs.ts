@@ -5,8 +5,18 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
-import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
-import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import {
+  createViewerAccessToken,
+  verifyViewerAccessToken,
+  type ViewerTokenPayload,
+} from '../services/jwt';
+import {
+  createLegacyViewerCompatibilityWsTicket,
+  createWsTicket,
+  consumeDesktopConnectCode,
+  consumeWsTicket,
+  getViewerAccessTokenExpirySeconds,
+} from '../services/remoteSessionAuth';
 import { getIceServers, logSessionAudit, buildRemoteSessionPromptPayload } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -124,6 +134,7 @@ type ViewerAccessResult =
       session: typeof remoteSessions.$inferSelect;
       device: typeof devices.$inferSelect;
       user: Pick<typeof users.$inferSelect, 'id' | 'email' | 'status'>;
+      viewerToken: ViewerTokenPayload;
     }
   | {
       valid: false;
@@ -133,14 +144,15 @@ type ViewerAccessResult =
 
 async function validateViewerSessionAccess(
   authorizationHeader: string | undefined,
-  sessionId: string
+  sessionId: string,
+  prevalidatedViewerToken?: ViewerTokenPayload,
 ): Promise<ViewerAccessResult> {
   if (!authorizationHeader?.startsWith('Bearer ')) {
     return { valid: false, status: 401, error: 'Missing viewer token' };
   }
 
   const token = authorizationHeader.slice(7);
-  const payload = await verifyViewerAccessToken(token);
+  const payload = prevalidatedViewerToken ?? await verifyViewerAccessToken(token);
   if (!payload) {
     return { valid: false, status: 401, error: 'Invalid or expired viewer token' };
   }
@@ -215,7 +227,7 @@ async function validateViewerSessionAccess(
       };
     }
 
-    return { valid: true as const, session, device, user };
+    return { valid: true as const, session, device, user, viewerToken: payload };
   });
 }
 
@@ -873,6 +885,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         sub: codeRecord.userId,
         email: codeRecord.email,
         sessionId: session.id,
+        mfaSatisfied: true,
       });
       const result = {
         accessToken,
@@ -917,7 +930,26 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
     zValidator('param', desktopSessionIdParamSchema),
     async (c) => {
       const { id: sessionId } = c.req.valid('param');
-      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      const authorizationHeader = c.req.header('Authorization');
+      if (!authorizationHeader?.startsWith('Bearer ')) {
+        return c.json({ error: 'Missing viewer token' }, 401);
+      }
+      const viewerToken = await verifyViewerAccessToken(authorizationHeader.slice(7));
+      if (!viewerToken) {
+        return c.json({ error: 'Invalid or expired viewer token' }, 401);
+      }
+      const mode = process.env.REMOTE_WS_AUTH_MODE === 'pre_upgrade'
+        ? 'pre_upgrade'
+        : 'post_upgrade';
+      if (viewerToken.mfaSatisfied !== true && mode === 'pre_upgrade') {
+        return c.json({ error: 'mfa_unassured' }, 403);
+      }
+
+      const access = await validateViewerSessionAccess(
+        authorizationHeader,
+        sessionId,
+        viewerToken,
+      );
       if (!access.valid) {
         return c.json({ error: access.error }, access.status);
       }
@@ -930,15 +962,16 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
       }
 
       try {
-        const ticket = await createWsTicket({
+        const ticketInput = {
           sessionId: access.session.id,
-          sessionType: 'desktop',
+          sessionType: 'desktop' as const,
           userId: access.user.id,
-          // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
-          // ticket can't be opened from a different network position.
           ip: getTrustedClientIp(c),
           userAgent: c.req.header('user-agent') ?? '',
-        });
+        };
+        const ticket = access.viewerToken.mfaSatisfied === true
+          ? await createWsTicket({ ...ticketInput, mfaSatisfied: true })
+          : await createLegacyViewerCompatibilityWsTicket({ ...ticketInput, mode });
         return c.json(ticket);
       } catch (error) {
         console.error('[desktop-ws] Failed to create viewer WebSocket ticket:', error);

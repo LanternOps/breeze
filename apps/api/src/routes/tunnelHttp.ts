@@ -40,7 +40,7 @@ import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
 export const tunnelHttpRoutes = new Hono();
 
 const HTTP_REQUEST_TIMEOUT_MS = 25_000;
-const COOKIE_TTL_SECONDS = 300; // ~5 min
+export const HTTP_TUNNEL_COOKIE_TTL_SECONDS = 300;
 const COOKIE_AUDIENCE = 'breeze-tunnel-http';
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'];
 
@@ -107,7 +107,7 @@ async function signTunnelCookie(userId: string, tunnelId: string): Promise<strin
     .setProtectedHeader(buildHeader(kid))
     .setSubject(userId)
     .setIssuedAt()
-    .setExpirationTime(`${COOKIE_TTL_SECONDS}s`)
+    .setExpirationTime(`${HTTP_TUNNEL_COOKIE_TTL_SECONDS}s`)
     .setIssuer('breeze')
     .setAudience(COOKIE_AUDIENCE)
     .sign(key);
@@ -267,7 +267,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       secure: true,
       sameSite: 'Lax',
       path: basePath,
-      maxAge: COOKIE_TTL_SECONDS,
+      maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
     });
 
     const url = new URL(c.req.url);
