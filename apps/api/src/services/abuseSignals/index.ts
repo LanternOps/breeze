@@ -5,6 +5,7 @@ import { recordAbuseSignalFired } from '../abuseMetrics';
 import { loadSignalConfig } from './config';
 import { computeInvariantSignals } from './invariants';
 import { loadPartnerAggregates, computeHeuristicSignals } from './heuristics';
+import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
 
@@ -45,13 +46,26 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates } = await runSystemDbCompute(async () => ({
+  const { invariants, aggregates, scriptFindings } = await runSystemDbCompute(async () => ({
     invariants: await computeInvariantSignals(),
     aggregates: await loadPartnerAggregates(),
+    scriptFindings: await loadScriptFindings(now),
   }));
 
-  const computed = [...invariants, ...computeHeuristicSignals(aggregates, cfg, now)];
-  const evaluatedPartnerIds = new Set(aggregates.map((a) => a.partnerId));
+  const computed = [
+    ...invariants,
+    ...computeHeuristicSignals(aggregates, cfg, now),
+    // Content-based signals are never age-decayed (computeScriptSignals takes
+    // no partner age at all) — a malicious installer is malicious regardless
+    // of account age.
+    ...computeScriptSignals(scriptFindings.findings, scriptFindings.sharedHosts, cfg, loadScriptIndicators()),
+  ];
+  // Script-scanned partners join the evaluated set so open script-signal rows
+  // stale-resolve when the evidence disappears (script edited/deleted).
+  const evaluatedPartnerIds = new Set([
+    ...aggregates.map((a) => a.partnerId),
+    ...scriptFindings.scannedPartnerIds,
+  ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 
   for (const s of computed) recordAbuseSignalFired(s.severity);

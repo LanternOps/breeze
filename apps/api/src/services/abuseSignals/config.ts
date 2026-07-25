@@ -21,6 +21,24 @@ export const SIGNAL_DEFAULTS = {
   'resource.enrollment_denied.count_24h': 20,
   'resource.volume_outlier.commands_24h': 500,
   'resource.volume_outlier.scripts_24h': 200,
+  // Script-content detector (scriptContent.ts). Gate alone (remote-access
+  // product + install/fetch primitive) is what an RMM does, so it scores
+  // below watch; corroborating markers are additive on top, clamped at 100.
+  // NONE of these are age-decayed — a malicious installer is malicious
+  // regardless of account age.
+  'rmm.remote_access_installer.gate_score': 20,
+  'rmm.remote_access_installer.marker.tls_bypass': 70,
+  'rmm.remote_access_installer.marker.shared_host': 60,
+  'rmm.remote_access_installer.marker.indicator_host': 60,
+  'rmm.remote_access_installer.marker.throwaway_tld': 50,
+  'rmm.remote_access_installer.marker.bare_ip_port': 50,
+  'rmm.remote_access_installer.marker.misleading_filename': 45,
+  'rmm.remote_access_installer.marker.unrelated_host': 25,
+  'rmm.remote_access_installer.marker.exec_policy_bypass': 20,
+  'rmm.remote_access_installer.marker.unattended_params': 15,
+  'rmm.shared_installer_host.min_partners': 2,
+  'rmm.shared_installer_host.base_score': 60,
+  'rmm.shared_installer_host.per_extra_partner': 20,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;
