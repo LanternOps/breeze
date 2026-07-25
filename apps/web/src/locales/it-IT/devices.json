@@ -94,6 +94,8 @@
     "generatingToken": "Generazione del token…",
     "multiFactorAuthenticationIsRequiredTo3": "Per generare token di installazione è necessaria l'autenticazione a più fattori.",
     "generateNewToken": "Genera nuovo token",
+    "tokenExpiresIn": "Il token scade tra",
+    "generateNewTokenToApplyExpiry": "Genera un nuovo token per applicare questa scadenza: il token sopra mantiene quella originale.",
     "singleUseValidForOneDevice": "Monouso — valido per un dispositivo. Genera un nuovo token per ogni computer aggiuntivo.",
     "linux": "Linux",
     "windows2": "Windows",

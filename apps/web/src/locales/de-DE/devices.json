@@ -94,6 +94,8 @@
     "generatingToken": "Token wird generiert...",
     "multiFactorAuthenticationIsRequiredTo3": "Zum Generieren von Installationstokens ist eine Multi-Faktor-Authentifizierung erforderlich.",
     "generateNewToken": "Neues Token generieren",
+    "tokenExpiresIn": "Token läuft ab in",
+    "generateNewTokenToApplyExpiry": "Generieren Sie ein neues Token, um diese Ablaufzeit anzuwenden – das Token oben behält seine ursprüngliche.",
     "singleUseValidForOneDevice": "Einmalige Verwendung — gültig für ein Gerät. Für jedes weitere Gerät ein neues Token generieren.",
     "linux": "Linux",
     "windows2": "Windows",

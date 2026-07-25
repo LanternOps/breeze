@@ -94,6 +94,8 @@
     "generatingToken": "Gerando token...",
     "multiFactorAuthenticationIsRequiredTo3": "A autenticação multifator é obrigatória para gerar tokens de instalação.",
     "generateNewToken": "Gerar novo token",
+    "tokenExpiresIn": "O token expira em",
+    "generateNewTokenToApplyExpiry": "Gere um novo token para aplicar esta expiração — o token acima mantém a original.",
     "singleUseValidForOneDevice": "Uso único — válido para um dispositivo. Gere um novo token para cada máquina adicional.",
     "linux": "linux",
     "windows2": "Windows",

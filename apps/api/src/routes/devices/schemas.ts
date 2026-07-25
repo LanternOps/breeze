@@ -95,6 +95,34 @@ export const listNetworkDevicesSchema = z.object({
   search: z.string().optional(),
 });
 
+// POST /devices/onboarding-token — mints a standalone enrollment key for the
+// Add Device modal's CLI tab. `count` maps to maxUsage so one copied CLI
+// command can enroll a whole batch; `ttlMinutes` is the operator's per-token
+// expiry choice (#2777).
+//
+// Bounds mirror the enrollment-keys installer routes exactly
+// (`installerQuerySchema` / `installerLinkSchema` in routes/enrollmentKeys.ts)
+// so the two paths cannot drift: 1..525_600 minutes (365 days) and
+// 1..1000 uses. The TTL is a security control on an enrollment credential —
+// the ceiling is enforced here, server-side, and is never taken from the
+// client. Out-of-range now *rejects* with 400 rather than silently clamping:
+// silent coercion is precisely what hid the CLI tab's stuck 60-minute default
+// (the omitted field arrived as NaN and fell through to the deployment
+// default with no signal to the caller).
+//
+// `.strict()` follows #945 — an unknown key (e.g. `maxUses` for `count`)
+// surfaces as a 400 instead of being dropped while the response reports the
+// default the caller never asked for.
+export const ENROLL_TOKEN_MAX_COUNT = 1000;
+export const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
+
+export const onboardingTokenSchema = z
+  .object({
+    count: z.number().int().min(1).max(ENROLL_TOKEN_MAX_COUNT).optional(),
+    ttlMinutes: z.number().int().min(1).max(ENROLL_TOKEN_MAX_TTL_MINUTES).optional(),
+  })
+  .strict();
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.

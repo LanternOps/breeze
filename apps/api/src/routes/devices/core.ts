@@ -24,7 +24,12 @@ import {
   SITE_ACCESS_DENIED,
   stripSensitiveDeviceFields,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema } from './schemas';
+import {
+  ENROLL_TOKEN_MAX_TTL_MINUTES,
+  listDevicesSchema,
+  onboardingTokenSchema,
+  updateDeviceSchema,
+} from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -268,20 +273,21 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-// #1108: caller-supplied onboarding-token limits. Count maps to maxUsage so one
-// copied CLI command can enroll a whole batch; TTL cap mirrors the enrollment-
-// keys route's 365-day ceiling.
-const ENROLL_TOKEN_MAX_COUNT = 1000;
-const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
-
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
 // shared secret; otherwise the short-lived key stands on its own.
+//
+// The body is optional: Hono's json validator leaves the parsed value as `{}`
+// when the request carries no `application/json` content-type, and every field
+// in onboardingTokenSchema is optional — so bodyless callers
+// (apps/web/.../setup/EnrollDeviceStep.tsx) keep working unchanged and fall
+// back to the deployment defaults below.
 coreRoutes.post(
   '/onboarding-token',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  zValidator('json', onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');
@@ -317,21 +323,25 @@ coreRoutes.post(
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
-    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
-    // command is frequently pasted onto several machines during a migration;
+    // Optional caller-supplied multi-use / TTL controls (#1108, #2777). A copied
+    // CLI command is frequently pasted onto several machines during a migration;
     // without these the historical hard-coded single-use token failed on every
-    // machine after the first. Defaults preserve the old single-use, 60-min
-    // behaviour for callers that send no body.
-    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-    const rawCount = Number((body as { count?: unknown }).count);
-    const maxUsage = Number.isFinite(rawCount)
-      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
-      : 1;
-    const rawTtl = Number((body as { ttlMinutes?: unknown }).ttlMinutes);
-    const defaultTtlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
-    const ttlMinutes = Number.isFinite(rawTtl)
-      ? Math.min(ENROLL_TOKEN_MAX_TTL_MINUTES, Math.max(1, Math.trunc(rawTtl)))
-      : defaultTtlMinutes;
+    // machine after the first. Bounds are enforced by onboardingTokenSchema, so
+    // an out-of-range request 400s instead of being silently clamped. Defaults
+    // preserve the old single-use, 60-min behaviour for callers that send no
+    // body.
+    //
+    // The requested TTL is bounded only by ENROLL_TOKEN_MAX_TTL_MINUTES: this
+    // route mints a *standalone* enrollment key (no parentKeyId), so there is
+    // no parent lifetime to cap against. Capping child keys by their parent on
+    // the installer path is #2775 and is deliberately out of scope here.
+    const { count: rawCount, ttlMinutes: rawTtl } = c.req.valid('json');
+    const maxUsage = rawCount ?? 1;
+    const defaultTtlMinutes = Math.min(
+      ENROLL_TOKEN_MAX_TTL_MINUTES,
+      Math.max(1, envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60))
+    );
+    const ttlMinutes = rawTtl ?? defaultTtlMinutes;
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);

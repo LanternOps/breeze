@@ -94,6 +94,8 @@
     "generatingToken": "Génération de jeton...",
     "multiFactorAuthenticationIsRequiredTo3": "L’authentification multifacteur est nécessaire pour générer des jetons d’installation.",
     "generateNewToken": "Générer un nouveau jeton",
+    "tokenExpiresIn": "Le jeton expire dans",
+    "generateNewTokenToApplyExpiry": "Générez un nouveau jeton pour appliquer cette expiration — le jeton ci-dessus conserve la sienne.",
     "singleUseValidForOneDevice": "Usage unique — valide pour un seul appareil. Générez un nouveau jeton pour chaque machine supplémentaire.",
     "linux": "Linux",
     "windows2": "Windows",

@@ -84,6 +84,32 @@ function formatTokenExpiry(iso: string): string {
   return `on ${formatDateTime(expiresMs)}`;
 }
 
+/**
+ * Shared expiry choices for both tabs' "expires in" selects. The installer tab
+ * spends these on the child enrollment key behind a download/link; the CLI tab
+ * spends them on the onboarding token (#2777). Both server routes cap at
+ * 525_600 minutes (365 days), so the top option matches the ceiling exactly and
+ * can never be rejected. "Never expires" is intentionally absent until the
+ * partner-level cap (maxEnrollmentLinkTtlMinutes, #2776) lands.
+ */
+const TTL_OPTIONS = [
+  { minutes: 60, labelKey: "addDeviceModal.n1Hour" },
+  { minutes: 1440, labelKey: "addDeviceModal.n24Hours" },
+  { minutes: 10080, labelKey: "addDeviceModal.n7Days" },
+  { minutes: 43200, labelKey: "addDeviceModal.n30Days" },
+  { minutes: 129600, labelKey: "addDeviceModal.n90Days" },
+  { minutes: 525600, labelKey: "addDeviceModal.n1Year" },
+] as const;
+
+/**
+ * Product default for both tabs: 24h. Set explicitly client-side rather than
+ * relying on either server fallback (CHILD_ENROLLMENT_KEY_TTL_MINUTES for the
+ * installer child key, ENROLLMENT_KEY_DEFAULT_TTL_MINUTES — 60 minutes — for
+ * the onboarding token), so what the operator sees selected is what the token
+ * actually gets.
+ */
+const DEFAULT_TTL_MINUTES = 1440;
+
 interface AddDeviceModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -130,7 +156,7 @@ export default function AddDeviceModal({
   // fallback, but is set explicitly here, not inherited). "Never expires"
   // is intentionally omitted until the partner-level cap
   // (maxEnrollmentLinkTtlMinutes) lands in a sibling PR.
-  const [ttlMinutes, setTtlMinutes] = useState<number>(1440);
+  const [ttlMinutes, setTtlMinutes] = useState<number>(DEFAULT_TTL_MINUTES);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -154,6 +180,20 @@ export default function AddDeviceModal({
   const [cliDeviceCount, setCliDeviceCount] = useState(1);
   const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
+  // #2777: the CLI token's requested lifetime. Kept separate from the installer
+  // tab's `ttlMinutes` because the two spend it on different credentials (child
+  // enrollment key vs. onboarding token) — switching tabs must not silently
+  // re-target a value the operator picked for the other flow.
+  //
+  // `cliTokenTtlMinutes` records the TTL the *displayed* token was actually
+  // minted with, so a selection made after the auto-mint can be flagged as
+  // pending instead of quietly disagreeing with the expiry shown in step 3.
+  const [cliTtlMinutes, setCliTtlMinutes] = useState<number>(
+    DEFAULT_TTL_MINUTES,
+  );
+  const [cliTokenTtlMinutes, setCliTokenTtlMinutes] = useState<number | null>(
+    null,
+  );
   const [selectedOS, setSelectedOS] = useState<"windows" | "macos" | "linux">(
     userOS,
   );
@@ -190,11 +230,13 @@ export default function AddDeviceModal({
       setDownloadError(undefined);
       setDownloadSuccess(false);
       setDeviceCount(1);
-      setTtlMinutes(1440);
+      setTtlMinutes(DEFAULT_TTL_MINUTES);
       setCliInitialized(false);
       setOnboardingToken("");
       setTokenError(undefined);
       setCliDeviceCount(1);
+      setCliTtlMinutes(DEFAULT_TTL_MINUTES);
+      setCliTokenTtlMinutes(null);
       setTokenMaxUsage(null);
       setTokenExpiresAt(null);
       setGeneratedLink("");
@@ -214,7 +256,7 @@ export default function AddDeviceModal({
   // gating lives in the auto-init effect; the "Generate new token" button and
   // error-retry call this directly to re-mint, so it only self-guards against
   // concurrent runs rather than against being called again.
-  const initializeCli = useCallback(async (count: number) => {
+  const initializeCli = useCallback(async (count: number, ttl: number) => {
     if (cliFetchInFlight.current) return;
     cliFetchInFlight.current = true;
     setCliInitialized(true);
@@ -224,11 +266,16 @@ export default function AddDeviceModal({
     setTokenError(undefined);
     setTokenMaxUsage(null);
     setTokenExpiresAt(null);
+    setCliTokenTtlMinutes(null);
 
     try {
       const response = await fetchWithAuth("/devices/onboarding-token", {
         method: "POST",
-        body: JSON.stringify({ count }),
+        // #2777: the endpoint now runs a zValidator body schema. Without the
+        // content-type Hono's json validator sees no body at all and the
+        // ttlMinutes below would be dropped in favour of the server default.
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ count, ttlMinutes: ttl }),
       });
 
       if (!response.ok) {
@@ -274,6 +321,7 @@ export default function AddDeviceModal({
       if (typeof data.expiresAt === "string") {
         setTokenExpiresAt(data.expiresAt);
       }
+      setCliTokenTtlMinutes(ttl);
       if (data.enrollmentSecret) {
         setEnrollmentSecret(data.enrollmentSecret);
       }
@@ -292,9 +340,9 @@ export default function AddDeviceModal({
   // Re-mint the CLI token, e.g. after the operator bumps the device count or
   // wants a fresh one mid-session (#1108).
   const regenerateCliToken = useCallback(
-    (count: number) => {
+    (count: number, ttl: number) => {
       setTokenCopied(false);
-      void initializeCli(count);
+      void initializeCli(count, ttl);
     },
     [initializeCli],
   );
@@ -325,9 +373,16 @@ export default function AddDeviceModal({
   // the Linux default where the CLI tab is already active on open (#1108).
   useEffect(() => {
     if (isOpen && activeTab === "cli" && !cliInitialized) {
-      void initializeCli(cliDeviceCount);
+      void initializeCli(cliDeviceCount, cliTtlMinutes);
     }
-  }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
+  }, [
+    isOpen,
+    activeTab,
+    cliInitialized,
+    cliDeviceCount,
+    cliTtlMinutes,
+    initializeCli,
+  ]);
 
   const handleTabChange = (tab: "installer" | "cli") => {
     setActiveTab(tab);
@@ -715,14 +770,11 @@ export default function AddDeviceModal({
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     data-testid="link-ttl"
                   >
-                    <option value={60}>{t("addDeviceModal.n1Hour")}</option>
-                    <option value={1440}>{t("addDeviceModal.n24Hours")}</option>
-                    <option value={10080}>{t("addDeviceModal.n7Days")}</option>
-                    <option value={43200}>{t("addDeviceModal.n30Days")}</option>
-                    <option value={129600}>
-                      {t("addDeviceModal.n90Days")}
-                    </option>
-                    <option value={525600}>{t("addDeviceModal.n1Year")}</option>
+                    {TTL_OPTIONS.map(({ minutes, labelKey }) => (
+                      <option key={minutes} value={minutes}>
+                        {t(labelKey)}
+                      </option>
+                    ))}
                   </select>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t(
@@ -938,7 +990,7 @@ export default function AddDeviceModal({
                     <button
                       type="button"
                       onClick={() => {
-                        void initializeCli(cliDeviceCount);
+                        void initializeCli(cliDeviceCount, cliTtlMinutes);
                       }}
                       className="ml-2 underline hover:no-underline"
                     >
@@ -980,9 +1032,39 @@ export default function AddDeviceModal({
                           className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
                         />
                       </div>
+                      {/* #2777: the CLI path's whole point is a command pasted
+                          into a GPO/RMM script or golden image that runs later,
+                          so the 60-minute server default was unusable and,
+                          before this control existed, unchangeable. */}
+                      <div>
+                        <label
+                          htmlFor="cli-token-ttl"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          {t("addDeviceModal.tokenExpiresIn")}
+                        </label>
+                        <select
+                          id="cli-token-ttl"
+                          value={cliTtlMinutes}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n)) setCliTtlMinutes(n);
+                          }}
+                          className="rounded-md border bg-background px-2 py-1 text-sm"
+                          data-testid="cli-token-ttl"
+                        >
+                          {TTL_OPTIONS.map(({ minutes, labelKey }) => (
+                            <option key={minutes} value={minutes}>
+                              {t(labelKey)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => regenerateCliToken(cliDeviceCount)}
+                        onClick={() =>
+                          regenerateCliToken(cliDeviceCount, cliTtlMinutes)
+                        }
                         className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
                         {t("addDeviceModal.generateNewToken")}{" "}
@@ -995,6 +1077,21 @@ export default function AddDeviceModal({
                           : `Valid for ${tokenMaxUsage ?? cliDeviceCount} device enrollments.`}
                       </p>
                     )}
+                    {/* The token in the box above was already minted, so a
+                        later expiry change does not apply to it. Say so
+                        explicitly rather than letting the step-3 expiry line
+                        quietly contradict the select — that mismatch is the
+                        exact complaint behind #2775. */}
+                    {onboardingToken &&
+                      cliTokenTtlMinutes !== null &&
+                      cliTokenTtlMinutes !== cliTtlMinutes && (
+                        <p
+                          className="w-full text-xs text-amber-600"
+                          data-testid="cli-token-ttl-pending"
+                        >
+                          {t("addDeviceModal.generateNewTokenToApplyExpiry")}
+                        </p>
+                      )}
                   </div>
                 )}
               </div>

@@ -375,8 +375,14 @@ describe('AddDeviceModal', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/devices/onboarding-token',
-        // #1108: the request now carries a device count → maxUsage.
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 1 }) })
+        // #1108: the request carries a device count → maxUsage.
+        // #2777: …and the selected expiry, plus the content-type the API's
+        // json validator needs in order to see the body at all.
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ count: 1, ttlMinutes: 1440 }),
+        })
       );
     });
 
@@ -435,7 +441,10 @@ describe('AddDeviceModal', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
         '/devices/onboarding-token',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 5 }) })
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ count: 5, ttlMinutes: 1440 }),
+        })
       );
     });
 
@@ -466,5 +475,97 @@ describe('AddDeviceModal', () => {
     expect(screen.getByText(/expires in about 1 hour/)).toBeDefined();
     // …and the old misleading hard-coded string is gone.
     expect(screen.queryByText(/expires in 24 hours/)).toBeNull();
+  });
+
+  // --- #2777: CLI-tab expiry control -------------------------------------
+
+  const openCliTab = async (payload: Record<string, unknown> = {}) => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-cli',
+        maxUsage: 1,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        ...payload,
+      })
+    );
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+    await waitFor(() => {
+      expect(screen.getByText('token-cli')).toBeDefined();
+    });
+  };
+
+  it('renders an expiry control on the CLI tab defaulting to 24 hours (#2777)', async () => {
+    await openCliTab();
+
+    const select = screen.getByTestId('cli-token-ttl') as HTMLSelectElement;
+    // Before #2777 there was no control at all and every CLI token silently
+    // took the server's 60-minute default.
+    expect(select.value).toBe('1440');
+    expect(
+      Array.from(select.options).map((o) => o.value)
+    ).toEqual(['60', '1440', '10080', '43200', '129600', '525600']);
+  });
+
+  it('sends the selected expiry when the CLI token is regenerated (#2777)', async () => {
+    await openCliTab();
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-30d',
+        maxUsage: 1,
+        expiresAt: new Date(Date.now() + 43_200 * 60_000).toISOString(),
+      })
+    );
+
+    fireEvent.change(screen.getByTestId('cli-token-ttl'), {
+      target: { value: '43200' },
+    });
+    fireEvent.click(screen.getByText('Generate new token'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
+        '/devices/onboarding-token',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ count: 1, ttlMinutes: 43200 }),
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('token-30d')).toBeDefined();
+    });
+  });
+
+  it('flags a pending expiry change until the token is regenerated (#2777)', async () => {
+    await openCliTab();
+
+    // Freshly minted at the selected TTL → nothing pending.
+    expect(screen.queryByTestId('cli-token-ttl-pending')).toBeNull();
+
+    // Changing the select does NOT retroactively re-expire the token already
+    // shown, so the mismatch has to be called out rather than left to the
+    // step-3 expiry line to silently contradict (#2775's complaint).
+    fireEvent.change(screen.getByTestId('cli-token-ttl'), {
+      target: { value: '10080' },
+    });
+    expect(screen.getByTestId('cli-token-ttl-pending')).toBeDefined();
+
+    // Regenerating at the new TTL clears the warning.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        token: 'token-7d',
+        maxUsage: 1,
+        expiresAt: new Date(Date.now() + 10_080 * 60_000).toISOString(),
+      })
+    );
+    fireEvent.click(screen.getByText('Generate new token'));
+
+    await waitFor(() => {
+      expect(screen.getByText('token-7d')).toBeDefined();
+    });
+    expect(screen.queryByTestId('cli-token-ttl-pending')).toBeNull();
   });
 });

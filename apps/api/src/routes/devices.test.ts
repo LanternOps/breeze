@@ -303,6 +303,32 @@ describe('device routes', () => {
       expect(body.enrollmentSecret).toBe('global-secret');
     });
 
+    // Compat guard for the #2777 zValidator: Hono's json validator leaves the
+    // parsed body as `{}` when there is no application/json content-type, and
+    // every field is optional — so a bodyless POST must still succeed rather
+    // than 400. apps/web/src/components/setup/EnrollDeviceStep.tsx is exactly
+    // such a caller.
+    it('accepts a bodyless POST with no content-type (#2777 regression)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).token).toMatch(/^enroll_/);
+    });
+
     it('defaults to a single-use token when no count is supplied (#1108)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
       const valuesMock = vi.fn().mockResolvedValue(undefined);
@@ -350,17 +376,13 @@ describe('device routes', () => {
       expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 5 }));
     });
 
-    it('clamps an out-of-range count to the allowed bounds (#1108)', async () => {
+    // #2777: the endpoint now runs onboardingTokenSchema. Out-of-range and
+    // non-integer values are REJECTED rather than silently clamped/floored —
+    // silent coercion is what let the web CLI tab sit on a stuck 60-minute
+    // token with no signal that the field was being ignored. Bounds mirror the
+    // enrollment-keys installer routes (1..1000 uses, 1..525_600 minutes).
+    it('rejects an out-of-range count instead of silently clamping it (#2777)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
-      const valuesMock = vi.fn().mockResolvedValue(undefined);
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
-          })
-        })
-      } as any);
-      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
 
       const res = await app.request('/devices/onboarding-token', {
         method: 'POST',
@@ -368,15 +390,31 @@ describe('device routes', () => {
         body: JSON.stringify({ count: 999999 })
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.maxUsage).toBe(1000);
-      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 1000 }));
+      expect(res.status).toBe(400);
+      // No key is minted when validation fails.
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
-    it('floors a zero/negative/garbage count to a single use (#1108)', async () => {
+    it('rejects a zero/negative/garbage/non-integer count (#2777)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
-      for (const badCount of [0, -5, 'abc']) {
+      for (const badCount of [0, -5, 'abc', 1.5, null]) {
+        const res = await app.request('/devices/onboarding-token', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count: badCount })
+        });
+
+        expect(res.status, `count=${String(badCount)} should be rejected`).toBe(400);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('accepts the inclusive count/ttlMinutes boundaries (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      for (const body of [
+        { count: 1, ttlMinutes: 1 },
+        { count: 1000, ttlMinutes: 525_600 }
+      ]) {
         const valuesMock = vi.fn().mockResolvedValue(undefined);
         vi.mocked(db.select).mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -390,14 +428,29 @@ describe('device routes', () => {
         const res = await app.request('/devices/onboarding-token', {
           method: 'POST',
           headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: badCount })
+          body: JSON.stringify(body)
         });
 
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        expect(body.maxUsage).toBe(1);
-        expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ maxUsage: 1 }));
+        expect(res.status, `${JSON.stringify(body)} should be accepted`).toBe(200);
+        expect(valuesMock).toHaveBeenCalledWith(
+          expect.objectContaining({ maxUsage: body.count })
+        );
       }
+    });
+
+    // #945's lesson applied here: an unknown key must 400 rather than be
+    // dropped while the response reports the default the caller never asked for.
+    it('rejects unknown body keys (#2777, cf. #945)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxUses: 5, ttlMins: 1440 })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('defaults the token TTL to 60 minutes and honors a supplied ttlMinutes (#1108)', async () => {
@@ -442,15 +495,67 @@ describe('device routes', () => {
       expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(1439);
       expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(1441);
 
-      // Over-cap → clamped to 365 days.
-      valuesMock = captureExpiry();
+      // Over-cap → rejected outright (#2777). Previously this was silently
+      // clamped to 525_600, which meant the caller could not distinguish
+      // "you got what you asked for" from "we quietly substituted something
+      // else" — the same blindness that hid the CLI tab's missing field.
       res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlMinutes: 99_999_999 })
       });
-      expect(res.status).toBe(200);
-      expect(expiryMinutesFrom(valuesMock)).toBe(525_600);
+      expect(res.status).toBe(400);
+    });
+
+    // The onboarding token is an enrollment credential, so its lifetime cannot
+    // be dictated by the client. The ceiling is server-side and absolute; this
+    // pins it against the enrollment-keys routes' MAX_TTL_MINUTES (#2777).
+    it('caps the requested TTL server-side at 365 days (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      for (const ttlMinutes of [525_601, 1_000_000, Number.MAX_SAFE_INTEGER]) {
+        const res = await app.request('/devices/onboarding-token', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ttlMinutes })
+        });
+        expect(res.status, `ttlMinutes=${ttlMinutes} should be rejected`).toBe(400);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // A misconfigured ENROLLMENT_KEY_DEFAULT_TTL_MINUTES must not be able to
+    // mint an already-expired (or absurdly long-lived) key on the bodyless
+    // path, where no client value is available to override it (#2777).
+    it('clamps a misconfigured ENROLLMENT_KEY_DEFAULT_TTL_MINUTES into range (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      const run = async (envValue: string) => {
+        vi.stubEnv('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', envValue);
+        const valuesMock = vi.fn().mockResolvedValue(undefined);
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+            })
+          })
+        } as any);
+        vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+        const res = await app.request('/devices/onboarding-token', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        const { expiresAt } = valuesMock.mock.calls[0]![0] as { expiresAt: Date };
+        return Math.round((expiresAt.getTime() - Date.now()) / 60000);
+      };
+
+      // 0 / negative would otherwise mint a key that is already dead on arrival.
+      expect(await run('0')).toBe(1);
+      expect(await run('-120')).toBe(1);
+      // Above the ceiling is pulled back to it.
+      expect(await run('99999999')).toBe(525_600);
     });
   });
 
