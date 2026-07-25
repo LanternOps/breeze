@@ -1,6 +1,6 @@
 ---
 title: Antivirus Exceptions
-description: Required antivirus and security software exclusions for the Breeze agent when using unsigned binaries.
+description: Antivirus and security software exclusions for the Breeze agent, plus how to report a false positive on a signed binary.
 sidebar:
   order: 6
   label: Antivirus Exceptions
@@ -8,10 +8,14 @@ sidebar:
 
 import { Tabs, TabItem, Steps, Aside } from '@astrojs/starlight/components';
 
-When deploying the Breeze agent **without code-signed binaries**, endpoint protection software may flag, quarantine, or block the agent. This guide covers the exclusions needed for each platform.
+Endpoint protection software may flag, quarantine, or block the Breeze agent. This guide covers the exclusions needed for each platform, and what to do when a *signed* binary is flagged.
 
 <Aside type="caution">
-  Unsigned binaries are common during development, self-hosted builds, and early deployments. For production fleets, consider signing your binaries to avoid the need for broad AV exclusions. See [Building from Source](/agents/building/) for build instructions.
+  Unsigned binaries are common during development, self-hosted builds, and early deployments, and are the most common cause of AV interference. For production fleets, consider signing your binaries to avoid the need for broad AV exclusions. See [Building from Source](/agents/building/) for build instructions.
+</Aside>
+
+<Aside type="note">
+  Agent binaries from official Breeze releases **are** code-signed. If one of those is being quarantined, exclusions are a workaround rather than the fix. See [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) below.
 </Aside>
 
 ## Why Exclusions Are Needed
@@ -25,6 +29,54 @@ The Breeze agent is a single Go binary that:
 - Reads **hardware and software inventory** from the system
 
 These behaviors overlap with patterns that heuristic-based antivirus engines flag as suspicious. Without code signing, there is no publisher reputation to offset the heuristic score.
+
+## Signed Binaries Flagged as Malware
+
+Agent binaries published in official Breeze releases are Authenticode-signed on Windows and codesigned/notarized on macOS. A signed binary being quarantined is a **false positive**, and adding an exclusion treats the symptom rather than the cause.
+
+### Step 1: Confirm the binary is actually signed
+
+Do this before anything else. A binary from a development build, a fork, or a self-hosted build pipeline will not be signed, and the rest of this section does not apply to it.
+
+```powershell
+# Windows
+Get-AuthenticodeSignature "C:\Program Files\Breeze\breeze-agent.exe" | Format-List Status, SignerCertificate
+```
+
+```bash
+# macOS
+codesign --verify --deep --strict --verbose=2 /usr/local/bin/breeze-agent
+spctl --assess --type execute --verbose /usr/local/bin/breeze-agent
+```
+
+If Windows reports `NotSigned`, or macOS reports the binary is not signed, that binary did not come from an official release. Reinstall from an official release before pursuing a false-positive report.
+
+### Step 2: Read the detection name
+
+Machine-learning verdicts end in `!ml` (for example `Trojan:Script/Wacatac.B!ml`). These are heuristic scores, not signature matches, and are the detection class most likely to be a false positive on a legitimate RMM agent.
+
+Several normal agent behaviors contribute to that score: writing PowerShell scripts to a temporary directory and executing them with `-ExecutionPolicy Bypass`, downloading a replacement binary during self-update, and running as SYSTEM while spawning processes into user sessions. Every remote management tool does some version of this.
+
+### Step 3: Report the false positive to the vendor
+
+Reporting it is what actually fixes the problem, for you and for everyone else running the same version. Include the detection name, the agent version, and the file hash.
+
+| Vendor | Submission channel |
+|---|---|
+| Microsoft Defender | [Microsoft Security Intelligence submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission) — choose **Software developer** and note that the file is signed |
+| CrowdStrike Falcon | Support portal detection review, or ask your CS rep for a certificate-based exclusion |
+| SentinelOne | Support ticket referencing the signing certificate |
+| Other vendors | Most maintain a "submit a false positive" form; search for the vendor name plus "false positive submission" |
+
+Please also open an issue on the [Breeze repository](https://github.com/LanternOps/breeze/issues) with the detection name and agent version, so the same submission can be made centrally.
+
+### Step 4: Add a temporary exclusion
+
+Use the platform sections below to unblock the fleet while the vendor submission is processed, then remove the exclusion once the detection is retired.
+
+<Aside type="caution">
+  **Attack Surface Reduction (ASR) rules do not honour standard AV exclusions.** If Defender is blocking the agent through an ASR rule rather than real-time protection, the exclusions in this guide will have no effect. Check the Windows Defender operational event log for ASR block events (event IDs 1121 and 1122) and configure a per-rule exclusion instead. The rules most likely to fire are "Block process creations originating from PSExec and WMI commands" and "Block credential stealing from LSASS".
+</Aside>
 
 ## Paths to Exclude
 
@@ -293,7 +345,7 @@ Common symptoms of AV interference:
 
 | Symptom | Likely Cause |
 |---|---|
-| Agent binary deleted or moved to quarantine | Real-time scan flagging the unsigned binary |
+| Agent binary deleted or moved to quarantine | Real-time scan flagging the binary — if it is signed, see [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) |
 | Agent service starts then stops immediately | On-execution scan blocking the process |
 | Intermittent WebSocket disconnections | Network inspection blocking persistent connections |
 | Script execution failures | Behavior-based detection blocking child processes |
