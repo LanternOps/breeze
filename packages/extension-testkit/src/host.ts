@@ -7,8 +7,14 @@
  *   `{ authorization: 'Bearer <token>' }` or `{ 'x-api-key': '<key>' }`.
  *   Header auth avoids driving the rate-limited login flow to mint a cookie.
  *
- * The union requires at least one of the two. **Every** supplied secret value is
- * redacted from observations and errors, whichever shape it arrived in.
+ * Every value in `headers` is treated as a secret: **every** supplied credential
+ * is redacted from observations and errors, whichever shape it arrived in. Put
+ * non-sensitive headers here too if you must, but note they are redacted from
+ * the report as well (see `MIN_SECRET_LENGTH` for the short-value carve-out).
+ *
+ * The union requires one of the two *properties* to be present — it cannot rule
+ * out `{ headers: {} }` or `{ cookie: '' }`, which supply no actual credential.
+ * `probeStockHost` throws on those rather than probing anonymously.
  */
 export type StockHostProbeAuth =
   | { cookie: string; headers?: Record<string, string> }
@@ -43,35 +49,85 @@ export interface HostProbeResult {
   observations: ProbeObservation[];
 }
 
+/**
+ * `fetch` reports connection, TLS and DNS failures as a bare `fetch failed`,
+ * stranding the actionable reason (`ECONNREFUSED`, cert mismatch, `ENOTFOUND`)
+ * on `error.cause`. Fold it in, or an unreachable host observes as one useless
+ * word. The result still goes through `redact` before it reaches a caller.
+ */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  const { cause } = error;
+  const causeText = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  if (!causeText || error.message.includes(causeText)) return error.message;
+  return `${error.message}: ${causeText}`;
 }
 
-/** Below this length a derived fragment is too generic to blanket-replace. */
-const MIN_DERIVED_SECRET_LENGTH = 8;
+/**
+ * Redaction is blanket substring replacement, so a short value is not safe to
+ * replace: scrubbing `1` would rewrite the HTTP status codes, digests and URLs
+ * that are this probe's entire diagnostic product (a stray `x-tenant: 1` header
+ * would turn `-> 401` into `-> 40[redacted]`). Nothing this short is a credible
+ * credential — every session cookie, Bearer token and API key is far longer —
+ * so the floor costs no real protection. Applies to supplied and derived values
+ * alike.
+ */
+const MIN_SECRET_LENGTH = 8;
 
 /**
- * Every secret string that must never appear in output: the cookie, each header
- * value, and — for scheme-prefixed values like `Bearer <token>` or
- * `Basic <base64>` — the bare credential after the scheme, since a host that
- * echoes an invalid token back usually echoes it without the scheme. Sorted
- * longest-first so the most specific match is replaced before its substrings.
+ * Auth schemes whose credential is worth registering on its own. Deriving from
+ * *any* spaced value would make ordinary headers into secrets — a
+ * `user-agent: probe/1.0 conformance-suite` would blanket-replace
+ * `conformance-suite` throughout the report.
  */
-export function collectProbeSecrets(auth: StockHostProbeAuth): string[] {
+const AUTH_SCHEMES = new Set(['bearer', 'basic', 'token', 'digest']);
+
+/**
+ * Every secret string that must never appear in output, longest-first so the
+ * most specific match is replaced before its own substrings:
+ *
+ * - the cookie string, plus each `name=value` pair and each pair's value — a
+ *   host rejecting a session echoes back just the offending pair, not the whole
+ *   multi-pair string;
+ * - each header value, plus — for scheme-prefixed values like `Bearer <token>`
+ *   — the bare credential after the scheme, since a host that rejects a token
+ *   usually echoes it without the scheme.
+ *
+ * Values below {@link MIN_SECRET_LENGTH} are skipped. Non-string header values
+ * are ignored (this package is consumable from plain JS).
+ *
+ * @internal Exported for the co-located tests; not part of the package API.
+ */
+export function collectProbeSecrets(auth: StockHostProbeAuth): readonly string[] {
   const secrets = new Set<string>();
-  const add = (value: string | undefined): void => {
-    // Empty values must never be added: ''.split('') would replace every char.
-    if (value) secrets.add(value);
+  // An empty value must never be added — ''.split('') would put a marker
+  // between every character — which the length floor already precludes.
+  const add = (value: string): void => {
+    if (value.length >= MIN_SECRET_LENGTH) secrets.add(value);
   };
 
-  add(auth.cookie);
+  if (typeof auth.cookie === 'string' && auth.cookie.trim()) {
+    add(auth.cookie);
+    for (const pair of auth.cookie.split(';')) {
+      const trimmed = pair.trim();
+      add(trimmed);
+      const nameEnd = trimmed.indexOf('=');
+      if (nameEnd > 0) add(trimmed.slice(nameEnd + 1).trim());
+    }
+  }
+
   for (const value of Object.values(auth.headers ?? {})) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
     add(value);
+    add(trimmed);
     // Split on the first space only — no regex (CodeQL js/polynomial-redos).
-    const schemeEnd = value.indexOf(' ');
-    if (schemeEnd > 0) {
-      const credential = value.slice(schemeEnd + 1).trim();
-      if (credential.length >= MIN_DERIVED_SECRET_LENGTH) add(credential);
+    // Derive off the *trimmed* value: a leading space would otherwise put the
+    // scheme at index 0 and silently skip derivation.
+    const schemeEnd = trimmed.indexOf(' ');
+    if (schemeEnd > 0 && AUTH_SCHEMES.has(trimmed.slice(0, schemeEnd).toLowerCase())) {
+      add(trimmed.slice(schemeEnd + 1).trim());
     }
   }
 
@@ -85,6 +141,11 @@ export function collectProbeSecrets(auth: StockHostProbeAuth): string[] {
  * unauthenticated requests. Auth is a session cookie, auth headers (Bearer /
  * API key), or both. Every supplied secret value is redacted from every
  * observation and error — none is ever logged or returned in the clear.
+ *
+ * A failing probe is reported as an `ok: false` observation, never thrown.
+ *
+ * @throws if `auth` carries no usable credential — a caller precondition, not a
+ * host observation, so it must not be reported as a host conformance failure.
  */
 export async function probeStockHost(options: StockHostProbeOptions): Promise<HostProbeResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -92,10 +153,28 @@ export async function probeStockHost(options: StockHostProbeOptions): Promise<Ho
   // on adversarial input (CodeQL js/polynomial-redos).
   let base = options.baseUrl;
   while (base.endsWith('/')) base = base.slice(0, -1);
-  // Header auth and cookie auth compose; an explicit `cookie` wins over a
-  // `cookie` key inside `headers`.
-  const authedHeaders: Record<string, string> = { ...options.auth.headers };
-  if (options.auth.cookie) authedHeaders.cookie = options.auth.cookie;
+  // Header auth and cookie auth compose. Header names are case-insensitive, so
+  // normalise before merging: without this, `headers: { Cookie }` plus an
+  // explicit `cookie` survives as two keys that `Headers` joins into one
+  // `cookie: "stale; fresh"` value, sending the stale credential first.
+  // Blank values are dropped — they authenticate nothing.
+  const authedHeaders: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options.auth.headers ?? {})) {
+    if (typeof value === 'string' && value.trim()) authedHeaders[name.toLowerCase()] = value;
+  }
+  if (typeof options.auth.cookie === 'string' && options.auth.cookie.trim()) {
+    authedHeaders.cookie = options.auth.cookie;
+  }
+  // The union enforces that an auth *property* is present, but `{ headers: {} }`
+  // and `{ cookie: '' }` satisfy it while supplying nothing. Probing anonymously
+  // would report the authed routes as conformance failures when the real fault
+  // is missing credentials — so fail on the caller's precondition instead.
+  if (Object.keys(authedHeaders).length === 0) {
+    throw new Error(
+      'probeStockHost: `auth` supplied no usable credentials — pass a non-empty `cookie` '
+      + 'or at least one non-blank header value.',
+    );
+  }
   const authedInit: RequestInit = { headers: authedHeaders };
   const member = options.assetMember ?? 'index.html';
 
