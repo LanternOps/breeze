@@ -150,6 +150,34 @@ export const OAUTH_AUTH_EPOCH_ENFORCE_AFTER = parseOAuthAuthEpochEnforceAfter(
     nodeEnv: process.env.NODE_ENV,
   },
 );
+
+export type EventPermissionEpochMode = 'compat' | 'enforce';
+
+export function parseEventPermissionEpochMode(
+  raw: string | undefined,
+  nodeEnv: string | undefined,
+): EventPermissionEpochMode {
+  const value = raw?.trim().toLowerCase();
+  const strictEnvironment = nodeEnv === 'production' || nodeEnv === 'staging';
+  if (!value) {
+    if (strictEnvironment) {
+      throw new Error(
+        'EVENT_PERMISSION_EPOCH_MODE is required in production and staging',
+      );
+    }
+    return 'compat';
+  }
+  if (value !== 'compat' && value !== 'enforce') {
+    throw new Error('EVENT_PERMISSION_EPOCH_MODE must be compat or enforce');
+  }
+  return value;
+}
+
+export const EVENT_PERMISSION_EPOCH_MODE = parseEventPermissionEpochMode(
+  process.env.EVENT_PERMISSION_EPOCH_MODE,
+  process.env.NODE_ENV,
+);
+
 // Optional override for the consent UI base. Defaults to '' (relative path)
 // — in prod the API and web share the same origin behind Caddy, so a
 // relative redirect works. In local dev where API and web run on different

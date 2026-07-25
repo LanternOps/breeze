@@ -12,6 +12,7 @@ type CallableDelegate = (...args: any[]) => any;
 
 const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(),
+  writeMarker: vi.fn<CallableDelegate>(),
   revokeJti: vi.fn<CallableDelegate>(),
   revokeGrant: vi.fn<CallableDelegate>(),
   isJtiRevoked: vi.fn(),
@@ -31,6 +32,13 @@ vi.mock('../config/env', () => Object.defineProperty({
   get: () => configState.privateJwks,
 }));
 vi.mock('../oauth/provider', () => ({ getProvider: mocks.getProvider }));
+vi.mock('../db', () => ({
+  db: {},
+  withDbAccessContext: vi.fn(async (_context: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../oauth/revocationRetry', () => ({
+  writeOAuthRevocationMarkerDurably: mocks.writeMarker,
+}));
 vi.mock('../oauth/revocationCache', () => ({
   revokeJti: mocks.revokeJti,
   revokeGrant: mocks.revokeGrant,
@@ -119,6 +127,17 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     configState.privateJwks = JSON.stringify({ keys: [privateJwk] });
     mocks.getProvider.mockReset();
     mocks.getProvider.mockRejectedValue(new Error('provider sentinel — bridge reached'));
+    mocks.writeMarker.mockReset();
+    mocks.writeMarker.mockImplementation(async (_tx, input: { markerType: 'grant' | 'jti'; markerId: string; expiresAt: Date }) => {
+      try {
+        const ttl = Math.max(Math.ceil((input.expiresAt.getTime() - Date.now()) / 1000), 1);
+        if (input.markerType === 'grant') await mocks.revokeGrant(input.markerId, ttl);
+        else await mocks.revokeJti(input.markerId, ttl);
+        return { status: 'written' };
+      } catch {
+        return { status: 'retry_queued', errorCode: 'redis_unavailable' };
+      }
+    });
     mocks.revokeJti.mockReset();
     mocks.revokeJti.mockResolvedValue(undefined);
     mocks.revokeGrant.mockReset();
@@ -198,7 +217,7 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     const token = await signTestJwt(
       h.privateJwk,
       h.kid,
-      { client_id: 'client-A', jti, grant_id: grantId },
+      { sub: '11111111-1111-4111-8111-111111111111', client_id: 'client-A', jti, grant_id: grantId },
       { issuer: ISSUER, audience: AUDIENCE }
     );
 
@@ -219,7 +238,12 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     const token = await signTestJwt(
       h.privateJwk,
       h.kid,
-      { client_id: 'client-A', jti: randomUUID(), grant_id: randomUUID() },
+      {
+        sub: '11111111-1111-4111-8111-111111111111',
+        client_id: 'client-A',
+        jti: randomUUID(),
+        grant_id: randomUUID(),
+      },
       { issuer: ISSUER, audience: AUDIENCE }
     );
 
@@ -228,6 +252,9 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     expect(res.status).toBe(503);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe('server_error');
+    // The sibling grant is attempted even after the JTI write fails so every
+    // failed marker can be represented in the same durable transaction.
+    expect(mocks.writeMarker).toHaveBeenCalledTimes(2);
   });
 
   it('returns 503 when the GRANT cache write fails (after JTI succeeded)', async () => {
@@ -239,13 +266,19 @@ describe('POST /oauth/token/revocation pre-handler — JWT signature gating', ()
     const token = await signTestJwt(
       h.privateJwk,
       h.kid,
-      { client_id: 'client-A', jti: randomUUID(), grant_id: randomUUID() },
+      {
+        sub: '11111111-1111-4111-8111-111111111111',
+        client_id: 'client-A',
+        jti: randomUUID(),
+        grant_id: randomUUID(),
+      },
       { issuer: ISSUER, audience: AUDIENCE }
     );
 
     const res = await post(h.app, { token, client_id: 'client-A' });
 
     expect(res.status).toBe(503);
+    expect(mocks.writeMarker).toHaveBeenCalledTimes(2);
   });
 
   it('rejects oversized revocation bodies before provider bridge or cache writes', async () => {

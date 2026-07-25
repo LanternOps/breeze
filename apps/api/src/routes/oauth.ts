@@ -5,7 +5,8 @@ import { createLocalJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { getProvider } from '../oauth/provider';
 import { MCP_OAUTH_ENABLED, OAUTH_DCR_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
 import { loadPublicJwks } from '../oauth/keys';
-import { revokeGrant, revokeJti } from '../oauth/revocationCache';
+import { db, withDbAccessContext } from '../db';
+import { writeOAuthRevocationMarkerDurably } from '../oauth/revocationRetry';
 import { normalizeFormEncodedResource, normalizeResourceParams } from '../oauth/resourceIndicators';
 import { ERROR_IDS, logOauthDebug, logOauthError } from '../oauth/log';
 // Import getRedis/rateLimiter from their specific modules (NOT the services
@@ -606,41 +607,59 @@ if (MCP_OAUTH_ENABLED) {
     const jti = typeof payload.jti === 'string' ? payload.jti : null;
     const exp = typeof payload.exp === 'number' ? payload.exp : null;
     if (!jti || !exp) return next();
-    const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
-
-    // Cache writes MUST propagate failures as 5xx — silently swallowing a
-    // Redis-down condition would tell the client "revoked" while the bearer
-    // middleware (which fails closed on Redis error) would still accept the
-    // token until natural expiry, defeating revocation. Better to surface
-    // the outage so the caller retries.
-    try {
-      await revokeJti(jti, ttl);
-    } catch (err) {
+    const userId = typeof payload.sub === 'string' && payload.sub.length > 0
+      ? payload.sub
+      : null;
+    if (!userId) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'Revocation jti cache write failed in pre-handler',
-        err,
-        context: { jti },
+        message: 'Revocation JWT missing authoritative subject owner',
       });
       return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
     }
-    // Revoking an access JWT should also kill every sibling access token
-    // minted from the same grant. Without this, a client that holds two
-    // active access tokens for the same grant (e.g. one in the helper,
-    // one in a worker) could continue using the un-revoked one.
-    const grantId = (payload as { grant_id?: unknown }).grant_id;
-    if (typeof grantId === 'string' && grantId.length > 0) {
-      try {
-        await revokeGrant(grantId, ttl);
-      } catch (err) {
-        logOauthError({
-          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'Revocation grant cache write failed in pre-handler',
-          err,
-          context: { grantId },
+    const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
+    const expiresAt = new Date((Math.floor(Date.now() / 1000) + ttl) * 1000);
+    let retryQueued = false;
+    try {
+      await withDbAccessContext({
+        scope: 'organization',
+        orgId: null,
+        accessibleOrgIds: [],
+        accessiblePartnerIds: [],
+        userId,
+        currentPartnerId: null,
+        label: 'oauth.revocation',
+      }, async () => {
+        const jtiResult = await writeOAuthRevocationMarkerDurably(db, {
+          userId,
+          markerType: 'jti',
+          markerId: jti,
+          expiresAt,
         });
-        return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
-      }
+        retryQueued ||= jtiResult.status === 'retry_queued';
+
+        const grantId = payload.grant_id;
+        if (typeof grantId === 'string' && grantId.length > 0) {
+          const grantResult = await writeOAuthRevocationMarkerDurably(db, {
+            userId,
+            markerType: 'grant',
+            markerId: grantId,
+            expiresAt,
+          });
+          retryQueued ||= grantResult.status === 'retry_queued';
+        }
+      });
+    } catch (err) {
+      logOauthError({
+        errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
+        message: 'Durable revocation marker transaction failed in pre-handler',
+        err,
+        context: { markerTypes: typeof payload.grant_id === 'string' ? 2 : 1 },
+      });
+      return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
+    }
+    if (retryQueued) {
+      return c.json({ error: 'server_error', error_description: 'revocation cache unavailable' }, 503);
     }
     return c.body(null, 200);
   });

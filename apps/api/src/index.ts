@@ -184,6 +184,10 @@ import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/m
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import {
+  initializeOAuthRevocationRetryWorker,
+  shutdownOAuthRevocationRetryWorker,
+} from './jobs/oauthRevocationRetryWorker';
 import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
 import { initializeQuoteSendWorker, shutdownQuoteSendWorker } from './jobs/quoteSendQueue';
 import {
@@ -1220,6 +1224,7 @@ async function initializeWorkers(): Promise<void> {
     ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
     // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
     // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
     ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
@@ -1423,6 +1428,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownOAuthRevocationRetryWorker,
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,

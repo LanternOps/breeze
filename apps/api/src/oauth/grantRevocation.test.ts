@@ -5,7 +5,7 @@ import { revokeGrant, revokeJti } from './revocationCache';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts, revokeAllUserOauthArtifacts } from './grantRevocation';
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn(), update: vi.fn() },
+  db: { select: vi.fn(), update: vi.fn(), insert: vi.fn() },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -17,6 +17,7 @@ vi.mock('./revocationCache', () => ({
 
 const selectMock = vi.mocked(db.select);
 const updateMock = vi.mocked(db.update);
+const insertMock = vi.mocked(db.insert);
 const runOutsideDbContextMock = vi.mocked(runOutsideDbContext);
 const withSystemDbAccessContextMock = vi.mocked(withSystemDbAccessContext);
 const revokeJtiMock = vi.mocked(revokeJti);
@@ -48,13 +49,17 @@ describe('revokeAllUserOauthArtifacts', () => {
     // jti markers key on the token ROW id (Task 3 removes payload.jti), and
     // grants come from the authoritative oauth_grants select below.
     mockSelectRows([
-      { id: 'rt-1', expiresAt: futureExpiry },
-      { id: 'rt-2', expiresAt: futureExpiry },
-      { id: 'rt-3', expiresAt: futureExpiry },
+      { id: 'rt-1', userId, expiresAt: futureExpiry },
+      { id: 'rt-2', userId, expiresAt: futureExpiry },
+      { id: 'rt-3', userId, expiresAt: futureExpiry },
     ]);
     // Second select: grants (authoritative inventory, incl. a code-only grant-C
     // with no active refresh row).
-    mockSelectRows([{ id: 'grant-A' }, { id: 'grant-B' }, { id: 'grant-C' }]);
+    mockSelectRows([
+      { id: 'grant-A', accountId: userId },
+      { id: 'grant-B', accountId: userId },
+      { id: 'grant-C', accountId: userId },
+    ]);
 
     const { set } = mockUpdateChain();
 
@@ -85,7 +90,7 @@ describe('revokeAllUserOauthArtifacts', () => {
   it('handles user with no refresh tokens but existing grants', async () => {
     const userId = '22222222-2222-2222-2222-222222222222';
     mockSelectRows([]); // no refresh tokens
-    mockSelectRows([{ id: 'grant-X' }]);
+    mockSelectRows([{ id: 'grant-X', accountId: userId }]);
     mockUpdateChain();
 
     const result = await revokeAllUserOauthArtifacts(userId);
@@ -131,9 +136,13 @@ describe('revokeAllUserOauthArtifacts', () => {
 
   it('revokes partner-wide OAuth artifacts for tenant lifecycle changes', async () => {
     mockSelectRows([
-      { id: 'rt-partner', expiresAt: new Date(Date.now() + 60_000) },
+      {
+        id: 'rt-partner',
+        userId: '11111111-1111-4111-8111-111111111111',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
     ]);
-    mockSelectRows([{ id: 'grant-partner' }]);
+    mockSelectRows([{ id: 'grant-partner', accountId: '11111111-1111-4111-8111-111111111111' }]);
     const { set } = mockUpdateChain();
 
     const result = await revokeAllPartnerOauthArtifacts('66666666-6666-6666-8666-666666666666');
@@ -149,9 +158,13 @@ describe('revokeAllUserOauthArtifacts', () => {
 
   it('revokes org-wide OAuth artifacts for tenant lifecycle changes', async () => {
     mockSelectRows([
-      { id: 'rt-org', expiresAt: new Date(Date.now() + 60_000) },
+      {
+        id: 'rt-org',
+        userId: '11111111-1111-4111-8111-111111111111',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
     ]);
-    mockSelectRows([{ id: 'grant-org' }]);
+    mockSelectRows([{ id: 'grant-org', accountId: '11111111-1111-4111-8111-111111111111' }]);
     mockUpdateChain();
 
     const result = await revokeAllOrgOauthArtifacts('77777777-7777-7777-8777-777777777777');
@@ -161,27 +174,89 @@ describe('revokeAllUserOauthArtifacts', () => {
     expect(result.refreshTokensRevoked).toBe(1);
   });
 
-  it('propagates revokeJti cache failures', async () => {
+  it('commits a durable retry before propagating a jti marker failure', async () => {
     const userId = '44444444-4444-4444-4444-444444444444';
     mockSelectRows([
-      { id: 'rt-1', expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-1', userId, expiresAt: new Date(Date.now() + 60_000) },
     ]);
+    mockSelectRows([]);
+    let queuedUserId = '';
+    const returning = vi.fn(async () => [{ userId: queuedUserId }]);
+    const onConflictDoUpdate = vi.fn(() => ({ returning }));
+    const values = vi.fn((input: { userId: string }) => {
+      queuedUserId = input.userId;
+      return { onConflictDoUpdate };
+    });
+    insertMock.mockReturnValue({ values } as unknown as ReturnType<typeof db.insert>);
     mockUpdateChain();
     revokeJtiMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow(/redis down/);
+    await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      userId,
+      markerType: 'jti',
+      markerId: 'rt-1',
+    }));
+    expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
   });
 
-  it('propagates revokeGrant cache failures and does not stamp grant rows (fail closed)', async () => {
+  it('commits grant revocation and its durable retry before propagating failure', async () => {
     const userId = '55555555-5555-5555-5555-555555555555';
     mockSelectRows([]);
-    mockSelectRows([{ id: 'grant-X' }]);
+    mockSelectRows([{ id: 'grant-X', accountId: userId }]);
+    let queuedUserId = '';
+    const returning = vi.fn(async () => [{ userId: queuedUserId }]);
+    const onConflictDoUpdate = vi.fn(() => ({ returning }));
+    const values = vi.fn((input: { userId: string }) => {
+      queuedUserId = input.userId;
+      return { onConflictDoUpdate };
+    });
+    insertMock.mockReturnValue({ values } as unknown as ReturnType<typeof db.insert>);
     mockUpdateChain();
     revokeGrantMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow(/redis down/);
-    // A stamped-but-unmarked grant would look revoked in the DB while its
-    // in-flight access JWTs kept working — the stamp must not happen.
-    expect(updateMock).not.toHaveBeenCalledWith(oauthGrants);
+    await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      userId,
+      markerType: 'grant',
+      markerId: 'grant-X',
+    }));
+    expect(updateMock).toHaveBeenCalledWith(oauthGrants);
+  });
+
+  it('records every failed marker for its exact artifact owner before failing closed', async () => {
+    const initiatingUserId = '99999999-9999-4999-8999-999999999999';
+    const tokenOwner = '11111111-1111-4111-8111-111111111111';
+    const grantOwner = '22222222-2222-4222-8222-222222222222';
+    mockSelectRows([
+      { id: 'rt-failed', userId: tokenOwner, expiresAt: new Date(Date.now() + 60_000) },
+    ]);
+    mockSelectRows([
+      { id: 'grant-failed', accountId: grantOwner },
+    ]);
+    insertMock.mockImplementation((() => {
+      let queuedUserId = '';
+      const returning = vi.fn(async () => [{ userId: queuedUserId }]);
+      const onConflictDoUpdate = vi.fn(() => ({ returning }));
+      const values = vi.fn((input: { userId: string }) => {
+        queuedUserId = input.userId;
+        return { onConflictDoUpdate };
+      });
+      return { values };
+    }) as unknown as typeof db.insert);
+    mockUpdateChain();
+    revokeJtiMock.mockRejectedValueOnce(new Error('Redis unavailable'));
+    revokeGrantMock.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await expect(revokeAllUserOauthArtifacts(initiatingUserId)).rejects.toThrow();
+
+    const queued = insertMock.mock.results.map((result) => {
+      const values = (result.value as { values: ReturnType<typeof vi.fn> }).values;
+      return values.mock.calls[0]?.[0] as { userId?: string; markerId?: string };
+    });
+    expect(queued).toEqual(expect.arrayContaining([
+      expect.objectContaining({ userId: tokenOwner, markerId: 'rt-failed' }),
+      expect.objectContaining({ userId: grantOwner, markerId: 'grant-failed' }),
+    ]));
   });
 });
