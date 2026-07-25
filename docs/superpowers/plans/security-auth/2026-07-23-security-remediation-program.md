@@ -15,7 +15,7 @@
 - Start every execution branch from a freshly fetched `origin/main`; never implement from this documentation branch.
 - Use repository branch names from the registry below; never use an agent/tool/vendor prefix.
 - One wave owns one security boundary, PR, deployment gate, and rollback boundary.
-- Reserve migration order across concurrent branches as `2026-08-05-a` through `-f`: Wave 2
+- Reserve migration order across concurrent branches as `2026-08-06-a` through `-f`: Wave 2
   owns `a`, Wave 3 owns `b/c`, Wave 5 owns `d`, and Wave 6 owns `e/f`. Development may overlap,
   but migration-bearing PRs merge in that order. If `origin/main` advances past the reservation,
   stop and revise every affected plan centrally before writing SQL.
@@ -390,8 +390,8 @@ Execute the wave plan through migration, worker, edge identity, shared REST/WS b
 
 - [ ] **Step 2: Verify the reserved migration merge order**
 
-Confirm Wave 2 `2026-08-05-a-report-site-scope.sql` and Wave 3
-`2026-08-05-b-live-authorization.sql`/`2026-08-05-c-quote-response-capability.sql` are present on
+Confirm Wave 2 `2026-08-06-a-report-site-scope.sql` and Wave 3
+`2026-08-06-b-live-authorization.sql`/`2026-08-06-c-quote-response-capability.sql` are present on
 `origin/main`. If any is absent, keep Wave 5 green but unmerged.
 
 - [ ] **Step 3: Merge in non-blocking mode**

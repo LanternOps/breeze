@@ -23,7 +23,7 @@
 - Every report-definition list, template list, count, page, known-ID read, update, delete, and reauthorization lookup must apply the canonical parameterized definition-scope predicate in SQL before counting, ordering, limiting, offsetting, locking, reading, or mutating. Post-query definition filtering is forbidden.
 - Every run count, paginated run query, known-ID lookup, download lookup, and embedded `recentRuns` query must apply the same parameterized immutable run-scope predicate in SQL before counting, ordering, limiting, offsetting, or selecting result content. Post-query filtering is forbidden.
 - No report generator may have a permissive default branch for a new report type.
-- Reserved migration `2026-08-05-a-report-site-scope.sql` is additive, idempotent, forward-only, and safe while old API and worker instances still omit the new columns.
+- Reserved migration `2026-08-06-a-report-site-scope.sql` is additive, idempotent, forward-only, and safe while old API and worker instances still omit the new columns.
 - Before implementation, verify the reserved filename is unoccupied and sorts after the current highest migration. If either check fails, stop and revise the coordinated wave plans centrally; a worker must not invent or rename a migration.
 - Keep the existing `report_runs` parent-join RLS policy. Add a real cross-tenant and cross-site integration test; do not weaken forced RLS to solve application authorization.
 - Telemetry may contain scope kind, version, count, and a bounded fingerprint; it must not contain report output, attachment content, user email, or site names.
@@ -265,7 +265,7 @@ git commit -m "fix(reports): define canonical site scope"
 
 **Files:**
 - Modify: `apps/api/src/db/schema/reports.ts`
-- Create: `apps/api/migrations/2026-08-05-a-report-site-scope.sql`
+- Create: `apps/api/migrations/2026-08-06-a-report-site-scope.sql`
 - Modify: `apps/api/src/db/autoMigrate.test.ts`
 - Modify: `apps/api/src/db/schema/reports.test.ts`
 
@@ -289,15 +289,15 @@ executionScopeCapturedAt
 First run:
 
 ```bash
-test ! -e apps/api/migrations/2026-08-05-a-report-site-scope.sql
+test ! -e apps/api/migrations/2026-08-06-a-report-site-scope.sql
 wave2_latest_migration="$(find apps/api/migrations -maxdepth 1 -type f -name '*.sql' -print | LC_ALL=C sort | tail -1)"
-wave2_reserved_migration="apps/api/migrations/2026-08-05-a-report-site-scope.sql"
+wave2_reserved_migration="apps/api/migrations/2026-08-06-a-report-site-scope.sql"
 test "$(printf '%s\n%s\n' "$wave2_latest_migration" "$wave2_reserved_migration" | LC_ALL=C sort | tail -1)" = "$wave2_reserved_migration"
 ```
 
 Expected: both commands exit 0. If either fails, stop and revise the reserved sequence in the central remediation plans; do not choose a new filename locally.
 
-Then extend migration ordering coverage so `2026-08-05-a-report-site-scope.sql` is discovered once in lexical order.
+Then extend migration ordering coverage so `2026-08-06-a-report-site-scope.sql` is discovered once in lexical order.
 
 - [ ] **Step 2: Prove the assertions fail**
 
@@ -339,7 +339,7 @@ Expected: PASS; the migration checker reports no invalid transaction block or na
 - [ ] **Step 6: Commit the expansion**
 
 ```bash
-git add apps/api/src/db/schema/reports.ts apps/api/src/db/schema/reports.test.ts apps/api/src/db/autoMigrate.test.ts apps/api/migrations/2026-08-05-a-report-site-scope.sql
+git add apps/api/src/db/schema/reports.ts apps/api/src/db/schema/reports.test.ts apps/api/src/db/autoMigrate.test.ts apps/api/migrations/2026-08-06-a-report-site-scope.sql
 git commit -m "fix(reports): persist execution scope provenance"
 ```
 

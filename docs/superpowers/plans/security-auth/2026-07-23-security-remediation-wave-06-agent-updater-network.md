@@ -41,9 +41,9 @@ Before implementation, run this migration reservation gate from the Wave 06 work
 ```bash
 git fetch --prune origin
 test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
-predecessor=2026-08-05-d-device-mtls-certificate-history.sql
-first_reserved=2026-08-05-e-agent-outbound-network-capability.sql
-second_reserved=2026-08-05-f-manifest-key-delegations.sql
+predecessor=2026-08-06-d-device-mtls-certificate-history.sql
+first_reserved=2026-08-06-e-agent-outbound-network-capability.sql
+second_reserved=2026-08-06-f-manifest-key-delegations.sql
 test -e "apps/api/migrations/$predecessor"
 test ! -e "apps/api/migrations/$first_reserved"
 test ! -e "apps/api/migrations/$second_reserved"
@@ -216,7 +216,7 @@ The `dev_update` path remains disabled by default and must use the same network 
 - Modify: `apps/api/src/routes/software.ts`
 - Modify: `apps/api/src/routes/software.test.ts`
 - Modify: `apps/api/src/db/schema/devices.ts`
-- Create: `apps/api/migrations/2026-08-05-e-agent-outbound-network-capability.sql`
+- Create: `apps/api/migrations/2026-08-06-e-agent-outbound-network-capability.sql`
 - Modify: `apps/api/src/db/autoMigrate.test.ts`
 - Modify: `apps/api/src/routes/agents/heartbeat.ts`
 - Modify: `apps/api/src/routes/agents/heartbeat.test.ts`
@@ -361,7 +361,7 @@ The embedded LanternOps root does not count as a deployment-pinned key.
 
 - Modify: `apps/api/src/db/schema/manifestSigningKeys.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create: `apps/api/migrations/2026-08-05-f-manifest-key-delegations.sql`
+- Create: `apps/api/migrations/2026-08-06-f-manifest-key-delegations.sql`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
 - Modify: `apps/api/src/services/manifestSigning.ts`
 - Modify: `apps/api/src/services/manifestSigning.test.ts`

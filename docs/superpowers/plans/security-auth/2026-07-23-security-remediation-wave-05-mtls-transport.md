@@ -16,7 +16,7 @@
   and 03 may proceed concurrently because this plan has no code dependency on them, but do not
   merge the reserved `-d-` migration until their reserved `-a-`, `-b-`, and `-c-` migrations are
   present on `origin/main`.
-- Do not edit shipped migration `apps/api/migrations/0013-mtls-cert-management.sql`. The current highest migration is `2026-08-04-widen-device-mac-address-columns.sql`; the centrally reserved Wave 05 slot is `2026-08-05-d-device-mtls-certificate-history.sql`.
+- Do not edit shipped migration `apps/api/migrations/0013-mtls-cert-management.sql`. The current highest migration is `2026-08-04-widen-device-mac-address-columns.sql`; the centrally reserved Wave 05 slot is `2026-08-06-d-device-mtls-certificate-history.sql`.
 - This is an expand-only mixed-version change. Keep `devices.mtls_cert_*` readable and updated until a separately approved contract migration.
 - Every request-path database operation uses `withDbAccessContext`; workers use `runOutsideDbContext` followed by `withSystemDbAccessContext`.
 - The new table has direct `org_id`, `ENABLE ROW LEVEL SECURITY`, `FORCE ROW LEVEL SECURITY`, and per-operation `breeze_has_org_access(org_id)` policies in its creation migration.
@@ -41,8 +41,8 @@ Before implementation, run this migration reservation gate from the Wave 05 work
 ```bash
 git fetch --prune origin
 test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
-predecessor=2026-08-05-c-quote-response-capability.sql
-reserved=2026-08-05-d-device-mtls-certificate-history.sql
+predecessor=2026-08-06-c-quote-response-capability.sql
+reserved=2026-08-06-d-device-mtls-certificate-history.sql
 test -e "apps/api/migrations/$predecessor"
 test ! -e "apps/api/migrations/$reserved"
 current_highest="$(find apps/api/migrations -maxdepth 1 -type f -name '*.sql' -exec basename {} \; | LC_ALL=C sort | tail -1)"
@@ -63,7 +63,7 @@ affected wave plan before writing schema or SQL.
 
 - Create: `apps/api/src/db/schema/deviceMtlsCertificates.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
-- Create: `apps/api/migrations/2026-08-05-d-device-mtls-certificate-history.sql`
+- Create: `apps/api/migrations/2026-08-06-d-device-mtls-certificate-history.sql`
 - Modify: `apps/api/src/db/autoMigrate.test.ts`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
 - Create: `apps/api/src/__tests__/integration/device-mtls-certificates-rls.integration.test.ts`

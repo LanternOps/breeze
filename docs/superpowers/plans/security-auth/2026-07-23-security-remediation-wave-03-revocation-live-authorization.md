@@ -21,7 +21,7 @@
 - A quote response transaction that rolls back leaves both quote state and response capability unconsumed.
 - Quote response mode is fleet-wide, never a per-instance canary. Before any instance serves database-mode accept/decline, an external routing barrier covering every old and new backend returns `503` plus `Retry-After` for the two exact mutation routes while allowing public GET/assets. Lift it only after the complete backend inventory proves every responder is the target Wave 3 release in `database` mode and every pre-wave/legacy responder is drained.
 - Expansion migrations are additive, idempotent, forward-only, and safe with preceding API instances. Do not edit shipped migrations.
-- Reserved migrations `2026-08-05-b-live-authorization.sql` and `2026-08-05-c-quote-response-capability.sql` must be unoccupied and sort after the current highest migration before implementation. If either condition fails, stop and revise the coordinated wave plans centrally; a worker must not invent or rename a migration.
+- Reserved migrations `2026-08-06-b-live-authorization.sql` and `2026-08-06-c-quote-response-capability.sql` must be unoccupied and sort after the current highest migration before implementation. If either condition fails, stop and revise the coordinated wave plans centrally; a worker must not invent or rename a migration.
 - New `oauth_revocation_retries` data is user-scoped: ENABLE RLS, FORCE RLS, use `breeze_current_user_id()`, add coverage allowlisting, and prove a cross-user forge fails as `breeze_app`.
 - Metrics and logs use bounded reason codes, epoch numbers, version numbers, and truncated stable IDs. Never log JWTs, response tokens, quote URLs, JTI values, customer content, or Redis keys containing capabilities.
 - Rollback retains auth/permission epochs, retry work, quote capability state, and read-link revocation state. It may not return to a binary that authorizes OAuth solely from Redis, accepts indefinitely claimless tokens, or performs quote response consumption after commit. Once database-mode quote mutations have been exposed, quote rollback first restores the external mutation barrier and may target only a database-capable Wave 3 binary; it never restores a legacy responder.
@@ -140,7 +140,7 @@ QUOTE_RESPONSE_CAPABILITY_MODE=legacy
 
 Deployment sequence:
 
-1. Apply migrations `2026-08-05-b-live-authorization.sql` and `2026-08-05-c-quote-response-capability.sql`.
+1. Apply migrations `2026-08-06-b-live-authorization.sql` and `2026-08-06-c-quote-response-capability.sql`.
 2. Set the OAuth deadline, event `compat`, and quote `legacy`; deploy tolerant readers and new OAuth/event writers.
 3. Drain old OAuth providers, wait through the OAuth deadline, and prove claimless traffic is zero/rejected.
 4. Drain old event ticket writers, wait 60 seconds, then set event mode `enforce`.
@@ -160,8 +160,8 @@ After the OAuth/event enforcement points or the database quote cutover, rollback
 - Modify: `apps/api/src/db/schema/users.ts`
 - Modify: `apps/api/src/db/schema/oauth.ts`
 - Modify: `apps/api/src/db/schema/quotes.ts`
-- Create: `apps/api/migrations/2026-08-05-b-live-authorization.sql`
-- Create: `apps/api/migrations/2026-08-05-c-quote-response-capability.sql`
+- Create: `apps/api/migrations/2026-08-06-b-live-authorization.sql`
+- Create: `apps/api/migrations/2026-08-06-c-quote-response-capability.sql`
 - Modify: `apps/api/src/db/autoMigrate.test.ts`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
 
@@ -173,10 +173,10 @@ After the OAuth/event enforcement points or the database quote cutover, rollback
 Run:
 
 ```bash
-test ! -e apps/api/migrations/2026-08-05-b-live-authorization.sql
-test ! -e apps/api/migrations/2026-08-05-c-quote-response-capability.sql
+test ! -e apps/api/migrations/2026-08-06-b-live-authorization.sql
+test ! -e apps/api/migrations/2026-08-06-c-quote-response-capability.sql
 wave3_latest_migration="$(find apps/api/migrations -maxdepth 1 -type f -name '*.sql' -print | LC_ALL=C sort | tail -1)"
-wave3_first_reserved_migration="apps/api/migrations/2026-08-05-b-live-authorization.sql"
+wave3_first_reserved_migration="apps/api/migrations/2026-08-06-b-live-authorization.sql"
 test "$(printf '%s\n%s\n' "$wave3_latest_migration" "$wave3_first_reserved_migration" | LC_ALL=C sort | tail -1)" = "$wave3_first_reserved_migration"
 ```
 
@@ -262,7 +262,7 @@ Expected: PASS; no inner transaction and both migrations are idempotent.
 - [ ] **Step 8: Commit expansion**
 
 ```bash
-git add apps/api/src/db/schema/users.ts apps/api/src/db/schema/oauth.ts apps/api/src/db/schema/quotes.ts apps/api/migrations/2026-08-05-b-live-authorization.sql apps/api/migrations/2026-08-05-c-quote-response-capability.sql apps/api/src/db/autoMigrate.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
+git add apps/api/src/db/schema/users.ts apps/api/src/db/schema/oauth.ts apps/api/src/db/schema/quotes.ts apps/api/migrations/2026-08-06-b-live-authorization.sql apps/api/migrations/2026-08-06-c-quote-response-capability.sql apps/api/src/db/autoMigrate.test.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts
 git commit -m "fix(auth): expand live revocation state"
 ```
 
@@ -533,7 +533,7 @@ git commit -m "fix(oauth): retry revocation markers durably"
 - Create: `apps/api/src/__tests__/integration/permission-epoch.integration.test.ts`
 
 **Interfaces:**
-- Consumes: triggers from `2026-08-05-b-live-authorization.sql`.
+- Consumes: triggers from `2026-08-06-b-live-authorization.sql`.
 - Produces: transactional epoch evidence for every authorization mutation.
 
 - [ ] **Step 1: Write real-database trigger tests**
