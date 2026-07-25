@@ -517,6 +517,33 @@ git commit -m "fix(reports): resolve scheduled authority live"
 
 ---
 
+## Task Execution Order (corrected 2026-07-25)
+
+**Tasks 5, 6, and 7 are ONE combined execution slice — implement them together.** Tasks 1-4 run
+first, in numeric order.
+
+Why: Task 6 makes `ReportExecutionAuthority` a MANDATORY parameter of `generateReport`. Making a
+parameter mandatory is inherently atomic — the moment the signature changes, every caller must
+change in the same commit or the build breaks. Those callers are split across three tasks:
+
+| Caller | Owned by |
+|---|---|
+| `POST /reports/generate` route passing the authority | Task 5 |
+| `generateReport` signature itself | Task 6 |
+| `reportScheduleWorker.ts`, which currently passes `undefined` | Task 7 |
+
+Executing them separately leaves only bad options: a compatibility overload (which violates Task 6's
+mandatory-scope invariant — an optional scope is exactly the defect this wave closes), a knowingly
+broken build between commits, or a stub. Implement the run/baseline scoping, the mandatory generator
+signature, and the scheduler fail-closed path as one slice satisfying all three tasks' red-green
+gates.
+
+Keep the invariant intact across the merged slice: a generator that omits scope must fail to compile
+or fail a test — never silently return unscoped data. The scheduler must fail closed BEFORE
+generation or delivery, not after.
+
+---
+
 ### Task 5: Make run creation, visibility, download, and baselines scope-safe
 
 **Files:**
@@ -574,7 +601,8 @@ Expected: FAIL because run authorization is not enforced in SQL, totals/pages an
 
 - [ ] **Step 3: Persist the run snapshot before generation**
 
-After the Task 3 metadata-only lookup identifies the definition's exact organization, call `resolveRequestReportAuthority(auth, orgId)`. Decode the definition, intersect it with that rebound current scope, reject null/empty/legacy scope, create `ReportExecutionAuthority`, and insert all six scope fields with the pending run. Pass that exact authority into generation; do not reconstruct it from the caller after the run exists and do not reuse a multi-organization partner list scope.
+After the Task 3 metadata-only lookup identifies the definition's exact organization, call `resolveRequestReportAuthority(auth, orgId, 'read')` (generation is a read per the Task 4
+action mapping). Decode the definition, intersect it with that rebound current scope, reject null/empty/legacy scope, create `ReportExecutionAuthority`, and insert all six scope fields with the pending run. Pass that exact authority into generation; do not reconstruct it from the caller after the run exists and do not reuse a multi-organization partner list scope.
 
 - [ ] **Step 4: Implement one parameterized immutable run predicate**
 
@@ -686,7 +714,8 @@ Require `authority.scope.orgId === orgId`; a mismatch throws before querying. Ce
 
 Use an exhaustive report-type switch whose default assigns to `never` and throws. Apply the same authority scope to `securityComplianceReport`.
 
-In `generate.ts`, after existing tenant authorization of the explicit target `orgId`, call `resolveRequestReportAuthority(auth, orgId)`. Organization and explicit query-organization requests always derive one scope for that exact organization: organization membership `site_ids` has precedence, partner fallback is unrestricted only when no organization membership exists and partner access/permission is current, and system is unrestricted. Use the returned `ReportExecutionAuthority` directly (same principal, capture time, scope, and fingerprint) and pass that exact object to `generateReport`; do not rebuild it from cached request permissions. The generator handles restricted-empty before its first database query and returns the type's zero-safe result. Remove `siteScopeRequestAllowed` and the optional-permissions generation path; any config device/site narrowing is validated against and intersected with the authority without broadening it.
+In `generate.ts`, after existing tenant authorization of the explicit target `orgId`, call `resolveRequestReportAuthority(auth, orgId, 'read')` (generation is a read per the Task 4
+action mapping). Organization and explicit query-organization requests always derive one scope for that exact organization: organization membership `site_ids` has precedence, partner fallback is unrestricted only when no organization membership exists and partner access/permission is current, and system is unrestricted. Use the returned `ReportExecutionAuthority` directly (same principal, capture time, scope, and fingerprint) and pass that exact object to `generateReport`; do not rebuild it from cached request permissions. The generator handles restricted-empty before its first database query and returns the type's zero-safe result. Remove `siteScopeRequestAllowed` and the optional-permissions generation path; any config device/site narrowing is validated against and intersected with the authority without broadening it.
 
 - [ ] **Step 4: Run the green matrix**
 
