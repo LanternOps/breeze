@@ -554,6 +554,40 @@ Every rollback starts by closing/probing the external barrier, including `/api/v
 
 ---
 
+## Task Execution Order (corrected 2026-07-25 — read before starting any task)
+
+**Execute in this order, NOT in numeric order:** 1 → 2 → 3 → **7** → 6 → 4 → 5 → 8 → 9 → 10.
+
+Task numbering is retained so every existing cross-reference stays valid; only the execution sequence
+changes.
+
+Why: Tasks 4 and 6 require a lease to be acquired *before* the `101` upgrade, but ticket validation
+in the current code happens *after* upgrade, and the pre-upgrade validate-and-reserve machinery
+(`remoteWsUpgrade.ts`) is created by Task 7. Attempting Task 4 first forces one of two unacceptable
+outcomes: acquire the lease before validating the ticket — which lets an INVALID ticket reserve
+session ownership and violates the global invariant that a denied request performs no mutation,
+queue submission, or reservation — or leave acquisition after upgrade, which is the very defect the
+wave exists to close. Task 7 also modifies `terminalWs.ts` and `desktopWs.ts`, the same files Tasks
+4 and 6 own, so running it first avoids re-litigating those routes twice.
+
+Task 5 (desktop teardown) additionally depends on an exact desktop shared owner, whose fields and
+acquisition are introduced by Tasks 6 and 7. It therefore runs after both.
+
+Two scope corrections, folded into Task 4:
+
+- `apps/api/src/routes/agentWs.ts` has an identifier-only late terminal-start failure callback that
+  must be bound to the exact lease. It was missing from Task 4's file list; add it.
+- `apps/api/src/services/remoteSessionTeardown.ts` expects a synchronous
+  `closeTerminalSession(...): boolean`, but the exact `beginClose` is asynchronous. Reconcile the
+  caller rather than making `beginClose` synchronous — teardown must remain idempotent and
+  delete-last.
+
+Task 4 Step 1's "two route instances with separate local maps" is satisfied against the shared lease
+manager using two distinct instance identities. Route maps are module-global, so do NOT attempt to
+instantiate the route module twice; drive the second identity through the lease manager directly.
+
+---
+
 ### Task 1: Lock socket lease identity and reservation semantics
 
 **Files:**
