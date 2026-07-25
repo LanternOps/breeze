@@ -342,6 +342,20 @@ Add `/time-entries` to `FALLBACK_AUDIT_EXCLUDE_PREFIXES` in the same change. Thi
 - Modify: `apps/api/src/routes/tickets/parts.test.ts`
 - Modify: `apps/api/src/routes/reports/runs.ts`
 - Create: `apps/api/src/routes/reports/runs.audit.test.ts`
+- Modify: `apps/api/src/services/contractDocumentService.ts` (**scope exception approved
+  2026-07-25** — see below)
+- Modify: `apps/api/src/services/contractDocumentService.test.ts` (same exception)
+
+**Scope exception (approved 2026-07-25).** This task must attribute each successful sensitive
+download to its owning organization, but `getContractDocumentPdf` returns only
+`{ pdfData, mime, byteSize, sha256 }` — it has `row.orgId` internally (it already uses it for the
+`canAccessOrg` check) and discards it. Auditing the download without it would either omit the org or
+re-derive it from request state, which is exactly the kind of inferred tenancy this program is
+closing.
+
+Add `orgId` to the returned object and audit from that value. Keep the existing `canAccessOrg` check
+where it is; this exception widens the return type only, and must not relax the authorization that
+already guards it.
 
 Expose:
 
