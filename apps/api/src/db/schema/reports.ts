@@ -38,6 +38,12 @@ export const reports = pgTable('reports', {
   format: reportFormatEnum('format').notNull().default('csv'),
   lastGeneratedAt: timestamp('last_generated_at'),
   createdBy: uuid('created_by').references(() => users.id),
+  executionScopeVersion: integer('execution_scope_version'),
+  executionScopeKind: varchar('execution_scope_kind', { length: 32 }),
+  executionScopeSiteIds: uuid('execution_scope_site_ids').array(),
+  executionScopeUserId: uuid('execution_scope_user_id'),
+  executionScopeFingerprint: varchar('execution_scope_fingerprint', { length: 64 }),
+  executionScopeCapturedAt: timestamp('execution_scope_captured_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -52,5 +58,11 @@ export const reportRuns = pgTable('report_runs', {
   errorMessage: text('error_message'),
   rowCount: integer('row_count'),
   result: jsonb('result'),
+  executionScopeVersion: integer('execution_scope_version'),
+  executionScopeKind: varchar('execution_scope_kind', { length: 32 }),
+  executionScopeSiteIds: uuid('execution_scope_site_ids').array(),
+  executionScopeUserId: uuid('execution_scope_user_id'),
+  executionScopeFingerprint: varchar('execution_scope_fingerprint', { length: 64 }),
+  executionScopeCapturedAt: timestamp('execution_scope_captured_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
