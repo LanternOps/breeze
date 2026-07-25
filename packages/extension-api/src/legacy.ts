@@ -95,6 +95,14 @@ export const TENANT_SCOPE_COLUMNS: readonly string[] = [
 const tenancySchema = z.object({
   /** org_id-bearing tables, deleted by org cascade before `organizations`. */
   orgCascadeDeleteTables: z.array(z.string()).default([]),
+  /** Explicit deny-default column classification for org-cascade export tables. */
+  orgExportColumns: z.record(
+    z.string(),
+    z.object({
+      include: z.array(z.string()),
+      exclude: z.array(z.string()),
+    }).strict(),
+  ).default({}),
   /** device_id tables hard-deleted before the device row (FK order, children first). */
   deviceCascadeDeleteTables: z.array(z.string()).default([]),
   /** device_id + org_id tables whose org_id is rewritten when a device moves org. */
@@ -163,6 +171,7 @@ const manifestSchema = z
       .optional(),
     tenancy: tenancySchema.optional().default({
       orgCascadeDeleteTables: [],
+      orgExportColumns: {},
       deviceCascadeDeleteTables: [],
       deviceOrgDenormalizedTables: [],
     }),
@@ -203,8 +212,15 @@ const manifestSchema = z
     }
   });
 
-export type ExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
-export type LegacyExtensionManifest = z.infer<typeof manifestSchema>;
+type ParsedExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
+export type ExtensionTenancyDeclaration =
+  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>
+  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>>;
+
+type ParsedLegacyExtensionManifest = z.infer<typeof manifestSchema>;
+export type LegacyExtensionManifest =
+  Omit<ParsedLegacyExtensionManifest, 'tenancy'>
+  & { tenancy: ExtensionTenancyDeclaration };
 
 export function parseLegacyExtensionManifest(raw: unknown): LegacyExtensionManifest {
   try {

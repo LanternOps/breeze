@@ -11,6 +11,16 @@ vi.mock('./discovery', () => ({
         migrationsDir: 'migrations', helperRoutes: false,
         tenancy: {
           orgCascadeDeleteTables: ['sample_items', 'memory_blocks'],
+          orgExportColumns: {
+            sample_items: {
+              include: ['id', 'org_id', 'display_name', 'access_token_status'],
+              exclude: ['credential_hash', 'metadata'],
+            },
+            memory_blocks: {
+              include: ['id', 'org_id', 'content_type'],
+              exclude: ['data'],
+            },
+          },
           deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
           deviceOrgDenormalizedTables: ['sample_events'],
           deviceOrgMoveDeleteTables: ['demo_things'],
@@ -22,10 +32,15 @@ vi.mock('./discovery', () => ({
 
 import { discoverExtensions } from './discovery';
 import {
+  CORE_TENANT_EXPORT_POLICY,
+  getTenantExportPolicyRegistry,
+} from '../services/tenantExportPolicyRegistry';
+import {
   withExtensionOrgCascade,
   withExtensionDeviceCascade,
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
+  getExtensionOrgExportColumns,
   resetExtensionTenancyCacheForTests,
 } from './tenancyRegistry';
 
@@ -145,5 +160,178 @@ describe('tenancyRegistry', () => {
     resetExtensionTenancyCacheForTests();
     withExtensionDeviceOrgDenormalized(['agent_logs']);
     expect(discoverExtensions).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns complete extension org-export classifications', () => {
+    expect(getExtensionOrgExportColumns()).toEqual({
+      sample_items: {
+        include: ['id', 'org_id', 'display_name', 'access_token_status'],
+        exclude: ['credential_hash', 'metadata'],
+      },
+      memory_blocks: {
+        include: ['id', 'org_id', 'content_type'],
+        exclude: ['data'],
+      },
+    });
+  });
+
+  it('fails when an org-cascade extension table has no export policy', () => {
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      {
+        name: 'sample',
+        dir: '/x/sample',
+        migrationsDir: null,
+        manifest: {
+          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
+          migrationsDir: 'migrations', helperRoutes: false,
+          tenancy: {
+            orgCascadeDeleteTables: ['sample_items'],
+            orgExportColumns: {},
+            deviceCascadeDeleteTables: [],
+            deviceOrgDenormalizedTables: [],
+          },
+        },
+      },
+    ]);
+
+    expect(() => getExtensionOrgExportColumns()).toThrow(/sample_items.*classification/i);
+  });
+
+  it.each([
+    ['duplicate include', { include: ['id', 'id', 'org_id'], exclude: [] }],
+    ['duplicate exclude', { include: ['id', 'org_id'], exclude: ['secret', 'secret'] }],
+    ['include/exclude overlap', { include: ['id', 'org_id'], exclude: ['id'] }],
+  ])('rejects %s in an extension export policy', (_label, exportPolicy) => {
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      {
+        name: 'sample',
+        dir: '/x/sample',
+        migrationsDir: null,
+        manifest: {
+          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
+          migrationsDir: 'migrations', helperRoutes: false,
+          tenancy: {
+            orgCascadeDeleteTables: ['sample_items'],
+            orgExportColumns: { sample_items: exportPolicy },
+            deviceCascadeDeleteTables: [],
+            deviceOrgDenormalizedTables: [],
+          },
+        },
+      },
+    ]);
+
+    expect(() => getExtensionOrgExportColumns()).toThrow(/sample_items.*duplicate|sample_items.*overlap/i);
+  });
+
+  it('rejects two extensions that classify the same table inconsistently', () => {
+    const first = {
+      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
+      migrationsDir: 'migrations', helperRoutes: false,
+      tenancy: {
+        orgCascadeDeleteTables: ['memory_blocks'],
+        orgExportColumns: {
+          memory_blocks: { include: ['id', 'org_id'], exclude: ['data'] },
+        },
+        deviceCascadeDeleteTables: [],
+        deviceOrgDenormalizedTables: [],
+      },
+    };
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest: first },
+      {
+        name: 'other',
+        dir: '/x/other',
+        migrationsDir: null,
+        manifest: {
+          ...first,
+          name: 'other',
+          routeNamespace: 'other',
+          tenancy: {
+            ...first.tenancy,
+            orgExportColumns: {
+              memory_blocks: { include: ['id', 'org_id', 'data'], exclude: [] },
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(() => getExtensionOrgExportColumns()).toThrow(/memory_blocks.*inconsistent/i);
+  });
+
+  it('dedupes identical classifications for a shared extension table', () => {
+    const sharedPolicy = { include: ['id', 'org_id'], exclude: ['data'] };
+    const manifest = {
+      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
+      migrationsDir: 'migrations', helperRoutes: false,
+      tenancy: {
+        orgCascadeDeleteTables: ['memory_blocks'],
+        orgExportColumns: { memory_blocks: sharedPolicy },
+        deviceCascadeDeleteTables: [],
+        deviceOrgDenormalizedTables: [],
+      },
+    };
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest },
+      {
+        name: 'other',
+        dir: '/x/other',
+        migrationsDir: null,
+        manifest: { ...manifest, name: 'other', routeNamespace: 'other' },
+      },
+    ]);
+
+    expect(getExtensionOrgExportColumns()).toEqual({
+      memory_blocks: sharedPolicy,
+    });
+  });
+
+  it('adapts explicit suspicious and open-container extension decisions as reviewed', () => {
+    const policy = getTenantExportPolicyRegistry().sample_items;
+
+    expect(policy).toMatchObject({ organizationKey: 'org_id' });
+    expect(policy?.columns.access_token_status).toMatchObject({
+      decision: 'include',
+      reviewedSensitiveName: true,
+      openContainerReviewed: true,
+    });
+    expect(policy?.columns.credential_hash).toMatchObject({
+      decision: 'exclude',
+      reviewedSensitiveName: true,
+      openContainerReviewed: true,
+    });
+    expect(policy?.columns.metadata).toMatchObject({
+      decision: 'exclude',
+      openContainerReviewed: true,
+    });
+  });
+
+  it.each([
+    ['contract_documents', 'pdf_data'],
+    ['contract_template_versions', 'file_data'],
+    ['invoice_documents', 'pdf'],
+    ['quote_images', 'image_data'],
+    ['users', 'avatar_data'],
+  ])('explicitly reviews and excludes core bytea column %s.%s', (table, column) => {
+    expect(CORE_TENANT_EXPORT_POLICY[table]?.columns[column]).toMatchObject({
+      decision: 'exclude',
+      openContainerReviewed: true,
+    });
+  });
+
+  it.each([
+    ['c2c_consent_sessions', 'state'],
+    ['device_config_state', 'config_value'],
+    ['device_registry_state', 'value_data'],
+    ['enrollment_keys', 'short_code'],
+    ['google_workspace_connections', 'service_account_key'],
+    ['m365_consent_sessions', 'nonce'],
+    ['m365_consent_sessions', 'code_verifier'],
+  ])('excludes reviewed core capability or opaque-value alias %s.%s', (table, column) => {
+    expect(CORE_TENANT_EXPORT_POLICY[table]?.columns[column]).toMatchObject({
+      decision: 'exclude',
+      reviewedSensitiveName: true,
+      openContainerReviewed: true,
+    });
   });
 });
