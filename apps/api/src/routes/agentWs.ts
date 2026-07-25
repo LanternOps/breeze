@@ -1838,7 +1838,19 @@ async function processCommandResult(
 export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
   const agentDb = preValidatedAgent;
 
-  const runWithAgentDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  /**
+   * `label` is REQUIRED, and deliberately so. Every context on this socket
+   * funnels through this one closure, so in a minified production build all of
+   * them collapse to an anonymous arrow inside `onMessage` — the #1105
+   * held-connection warning could not name which agent message was responsible.
+   * That is how BREEZE-A became ~7k events that could not be triaged. A
+   * required parameter means a handler added later cannot silently rejoin that
+   * pile: it will not compile without a label.
+   *
+   * Keep labels stable and low-cardinality (a handler name, never an id or
+   * sessionId) — they become a Sentry tag and part of the grouping message.
+   */
+  const runWithAgentDbAccess = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
     return withDbAccessContext(
       {
         scope: 'organization',
@@ -1848,7 +1860,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         accessiblePartnerIds: [],
         // Agents don't browse the catalog as org users; null disables the
         // partner-wide read branch (safe).
-        currentPartnerId: null
+        currentPartnerId: null,
+        label
       },
       fn
     );
@@ -1894,14 +1907,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // HTTP heartbeat claim (the agent heartbeats immediately on startup)
       // and executeCommand's direct per-command push while the socket is
       // live.
-      await runWithAgentDbAccess(async () => {
+      await runWithAgentDbAccess('agentWs.onOpen.markOnline', async () => {
         await updateDeviceStatus(agentId, 'online');
       });
 
       // Publish device.online event for real-time UI updates
       if (agentDb) {
         try {
-          const [deviceInfo] = await runWithAgentDbAccess(async () =>
+          const [deviceInfo] = await runWithAgentDbAccess('agentWs.onOpen.loadDevice', async () =>
             db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion })
               .from(devices)
               .where(eq(devices.agentId, agentId))
@@ -2051,7 +2064,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         // Handle update_status messages: agent is about to self-update
         if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
           if (agentDb) {
-            await runWithAgentDbAccess(async () => {
+            await runWithAgentDbAccess('agentWs.updateStatus', async () => {
               try {
                 // Same terminal-status guard as updateDeviceStatus (#2230):
                 // this write must not resurrect a decommissioned/quarantined
@@ -2141,7 +2154,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 : null;
             if (sessionId && fastResult.event === 'peer_disconnected') {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
                   const result = await db
                     .update(remoteSessions)
                     .set({ status: 'disconnected', endedAt: new Date() })
@@ -2185,7 +2198,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const reason = typeof fastResult.reason === 'string' ? fastResult.reason : 'no_user';
             if (sessionId) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.consentDenied', async () => {
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({ status: 'denied', endedAt: new Date() })
@@ -2238,7 +2251,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const answer = typeof fastResult.answer === 'string' ? fastResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.webrtcAnswer', async () => {
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({
@@ -2305,7 +2318,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             );
             if (sessionId) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.captureFailed', async () => {
                   const result = await db
                     .update(remoteSessions)
                     .set({
@@ -2357,7 +2370,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
         switch (parsed.data.type) {
           case 'command_result':
-            await runWithAgentDbAccess(async () =>
+            await runWithAgentDbAccess('agentWs.commandResult', async () =>
               processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId, authenticatedAgent.orgId)
             );
             ws.send(JSON.stringify({
@@ -2368,7 +2381,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
           case 'backup_progress': {
             const progressMessage = parsed.data as z.infer<typeof backupProgressMessageSchema>;
-            await runWithAgentDbAccess(async () => {
+            await runWithAgentDbAccess('agentWs.backupProgress', async () => {
               const applied = await applyBackupProgress({
                 agentId,
                 commandId: progressMessage.commandId,
@@ -2415,7 +2428,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               }
 
             // Update last seen timestamp
-              await runWithAgentDbAccess(async () => {
+              await runWithAgentDbAccess('agentWs.heartbeat', async () => {
                 await updateDeviceStatus(agentId, 'online');
                 if (heartbeatMessage.ipHistoryUpdate) {
                   if (heartbeatMessage.ipHistoryUpdate.deviceId && heartbeatMessage.ipHistoryUpdate.deviceId !== authenticatedAgent.deviceId) {
@@ -2518,7 +2531,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         if (agentDb) {
-          await runWithAgentDbAccess(async () => {
+          await runWithAgentDbAccess('agentWs.onClose.markOffline', async () => {
             try {
               const [current] = await db
                 .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
@@ -2572,7 +2585,7 @@ if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
       }
       if (agentDb) {
-        void runWithAgentDbAccess(async () => {
+        void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await db
               .select({ status: devices.status })
