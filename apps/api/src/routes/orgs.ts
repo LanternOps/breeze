@@ -300,7 +300,12 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 // linkage), ssoConfig (may carry IdP secrets; managed via dedicated SSO
 // routes), deletedAt (soft-delete bookkeeping — these handlers already filter
 // deleted rows out).
-const partnerPublicColumns = {
+//
+// Built lazily (a function, not a module-scope object) so importing this module
+// never dereferences `partners.*` at load time. Test files that
+// `vi.mock('../db/schema')` with a partial mock would otherwise fail to import
+// orgs.ts at all ("No 'partners' export is defined on the mock").
+const partnerPublicColumns = () => ({
   id: partners.id,
   name: partners.name,
   slug: partners.slug,
@@ -335,7 +340,7 @@ const partnerPublicColumns = {
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   createdAt: partners.createdAt,
   updatedAt: partners.updatedAt,
-};
+});
 
 orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('query', paginationSchema), async (c) => {
   const { page, limit, offset } = getPagination(c.req.valid('query'));
@@ -348,7 +353,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
   const count = countResult[0]?.count ?? 0;
 
   const data = await db
-    .select(partnerPublicColumns)
+    .select(partnerPublicColumns())
     .from(partners)
     .where(conditions)
     .limit(limit)
@@ -393,7 +398,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         settings: data.settings,
         billingEmail: data.billingEmail
       })
-      .returning(partnerPublicColumns);
+      .returning(partnerPublicColumns());
     if (newPartner) {
       await seedSystemTicketStatuses(tx, newPartner.id);
     }
@@ -621,7 +626,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   const auth = c.get('auth');
 
   const [partner] = await db
-    .select(partnerPublicColumns)
+    .select(partnerPublicColumns())
     .from(partners)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
     .limit(1);
@@ -804,7 +809,7 @@ orgRoutes.patch(
     .update(partners)
     .set(updateData)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
-    .returning(partnerPublicColumns);
+    .returning(partnerPublicColumns());
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -835,7 +840,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
   const id = c.req.param('id')!;
 
   const [partner] = await db
-    .select(partnerPublicColumns)
+    .select(partnerPublicColumns())
     .from(partners)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
     .limit(1);
@@ -935,7 +940,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     .update(partners)
     .set(updates)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning(partnerPublicColumns);
+    .returning(partnerPublicColumns());
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
