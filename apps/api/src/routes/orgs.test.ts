@@ -286,6 +286,18 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(2);
       expect(body.pagination.total).toBe(2);
+
+      // The page query (second select) must use an explicit projection that
+      // excludes internal metadata columns rather than the whole partners row.
+      const pageProjection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
+      expect(pageProjection).toBeDefined();
+      const keys = Object.keys(pageProjection!);
+      expect(keys).toContain('id');
+      expect(keys).toContain('name');
+      expect(keys).toContain('status');
+      for (const internal of ['signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp']) {
+        expect(keys).not.toContain(internal);
+      }
     });
   });
 
@@ -368,6 +380,16 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+
+      // Explicit projection: internal metadata columns must not be selected.
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(projection).toBeDefined();
+      const keys = Object.keys(projection!);
+      expect(keys).toContain('id');
+      expect(keys).toContain('settings');
+      for (const internal of ['signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp']) {
+        expect(keys).not.toContain(internal);
+      }
     });
 
     it('should return 404 when partner not found', async () => {
@@ -2769,6 +2791,54 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('selects an explicit column projection that excludes internal metadata columns', async () => {
+      // Serialization hygiene: the handler must pass an explicit column map to
+      // db.select() so internal columns (signup attribution, Stripe linkage,
+      // MCP-origin metadata, ssoConfig) never reach partner-scoped tokens —
+      // and a future column added to the schema does not auto-appear in the
+      // response. The db is mocked, so the enforcing assertion here is the
+      // projection object the handler hands to select(), not the mocked body.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      let selectedColumns: Record<string, unknown> | undefined;
+      vi.mocked(db.select).mockImplementationOnce(((columns: Record<string, unknown>) => {
+        selectedColumns = columns;
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+            })
+          })
+        };
+      }) as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+
+      expect(selectedColumns).toBeDefined();
+      const keys = Object.keys(selectedColumns!);
+      for (const expected of [
+        'id', 'name', 'slug', 'type', 'plan', 'status', 'timezone', 'settings',
+        'billingEmail', 'emailSignature', 'inboundLocalPart', 'currencyCode',
+        'defaultTaxRate', 'invoiceNumberPrefix', 'invoiceTermsDays', 'invoiceFooter',
+        'billingCompanyName', 'billingPhone', 'billingWebsite',
+        'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
+        'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
+        'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
+      ]) {
+        expect(keys).toContain(expected);
+      }
+      for (const internal of [
+        'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
+        'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
+    });
   });
 
   describe('GET /partners/me/ip-allowlist/status', () => {
@@ -2858,6 +2928,53 @@ describe('org routes', () => {
 
       expect(res.status).toBe(400);
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('passes an explicit column projection to .returning() that excludes internal metadata columns', async () => {
+      // Same serialization-hygiene contract as GET /partners/me: the updated
+      // row is echoed back to a partner-scoped token, so the .returning()
+      // clause must be an explicit projection — never the whole partners row.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let returningColumns: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation((columns: Record<string, unknown>) => {
+              returningColumns = columns;
+              return Promise.resolve([{ ...currentPartner, name: 'Acme Managed Services' }]);
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Acme Managed Services' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ id: 'partner-123', name: 'Acme Managed Services' });
+
+      expect(returningColumns).toBeDefined();
+      const keys = Object.keys(returningColumns!);
+      for (const expected of ['id', 'name', 'slug', 'status', 'settings', 'billingEmail', 'emailSignature', 'updatedAt']) {
+        expect(keys).toContain(expected);
+      }
+      for (const internal of [
+        'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
+        'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
     });
 
     it('rejects a logoUrl exceeding 400 KB', async () => {
