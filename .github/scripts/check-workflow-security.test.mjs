@@ -767,3 +767,19 @@ test('developer signing requires global and developer-specific kill switches', (
   assert.match(signingCondition, /vars\.ENABLE_MACOS_SIGNING == 'true'/u);
   assert.match(signingCondition, /vars\.ENABLE_DEV_MACOS_SIGNING == 'true'/u);
 });
+
+test('pull requests run the confidential pattern scan without repository secrets', () => {
+  const workflowText = readFileSync(
+    new URL('../workflows/secret-scan.yml', import.meta.url),
+    'utf8',
+  );
+  const jobStart = workflowText.indexOf('  confidential-patterns:');
+
+  assert.notEqual(jobStart, -1);
+
+  const jobText = workflowText.slice(jobStart);
+  assert.match(jobText, /if: github\.event_name == 'pull_request'/u);
+  assert.match(jobText, /bash scripts\/security\/scan-confidential\.sh --all/u);
+  assert.doesNotMatch(jobText, /\bsecrets(?:\.|\[)/u);
+  assert.doesNotMatch(jobText, /CONFIDENTIAL_DENYLIST/u);
+});
