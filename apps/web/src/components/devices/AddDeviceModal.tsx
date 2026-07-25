@@ -772,7 +772,7 @@ export default function AddDeviceModal({
                   >
                     {TTL_OPTIONS.map(({ minutes, labelKey }) => (
                       <option key={minutes} value={minutes}>
-                        {t(labelKey)}
+                        {t(/* i18n-dynamic */ labelKey)}
                       </option>
                     ))}
                   </select>
@@ -1062,7 +1062,7 @@ export default function AddDeviceModal({
                         >
                           {TTL_OPTIONS.map(({ minutes, labelKey }) => (
                             <option key={minutes} value={minutes}>
-                              {t(labelKey)}
+                              {t(/* i18n-dynamic */ labelKey)}
                             </option>
                           ))}
                         </select>
