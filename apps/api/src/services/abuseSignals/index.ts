@@ -62,8 +62,10 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // of account age.
     ...computeScriptSignals(scriptFindings.findings, scriptFindings.sharedHosts, cfg, loadScriptIndicators()),
     // Identity signals are likewise never age-decayed — a cardholder name that
-    // matches nothing about the account is evidence at any account age.
-    ...computeBillingIdentitySignals(billingIdentity.aggregates, billingIdentity.sharedFingerprints, cfg, now),
+    // matches nothing about the account is evidence at any account age. The
+    // scorer takes no clock at all; card-testing is scored on the span the
+    // billing service recorded, not on how recently the sweep ran.
+    ...computeBillingIdentitySignals(billingIdentity.aggregates, billingIdentity.sharedFingerprints, cfg),
   ];
   // Script-scanned and billing-scanned partners join the evaluated set so open
   // rows for those detectors stale-resolve when the evidence disappears

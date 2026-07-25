@@ -53,7 +53,15 @@ export const SIGNAL_DEFAULTS = {
   'billing.shared_card_fingerprint.base_score': 70,
   'billing.shared_card_fingerprint.per_extra_partner': 15,
   'billing.card_testing.distinct_methods': 3,
-  'billing.card_testing.window_days': 7,
+  // The window is the SPAN the distinct methods were accumulated over
+  // (last_seen - first_seen), not a recency check. A card-testing burst is
+  // minutes; a legitimate MSP replacing an expired card is months or years
+  // apart. 1 day sits far above the burst and far below any legitimate
+  // re-card cadence, and still covers an adversary pacing attempts across a
+  // working day. It deliberately does also catch a genuine
+  // decline-then-retry-twice signup — that is a watch-tier review, not an
+  // alert, which is why 3 methods alone scores below severity.alert_score.
+  'billing.card_testing.window_days': 1,
   'billing.card_testing.base_score': 50,
   'billing.card_testing.per_extra_method': 15,
   'billing.card_testing.per_failed_attempt': 5,

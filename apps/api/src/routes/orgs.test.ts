@@ -298,6 +298,7 @@ describe('org routes', () => {
       for (const internal of [
         'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
         'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
       ]) {
         expect(keys).not.toContain(internal);
       }
@@ -393,6 +394,7 @@ describe('org routes', () => {
       for (const internal of [
         'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
         'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
       ]) {
         expect(keys).not.toContain(internal);
       }
@@ -2846,6 +2848,7 @@ describe('org routes', () => {
         // served to a partner-scoped token.
         'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
         'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
         'billingIdentitySyncedAt', 'billingSubscriptionStatus',
       ]) {
         expect(keys).not.toContain(internal);
@@ -2989,6 +2992,7 @@ describe('org routes', () => {
         // served to a partner-scoped token.
         'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
         'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
         'billingIdentitySyncedAt', 'billingSubscriptionStatus',
       ]) {
         expect(keys).not.toContain(internal);

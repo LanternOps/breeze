@@ -5,13 +5,13 @@ import {
   identityTokens,
   domainIdentityLabels,
   isFreeEmailProvider,
+  spanMilliseconds,
   FREE_EMAIL_PROVIDER_LABELS,
   type BillingIdentityAggregate,
 } from './billingIdentity';
 import { SIGNAL_DEFAULTS } from './config';
 
 // Every name, mailbox, domain and fingerprint below is invented for this file.
-const now = new Date('2026-07-25T00:00:00Z');
 
 function agg(overrides: Partial<BillingIdentityAggregate> = {}): BillingIdentityAggregate {
   return {
@@ -22,6 +22,8 @@ function agg(overrides: Partial<BillingIdentityAggregate> = {}): BillingIdentity
     cardholderName: null,
     cardFingerprint: null,
     distinctPaymentMethods: 0,
+    paymentMethodsFirstSeenAt: null,
+    paymentMethodsLastSeenAt: null,
     failedAttempts: 0,
     identitySyncedAt: null,
     ...overrides,
@@ -32,18 +34,18 @@ const signalKeys = (signals: ReturnType<typeof computeBillingIdentitySignals>) =
   signals.map((s) => s.signalKey);
 
 const fires = (a: BillingIdentityAggregate, shared = new Map<string, number>()) =>
-  signalKeys(computeBillingIdentitySignals([a], shared, SIGNAL_DEFAULTS, now)).includes(
+  signalKeys(computeBillingIdentitySignals([a], shared, SIGNAL_DEFAULTS)).includes(
     'billing.cardholder_name_mismatch',
   );
 
 describe('computeBillingIdentitySignals — quiet cases', () => {
   it('emits nothing for a partner with no billing identity data', () => {
-    expect(computeBillingIdentitySignals([agg()], new Map(), SIGNAL_DEFAULTS, now)).toEqual([]);
+    expect(computeBillingIdentitySignals([agg()], new Map(), SIGNAL_DEFAULTS)).toEqual([]);
   });
 
   it('emits nothing when the cardholder name is blank', () => {
     expect(
-      computeBillingIdentitySignals([agg({ cardholderName: '   ' })], new Map(), SIGNAL_DEFAULTS, now),
+      computeBillingIdentitySignals([agg({ cardholderName: '   ' })], new Map(), SIGNAL_DEFAULTS),
     ).toEqual([]);
   });
 
@@ -181,7 +183,6 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
       [agg({ cardholderName: 'Bartholomew Pfennig' })],
       new Map(),
       SIGNAL_DEFAULTS,
-      now,
     );
     expect(signal).toBeDefined();
     expect(signal!.signalKey).toBe('billing.cardholder_name_mismatch');
@@ -199,7 +200,6 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
       [agg({ cardholderName: 'Bartholomew Pfennig', failedAttempts: 9 })],
       new Map(),
       SIGNAL_DEFAULTS,
-      now,
     );
     expect(signal!.score).toBe(
       SIGNAL_DEFAULTS['billing.cardholder_name_mismatch.score'] +
@@ -218,7 +218,7 @@ describe('billing.cardholder_name_mismatch — matching algorithm', () => {
     // With the default list the domain token 'calloway' matches, so it is quiet.
     expect(fires(aggregate)).toBe(false);
     // Treating that domain as a free provider strips the token, so it fires.
-    const signals = computeBillingIdentitySignals([aggregate], new Map(), SIGNAL_DEFAULTS, now, {
+    const signals = computeBillingIdentitySignals([aggregate], new Map(), SIGNAL_DEFAULTS, {
       freeEmailProviderLabels: new Set(['calloway-brix']),
     });
     expect(signalKeys(signals)).toContain('billing.cardholder_name_mismatch');
@@ -232,7 +232,6 @@ describe('billing.shared_card_fingerprint', () => {
       [agg({ cardholderName: 'Nordvane', cardFingerprint: 'fpr_zzxq1' })],
       shared,
       SIGNAL_DEFAULTS,
-      now,
     );
     const signal = signals.find((s) => s.signalKey === 'billing.shared_card_fingerprint');
     expect(signal).toBeDefined();
@@ -246,7 +245,6 @@ describe('billing.shared_card_fingerprint', () => {
       [agg({ cardFingerprint: 'fpr_zzxq1' })],
       new Map([['fpr_zzxq1', 4]]),
       SIGNAL_DEFAULTS,
-      now,
     );
     const signal = signals.find((s) => s.signalKey === 'billing.shared_card_fingerprint');
     expect(signal!.score).toBe(
@@ -260,7 +258,6 @@ describe('billing.shared_card_fingerprint', () => {
       [agg({ cardFingerprint: 'fpr_zzxq1' })],
       new Map(),
       SIGNAL_DEFAULTS,
-      now,
     );
     expect(signalKeys(signals)).not.toContain('billing.shared_card_fingerprint');
   });
@@ -273,66 +270,134 @@ describe('billing.shared_card_fingerprint', () => {
       [agg({ partnerId: 'pA', cardFingerprint: null }), agg({ partnerId: 'pB', cardFingerprint: '  ' })],
       shared,
       SIGNAL_DEFAULTS,
-      now,
     );
     expect(signalKeys(signals)).not.toContain('billing.shared_card_fingerprint');
   });
 });
 
-describe('billing.card_testing', () => {
-  const freshSync = new Date('2026-07-24T00:00:00Z');
+describe('billing.card_testing — span-based', () => {
+  const burstStart = new Date('2026-07-25T09:00:00Z');
+  /** Same day, 7 minutes later: the flagship card-testing shape. */
+  const burstEnd = new Date('2026-07-25T09:07:00Z');
 
-  it('fires when distinct payment methods reach the threshold on a fresh snapshot', () => {
-    const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 3, identitySyncedAt: freshSync })],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      now,
+  const cardTesting = (overrides: Partial<BillingIdentityAggregate>) =>
+    computeBillingIdentitySignals([agg(overrides)], new Map(), SIGNAL_DEFAULTS).find(
+      (s) => s.signalKey === 'billing.card_testing',
     );
-    const signal = signals.find((s) => s.signalKey === 'billing.card_testing');
+
+  it('fires for 3 distinct methods inside a 7-minute span', () => {
+    const signal = cardTesting({
+      distinctPaymentMethods: 3,
+      paymentMethodsFirstSeenAt: burstStart,
+      paymentMethodsLastSeenAt: burstEnd,
+    });
     expect(signal).toBeDefined();
     expect(signal!.score).toBe(SIGNAL_DEFAULTS['billing.card_testing.base_score']);
-    expect(signal!.evidence).toMatchObject({ distinctPaymentMethods: 3, failedAttempts: 0 });
+    expect(signal!.evidence).toMatchObject({
+      distinctPaymentMethods: 3,
+      failedAttempts: 0,
+      spanMinutes: 7,
+    });
   });
 
-  it('is silent below the threshold', () => {
-    const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 2, identitySyncedAt: freshSync })],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      now,
-    );
-    expect(signalKeys(signals)).not.toContain('billing.card_testing');
+  it('does NOT fire for 3 distinct methods spanning two years', () => {
+    // A long-lived MSP replacing an expired card twice. Identical count, and an
+    // equally fresh snapshot — only the span tells the two apart.
+    expect(
+      cardTesting({
+        distinctPaymentMethods: 3,
+        paymentMethodsFirstSeenAt: new Date('2024-07-25T09:00:00Z'),
+        paymentMethodsLastSeenAt: new Date('2026-07-25T09:00:00Z'),
+        identitySyncedAt: new Date('2026-07-25T08:00:00Z'),
+      }),
+    ).toBeUndefined();
   });
 
-  it('is silent when the snapshot is older than the window', () => {
-    const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 6, identitySyncedAt: new Date('2026-06-01T00:00:00Z') })],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      now,
-    );
-    expect(signalKeys(signals)).not.toContain('billing.card_testing');
+  it('does NOT fire when both span timestamps are NULL', () => {
+    // The deploy-day case: legacy rows, or the billing service has not
+    // backfilled yet. An unknown span must never read as a zero span.
+    expect(cardTesting({ distinctPaymentMethods: 9 })).toBeUndefined();
   });
 
-  it('is silent when the snapshot was never synced', () => {
+  it('does NOT fire when only one span timestamp is present', () => {
+    expect(
+      cardTesting({ distinctPaymentMethods: 9, paymentMethodsFirstSeenAt: burstStart }),
+    ).toBeUndefined();
+    expect(
+      cardTesting({ distinctPaymentMethods: 9, paymentMethodsLastSeenAt: burstEnd }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT fire on a reversed span (bad data is not an instantaneous burst)', () => {
+    expect(
+      cardTesting({
+        distinctPaymentMethods: 9,
+        paymentMethodsFirstSeenAt: burstEnd,
+        paymentMethodsLastSeenAt: burstStart,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('fires at exactly the window boundary and is silent one millisecond past it', () => {
+    const windowMs = SIGNAL_DEFAULTS['billing.card_testing.window_days'] * 86_400_000;
+    expect(
+      cardTesting({
+        distinctPaymentMethods: 3,
+        paymentMethodsFirstSeenAt: burstStart,
+        paymentMethodsLastSeenAt: new Date(burstStart.getTime() + windowMs),
+      }),
+    ).toBeDefined();
+    expect(
+      cardTesting({
+        distinctPaymentMethods: 3,
+        paymentMethodsFirstSeenAt: burstStart,
+        paymentMethodsLastSeenAt: new Date(burstStart.getTime() + windowMs + 1),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('is silent below the method threshold even inside a tight span', () => {
+    expect(
+      cardTesting({
+        distinctPaymentMethods: 2,
+        paymentMethodsFirstSeenAt: burstStart,
+        paymentMethodsLastSeenAt: burstEnd,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('scores a legitimate multi-year partner with several cards at zero', () => {
+    // The whole aggregate, not just the card-testing branch: a cardholder that
+    // matches the account and a fingerprint held by nobody else must produce no
+    // signals at all, however many cards the account has seen over the years.
     const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 6, identitySyncedAt: null })],
+      [
+        agg({
+          partnerName: 'Nordvane',
+          userNames: ['Rosalind Quibley'],
+          emails: ['rosalind@nordvane.example'],
+          cardholderName: 'Rosalind Quibley',
+          cardFingerprint: 'fpr_zzxq1',
+          distinctPaymentMethods: 5,
+          failedAttempts: 3,
+          paymentMethodsFirstSeenAt: new Date('2022-01-04T00:00:00Z'),
+          paymentMethodsLastSeenAt: new Date('2026-07-01T00:00:00Z'),
+          identitySyncedAt: new Date('2026-07-25T08:00:00Z'),
+        }),
+      ],
       new Map(),
       SIGNAL_DEFAULTS,
-      now,
     );
-    expect(signalKeys(signals)).not.toContain('billing.card_testing');
+    expect(signals).toEqual([]);
   });
 
   it('escalates with extra methods and failed attempts', () => {
-    const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 5, failedAttempts: 4, identitySyncedAt: freshSync })],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      now,
-    );
-    const signal = signals.find((s) => s.signalKey === 'billing.card_testing');
+    const signal = cardTesting({
+      distinctPaymentMethods: 5,
+      failedAttempts: 4,
+      paymentMethodsFirstSeenAt: burstStart,
+      paymentMethodsLastSeenAt: burstEnd,
+    });
     expect(signal!.score).toBe(
       SIGNAL_DEFAULTS['billing.card_testing.base_score'] +
         SIGNAL_DEFAULTS['billing.card_testing.per_extra_method'] * 2 +
@@ -342,35 +407,48 @@ describe('billing.card_testing', () => {
   });
 
   it('clamps the score at 100', () => {
-    const signals = computeBillingIdentitySignals(
-      [agg({ distinctPaymentMethods: 40, failedAttempts: 40, identitySyncedAt: freshSync })],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      now,
-    );
-    const signal = signals.find((s) => s.signalKey === 'billing.card_testing');
+    const signal = cardTesting({
+      distinctPaymentMethods: 40,
+      failedAttempts: 40,
+      paymentMethodsFirstSeenAt: burstStart,
+      paymentMethodsLastSeenAt: burstEnd,
+    });
     expect(signal!.score).toBe(100);
   });
 });
 
+describe('spanMilliseconds', () => {
+  const first = new Date('2026-07-25T09:00:00Z');
+  const last = new Date('2026-07-25T09:07:00Z');
+
+  it('returns the elapsed milliseconds for a coherent pair', () => {
+    expect(spanMilliseconds(first, last)).toBe(7 * 60_000);
+  });
+
+  it('returns 0 for identical bounds', () => {
+    expect(spanMilliseconds(first, first)).toBe(0);
+  });
+
+  it('returns null — never 0 — when either bound is missing', () => {
+    expect(spanMilliseconds(null, last)).toBeNull();
+    expect(spanMilliseconds(first, null)).toBeNull();
+    expect(spanMilliseconds(null, null)).toBeNull();
+  });
+
+  it('returns null for a reversed pair', () => {
+    expect(spanMilliseconds(last, first)).toBeNull();
+  });
+});
+
 describe('never age-decays', () => {
-  it('scores an old account exactly like a brand-new one', () => {
-    // The scorer takes no partner creation date at all — this asserts the
-    // signature/behaviour rather than a decayed value.
+  it('takes no clock, so a signal cannot weaken as the account ages', () => {
+    // The scorer's signature carries neither `now` nor partnerCreatedAt, which
+    // is what makes "never age-decayed" structural rather than a convention.
     const aggregate = agg({ cardholderName: 'Bartholomew Pfennig' });
-    const early = computeBillingIdentitySignals(
-      [aggregate],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      new Date('2026-01-01T00:00:00Z'),
-    );
-    const late = computeBillingIdentitySignals(
-      [aggregate],
-      new Map(),
-      SIGNAL_DEFAULTS,
-      new Date('2029-01-01T00:00:00Z'),
-    );
-    expect(early[0]!.score).toBe(late[0]!.score);
+    const first = computeBillingIdentitySignals([aggregate], new Map(), SIGNAL_DEFAULTS);
+    const second = computeBillingIdentitySignals([aggregate], new Map(), SIGNAL_DEFAULTS);
+    expect(first).toEqual(second);
+    expect(first[0]!.score).toBe(SIGNAL_DEFAULTS['billing.cardholder_name_mismatch.score']);
   });
 });
 

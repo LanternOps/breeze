@@ -43,8 +43,17 @@ export interface BillingIdentityAggregate {
   /** Provider-side opaque card fingerprint; NULL for wallet/Link payments. */
   cardFingerprint: string | null;
   distinctPaymentMethods: number;
+  /**
+   * Bounds of the interval distinctPaymentMethods was accumulated over.
+   * billing.card_testing scores the SPAN between them — three cards seven
+   * minutes apart and three cards two years apart are the same count and
+   * completely different events. Either being NULL means the span is unknown,
+   * which must fail closed rather than read as a zero span.
+   */
+  paymentMethodsFirstSeenAt: Date | null;
+  paymentMethodsLastSeenAt: Date | null;
   failedAttempts: number;
-  /** When the billing service last refreshed this snapshot. */
+  /** When the billing service last refreshed this snapshot. Evidence only. */
   identitySyncedAt: Date | null;
 }
 
@@ -204,6 +213,18 @@ export function buildIdentityTokens(
   return tokens;
 }
 
+/**
+ * Milliseconds between two snapshot bounds, or null when the span is unknown
+ * (either bound missing) or incoherent (last before first). Null is never a
+ * zero span — every caller must treat it as "do not fire".
+ */
+export function spanMilliseconds(first: Date | null, last: Date | null): number | null {
+  if (first === null || last === null) return null;
+  const span = last.getTime() - first.getTime();
+  if (!Number.isFinite(span) || span < 0) return null;
+  return span;
+}
+
 export interface BillingIdentityScorerOptions {
   /** Injectable for tests; defaults to FREE_EMAIL_PROVIDER_LABELS. */
   freeEmailProviderLabels?: ReadonlySet<string>;
@@ -215,19 +236,22 @@ export interface BillingIdentityScorerOptions {
  *     meaningful token with the account identity.
  *   - billing.shared_card_fingerprint — the same non-null fingerprint appears
  *     under >= min_partners distinct partners in the corpus.
- *   - billing.card_testing — >= distinct_methods payment methods on a snapshot
- *     that is still inside the window.
+ *   - billing.card_testing — >= distinct_methods payment methods accumulated
+ *     inside a span of <= window_days.
  *
  * Known miss, on purpose: a cardholder sharing a token with the partner name
  * never fires. Tightening that (e.g. requiring a PERSON-name match) starts
  * flagging every operator who pays with a spouse's or parent company's card,
- * which is common and legitimate. Deliberately no youngWeight()/age decay.
+ * which is common and legitimate.
+ *
+ * Takes no clock at all — not `now`, not partnerCreatedAt — which is what makes
+ * "never age-decayed" structural rather than a convention, same as
+ * computeScriptSignals.
  */
 export function computeBillingIdentitySignals(
   aggregates: readonly BillingIdentityAggregate[],
   sharedFingerprints: ReadonlyMap<string, number>,
   cfg: SignalConfig,
-  now: Date,
   options: BillingIdentityScorerOptions = {},
 ): ComputedSignal[] {
   const freeLabels = options.freeEmailProviderLabels ?? FREE_EMAIL_PROVIDER_LABELS;
@@ -292,15 +316,20 @@ export function computeBillingIdentitySignals(
     }
 
     // --- billing.card_testing ---------------------------------------------
-    // The write side supplies a point-in-time distinct-method COUNT, not
-    // per-method timestamps, so the "short window" is applied to snapshot
-    // freshness: a count last refreshed outside window_days is history, not
-    // current evidence, and must not keep an open signal alive forever.
+    // N distinct payment methods accumulated INSIDE a short span. The span —
+    // not the count, and not snapshot recency — is what separates a testing
+    // burst from a long-lived account that has replaced an expired card a few
+    // times: both show the same count, and both may have synced this morning.
+    //
+    // Fails closed on an unknown span. A NULL first/last-seen (legacy row, or
+    // the billing service has not backfilled yet) is NOT a zero span; treating
+    // it as one would fire for every pre-existing partner with 3+ lifetime
+    // cards the moment this ships. Same for a reversed pair, which is bad data
+    // rather than an instantaneous burst.
     const methodThreshold = cfg['billing.card_testing.distinct_methods'];
     const windowMs = cfg['billing.card_testing.window_days'] * 86_400_000;
-    const syncAgeMs = a.identitySyncedAt ? now.getTime() - a.identitySyncedAt.getTime() : null;
-    const fresh = syncAgeMs !== null && syncAgeMs >= 0 && syncAgeMs <= windowMs;
-    if (fresh && a.distinctPaymentMethods >= methodThreshold) {
+    const spanMs = spanMilliseconds(a.paymentMethodsFirstSeenAt, a.paymentMethodsLastSeenAt);
+    if (spanMs !== null && spanMs <= windowMs && a.distinctPaymentMethods >= methodThreshold) {
       push(
         'billing.card_testing',
         cfg['billing.card_testing.base_score'] +
@@ -309,7 +338,9 @@ export function computeBillingIdentitySignals(
         {
           distinctPaymentMethods: a.distinctPaymentMethods,
           failedAttempts: a.failedAttempts,
-          identitySyncedAt: a.identitySyncedAt?.toISOString() ?? null,
+          spanMinutes: Number((spanMs / 60_000).toFixed(1)),
+          paymentMethodsFirstSeenAt: a.paymentMethodsFirstSeenAt?.toISOString() ?? null,
+          paymentMethodsLastSeenAt: a.paymentMethodsLastSeenAt?.toISOString() ?? null,
         },
       );
     }
@@ -333,11 +364,20 @@ interface AggregateRow {
   billing_cardholder_name: string | null;
   billing_card_fingerprint: string | null;
   billing_distinct_payment_methods: number | string | null;
+  billing_payment_methods_first_seen_at: string | Date | null;
+  billing_payment_methods_last_seen_at: string | Date | null;
   billing_failed_attempts: number | string | null;
   billing_identity_synced_at: string | Date | null;
   user_names: unknown;
   user_emails: unknown;
 }
+
+/** Parse a timestamptz column; an unparseable value is "unknown", never epoch. */
+const toDate = (value: string | Date | null): Date | null => {
+  if (value === null) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
@@ -367,6 +407,8 @@ export async function loadBillingIdentityAggregates(): Promise<BillingIdentityRe
         p.billing_cardholder_name,
         p.billing_card_fingerprint,
         p.billing_distinct_payment_methods,
+        p.billing_payment_methods_first_seen_at,
+        p.billing_payment_methods_last_seen_at,
         p.billing_failed_attempts,
         p.billing_identity_synced_at
       FROM partners p
@@ -406,6 +448,8 @@ export async function loadBillingIdentityAggregates(): Promise<BillingIdentityRe
       s.billing_cardholder_name,
       s.billing_card_fingerprint,
       s.billing_distinct_payment_methods,
+      s.billing_payment_methods_first_seen_at,
+      s.billing_payment_methods_last_seen_at,
       s.billing_failed_attempts,
       s.billing_identity_synced_at,
       COALESCE(m.user_names, '{}') AS user_names,
@@ -424,8 +468,10 @@ export async function loadBillingIdentityAggregates(): Promise<BillingIdentityRe
       cardholderName: r.billing_cardholder_name,
       cardFingerprint: r.billing_card_fingerprint,
       distinctPaymentMethods: Number(r.billing_distinct_payment_methods ?? 0),
+      paymentMethodsFirstSeenAt: toDate(r.billing_payment_methods_first_seen_at),
+      paymentMethodsLastSeenAt: toDate(r.billing_payment_methods_last_seen_at),
       failedAttempts: Number(r.billing_failed_attempts ?? 0),
-      identitySyncedAt: r.billing_identity_synced_at ? new Date(String(r.billing_identity_synced_at)) : null,
+      identitySyncedAt: toDate(r.billing_identity_synced_at),
     };
   });
 

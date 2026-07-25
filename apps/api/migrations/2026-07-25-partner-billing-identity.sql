@@ -22,14 +22,23 @@
 --
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps each file).
 
+-- billing_payment_methods_first_seen_at / _last_seen_at bound the interval the
+-- distinct-method count was accumulated over. billing.card_testing fires on
+-- that SPAN, not on the count alone: "3 distinct cards in 7 minutes" and "3
+-- distinct cards over 2 years" are the same count and completely different
+-- events. Both are nullable, and a NULL span is never treated as a zero span —
+-- the detector fails closed so legacy rows and un-backfilled partners cannot
+-- fire on deploy day.
 ALTER TABLE partners
-  ADD COLUMN IF NOT EXISTS billing_cardholder_name          text,
-  ADD COLUMN IF NOT EXISTS billing_card_country             char(2),
-  ADD COLUMN IF NOT EXISTS billing_card_fingerprint         text,
-  ADD COLUMN IF NOT EXISTS billing_distinct_payment_methods integer NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS billing_failed_attempts          integer NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS billing_identity_synced_at       timestamptz,
-  ADD COLUMN IF NOT EXISTS billing_subscription_status      text;
+  ADD COLUMN IF NOT EXISTS billing_cardholder_name               text,
+  ADD COLUMN IF NOT EXISTS billing_card_country                  char(2),
+  ADD COLUMN IF NOT EXISTS billing_card_fingerprint              text,
+  ADD COLUMN IF NOT EXISTS billing_distinct_payment_methods      integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS billing_payment_methods_first_seen_at timestamptz,
+  ADD COLUMN IF NOT EXISTS billing_payment_methods_last_seen_at  timestamptz,
+  ADD COLUMN IF NOT EXISTS billing_failed_attempts               integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS billing_identity_synced_at            timestamptz,
+  ADD COLUMN IF NOT EXISTS billing_subscription_status           text;
 
 -- Partial index: the shared-fingerprint correlation groups over non-NULL
 -- fingerprints across ALL partners, and the vast majority of rows are NULL.

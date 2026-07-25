@@ -54,6 +54,11 @@ export const partners = pgTable('partners', {
   billingCardCountry: char('billing_card_country', { length: 2 }),
   billingCardFingerprint: text('billing_card_fingerprint'),
   billingDistinctPaymentMethods: integer('billing_distinct_payment_methods').notNull().default(0),
+  // Bounds of the interval the distinct-method count was accumulated over.
+  // billing.card_testing fires on the SPAN between these, never on the count
+  // alone. NULL means "unknown span" and must fail closed, never zero.
+  billingPaymentMethodsFirstSeenAt: timestamp('billing_payment_methods_first_seen_at', { withTimezone: true }),
+  billingPaymentMethodsLastSeenAt: timestamp('billing_payment_methods_last_seen_at', { withTimezone: true }),
   billingFailedAttempts: integer('billing_failed_attempts').notNull().default(0),
   billingIdentitySyncedAt: timestamp('billing_identity_synced_at', { withTimezone: true }),
   billingSubscriptionStatus: text('billing_subscription_status'),
