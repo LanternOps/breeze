@@ -546,8 +546,11 @@ async function repairIncompleteEntry(
   console.warn(
     `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
   );
-  const queued = await queueDrainUninstalls(orgIds, null);
+  // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
+  // that lifts a superseded token suspension, so queueing before it would leave
+  // a window where the uninstall exists but the fleet is still 401ing.
   await prepareAgentDrainForOrgIds(orgIds);
+  const queued = await queueDrainUninstalls(orgIds, null);
 
   if (scope === 'organization') {
     await db

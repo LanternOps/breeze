@@ -139,17 +139,43 @@ export async function severAgentCredentialsForOrgIds(
  * draining tenant must not keep an interactive control channel). Agent tokens
  * are deliberately left untouched: they are the delivery path for the queued
  * self_uninstall.
+ *
+ * #2785: "left untouched" is not enough when the drain is entered from
+ * `suspended`/`churned`, where an earlier sever already set
+ * devices.agentTokenSuspendedAt. agentAuthMiddleware checks that column BEFORE
+ * it consults the tenant state (agentAuth.ts: suspension 401 precedes the
+ * getAgentTenantState drain narrowing), so those devices 401 on every poll for
+ * the whole drain window and the queued self_uninstall is undeliverable by
+ * construction — the exact failure #2774 exists to remove. So the drain also
+ * LIFTS the suspensions it is superseding, reusing
+ * restoreAgentCredentialsForOrgIds for its narrowness: scoped to these orgIds
+ * and to reason=TENANT_SUSPENDED_TOKEN_REASON, so a cross-tenant-probe
+ * suspension (or any other reason tag) survives the transition untouched.
  */
 export async function prepareAgentDrainForOrgIds(
   orgIds: string[]
-): Promise<{ enrollmentKeysInvalidated: number }> {
+): Promise<{ enrollmentKeysInvalidated: number; agentTokensRestored: number }> {
   if (orgIds.length === 0) {
-    return { enrollmentKeysInvalidated: 0 };
+    return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
   }
 
   await invalidateAgentTenantCache(orgIds);
   const enrollmentKeysInvalidated = await expireEnrollmentKeysForOrgIds(orgIds, new Date());
   await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
+  // Lift the superseded tenant-suspensions AFTER the socket sever, not before:
+  // clearing the flag re-opens this fleet's auth gate, and a device that
+  // reconnected between the restore and the sever sweep's device read would keep
+  // a full WS control channel until the reaper's next re-sweep. Callers
+  // (begin*Offboarding) await this whole function before queueDrainUninstalls,
+  // so the unsuspend still lands before any self_uninstall is queued.
+  const { agentTokensRestored } = await restoreAgentCredentialsForOrgIds(orgIds);
+  if (agentTokensRestored > 0) {
+    // Operationally load-bearing: this is the only signal that a drain was
+    // entered from an already-severed state, i.e. the stranded-fleet case.
+    console.warn(
+      `[tenantLifecycle] drain entry lifted ${agentTokensRestored} superseded tenant-suspension(s) so the queued self_uninstall is deliverable`
+    );
+  }
   // Invalidate a SECOND time, after the teardown. In sever mode the cache is
   // only an optimization (agentTokenSuspendedAt is the real-time cutoff), but
   // in drain mode tokens stay alive, so this cache IS the gate: a read that
@@ -160,7 +186,7 @@ export async function prepareAgentDrainForOrgIds(
   // socket re-sweep bounds whatever still slips through.
   await invalidateAgentTenantCache(orgIds);
 
-  return { enrollmentKeysInvalidated };
+  return { enrollmentKeysInvalidated, agentTokensRestored };
 }
 
 /**
@@ -169,6 +195,13 @@ export async function prepareAgentDrainForOrgIds(
  * probe suspensions intact. Expired enrollment keys are NOT un-expired —
  * operators regenerate keys; silently reviving an arbitrarily old key would be
  * wrong.
+ *
+ * Two callers, both narrow by construction: reactivation
+ * (restore{Organization,Partner}TenantAccess) and drain entry
+ * (prepareAgentDrainForOrgIds, #2785). Both pass an explicit org-id list, and
+ * the reason-tag equality is the second half of the guard — keep BOTH
+ * predicates on any future edit, or a drain/reactivation would silently lift a
+ * security-driven suspension.
  */
 async function restoreAgentCredentialsForOrgIds(orgIds: string[]): Promise<TenantRestorationResult> {
   if (orgIds.length === 0) return { agentTokensRestored: 0 };
