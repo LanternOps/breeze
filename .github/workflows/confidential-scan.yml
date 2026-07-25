@@ -1,0 +1,35 @@
+name: Confidential Scan
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  confidential:
+    name: Confidential info
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Non-bypassable backstop for the .githooks/pre-commit scan: catches prod
+      # infra identifiers (IPs, DB cluster ids) that gitleaks does not model.
+      # The exact-value denylist is supplied out-of-band via a repo secret so
+      # the values never live in this public repo. Absent the secret, the
+      # pattern checks still run.
+      - name: Scan for confidential identifiers
+        env:
+          CONFIDENTIAL_DENYLIST: ${{ secrets.CONFIDENTIAL_DENYLIST }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${CONFIDENTIAL_DENYLIST:-}" ]]; then
+            deny="$(mktemp)"
+            printf '%s\n' "$CONFIDENTIAL_DENYLIST" > "$deny"
+            export CONFIDENTIAL_DENYLIST_FILE="$deny"
+          fi
+          bash scripts/security/scan-confidential.sh --all
