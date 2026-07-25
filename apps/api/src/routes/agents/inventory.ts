@@ -19,6 +19,7 @@ import {
   updateNetworkSchema,
 } from './schemas';
 import { sanitizeDate } from './helpers';
+import { retryOnTransientLockError } from '../../utils/pgErrors';
 import { upsertAgentWarranty } from '../../services/warrantySync';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
@@ -105,7 +106,13 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     return c.json({ error: 'Device not found' }, 404);
   }
 
-  await db.transaction(async (tx) => {
+  // The ordering below makes the BREEZE-3 deadlock unreachable against the
+  // risk-score pass, but device_vulnerabilities has other writers (correlation,
+  // status changes, the waiver reaper). Losing a lock race to one of those must
+  // not cost the whole inventory report the way it did before — this route runs
+  // inside agentAuth's request-long context, so `db.transaction` is a SAVEPOINT
+  // and is safe to re-run (see retryOnTransientLockError).
+  await retryOnTransientLockError(`Inventory software device=${device.id}`, () => db.transaction(async (tx) => {
     // The wipe-and-reinsert below churns software_inventory row ids, and
     // device_vulnerabilities.software_inventory_id references them (ON DELETE
     // SET NULL). The fleet aggregation layer displays a NULL-linked finding as
@@ -113,6 +120,25 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     // repair every software report would misclassify the device's software
     // findings in the UI until the next correlation run. Capture what each
     // finding pointed at, then re-link to the replacement row.
+    //
+    // `FOR UPDATE OF device_vulnerabilities` + `ORDER BY device_vulnerabilities.id`
+    // is load-bearing, not a tidy-up: it is the fix for the BREEZE-3/BREEZE-W
+    // deadlock pair (pg 40P01, ~4k dropped software reports in 6 days).
+    //
+    // This select covers exactly the findings the DELETE below will touch via
+    // the ON DELETE SET NULL cascade, and exactly the ones the re-link UPDATEs
+    // touch afterwards. Without the locking clause this transaction acquired
+    // its device_vulnerabilities row locks implicitly, in whatever order the
+    // FK cascade walked software_inventory — which is NOT id order. The
+    // `risk-score-refresh` pass walks the same rows ordered by id (one UPDATE
+    // per row, see refreshRiskScores in jobs/vulnerabilityJobs.ts), so the two
+    // acquired the same locks in opposite orders and Postgres killed one side.
+    //
+    // #2751 added the ORDER BY on the refresh side only; that is not enough,
+    // and BREEZE-W kept firing on 0.100.0 with the ordering already shipped.
+    // Both sides must ascend by id — two ascending acquirers cannot form a
+    // cycle. Locking here up front pins the whole set in id order before the
+    // cascade can invert it.
     const linkedFindings = await tx
       .select({
         findingId: deviceVulnerabilities.id,
@@ -124,7 +150,12 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
       .where(and(
         eq(deviceVulnerabilities.deviceId, device.id),
         eq(softwareInventory.deviceId, device.id)
-      ));
+      ))
+      .orderBy(deviceVulnerabilities.id)
+      // Only the findings — locking the joined software_inventory rows here too
+      // would be harmless (the DELETE takes them immediately after) but adds
+      // nothing, and `OF` keeps the intent explicit.
+      .for('update', { of: deviceVulnerabilities });
 
     await tx
       .delete(softwareInventory)
@@ -225,7 +256,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
         `[Inventory] Software report for device ${device.id} emptied the inventory and detached ${linkedFindings.length} vuln finding link(s)`
       );
     }
-  });
+  }));
 
   return c.json({ success: true, count: data.software.length });
 });
