@@ -204,6 +204,14 @@ import {
   shutdownAuditChainAnchorWorker,
 } from './jobs/auditChainAnchor';
 import { initializeTenantErasureWorker, shutdownTenantErasureWorker } from './jobs/tenantErasure';
+import {
+  initializeDesktopSessionFinalizationWorker,
+  shutdownDesktopSessionFinalizationWorker,
+} from './jobs/desktopSessionFinalizationWorker';
+import {
+  initializeDesktopSessionOrphanRecovery,
+  shutdownDesktopSessionOrphanRecovery,
+} from './services/desktopSessionOrphanRecovery';
 import { initializeDiscoveryWorker, shutdownDiscoveryWorker } from './jobs/discoveryWorker';
 import { initializeNetworkBaselineWorker, shutdownNetworkBaselineWorker } from './jobs/networkBaselineWorker';
 import { initializeSnmpWorker, shutdownSnmpWorker } from './jobs/snmpWorker';
@@ -1236,6 +1244,8 @@ async function initializeWorkers(): Promise<void> {
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
     ['tenantErasure', initializeTenantErasureWorker],
+    ['desktopSessionFinalization', initializeDesktopSessionFinalizationWorker],
+    ['desktopSessionOrphanRecovery', initializeDesktopSessionOrphanRecovery],
     ['playbookRetention', initializePlaybookRetention],
     ['discoveryWorker', initializeDiscoveryWorker],
     ['networkBaselineWorker', initializeNetworkBaselineWorker],
@@ -1437,6 +1447,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
     shutdownTenantErasureWorker,
+    shutdownDesktopSessionOrphanRecovery,
+    shutdownDesktopSessionFinalizationWorker,
     shutdownPlaybookRetention,
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
