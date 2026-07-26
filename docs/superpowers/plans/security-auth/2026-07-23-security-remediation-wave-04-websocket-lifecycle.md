@@ -640,6 +640,21 @@ belongs to no other in-flight wave):
 Keep the delete-last and idempotency guarantees intact across the merged slice; a combined slice is
 not licence to relax either.
 
+**D3 — `remote/sessions.ts` is in scope for the 5+6 slice (approved 2026-07-25).** Task 2 made
+`revokeViewerSession` fail closed: it now throws `viewer session revocation unavailable` when Redis
+is down. That is correct — never report a token revoked when it was not. But
+`apps/api/src/routes/remote/sessions.ts` awaits it unguarded at two call sites (~:1087, ~:1225), so
+a Redis outage during a consent-deny now aborts the rest of the handler, skipping both the denial
+audit and the desktop safety stop.
+
+Fail-closed on the TOKEN must not become fail-open on the STREAM. Ensure the desktop safety stop is
+attempted and the denial is audited even when viewer revocation throws, and that the request still
+fails closed to the caller. Do not "fix" this by making revocation swallow its error.
+
+**Out of scope here, deferred to Task 4:** `apps/api/src/routes/agentWs.ts`, where stale or
+superseded agent sockets can still submit stop results and need exact delivery-epoch proof. That
+file is already assigned to Task 4, which runs after Task 7 in the corrected order.
+
 Two scope corrections, folded into Task 4:
 
 - `apps/api/src/routes/agentWs.ts` has an identifier-only late terminal-start failure callback that
