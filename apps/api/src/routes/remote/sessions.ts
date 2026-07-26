@@ -1084,7 +1084,22 @@ sessionRoutes.post(
 
     // Kill any viewer token so a lingering token can't resurrect the denied
     // session via /viewer/offer.
-    await revokeViewerSession(sessionId);
+    let viewerRevocationError: unknown;
+    try {
+      await revokeViewerSession(sessionId);
+    } catch (error) {
+      viewerRevocationError = error;
+    }
+
+    // Token revocation failure must not leave the peer-to-peer desktop stream
+    // running. Attempt the agent-side safety stop before surfacing the failure.
+    if (session.type === 'desktop' && device.agentId) {
+      sendCommandToAgent(device.agentId, {
+        id: `desk-stop-${sessionId}`,
+        type: 'stop_desktop',
+        payload: { sessionId },
+      });
+    }
 
     // A genuine user denial or consent timeout is a "denied" decision; any other
     // reason (no user present, helper absent, policy chose proceed-then-block)
@@ -1098,6 +1113,10 @@ sessionRoutes.post(
       { sessionId, type: session.type, reason },
       getTrustedClientIpOrUndefined(c)
     );
+
+    if (viewerRevocationError) {
+      throw viewerRevocationError;
+    }
 
     return c.json({
       id: updated.id,
@@ -1222,7 +1241,12 @@ sessionRoutes.post(
     // token stays valid for its full lifetime (VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
     // in services/jwt.ts — not a hard-coded "2h" here so the two can't drift)
     // and could be replayed to reconnect after the operator clicked End.
-    await revokeViewerSession(sessionId);
+    let viewerRevocationError: unknown;
+    try {
+      await revokeViewerSession(sessionId);
+    } catch (error) {
+      viewerRevocationError = error;
+    }
 
     // Tell the agent to tear down the live stream. Revoking the viewer token
     // only blocks NEW/reconnecting viewers and the legacy WS path; the WebRTC
@@ -1253,6 +1277,10 @@ sessionRoutes.post(
       },
       getTrustedClientIpOrUndefined(c)
     );
+
+    if (viewerRevocationError) {
+      throw viewerRevocationError;
+    }
 
     return c.json({
       id: updated.id,
