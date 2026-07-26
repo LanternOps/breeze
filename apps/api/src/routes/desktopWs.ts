@@ -51,6 +51,13 @@ import {
 } from '../services/desktopSessionFinalization';
 import { enqueueDesktopSessionFinalization } from '../jobs/desktopSessionFinalizationWorker';
 import { ensureDesktopStreamStopped } from '../services/desktopSessionStop';
+import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  assertRemoteWsUpgradeRuntimeReady,
+  getRemoteWsUpgradeConnection,
+  requireRemoteWsUpgrade,
+  type RemoteWsUpgradeContext,
+} from '../services/remoteWsUpgrade';
 
 // Zod validation for desktop user messages
 const desktopInputEvent = z.object({
@@ -570,6 +577,37 @@ function reportRetainedDesktopCleanup(
   });
 }
 
+async function validateDesktopUpgradeContext(
+  context: RemoteWsUpgradeContext,
+): Promise<Awaited<ReturnType<typeof validateDesktopAccess>>> {
+  const result = context.authorizationPhase === 'complete'
+    ? { ok: true as const, context: context.authorization }
+    : await authorizeConsumedRemoteWsTicket(context.ticket);
+  if (!result.ok) return { valid: false, error: result.reason };
+  const authorization = result.context;
+  return {
+    valid: true,
+    userId: authorization.userId,
+    session: {
+      id: authorization.sessionId,
+      type: 'desktop',
+      userId: authorization.userId,
+      deviceId: authorization.deviceId,
+      orgId: authorization.orgId,
+      status: 'pending',
+    } as typeof remoteSessions.$inferSelect,
+    device: {
+      id: authorization.deviceId,
+      orgId: authorization.orgId,
+      siteId: authorization.siteId,
+      agentId: authorization.agentId,
+      hostname: authorization.deviceHostname ?? '',
+      osType: authorization.deviceOsType ?? '',
+      status: 'online',
+    } as typeof devices.$inferSelect,
+  };
+}
+
 /**
  * Create WebSocket handlers for desktop session
  */
@@ -578,12 +616,27 @@ function createDesktopWsHandlers(
   ticket: string | undefined,
   caller: { ip: string; userAgent: string },
   sharedLeases: RemoteWsSharedLeaseManager,
+  upgradeContext?: RemoteWsUpgradeContext,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateDesktopAccess>> | null = null;
   let connectionIdentity: RemoteConnectionIdentity | null = null;
-  const validationPromise = validateDesktopAccess(sessionId, ticket, caller).then(result => {
+  const validationPromise = (
+    upgradeContext
+      ? validateDesktopUpgradeContext(upgradeContext)
+      : validateDesktopAccess(sessionId, ticket, caller)
+  ).then(result => {
     validationResult = result;
   });
+  const releaseOpeningReservation = async () => {
+    if (!upgradeContext) return;
+    removeExactLocalRemoteConnection(
+      activeDesktopSessions,
+      sessionId,
+      getRemoteWsUpgradeConnection(upgradeContext),
+    );
+    upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
+    await sharedLeases.release(upgradeContext.sharedClaim);
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -599,6 +652,7 @@ function createDesktopWsHandlers(
         await validationPromise;
 
         if (!validationResult || !validationResult.valid) {
+          await releaseOpeningReservation();
           console.warn(`Desktop WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -611,11 +665,13 @@ function createDesktopWsHandlers(
 
         const { session, device, userId } = validationResult;
         if (!session || !device || !userId) {
+          await releaseOpeningReservation();
           ws.close(4001, 'Invalid session data');
           return;
         }
 
         if (!isAgentConnected(device.agentId)) {
+          await releaseOpeningReservation();
           ws.send(JSON.stringify({
             type: 'error',
             code: 'AGENT_OFFLINE',
@@ -626,7 +682,7 @@ function createDesktopWsHandlers(
         }
 
         // E1: Redis-backed rate limit user WS connections (fail-closed)
-        if (await isUserDesktopWsRateLimited(userId)) {
+        if (!upgradeContext && await isUserDesktopWsRateLimited(userId)) {
           console.warn(`Desktop WebSocket rate limited for user ${userId}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -637,7 +693,9 @@ function createDesktopWsHandlers(
           return;
         }
 
-        const acquired = await sharedLeases.acquire('desktop', sessionId);
+        const acquired = upgradeContext
+          ? { ok: true as const, claim: upgradeContext.sharedClaim }
+          : await sharedLeases.acquire('desktop', sessionId);
         if (!acquired.ok) {
           ws.close(
             acquired.reason === 'already_owned'
@@ -655,32 +713,55 @@ function createDesktopWsHandlers(
         validated = true;
 
         const now = Date.now();
-        const installed = installLocalRemoteConnection(
-          activeDesktopSessions,
-          sessionId,
-          acquired.claim,
-          (claim): DesktopSession => ({
-            ...claim,
-            state: 'opening',
-            userWs: null,
-            sharedOwner: claim,
-            sharedLeases,
+        const existingReservation = upgradeContext
+          ? activeDesktopSessions.get(sessionId)
+          : undefined;
+        if (existingReservation && upgradeContext) {
+          Object.assign(existingReservation, {
             agentId: device.agentId,
             userId,
             deviceId: device.id,
             orgId: device.orgId,
             startedAt: new Date(),
             lastPongAt: now,
-            inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
-            inputLastRefillMs: now,
-            inputOverageLogged: false,
-            inputEvents: 0,
-            frameBytes: 0,
-            detachComplete: false,
-            stopConfirmed: false,
-            intentAcknowledged: false,
-          }),
-        );
+          });
+        }
+        const installed = upgradeContext
+          ? (
+              existingReservation
+              && existingReservation.connectionId === acquired.claim.connectionId
+              && existingReservation.generation === acquired.claim.generation
+              && existingReservation.instanceId === acquired.claim.instanceId
+              && existingReservation.leaseToken === acquired.claim.leaseToken
+                ? { ok: true as const }
+                : { ok: false as const, reason: 'already_owned' as const }
+            )
+          : installLocalRemoteConnection(
+              activeDesktopSessions,
+              sessionId,
+              acquired.claim,
+              (claim): DesktopSession => ({
+                ...claim,
+                state: 'opening',
+                userWs: null,
+                sharedOwner: claim,
+                sharedLeases,
+                agentId: device.agentId,
+                userId,
+                deviceId: device.id,
+                orgId: device.orgId,
+                startedAt: new Date(),
+                lastPongAt: now,
+                inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
+                inputLastRefillMs: now,
+                inputOverageLogged: false,
+                inputEvents: 0,
+                frameBytes: 0,
+                detachComplete: false,
+                stopConfirmed: false,
+                intentAcknowledged: false,
+              }),
+            );
         if (!installed.ok) {
           await sharedLeases.release(acquired.claim);
           ws.close(4009, 'Desktop session already owned');
@@ -1012,6 +1093,8 @@ function createDesktopWsHandlers(
           });
         } else if (frameCallbackRegistered) {
           unregisterDesktopFrameCallback(sessionId);
+        } else {
+          await releaseOpeningReservation();
         }
 
         try {
@@ -1177,6 +1260,7 @@ export function createDesktopWsRoutes(
   upgradeWebSocket: Function,
   options: { sharedLeases?: RemoteWsSharedLeaseManager } = {},
 ): Hono {
+  assertRemoteWsUpgradeRuntimeReady();
   const app = new Hono();
 
   // Health check for debugging route registration
@@ -1468,7 +1552,49 @@ export function createDesktopWsRoutes(
   // GET /api/v1/desktop-ws/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
+    async (c, next) => {
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return c.json({ error: 'Remote ownership unavailable' }, 503);
+      }
+      return requireRemoteWsUpgrade({
+        expectedType: 'desktop',
+        sharedLeases,
+        installLocal: (sessionId, claim) => {
+          const now = Date.now();
+          return installLocalRemoteConnection(
+            activeDesktopSessions,
+            sessionId,
+            claim,
+            (shared): DesktopSession => ({
+              ...shared,
+              state: 'opening',
+              userWs: null,
+              sharedOwner: shared,
+              sharedLeases,
+              agentId: '',
+              userId: '',
+              deviceId: '',
+              orgId: '',
+              startedAt: new Date(),
+              lastPongAt: now,
+              inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
+              inputLastRefillMs: now,
+              inputOverageLogged: false,
+              inputEvents: 0,
+              frameBytes: 0,
+              detachComplete: false,
+              stopConfirmed: false,
+              intentAcknowledged: false,
+            }),
+          );
+        },
+        removeLocal: (sessionId, claim) =>
+          removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, claim),
+      })(c, next);
+    },
     upgradeWebSocket((c: {
+      get?: (key: string) => unknown;
       req: {
         param: (key: string) => string;
         query: (key: string) => string | undefined;
@@ -1493,7 +1619,8 @@ export function createDesktopWsRoutes(
           onError: () => undefined,
         };
       }
-      return createDesktopWsHandlers(sessionId, ticket, caller, sharedLeases);
+      const context = c.get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
+      return createDesktopWsHandlers(sessionId, ticket, caller, sharedLeases, context);
     })
   );
 

@@ -222,9 +222,59 @@ If the API container fails to start after an upgrade due to a migration error, f
   Migrations run inside a transaction. If a migration fails partway through, the transaction is rolled back and no partial changes are applied. The API will not start until all migrations succeed.
 </Aside>
 
+## Remote-access lease cutover
+
+The first release that enables shared remote-session ownership is a **barrier
+deployment**. Do not use a rolling or blue-green handoff for that release:
+legacy API processes can mint credentials that the new pre-upgrade admission
+path must not accept.
+
+<Steps>
+
+1. Set `REMOTE_ACCESS_ADMISSION_MODE=closed`,
+   `REMOTE_WS_AUTH_MODE=post_upgrade`, and
+   `REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary`. Recreate Caddy and
+   verify every terminal, desktop, VNC, WebSocket-tunnel, and HTTP-tunnel
+   issuer/consumer returns `503` with `Retry-After`.
+
+2. Stop the entire old API pool. Verify no old API process, WebSocket, or
+   tunnel-HTTP consumer remains reachable. Record the verified UTC stop times
+   in `REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT` and
+   `REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT`.
+
+3. Keep admission closed for the independent V0 credential drains: 60 seconds
+   for legacy WebSocket tickets and 300 seconds for tunnel-HTTP tickets/cookies.
+   The 60-second milestone does not permit reopen. At exactly 300 seconds, a
+   uniform new pool may reopen in `post_upgrade`.
+
+4. Deploy the new pool, verify every API instance uses the release digest, and
+   run the Redis preflight (standalone primary, cluster disabled, AOF enabled,
+   `maxmemory-policy=noeviction`). Only then set
+   `REMOTE_ACCESS_ADMISSION_MODE=open` and recreate Caddy.
+
+5. Independently wait 7,200 seconds plus a final 60 seconds for legacy viewer
+   tokens and their last compatibility ticket. Only after that boundary may
+   the complete pool switch to `REMOTE_WS_AUTH_MODE=pre_upgrade`. Startup
+   rejects this mode when either verified timestamp is missing, malformed,
+   future-dated, or too recent.
+
+</Steps>
+
+<Aside type="danger">
+  A health check is not cutover proof. Any failed probe, mixed image digest,
+  old process/socket, reachable tunnel-HTTP consumer, unsupported Redis mode,
+  or incomplete drain must leave remote-access admission closed.
+</Aside>
+
 ## Zero-Downtime Upgrades
 
 For production deployments where any downtime is unacceptable, you can perform a blue-green upgrade using two parallel Compose stacks:
+
+<Aside type="caution">
+  Do not use this procedure for the first shared-lease-aware remote-access
+  release. That release requires the closed admission barrier and full-pool
+  replacement above.
+</Aside>
 
 <Steps>
 

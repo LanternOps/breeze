@@ -40,6 +40,9 @@ export interface ValidatedRemoteWsContext {
   siteId: string | null;
   deviceId: string;
   agentId: string;
+  deviceHostname?: string;
+  deviceOsType?: string;
+  tunnelType?: 'vnc' | 'proxy';
   permission: {
     resource: typeof PERMISSIONS.REMOTE_ACCESS.resource;
     action: typeof PERMISSIONS.REMOTE_ACCESS.action;
@@ -356,6 +359,11 @@ export async function authorizeConsumedRemoteWsTicket(
         siteId: live.device.siteId ?? null,
         deviceId: live.device.id,
         agentId: live.device.agentId,
+        deviceHostname: live.device.hostname,
+        deviceOsType: live.device.osType,
+        ...(consumed.sessionType === 'tunnel'
+          ? { tunnelType: live.session.type as 'vnc' | 'proxy' }
+          : {}),
         permission: PERMISSIONS.REMOTE_ACCESS,
         ticketAssurance: consumed.ticketAssurance,
         ticketJti: consumed.ticketJti,

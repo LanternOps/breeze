@@ -5,6 +5,66 @@ export function envFlag(name: string, fallback = false): boolean {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+export type RemoteAccessAdmissionMode = 'open' | 'closed';
+export type RemoteWsRuntimeAuthMode = 'post_upgrade' | 'pre_upgrade';
+export type RemoteWsRedisTopology = 'standalone-single-primary';
+
+function requiredEnum<T extends string>(
+  source: NodeJS.ProcessEnv,
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = source[name]?.trim();
+  const productionLike = (
+    source.NODE_ENV === 'production'
+    || source.DEPLOYMENT_ENV === 'staging'
+  );
+  if (!raw) {
+    if (productionLike) throw new Error(`${name} is required`);
+    return fallback;
+  }
+  if (!allowed.includes(raw as T)) {
+    throw new Error(`${name} must be one of: ${allowed.join(', ')}`);
+  }
+  return raw as T;
+}
+
+export function getRemoteWsRuntimeConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): {
+  admissionMode: RemoteAccessAdmissionMode;
+  authMode: RemoteWsRuntimeAuthMode;
+  redisTopology: RemoteWsRedisTopology;
+  legacyTicketWriterDrainedAt: string | undefined;
+  legacyViewerIssuerDrainedAt: string | undefined;
+} {
+  return {
+    admissionMode: requiredEnum(
+      source,
+      'REMOTE_ACCESS_ADMISSION_MODE',
+      ['open', 'closed'] as const,
+      'open',
+    ),
+    authMode: requiredEnum(
+      source,
+      'REMOTE_WS_AUTH_MODE',
+      ['post_upgrade', 'pre_upgrade'] as const,
+      'post_upgrade',
+    ),
+    redisTopology: requiredEnum(
+      source,
+      'REMOTE_WS_REDIS_TOPOLOGY',
+      ['standalone-single-primary'] as const,
+      'standalone-single-primary',
+    ),
+    legacyTicketWriterDrainedAt:
+      source.REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT?.trim() || undefined,
+    legacyViewerIssuerDrainedAt:
+      source.REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT?.trim() || undefined,
+  };
+}
+
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
 /** Strictly decode the dedicated partner export cursor HMAC key from base64. */

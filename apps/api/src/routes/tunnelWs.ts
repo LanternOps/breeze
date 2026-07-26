@@ -27,6 +27,13 @@ import {
   type RemoteWsSharedLeaseClaim,
   type RemoteWsSharedLeaseManager,
 } from '../services/remoteWsSharedLease';
+import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  assertRemoteWsUpgradeRuntimeReady,
+  getRemoteWsUpgradeConnection,
+  requireRemoteWsUpgrade,
+  type RemoteWsUpgradeContext,
+} from '../services/remoteWsUpgrade';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
 interface TunnelConnection extends RemoteConnectionLease {
@@ -603,6 +610,29 @@ export function __setTunnelConnectionForTest(
   }
 }
 
+async function validateTunnelUpgradeContext(
+  context: RemoteWsUpgradeContext,
+): Promise<Awaited<ReturnType<typeof validateTunnelAccess>>> {
+  const result = context.authorizationPhase === 'complete'
+    ? { ok: true as const, context: context.authorization }
+    : await authorizeConsumedRemoteWsTicket(context.ticket);
+  if (!result.ok) return { valid: false, error: result.reason };
+  const authorization = result.context;
+  return {
+    valid: true,
+    userId: authorization.userId,
+    agentId: authorization.agentId,
+    session: {
+      id: authorization.sessionId,
+      type: authorization.tunnelType ?? 'proxy',
+      userId: authorization.userId,
+      deviceId: authorization.deviceId,
+      orgId: authorization.orgId,
+      status: 'pending',
+    } as typeof tunnelSessions.$inferSelect,
+  };
+}
+
 /**
  * Create WebSocket handlers for a tunnel session.
  */
@@ -611,12 +641,27 @@ function createTunnelWsHandlers(
   ticket: string | undefined,
   caller: { ip: string; userAgent: string },
   sharedLeases: RemoteWsSharedLeaseManager,
+  upgradeContext?: RemoteWsUpgradeContext,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateTunnelAccess>> | null = null;
   let connectionIdentity: RemoteConnectionIdentity | null = null;
-  const validationPromise = validateTunnelAccess(tunnelId, ticket, caller).then(result => {
+  const validationPromise = (
+    upgradeContext
+      ? validateTunnelUpgradeContext(upgradeContext)
+      : validateTunnelAccess(tunnelId, ticket, caller)
+  ).then(result => {
     validationResult = result;
   });
+  const releaseOpeningReservation = async () => {
+    if (!upgradeContext) return;
+    removeExactLocalRemoteConnection(
+      activeTunnelConnections,
+      tunnelId,
+      getRemoteWsUpgradeConnection(upgradeContext),
+    );
+    upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
+    await sharedLeases.release(upgradeContext.sharedClaim);
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -624,6 +669,7 @@ function createTunnelWsHandlers(
         await validationPromise;
 
         if (!validationResult || !validationResult.valid) {
+          await releaseOpeningReservation();
           console.warn(`[TunnelWs] Rejected tunnel ${tunnelId}: ${validationResult?.error}`);
           ws.send(JSON.stringify({ type: 'error', message: validationResult?.error ?? 'Validation failed' }));
           ws.close(4001, validationResult?.error ?? 'Validation failed');
@@ -632,23 +678,27 @@ function createTunnelWsHandlers(
 
         const { session, agentId, userId } = validationResult;
         if (!session || !agentId || !userId) {
+          await releaseOpeningReservation();
           ws.close(4001, 'Missing session data');
           return;
         }
 
-        if (await isUserTunnelWsRateLimited(userId)) {
+        if (!upgradeContext && await isUserTunnelWsRateLimited(userId)) {
           ws.send(JSON.stringify({ type: 'error', message: 'Too many tunnel connections' }));
           ws.close(4029, 'Rate limited');
           return;
         }
 
         if (!isAgentConnected(agentId)) {
+          await releaseOpeningReservation();
           ws.send(JSON.stringify({ type: 'error', message: 'Agent is not connected' }));
           ws.close(4002, 'Agent offline');
           return;
         }
 
-        const acquired = await sharedLeases.acquire('tunnel', tunnelId);
+        const acquired = upgradeContext
+          ? { ok: true as const, claim: upgradeContext.sharedClaim }
+          : await sharedLeases.acquire('tunnel', tunnelId);
         if (!acquired.ok) {
           ws.close(
             acquired.reason === 'already_owned' ? 4009 : 1011,
@@ -662,7 +712,10 @@ function createTunnelWsHandlers(
           instanceId: acquired.claim.instanceId,
           leaseToken: acquired.claim.leaseToken,
         };
-        const connection: TunnelConnection = {
+        const existingReservation = upgradeContext
+          ? activeTunnelConnections.get(tunnelId)
+          : undefined;
+        const connection: TunnelConnection = existingReservation ?? {
           ...acquired.claim,
           state: 'opening' as const,
           userWs: null,
@@ -676,12 +729,33 @@ function createTunnelWsHandlers(
           startedAt: new Date(),
           lastPongAt: Date.now(),
         };
-        const installed = installLocalRemoteConnection(
-          activeTunnelConnections,
-          tunnelId,
-          acquired.claim,
-          () => connection,
-        );
+        if (existingReservation) {
+          Object.assign(existingReservation, {
+            agentId,
+            userId,
+            deviceId: session.deviceId,
+            orgId: session.orgId,
+            tunnelType: session.type,
+            startedAt: new Date(),
+            lastPongAt: Date.now(),
+          });
+        }
+        const installed = upgradeContext
+          ? (
+              existingReservation
+              && existingReservation.connectionId === acquired.claim.connectionId
+              && existingReservation.generation === acquired.claim.generation
+              && existingReservation.instanceId === acquired.claim.instanceId
+              && existingReservation.leaseToken === acquired.claim.leaseToken
+                ? { ok: true as const }
+                : { ok: false as const, reason: 'already_owned' as const }
+            )
+          : installLocalRemoteConnection(
+              activeTunnelConnections,
+              tunnelId,
+              acquired.claim,
+              () => connection,
+            );
         if (
           !installed.ok
           || !bindRemoteConnection(
@@ -898,6 +972,8 @@ function createTunnelWsHandlers(
             notifyAgent: true,
             reason: 'Tunnel setup failed',
           }).catch(() => undefined);
+        } else {
+          await releaseOpeningReservation();
         }
         ws.close(4000, 'Internal error');
       }
@@ -1032,9 +1108,44 @@ export function createTunnelWsRoutes(
   upgradeWebSocket: (createEvents: () => ReturnType<typeof createTunnelWsHandlers>) => any,
   options: { sharedLeases?: RemoteWsSharedLeaseManager } = {},
 ) {
+  assertRemoteWsUpgradeRuntimeReady();
   const routes = new Hono();
 
-  routes.get('/:tunnelId/ws', (c) => {
+  routes.get(
+    '/:tunnelId/ws',
+    async (c, next) => {
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return c.json({ error: 'Remote ownership unavailable' }, 503);
+      }
+      return requireRemoteWsUpgrade({
+        expectedType: 'tunnel',
+        sharedLeases,
+        installLocal: (tunnelId, claim) =>
+          installLocalRemoteConnection(
+            activeTunnelConnections,
+            tunnelId,
+            claim,
+            (shared): TunnelConnection => ({
+              ...shared,
+              state: 'opening',
+              userWs: null,
+              sharedOwner: shared,
+              sharedLeases,
+              agentId: '',
+              userId: '',
+              deviceId: '',
+              orgId: '',
+              tunnelType: 'proxy',
+              startedAt: new Date(),
+              lastPongAt: Date.now(),
+            }),
+          ),
+        removeLocal: (tunnelId, claim) =>
+          removeExactLocalRemoteConnection(activeTunnelConnections, tunnelId, claim),
+      })(c, next);
+    },
+    (c) => {
     const tunnelId = c.req.param('tunnelId');
     const ticket = c.req.query('ticket');
 
@@ -1052,11 +1163,14 @@ export function createTunnelWsRoutes(
       return c.json({ error: 'Remote ownership unavailable' }, 503);
     }
 
+    const context = (c as unknown as { get?: (key: string) => unknown })
+      .get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
     const wsHandler = upgradeWebSocket(() =>
-      createTunnelWsHandlers(tunnelId, ticket, caller, sharedLeases),
+      createTunnelWsHandlers(tunnelId, ticket, caller, sharedLeases, context),
     );
     return wsHandler(c, c.req.raw);
-  });
+    },
+  );
 
   return routes;
 }

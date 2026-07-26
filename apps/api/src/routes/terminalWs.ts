@@ -13,6 +13,17 @@ import { logSessionAudit } from './remote/helpers';
 import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
 import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
+import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  assertRemoteWsUpgradeRuntimeReady,
+  requireRemoteWsUpgrade,
+  type RemoteWsUpgradeContext,
+} from '../services/remoteWsUpgrade';
+import {
+  getRemoteWsSharedLeaseManager,
+  type RemoteWsSharedLeaseClaim,
+  type RemoteWsSharedLeaseManager,
+} from '../services/remoteWsSharedLease';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -39,6 +50,8 @@ interface TerminalSession {
   // E2: audit summary counters
   bytesIn: number;
   bytesOut: number;
+  sharedOwner?: RemoteWsSharedLeaseClaim;
+  sharedLeases?: RemoteWsSharedLeaseManager;
 }
 
 // E2: per-session input limits
@@ -47,6 +60,7 @@ const TERMINAL_MSG_LIMIT = 200; // messages per minute
 const TERMINAL_BYTES_LIMIT = 1_048_576; // 1MB per minute
 
 const activeTerminalSessions = new Map<string, TerminalSession>();
+const terminalOpeningReservations = new Map<string, RemoteWsSharedLeaseClaim>();
 
 // Store pending terminal output to relay back to user
 // Map<sessionId, callback>
@@ -249,7 +263,43 @@ export function closeTerminalSession(sessionId: string): boolean {
   } catch (err) {
     console.error(`[TerminalWs] Failed to close terminal socket for session ${sessionId}:`, err);
   }
+  if (termSession.sharedOwner && termSession.sharedLeases) {
+    void termSession.sharedLeases.release(termSession.sharedOwner);
+  }
   return true;
+}
+
+async function validateTerminalUpgradeContext(
+  context: RemoteWsUpgradeContext,
+): Promise<Awaited<ReturnType<typeof validateTerminalAccess>>> {
+  const result = context.authorizationPhase === 'complete'
+    ? { ok: true as const, context: context.authorization }
+    : await authorizeConsumedRemoteWsTicket(context.ticket);
+  if (!result.ok) {
+    return { valid: false, error: result.reason };
+  }
+  const authorization = result.context;
+  return {
+    valid: true,
+    userId: authorization.userId,
+    session: {
+      id: authorization.sessionId,
+      type: 'terminal',
+      userId: authorization.userId,
+      deviceId: authorization.deviceId,
+      orgId: authorization.orgId,
+      status: 'pending',
+    } as typeof remoteSessions.$inferSelect,
+    device: {
+      id: authorization.deviceId,
+      orgId: authorization.orgId,
+      siteId: authorization.siteId,
+      agentId: authorization.agentId,
+      hostname: authorization.deviceHostname ?? '',
+      osType: authorization.deviceOsType ?? '',
+      status: 'online',
+    } as typeof devices.$inferSelect,
+  };
 }
 
 /**
@@ -258,12 +308,27 @@ export function closeTerminalSession(sessionId: string): boolean {
 function createTerminalWsHandlers(
   sessionId: string,
   ticket: string | undefined,
-  caller: { ip: string; userAgent: string }
+  caller: { ip: string; userAgent: string },
+  upgradeContext?: RemoteWsUpgradeContext,
+  sharedLeases?: RemoteWsSharedLeaseManager,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateTerminalAccess>> | null = null;
-  const validationPromise = validateTerminalAccess(sessionId, ticket, caller).then(result => {
+  const validationPromise = (
+    upgradeContext
+      ? validateTerminalUpgradeContext(upgradeContext)
+      : validateTerminalAccess(sessionId, ticket, caller)
+  ).then(result => {
     validationResult = result;
   });
+  const releaseOpeningReservation = async () => {
+    if (!upgradeContext || !sharedLeases) return;
+    const current = terminalOpeningReservations.get(sessionId);
+    if (current?.ownerValue === upgradeContext.sharedClaim.ownerValue) {
+      terminalOpeningReservations.delete(sessionId);
+    }
+    upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
+    await sharedLeases.release(upgradeContext.sharedClaim);
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -274,6 +339,7 @@ function createTerminalWsHandlers(
         console.log(`Terminal validation result:`, validationResult?.valid, validationResult?.error);
 
         if (!validationResult || !validationResult.valid) {
+          await releaseOpeningReservation();
           console.warn(`Terminal WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -286,6 +352,7 @@ function createTerminalWsHandlers(
 
         const { session, device, userId } = validationResult;
         if (!session || !device || !userId) {
+          await releaseOpeningReservation();
           ws.close(4001, 'Invalid session data');
           return;
         }
@@ -293,6 +360,7 @@ function createTerminalWsHandlers(
         // Check if agent is connected
         console.log(`Checking if agent ${device.agentId} is connected...`);
         if (!isAgentConnected(device.agentId)) {
+          await releaseOpeningReservation();
           console.warn(`Agent ${device.agentId} is not connected via WebSocket`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -305,7 +373,7 @@ function createTerminalWsHandlers(
         console.log(`Agent ${device.agentId} is connected`);
 
         // Rate limit user WS connections (E1: Redis-backed, fail-closed)
-        if (await isUserTerminalWsRateLimited(userId)) {
+        if (!upgradeContext && await isUserTerminalWsRateLimited(userId)) {
           console.warn(`Terminal WebSocket rate limited for user ${userId}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -321,6 +389,9 @@ function createTerminalWsHandlers(
 
         // Store the terminal session
         const now = Date.now();
+        if (upgradeContext) {
+          terminalOpeningReservations.delete(sessionId);
+        }
         activeTerminalSessions.set(sessionId, {
           userWs: ws,
           agentId: device.agentId,
@@ -333,6 +404,12 @@ function createTerminalWsHandlers(
           msgByteTimestamps: [],
           bytesIn: 0,
           bytesOut: 0,
+          ...(upgradeContext && sharedLeases
+            ? {
+                sharedOwner: upgradeContext.sharedClaim,
+                sharedLeases,
+              }
+            : {}),
         });
 
         // Register callback for terminal output (track bytesOut for audit summary)
@@ -394,6 +471,7 @@ function createTerminalWsHandlers(
           // Clean up: agent is offline, session cannot proceed
           activeTerminalSessions.delete(sessionId);
           unregisterTerminalOutputCallback(sessionId);
+          await releaseOpeningReservation();
           try {
             await withSystemDbAccessContext(async () => {
               await db
@@ -474,6 +552,7 @@ function createTerminalWsHandlers(
           activeTerminalSessions.delete(sessionId);
         }
         unregisterTerminalOutputCallback(sessionId);
+        await releaseOpeningReservation();
 
         // Best-effort: mark DB session as failed — only if auth/validation already passed
         if (validated) {
@@ -626,6 +705,9 @@ function createTerminalWsHandlers(
         // Clean up
         activeTerminalSessions.delete(sessionId);
         unregisterTerminalOutputCallback(sessionId);
+        if (termSession.sharedOwner && termSession.sharedLeases) {
+          await termSession.sharedLeases.release(termSession.sharedOwner);
+        }
 
         // Update session status
         const endedAt = new Date();
@@ -673,6 +755,9 @@ function createTerminalWsHandlers(
       }
       activeTerminalSessions.delete(sessionId);
       unregisterTerminalOutputCallback(sessionId);
+      if (termSession?.sharedOwner && termSession.sharedLeases) {
+        await termSession.sharedLeases.release(termSession.sharedOwner);
+      }
 
       // Update session status in database to match onClose behavior
       if (termSession) {
@@ -703,14 +788,45 @@ function createTerminalWsHandlers(
 /**
  * Create terminal WebSocket routes
  */
-export function createTerminalWsRoutes(upgradeWebSocket: Function): Hono {
+export function createTerminalWsRoutes(
+  upgradeWebSocket: Function,
+  options: { sharedLeases?: RemoteWsSharedLeaseManager } = {},
+): Hono {
+  assertRemoteWsUpgradeRuntimeReady();
   const app = new Hono();
 
   // WebSocket route for terminal sessions
   // GET /api/v1/remote/sessions/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
+    async (c, next) => {
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return c.json({ error: 'Remote ownership unavailable' }, 503);
+      }
+      return requireRemoteWsUpgrade({
+        expectedType: 'terminal',
+        sharedLeases,
+        installLocal: (sessionId, claim) => {
+          if (
+            activeTerminalSessions.has(sessionId)
+            || terminalOpeningReservations.has(sessionId)
+          ) {
+            return { ok: false, reason: 'already_owned' };
+          }
+          terminalOpeningReservations.set(sessionId, claim);
+          return { ok: true };
+        },
+        removeLocal: (sessionId, claim) => {
+          if (terminalOpeningReservations.get(sessionId)?.ownerValue !== claim.ownerValue) {
+            return false;
+          }
+          return terminalOpeningReservations.delete(sessionId);
+        },
+      })(c, next);
+    },
     upgradeWebSocket((c: {
+      get?: (key: string) => unknown;
       req: {
         param: (key: string) => string;
         query: (key: string) => string | undefined;
@@ -726,7 +842,9 @@ export function createTerminalWsRoutes(upgradeWebSocket: Function): Hono {
         ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
         userAgent: c.req.header('user-agent') ?? '',
       };
-      return createTerminalWsHandlers(sessionId, ticket, caller);
+      const context = c.get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager() ?? undefined;
+      return createTerminalWsHandlers(sessionId, ticket, caller, context, sharedLeases);
     })
   );
 

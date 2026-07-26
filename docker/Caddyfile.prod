@@ -89,6 +89,27 @@
     reverse_proxy api:3001
   }
 
+  # --- Remote-access cutover barrier ---
+  # This must precede general API proxying so even a pre-wave API cannot issue
+  # or consume remote credentials while the lease-aware pool is replaced.
+  @remoteAccessClosed {
+    expression {env.REMOTE_ACCESS_ADMISSION_MODE} == "closed"
+    path /api/v1/remote/sessions/*/ws-ticket
+    path /api/v1/desktop-ws/*/viewer/ws-ticket
+    path /api/v1/tunnels/*/ws-ticket
+    path /api/v1/tunnels/*/http-ticket
+    path /api/v1/vnc-exchange/*
+    path /api/v1/vnc-viewer/downgrade-to-vnc
+    path /api/v1/remote/sessions/*/ws
+    path /api/v1/desktop-ws/*/ws
+    path /api/v1/tunnel-ws/*/ws
+    path /api/v1/tunnel-http/*
+  }
+  handle @remoteAccessClosed {
+    header Retry-After "60"
+    respond "{\"error\":\"remote access temporarily unavailable\"}" 503
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {

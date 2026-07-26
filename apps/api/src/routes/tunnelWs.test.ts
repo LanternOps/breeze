@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // DB mock supporting both the simple user-status select and the
 // tunnelSessions⋈devices join used by `revalidateTunnelSession`. Tests drive
 // the returned rows via the setters below.
-let userRow: { id: string; status: string } | undefined = { id: 'user-1', status: 'active' };
+let userRow: { id: string; status: string; partnerId?: string | null } | undefined = {
+  id: 'user-1',
+  status: 'active',
+  partnerId: null,
+};
 let joinRow:
   | {
       session: {
@@ -13,7 +17,15 @@ let joinRow:
         orgId?: string;
         type?: 'vnc' | 'proxy';
       };
-      device: { id: string; status: string; agentId?: string };
+      device: {
+        id: string;
+        orgId?: string;
+        siteId?: string | null;
+        status: string;
+        agentId?: string;
+        hostname?: string;
+        osType?: string;
+      };
     }
   | undefined = {
   session: {
@@ -23,7 +35,15 @@ let joinRow:
     orgId: 'org-1',
     type: 'vnc',
   },
-  device: { id: 'dev-1', status: 'online', agentId: 'agent-1' },
+  device: {
+    id: 'dev-1',
+    orgId: 'org-1',
+    siteId: null,
+    status: 'online',
+    agentId: 'agent-1',
+    hostname: 'device-1',
+    osType: 'linux',
+  },
 };
 let throwOnJoin = false;
 let plainSelectOverride: (() => Promise<unknown[]>) | null = null;
@@ -44,23 +64,35 @@ function setPlainSelectOverride(value: typeof plainSelectOverride) {
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
+      from: vi.fn((table: string) => ({
         // Plain user-status query: .from().where().limit()
         where: vi.fn(() => ({
           limit: vi.fn(async () => (
-            plainSelectOverride
-              ? plainSelectOverride()
-              : (userRow ? [userRow] : [])
+            table === 'users'
+              ? (
+                  plainSelectOverride
+                    ? plainSelectOverride()
+                    : (userRow ? [userRow] : [])
+                )
+              : table === 'tunnelSessions' && plainSelectOverride
+                ? plainSelectOverride()
+              : table === 'organizationUsers'
+                ? [{ roleId: 'role-1', siteIds: null }]
+                : []
           )),
         })),
         // Join query: .from().innerJoin().where().limit()
         innerJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => {
-              if (throwOnJoin) throw new Error('db down');
-              return joinRow ? [joinRow] : [];
-            }),
-          })),
+          where: vi.fn(() => (
+            table === 'rolePermissions'
+              ? Promise.resolve([{ resource: 'remote', action: 'access' }])
+              : {
+                  limit: vi.fn(async () => {
+                    if (throwOnJoin) throw new Error('db down');
+                    return joinRow ? [joinRow] : [];
+                  }),
+                }
+          )),
         })),
       })),
     })),
@@ -76,9 +108,13 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  tunnelSessions: {},
-  devices: {},
-  users: {},
+  tunnelSessions: 'tunnelSessions',
+  devices: 'devices',
+  users: 'users',
+  organizationUsers: 'organizationUsers',
+  partnerUsers: 'partnerUsers',
+  rolePermissions: 'rolePermissions',
+  permissions: 'permissions',
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({
@@ -200,7 +236,7 @@ async function captureTunnelHandlers(sharedLeases: ReturnType<typeof testSharedL
 
 beforeEach(() => {
   vi.clearAllMocks();
-  setUserRow({ id: 'user-1', status: 'active' });
+  setUserRow({ id: 'user-1', status: 'active', partnerId: null });
   setJoinRow({
     session: {
       userId: 'user-1',
@@ -209,7 +245,15 @@ beforeEach(() => {
       orgId: 'org-1',
       type: 'vnc',
     },
-    device: { id: 'dev-1', status: 'online', agentId: 'agent-1' },
+    device: {
+      id: 'dev-1',
+      orgId: 'org-1',
+      siteId: null,
+      status: 'online',
+      agentId: 'agent-1',
+      hostname: 'device-1',
+      osType: 'linux',
+    },
   });
   setThrowOnJoin(false);
   setPlainSelectOverride(null);

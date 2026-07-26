@@ -41,6 +41,7 @@ export const tunnelHttpRoutes = new Hono();
 
 const HTTP_REQUEST_TIMEOUT_MS = 25_000;
 export const HTTP_TUNNEL_COOKIE_TTL_SECONDS = 300;
+export const HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS = 0;
 const COOKIE_AUDIENCE = 'breeze-tunnel-http';
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'];
 
@@ -120,6 +121,7 @@ async function verifyTunnelCookie(token: string | undefined, tunnelId: string): 
       issuer: 'breeze',
       audience: COOKIE_AUDIENCE,
       algorithms: ['HS256'],
+      clockTolerance: HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS,
     });
     if (payload.tunnelId !== tunnelId) return null;
     if (typeof payload.sub !== 'string' || payload.sub.length === 0) return null;
