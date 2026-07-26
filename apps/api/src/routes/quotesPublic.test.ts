@@ -86,6 +86,99 @@ describe('quotesPublic GET /:token', () => {
     expect(headingBlock.content).toEqual({ text: 'Intro', level: 2 }); // untouched
   });
 
+  it('returns an exact public quote header keyset without internal row fields', async () => {
+    dbResults.push([{
+      id: QUOTE_ID,
+      partnerId: 'internal-partner-sentinel',
+      orgId: 'internal-org-sentinel',
+      siteId: 'internal-site-sentinel',
+      quoteNumber: 'Q-1',
+      title: 'Managed Services',
+      status: 'sent',
+      currencyCode: 'USD',
+      issueDate: '2026-07-01',
+      expiryDate: '2026-08-01',
+      subtotal: '100.00',
+      taxRate: null,
+      taxTotal: '0.00',
+      total: '100.00',
+      oneTimeTotal: '100.00',
+      monthlyRecurringTotal: '0.00',
+      annualRecurringTotal: '0.00',
+      depositType: 'none',
+      depositPercent: null,
+      depositAmount: null,
+      billToName: 'Acme Co',
+      introNotes: 'Welcome',
+      terms: 'Net 30',
+      sellerSnapshot: {
+        name: 'Lantern IT',
+        address: null,
+        phone: null,
+        email: null,
+        website: null,
+        internalSellerSentinel: 'do-not-serialize',
+      },
+      coverPage: {
+        enabled: false,
+        showPreparedBy: true,
+        internalCoverSentinel: 'do-not-serialize',
+      },
+      termsAndConditions: 'Customer terms',
+      declineReason: 'internal-decline-sentinel',
+      convertedInvoiceId: 'internal-invoice-sentinel',
+      pdfDocumentRef: 'internal-document-sentinel',
+      pdfSha256: 'internal-sha-sentinel',
+      sentAt: 'internal-sent-sentinel',
+      sendScheduledAt: 'internal-schedule-sentinel',
+      sendJobId: 'internal-job-sentinel',
+      sendEmailReason: 'internal-failure-sentinel',
+      firstViewedAt: 'internal-first-view-sentinel',
+      viewedAt: 'internal-viewed-sentinel',
+      createdBy: 'internal-creator-sentinel',
+      createdAt: 'internal-created-sentinel',
+      updatedAt: 'internal-updated-sentinel',
+    }]);
+    dbResults.push([]);
+    dbResults.push([]);
+    dbResults.push([{ name: 'Lantern IT' }]);
+    dbResults.push([]);
+
+    const res = await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
+    const body = await res.json();
+    const header = body.data.quote;
+
+    expect(Object.keys(header)).toEqual([
+      'id',
+      'quoteNumber',
+      'title',
+      'status',
+      'currencyCode',
+      'issueDate',
+      'expiryDate',
+      'subtotal',
+      'taxRate',
+      'taxTotal',
+      'total',
+      'oneTimeTotal',
+      'monthlyRecurringTotal',
+      'annualRecurringTotal',
+      'depositType',
+      'depositAmount',
+      'dueOnAcceptanceTotal',
+      'depositDueTotal',
+      'categoryBreakdown',
+      'billToName',
+      'introNotes',
+      'terms',
+      'sellerSnapshot',
+      'coverPage',
+      'termsAndConditions',
+    ]);
+    expect(JSON.stringify(header)).not.toContain('internal-');
+    expect(JSON.stringify(header)).not.toContain('do-not-serialize');
+  });
+
   it('401s an invalid/expired token without querying the DB', async () => {
     (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue(null);
     const res = await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
