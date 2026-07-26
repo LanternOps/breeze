@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import type { RemoteConnectionIdentity, RemoteWsKind } from './remoteWsOwnership';
 import { createRemoteWsRedisTopologyMonitor } from './remoteWsRedisTopology';
+import { getRedis } from './redis';
 
 export const REMOTE_WS_SHARED_LEASE_TTL_MS = 30_000;
 export const REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS = 5_000;
@@ -49,6 +50,13 @@ export interface RemoteWsRedisKeys {
   generation: string;
   finalizing?: string;
   finalizationPayload?: string;
+}
+
+export interface DesktopFinalizationSharedState {
+  ownerPresent: boolean;
+  finalizationId: string | null;
+  canonicalPayload: string | null;
+  consistent: boolean;
 }
 
 export function getRemoteWsRedisKeys(kind: RemoteWsKind, sessionId: string): RemoteWsRedisKeys {
@@ -127,6 +135,17 @@ export const REMOTE_WS_SHARED_LEASE_SCRIPTS = {
     if redis.call('GET', KEYS[3]) ~= ARGV[2] then return {'owner_mismatch'} end
     redis.call('DEL', KEYS[2], KEYS[3])
     return {'released'}
+  `,
+  observeDesktopFinalization: `
+    local owner = redis.call('GET', KEYS[1])
+    local fence = redis.call('GET', KEYS[2])
+    local payload = redis.call('GET', KEYS[3])
+    return {
+      owner and '1' or '0',
+      fence or '',
+      payload or '',
+      ((fence and payload) or (not fence and not payload)) and '1' or '0'
+    }
   `,
 } as const;
 
@@ -419,6 +438,58 @@ export function createRemoteWsSharedLeaseManager(input: {
       }
     },
 
+    async observeDesktopFinalization(
+      sessionId: string,
+    ): Promise<DesktopFinalizationSharedState> {
+      const keys = getRemoteWsRedisKeys('desktop', sessionId);
+      const requestStart = monotonicNow();
+      const reply = await evalTimed(
+        REMOTE_WS_SHARED_LEASE_SCRIPTS.observeDesktopFinalization,
+        [keys.owner, keys.finalizing!, keys.finalizationPayload!],
+        [],
+        requestStart,
+      );
+      if (
+        reply.length !== 4
+        || (reply[0] !== '0' && reply[0] !== '1')
+        || (reply[3] !== '0' && reply[3] !== '1')
+      ) {
+        throw new Error('remote websocket desktop intent reply was malformed');
+      }
+      return {
+        ownerPresent: reply[0] === '1',
+        finalizationId: reply[1] === '' ? null : (reply[1] ?? null),
+        canonicalPayload: reply[2] === '' ? null : (reply[2] ?? null),
+        consistent: reply[3] === '1',
+      };
+    },
+
     topology,
   };
+}
+
+export type RemoteWsSharedLeaseManager = ReturnType<
+  typeof createRemoteWsSharedLeaseManager
+>;
+
+const remoteWsProcessInstanceId = randomUUID();
+let sharedLeaseManager: RemoteWsSharedLeaseManager | null = null;
+let sharedLeaseRedis: Redis | null = null;
+
+/**
+ * One manager per API process. Tests and route factories may inject a manager,
+ * but production callers share this exact process boot identity.
+ */
+export function getRemoteWsSharedLeaseManager(): RemoteWsSharedLeaseManager | null {
+  const redis = getRedis();
+  if (!redis) return null;
+  if (!sharedLeaseManager || sharedLeaseRedis !== redis) {
+    sharedLeaseRedis = redis;
+    sharedLeaseManager = createRemoteWsSharedLeaseManager({
+      redis,
+      instanceId: remoteWsProcessInstanceId,
+      requiredTopology: 'standalone-single-primary',
+    });
+  }
+  return sharedLeaseManager;
 }

@@ -112,6 +112,19 @@ class FakeRedis {
       return ['released'];
     }
 
+    if (script === REMOTE_WS_SHARED_LEASE_SCRIPTS.observeDesktopFinalization) {
+      const [ownerKey, fenceKey, payloadKey] = keys;
+      const owner = this.current(ownerKey!);
+      const fence = this.current(fenceKey!);
+      const payload = this.current(payloadKey!);
+      return [
+        owner === null ? '0' : '1',
+        fence ?? '',
+        payload ?? '',
+        (fence === null) === (payload === null) ? '1' : '0',
+      ];
+    }
+
     throw new Error('unknown script');
   }
 
@@ -298,6 +311,39 @@ describe('remote websocket shared lease', () => {
     expect(await leases.acquire('desktop', 'orphaned')).toEqual({
       ok: false,
       reason: 'desktop_orphan_recovery',
+    });
+  });
+
+  it('atomically observes owner presence and the exact desktop intent pair', async () => {
+    const redis = new FakeRedis();
+    const leases = manager(redis, '11111111-1111-4111-8111-111111111111');
+    const acquired = await leases.acquire('desktop', 'observed');
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    expect(await leases.observeDesktopFinalization('observed')).toEqual({
+      ownerPresent: true,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    });
+    const payload = '{"reason":"client_close"}';
+    await leases.writeDesktopFinalizationIntent(
+      acquired.claim,
+      'finalization-observed',
+      payload,
+    );
+    expect(await leases.observeDesktopFinalization('observed')).toEqual({
+      ownerPresent: true,
+      finalizationId: 'finalization-observed',
+      canonicalPayload: payload,
+      consistent: true,
+    });
+
+    const keys = getRemoteWsRedisKeys('desktop', 'incomplete');
+    redis.values.set(keys.finalizing!, { value: 'only-fence', expiresAt: null });
+    expect(await leases.observeDesktopFinalization('incomplete')).toMatchObject({
+      ownerPresent: false,
+      consistent: false,
     });
   });
 

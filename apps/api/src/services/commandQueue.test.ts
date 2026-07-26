@@ -10,6 +10,7 @@ import {
   SEND_RETRY_ATTEMPTS,
   CommandTypes,
   queueCommandForExecution,
+  rearmIdempotentCommandForDelivery,
 } from './commandQueue';
 import { db } from '../db';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
@@ -72,6 +73,41 @@ describe('command queue service', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('refuses to re-arm a desktop stop row whose payload is not exact', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111',
+            deviceId: '22222222-2222-4222-8222-222222222222',
+            type: 'desktop_stream_stop',
+            targetRole: 'agent',
+            payload: {
+              sessionId: '33333333-3333-4333-8333-333333333333',
+              finalizationId: '11111111-1111-4111-8111-111111111111',
+              changed: true,
+            },
+          }]),
+        }),
+      }),
+    } as any);
+
+    await expect(rearmIdempotentCommandForDelivery({
+      commandId: '11111111-1111-4111-8111-111111111111',
+      deviceId: '22222222-2222-4222-8222-222222222222',
+      type: 'desktop_stream_stop',
+      payload: {
+        sessionId: '33333333-3333-4333-8333-333333333333',
+        finalizationId: '11111111-1111-4111-8111-111111111111',
+      },
+    })).resolves.toEqual({
+      delivered: false,
+      reason: 'command_conflict',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('should queue a command for a device', async () => {
