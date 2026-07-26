@@ -4,6 +4,7 @@ vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 
 import { db } from '../db';
 import { generateExecutiveSummaryReport } from './reportGenerationService';
+import type { ReportExecutionAuthority } from './siteScope';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: unknown[]) {
@@ -15,6 +16,12 @@ function selectChain(rows: unknown[]) {
 }
 
 const ORG = '00000000-0000-0000-0000-000000000001';
+const AUTHORITY: ReportExecutionAuthority = {
+  scope: { version: 1, kind: 'unrestricted', orgId: ORG },
+  principalUserId: '11111111-1111-4111-8111-111111111111',
+  capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+  fingerprint: 'f'.repeat(64),
+};
 
 /**
  * The generator issues selects in this fixed order (with perms undefined, so
@@ -43,24 +50,26 @@ describe('generateExecutiveSummaryReport', () => {
   it('populates org identity alongside the existing numeric summary', async () => {
     mockGeneratorQueries();
 
-    const result = await generateExecutiveSummaryReport(ORG, {});
+    const result = await generateExecutiveSummaryReport(ORG, {}, AUTHORITY);
+    expect(result.summary).toBeDefined();
+    const summary = result.summary!;
 
-    expect(result.summary.org).toEqual({ id: ORG, name: 'Acme Corp' });
-    expect(result.summary.devices).toEqual({
+    expect(summary.org).toEqual({ id: ORG, name: 'Acme Corp' });
+    expect(summary.devices).toEqual({
       total: 5,
       online: 3,
       offline: 2,
       healthPercentage: 60
     });
-    expect(result.summary.alerts).toEqual({
+    expect(summary.alerts).toEqual({
       total: 10,
       critical: 2,
       high: 3,
       resolved: 5,
       resolutionRate: 50
     });
-    expect(result.summary.osDistribution).toEqual({ windows: 5 });
-    expect(result.summary.siteBreakdown).toEqual([{ site: 'HQ', count: 5 }]);
+    expect(summary.osDistribution).toEqual({ windows: 5 });
+    expect(summary.siteBreakdown).toEqual([{ site: 'HQ', count: 5 }]);
     expect(typeof result.generatedAt).toBe('string');
   });
 
@@ -70,8 +79,9 @@ describe('generateExecutiveSummaryReport', () => {
     m.mockReturnValueOnce(selectChain([])); // organizations: no row found
     m.mockReturnValue(selectChain([]));
 
-    const result = await generateExecutiveSummaryReport(ORG, {});
+    const result = await generateExecutiveSummaryReport(ORG, {}, AUTHORITY);
+    expect(result.summary).toBeDefined();
 
-    expect(result.summary.org).toEqual({ id: ORG, name: '' });
+    expect(result.summary!.org).toEqual({ id: ORG, name: '' });
   });
 });

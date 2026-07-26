@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices, deviceVulnerabilities, vulnerabilities } from '../../db/schema';
 import { generateSecurityCompliancePostureReport } from '../../services/securityComplianceReport';
+import { siteScopeFingerprint, type ReportExecutionAuthority } from '../../services/siteScope';
 import { loadOpenVulnerabilityCounts } from '../../services/securityComplianceReportVulnerabilities';
 import { setupTestEnvironment } from './db-utils';
 
@@ -104,9 +105,20 @@ describe('security compliance report vulnerability isolation', () => {
         userId: envA.user.id,
       },
       async () => {
+        const scope = {
+          version: 1 as const,
+          kind: 'unrestricted' as const,
+          orgId: envA.organization.id,
+        };
+        const authority: ReportExecutionAuthority = {
+          scope,
+          principalUserId: envA.user.id,
+          capturedAt: new Date(),
+          fingerprint: siteScopeFingerprint(scope),
+        };
         const result = await generateSecurityCompliancePostureReport(envA.organization.id, {
           includeCis: false,
-        });
+        }, authority);
         const vulnerabilityCounts = await loadOpenVulnerabilityCounts([
           seeded.deviceA,
           seeded.deviceB,
