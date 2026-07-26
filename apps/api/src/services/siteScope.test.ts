@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { reports } from '../db/schema';
+import { reportRuns, reports } from '../db/schema';
+import * as siteScopeModule from './siteScope';
 
 const liveDbState = vi.hoisted(() => ({
   rows: [] as Array<unknown[] | Error>,
@@ -627,6 +628,169 @@ describe('report definition scope SQL predicates', () => {
 
     expect(rendered.params).toContain(ORG_A);
     expect(rendered.params).not.toContain(ORG_B);
+  });
+});
+
+describe('report run scope SQL predicates', () => {
+  const task5SiteScope = siteScopeModule as unknown as {
+    reportRunScopeSqlPredicate: (
+      columns: typeof reportRuns,
+      scope: LiveSiteScopeV1,
+    ) => SQL;
+    unrestrictedReportRunScopeSqlPredicate: (
+      columns: typeof reportRuns,
+    ) => SQL;
+    reportRunMultiOrgScopeSqlPredicate: (
+      rowOrgId: typeof reports.orgId,
+      columns: typeof reportRuns,
+      scopes: readonly LiveSiteScopeV1[],
+    ) => SQL;
+  };
+
+  it.each([
+    {
+      name: 'unrestricted admits complete unrestricted, restricted, legacy, and all-null rows',
+      scope: unrestricted(),
+      expectedKinds: ['unrestricted', 'restricted', 'legacy_unscoped'],
+      expectedSql: ['is null', 'is not null'],
+      forbiddenSql: ['<@'],
+    },
+    {
+      name: 'restricted admits only complete restricted subset rows',
+      scope: restricted([SITE_B, SITE_A, SITE_B]),
+      expectedKinds: ['restricted'],
+      expectedSql: ['<@', 'array['],
+      forbiddenSql: [],
+    },
+    {
+      name: 'restricted-empty remains a valid bound subset',
+      scope: restricted([]),
+      expectedKinds: ['restricted'],
+      expectedSql: ['<@', 'array[]::uuid[]'],
+      forbiddenSql: [],
+    },
+  ])(
+    '$name',
+    ({ scope, expectedKinds, expectedSql, forbiddenSql }) => {
+      const rendered = renderSql(
+        task5SiteScope.reportRunScopeSqlPredicate(reportRuns, scope),
+      );
+
+      for (const fragment of expectedSql) {
+        expect(rendered.sql.toLowerCase()).toContain(fragment);
+      }
+      for (const fragment of forbiddenSql) {
+        expect(rendered.sql.toLowerCase()).not.toContain(fragment);
+      }
+      expect(rendered.sql).not.toContain(ORG_A);
+      expect(rendered.sql).not.toContain(SITE_A);
+      expect(rendered.sql).not.toContain(SITE_B);
+      for (const kind of expectedKinds) {
+        expect(rendered.params).toContain(kind);
+      }
+      if (scope.kind === 'restricted') {
+        for (const siteId of normalizeSiteIds(scope.siteIds)) {
+          expect(rendered.params).toContain(siteId);
+        }
+      }
+    },
+  );
+
+  it('rejects unrestricted, legacy, all-null, foreign-site, partial, invalid-kind, and invalid-version rows from the restricted SQL branch', () => {
+    const rendered = renderSql(
+      task5SiteScope.reportRunScopeSqlPredicate(
+        reportRuns,
+        restricted([SITE_A]),
+      ),
+    );
+
+    expect(rendered.params).toContain('restricted');
+    expect(rendered.params).not.toContain('unrestricted');
+    expect(rendered.params).not.toContain('legacy_unscoped');
+    expect(rendered.sql.toLowerCase()).toContain('<@');
+    expect(rendered.sql.toLowerCase()).toContain('is not null');
+    expect(rendered.sql.toLowerCase()).not.toContain(' or ');
+    expect(rendered.params).toContain(SITE_A);
+    expect(rendered.params).not.toContain(SITE_B);
+  });
+
+  it('fails closed for a forced runtime legacy caller scope', () => {
+    const rendered = renderSql(
+      task5SiteScope.reportRunScopeSqlPredicate(
+        reportRuns,
+        legacy() as unknown as LiveSiteScopeV1,
+      ),
+    );
+
+    expect(rendered.sql.toLowerCase()).toContain('false');
+    expect(rendered.params).toEqual([]);
+  });
+
+  it('exposes exactly the same unrestricted run branch without a fabricated organization', () => {
+    const exact = renderSql(
+      task5SiteScope.reportRunScopeSqlPredicate(
+        reportRuns,
+        unrestricted(),
+      ),
+    );
+    const system = renderSql(
+      task5SiteScope.unrestrictedReportRunScopeSqlPredicate(reportRuns),
+    );
+
+    expect(system).toEqual(exact);
+    expect(system.sql).not.toContain(ORG_A);
+  });
+
+  it('builds bound per-organization run branches for unrestricted A and Site B1-restricted B', () => {
+    const rendered = renderSql(
+      task5SiteScope.reportRunMultiOrgScopeSqlPredicate(
+        reports.orgId,
+        reportRuns,
+        [
+          unrestricted(ORG_A),
+          restricted([SITE_B, SITE_A, SITE_B], ORG_B),
+        ],
+      ),
+    );
+
+    expect(rendered.sql.toLowerCase()).toContain(' or ');
+    expect(rendered.sql.toLowerCase()).toContain('<@');
+    for (const value of [ORG_A, ORG_B, SITE_A, SITE_B]) {
+      expect(rendered.sql).not.toContain(value);
+      expect(rendered.params).toContain(value);
+    }
+  });
+
+  it('deduplicates run organizations/sites and omits restricted-empty organizations', () => {
+    const rendered = renderSql(
+      task5SiteScope.reportRunMultiOrgScopeSqlPredicate(
+        reports.orgId,
+        reportRuns,
+        [
+          restricted([SITE_B, SITE_A, SITE_B], ORG_A),
+          restricted([SITE_A, SITE_B], ORG_A),
+          restricted([], ORG_B),
+        ],
+      ),
+    );
+
+    expect(rendered.params.filter((value) => value === ORG_A)).toHaveLength(1);
+    expect(rendered.params.filter((value) => value === ORG_B)).toHaveLength(0);
+    expect(rendered.params.filter((value) => value === SITE_A)).toHaveLength(1);
+    expect(rendered.params.filter((value) => value === SITE_B)).toHaveLength(1);
+  });
+
+  it('returns SQL FALSE when no organization has a successful non-empty run scope', () => {
+    const rendered = renderSql(
+      task5SiteScope.reportRunMultiOrgScopeSqlPredicate(
+        reports.orgId,
+        reportRuns,
+        [],
+      ),
+    );
+
+    expect(rendered.sql.toLowerCase()).toContain('false');
+    expect(rendered.params).toEqual([]);
   });
 });
 

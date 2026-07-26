@@ -18,7 +18,7 @@ import {
   roles,
   users,
 } from '../db/schema';
-import type { reports } from '../db/schema';
+import type { reportRuns, reports } from '../db/schema';
 import {
   db,
   runOutsideDbContext,
@@ -411,8 +411,8 @@ export function persistedSiteScopeValues(
   }
 }
 
-type ReportDefinitionScopeColumns = Pick<
-  typeof reports,
+type ReportScopeColumns = Pick<
+  typeof reports | typeof reportRuns,
   | 'executionScopeVersion'
   | 'executionScopeKind'
   | 'executionScopeSiteIds'
@@ -435,7 +435,7 @@ function uuidArraySql(siteIds: readonly string[]): SQL<unknown> {
 }
 
 function completeVersionOneBase(
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
 ): SQL<unknown> {
   return and(
     eq(columns.executionScopeVersion, 1),
@@ -446,7 +446,7 @@ function completeVersionOneBase(
 }
 
 function unrestrictedDefinitionPredicate(
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
 ): SQL<unknown> {
   const completeBase = completeVersionOneBase(columns);
   return or(
@@ -479,7 +479,7 @@ function unrestrictedDefinitionPredicate(
 }
 
 function definitionScopePredicate(
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
   currentScope: LiveSiteScopeV1,
 ): SQL<unknown> {
   switch (currentScope.kind) {
@@ -500,21 +500,68 @@ function definitionScopePredicate(
 }
 
 export function reportDefinitionScopeSqlPredicate(
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
   currentScope: LiveSiteScopeV1,
 ): SQL<unknown> {
   return definitionScopePredicate(columns, currentScope);
 }
 
 export function unrestrictedReportDefinitionScopeSqlPredicate(
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
 ): SQL<unknown> {
   return unrestrictedDefinitionPredicate(columns);
 }
 
 export function reportDefinitionMultiOrgScopeSqlPredicate(
   rowOrgId: typeof reports.orgId,
-  columns: ReportDefinitionScopeColumns,
+  columns: ReportScopeColumns,
+  authorizedScopes: readonly LiveSiteScopeV1[],
+): SQL<unknown> {
+  const scopesByOrgId = new Map<string, LiveSiteScopeV1>();
+
+  for (const scope of authorizedScopes) {
+    assertNonEmptyString(scope.orgId, 'organization ID');
+    if (scope.kind === 'restricted' && scope.siteIds.length === 0) {
+      continue;
+    }
+    if (!scopesByOrgId.has(scope.orgId)) {
+      scopesByOrgId.set(
+        scope.orgId,
+        scope.kind === 'restricted'
+          ? { ...scope, siteIds: normalizeSiteIds(scope.siteIds) }
+          : scope,
+      );
+    }
+  }
+
+  const branches = [...scopesByOrgId.values()]
+    .sort((left, right) => left.orgId.localeCompare(right.orgId))
+    .map((scope) =>
+      and(
+        eq(rowOrgId, scope.orgId),
+        definitionScopePredicate(columns, scope),
+      )!,
+    );
+
+  return branches.length === 0 ? sqlFalse() : or(...branches)!;
+}
+
+export function reportRunScopeSqlPredicate(
+  columns: ReportScopeColumns,
+  currentScope: LiveSiteScopeV1,
+): SQL<unknown> {
+  return definitionScopePredicate(columns, currentScope);
+}
+
+export function unrestrictedReportRunScopeSqlPredicate(
+  columns: ReportScopeColumns,
+): SQL<unknown> {
+  return unrestrictedDefinitionPredicate(columns);
+}
+
+export function reportRunMultiOrgScopeSqlPredicate(
+  rowOrgId: typeof reports.orgId,
+  columns: ReportScopeColumns,
   authorizedScopes: readonly LiveSiteScopeV1[],
 ): SQL<unknown> {
   const scopesByOrgId = new Map<string, LiveSiteScopeV1>();

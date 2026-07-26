@@ -31,6 +31,9 @@ const siteScopeState = vi.hoisted(() => {
     exactPredicate: { op: 'definitionScope', mode: 'exact' },
     compositePredicate: { op: 'definitionScope', mode: 'composite' },
     systemPredicate: { op: 'definitionScope', mode: 'system' },
+    exactRunPredicate: { op: 'runScope', mode: 'exact' },
+    compositeRunPredicate: { op: 'runScope', mode: 'composite' },
+    systemRunPredicate: { op: 'runScope', mode: 'system' },
     result: {
       ok: true,
       authority: {
@@ -56,6 +59,12 @@ vi.mock('../services/siteScope', () => ({
   reportDefinitionScopeSqlPredicate: vi.fn(() => siteScopeState.exactPredicate),
   reportDefinitionMultiOrgScopeSqlPredicate: vi.fn(() => siteScopeState.compositePredicate),
   unrestrictedReportDefinitionScopeSqlPredicate: vi.fn(() => siteScopeState.systemPredicate),
+  reportRunScopeSqlPredicate: vi.fn(() => siteScopeState.exactRunPredicate),
+  reportRunMultiOrgScopeSqlPredicate: vi.fn(() => siteScopeState.compositeRunPredicate),
+  unrestrictedReportRunScopeSqlPredicate: vi.fn(() => siteScopeState.systemRunPredicate),
+  siteScopeFingerprint: vi.fn((scope: any) =>
+    scope.kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64)
+  ),
   persistedSiteScopeValues: vi.fn((authority: any) => ({
     executionScopeVersion: 1,
     executionScopeKind: authority.scope.kind,
@@ -67,6 +76,9 @@ vi.mock('../services/siteScope', () => ({
     executionScopeCapturedAt: authority.capturedAt
   })),
   decodeSiteScope: vi.fn((row: any, orgId: string) => {
+    if (row.executionScopeKind === undefined) {
+      return siteScopeState.result.authority.scope;
+    }
     if (row.executionScopeVersion === null) {
       return { version: 1, kind: 'legacy_unscoped', orgId };
     }
@@ -92,6 +104,17 @@ vi.mock('../services/securityComplianceReport', () => ({
     generatedAt: 'x'
   }))
 }));
+
+vi.mock('../services/reportGenerationService', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../services/reportGenerationService')
+  >();
+  return {
+    ...actual,
+    generateReport: vi.fn(actual.generateReport),
+    previousBaselineFor: vi.fn(actual.previousBaselineFor),
+  };
+});
 
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ op: 'and', conditions }),
@@ -158,7 +181,13 @@ vi.mock('../db/schema', () => ({
     errorMessage: 'reportRuns.errorMessage',
     rowCount: 'reportRuns.rowCount',
     result: 'reportRuns.result',
-    createdAt: 'reportRuns.createdAt'
+    createdAt: 'reportRuns.createdAt',
+    executionScopeVersion: 'reportRuns.executionScopeVersion',
+    executionScopeKind: 'reportRuns.executionScopeKind',
+    executionScopeSiteIds: 'reportRuns.executionScopeSiteIds',
+    executionScopeUserId: 'reportRuns.executionScopeUserId',
+    executionScopeFingerprint: 'reportRuns.executionScopeFingerprint',
+    executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt'
   },
   devices: {
     id: 'devices.id',
@@ -256,12 +285,17 @@ import { generateReport } from '../services/reportGenerationService';
 import { generateSecurityCompliancePostureReport } from '../services/securityComplianceReport';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
+  decodeSiteScope,
   isSiteScopeSubset,
+  intersectSiteScopes,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
+  reportRunMultiOrgScopeSqlPredicate,
+  reportRunScopeSqlPredicate,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
-  unrestrictedReportDefinitionScopeSqlPredicate
+  unrestrictedReportDefinitionScopeSqlPredicate,
+  unrestrictedReportRunScopeSqlPredicate
 } from '../services/siteScope';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -426,6 +460,22 @@ function mockGenerateDeviceInventoryQuery(rows: Array<{ hostname: string; siteId
   } as any);
 }
 
+function scopedRunRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'run-1',
+    reportId: 'rep-1',
+    orgId: ORG_ID,
+    status: 'completed',
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-25T12:00:00.000Z'),
+    ...overrides,
+  };
+}
+
 describe('GET /reports/runs/:id/download', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -440,11 +490,12 @@ describe('GET /reports/runs/:id/download', () => {
     vi.mocked(db.select)
       // getReportRunWithOrgCheck → run row (with orgId for access check)
       .mockReturnValueOnce(selectChain([
-        { id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }
+        scopedRunRow()
       ]))
       // download handler → result + report meta
       .mockReturnValueOnce(selectChain([
         {
+          ...scopedRunRow(),
           result: { rows: [{ hostname: 'pc-1', os: 'windows' }], rowCount: 1 },
           reportType: 'device_inventory',
           reportName: 'Inventory',
@@ -464,9 +515,9 @@ describe('GET /reports/runs/:id/download', () => {
   it('returns 409 when the run is not completed', async () => {
     const app = new Hono();
     app.route('/reports', reportRoutes);
-    vi.mocked(db.select).mockReturnValueOnce(selectChain([
-      { id: 'run-1', reportId: 'rep-1', status: 'pending', orgId: ORG_ID }
-    ]));
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([scopedRunRow({ status: 'pending' })]))
+      .mockReturnValueOnce(selectChain([scopedRunRow({ status: 'pending' })]));
     const res = await app.request('/reports/runs/run-1/download');
     expect(res.status).toBe(409);
   });
@@ -475,8 +526,8 @@ describe('GET /reports/runs/:id/download', () => {
     const app = new Hono();
     app.route('/reports', reportRoutes);
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([{ id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }]))
-      .mockReturnValueOnce(selectChain([{ result: { summary: {} }, reportType: 'executive_summary', reportName: 'Exec', reportFormat: 'csv' }]));
+      .mockReturnValueOnce(selectChain([scopedRunRow()]))
+      .mockReturnValueOnce(selectChain([{ ...scopedRunRow(), result: { summary: {} }, reportType: 'executive_summary', reportName: 'Exec', reportFormat: 'csv' }]));
     const res = await app.request('/reports/runs/run-1/download');
     expect(res.status).toBe(409);
   });
@@ -484,9 +535,7 @@ describe('GET /reports/runs/:id/download', () => {
   it('returns 404 for a run the caller cannot access', async () => {
     const app = new Hono();
     app.route('/reports', reportRoutes);
-    vi.mocked(db.select).mockReturnValueOnce(selectChain([
-      { id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: 'deadbeef-0000-0000-0000-000000000000' }
-    ]));
+    vi.mocked(db.select).mockReturnValueOnce(selectChain([]));
     const res = await app.request('/reports/runs/run-1/download');
     expect(res.status).toBe(404);
   });
@@ -495,8 +544,8 @@ describe('GET /reports/runs/:id/download', () => {
     const app = new Hono();
     app.route('/reports', reportRoutes);
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([{ id: 'run-1', reportId: 'rep-1', status: 'completed', orgId: ORG_ID }]))
-      .mockReturnValueOnce(selectChain([{ result: { rows: [{ hostname: 'pc-1' }], rowCount: 1 }, reportType: 'device_inventory', reportName: 'Inventory', reportFormat: 'pdf' }]));
+      .mockReturnValueOnce(selectChain([scopedRunRow()]))
+      .mockReturnValueOnce(selectChain([{ ...scopedRunRow(), result: { rows: [{ hostname: 'pc-1' }], rowCount: 1 }, reportType: 'device_inventory', reportName: 'Inventory', reportFormat: 'pdf' }]));
     const res = await app.request('/reports/runs/run-1/download?format=pdf');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
@@ -546,9 +595,24 @@ describe('generateReport dispatch — security_compliance_posture', () => {
   });
 
   it('routes to the posture generator', async () => {
-    await generateReport('security_compliance_posture', 'org-1', {}, undefined);
+    const executionAuthority = {
+      scope: { version: 1 as const, kind: 'unrestricted' as const, orgId: 'org-1' },
+      principalUserId: 'user-1',
+      capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      fingerprint: 'f'.repeat(64),
+    };
+    await generateReport(
+      'security_compliance_posture',
+      'org-1',
+      {},
+      executionAuthority,
+    );
 
-    expect(generateSecurityCompliancePostureReport).toHaveBeenCalledWith('org-1', {}, undefined);
+    expect(generateSecurityCompliancePostureReport).toHaveBeenCalledWith(
+      'org-1',
+      {},
+      executionAuthority,
+    );
   });
 });
 
@@ -1657,38 +1721,19 @@ describe('reports routes', () => {
 
   it('should return run details with export URL', async () => {
     vi.mocked(db.select)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: 'run-1',
-                reportId: 'report-1',
-                status: 'completed',
-                startedAt: new Date('2024-01-01T00:00:00Z'),
-                completedAt: new Date('2024-01-01T00:01:00Z'),
-                outputUrl: '/api/reports/runs/run-1/download',
-                errorMessage: null,
-                rowCount: 12,
-                createdAt: new Date('2024-01-01T00:00:00Z'),
-                orgId: ORG_ID
-              }])
-            })
-          })
-        })
-      } as any)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'report-1',
-              name: 'Device Inventory',
-              type: 'device_inventory',
-              format: 'csv'
-            }])
-          })
-        })
-      } as any);
+      .mockReturnValueOnce(selectChain([scopedRunRow({ reportId: 'report-1' })]))
+      .mockReturnValueOnce(selectChain([scopedRunRow({
+        reportId: 'report-1',
+        startedAt: new Date('2024-01-01T00:00:00Z'),
+        completedAt: new Date('2024-01-01T00:01:00Z'),
+        outputUrl: '/api/reports/runs/run-1/download',
+        errorMessage: null,
+        rowCount: 12,
+        createdAt: new Date('2024-01-01T00:00:00Z'),
+        reportName: 'Device Inventory',
+        reportType: 'device_inventory',
+        reportFormat: 'csv',
+      })]));
 
     const res = await app.request('/reports/runs/run-1', {
       method: 'GET',
@@ -1833,6 +1878,15 @@ describe('reports routes', () => {
 
     it('returns 403 when a site-restricted caller filters to an out-of-scope siteId', async () => {
       permissionState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      siteScopeState.result = {
+        ok: true,
+        authority: {
+          scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
+          principalUserId: 'user-123',
+          capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+          fingerprint: 'a'.repeat(64),
+        },
+      };
       mockGenerateDeviceInventoryQuery(rows);
 
       const res = await app.request('/reports/generate', {
@@ -1850,6 +1904,15 @@ describe('reports routes', () => {
 
     it('narrows generated device inventory rows to caller allowed sites', async () => {
       permissionState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      siteScopeState.result = {
+        ok: true,
+        authority: {
+          scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
+          principalUserId: 'user-123',
+          capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+          fingerprint: 'a'.repeat(64),
+        },
+      };
       mockGenerateDeviceInventoryQuery(rows);
 
       const res = await app.request('/reports/generate', {
@@ -1879,5 +1942,716 @@ describe('reports routes', () => {
       expect(body.data.rows).toHaveLength(2);
       expect(body.data.rowCount).toBe(2);
     });
+  });
+});
+
+describe('report run immutable scope enforcement', () => {
+  const USER_ID = '44444444-4444-4444-8444-444444444444';
+  const ORG_A = ORG_ID;
+  const ORG_B = '66666666-6666-4666-8666-666666666666';
+  const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const SITE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+  const RUN_ID = '88888888-8888-4888-8888-888888888888';
+  const MISSING_RUN_ID = '99999999-9999-4999-8999-999999999999';
+  const CAPTURED_AT = new Date('2026-07-25T12:00:00.000Z');
+
+  function authority(
+    kind: 'unrestricted' | 'restricted',
+    siteIds: string[] = [],
+    orgId = ORG_A,
+  ) {
+    return {
+      ok: true,
+      authority: {
+        scope: kind === 'restricted'
+          ? { version: 1, kind, orgId, siteIds }
+          : { version: 1, kind, orgId },
+        principalUserId: USER_ID,
+        capturedAt: CAPTURED_AT,
+        fingerprint: kind === 'restricted'
+          ? 'a'.repeat(64)
+          : 'f'.repeat(64),
+      },
+    };
+  }
+
+  function definitionMetadata(overrides: Record<string, unknown> = {}) {
+    return {
+      id: REPORT_ID,
+      orgId: ORG_A,
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: [SITE_A],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeCapturedAt: CAPTURED_AT,
+      ...overrides,
+    };
+  }
+
+  function definition(overrides: Record<string, unknown> = {}) {
+    return {
+      ...definitionMetadata(),
+      name: 'Scoped Inventory',
+      type: 'device_inventory',
+      config: {},
+      schedule: 'one_time',
+      format: 'csv',
+      ...overrides,
+    };
+  }
+
+  function runMetadata(overrides: Record<string, unknown> = {}) {
+    return {
+      id: RUN_ID,
+      reportId: REPORT_ID,
+      orgId: ORG_A,
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: [SITE_A],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeCapturedAt: CAPTURED_AT,
+      ...overrides,
+    };
+  }
+
+  function conditionContainsIdentity(condition: any, target: unknown): boolean {
+    if (condition === target) return true;
+    if (!condition || !Array.isArray(condition.conditions)) return false;
+    return condition.conditions.some((child: unknown) =>
+      conditionContainsIdentity(child, target)
+    );
+  }
+
+  function conditionValues(condition: any, column: string): unknown[] {
+    if (!condition) return [];
+    if (Array.isArray(condition.conditions)) {
+      return condition.conditions.flatMap((child: unknown) =>
+        conditionValues(child, column)
+      );
+    }
+    if (condition.column !== column) return [];
+    return condition.values ?? [condition.value];
+  }
+
+  function capturedSelectChain(rows: unknown[], captured: unknown[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      where: vi.fn((condition: unknown) => {
+        captured.push(condition);
+        return chain;
+      }),
+      orderBy: vi.fn(() => chain),
+      groupBy: vi.fn(() => chain),
+      limit: vi.fn(() => chain),
+      offset: vi.fn(() => chain),
+      for: vi.fn(() => chain),
+      then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject),
+    };
+    return chain;
+  }
+
+  function conditionalRecentRunsChain(
+    authorizedRows: unknown[],
+    hiddenRows: unknown[],
+    capturedConditions: unknown[],
+    capturedProjections: unknown[],
+  ) {
+    let condition: unknown;
+    let limit = Number.POSITIVE_INFINITY;
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      where: vi.fn((value: unknown) => {
+        condition = value;
+        capturedConditions.push(value);
+        return chain;
+      }),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn((value: number) => {
+        limit = value;
+        return chain;
+      }),
+      then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => {
+        capturedProjections.push(condition);
+        const rows = conditionContainsIdentity(
+          condition,
+          siteScopeState.exactRunPredicate,
+        )
+          ? authorizedRows
+          : hiddenRows;
+        return Promise.resolve(rows.slice(0, limit)).then(resolve, reject);
+      },
+    };
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authState.auth = authState.makeDefault();
+    permissionState.deny = false;
+    permissionState.permissions = undefined;
+    siteScopeState.result = authority('unrestricted') as any;
+    siteScopeState.mapResult = new Map();
+    vi.mocked(isSiteScopeSubset).mockReturnValue(true);
+    vi.mocked(intersectSiteScopes).mockImplementation(
+      (persisted: any) => persisted,
+    );
+    vi.mocked(generateReport).mockResolvedValue({
+      rows: [{ hostname: 'site-a-device' }],
+      rowCount: 1,
+    });
+  });
+
+  it('intersects definition/current scope, persists one immutable run snapshot, and passes that exact authority into generation', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    siteScopeState.result = authority('restricted', [SITE_A]) as any;
+    const narrowedScope = {
+      version: 1 as const,
+      kind: 'restricted' as const,
+      orgId: ORG_A,
+      siteIds: [SITE_A],
+    };
+    vi.mocked(intersectSiteScopes).mockReturnValue(narrowedScope);
+    const insertedValues: any[] = [];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definitionMetadata()]))
+      .mockReturnValueOnce(selectChain([definition()]));
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn((values: unknown) => {
+        insertedValues.push(values);
+        return {
+          returning: vi.fn().mockResolvedValue([{
+            id: RUN_ID,
+            reportId: REPORT_ID,
+            status: 'pending',
+          }]),
+        };
+      }),
+    } as any);
+
+    const res = await app.request(`/reports/${REPORT_ID}/generate`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      ORG_A,
+      'read',
+    );
+    expect(intersectSiteScopes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 1,
+        kind: 'restricted',
+        orgId: ORG_A,
+        siteIds: [SITE_A],
+      }),
+      expect.objectContaining(narrowedScope),
+    );
+    expect(insertedValues).toEqual([
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'pending',
+        executionScopeVersion: 1,
+        executionScopeKind: 'restricted',
+        executionScopeSiteIds: [SITE_A],
+        executionScopeUserId: USER_ID,
+        executionScopeFingerprint: 'a'.repeat(64),
+        executionScopeCapturedAt: CAPTURED_AT,
+      }),
+    ]);
+    expect(generateReport).toHaveBeenCalledWith(
+      'device_inventory',
+      ORG_A,
+      {},
+      expect.objectContaining({
+        scope: narrowedScope,
+        principalUserId: USER_ID,
+        capturedAt: CAPTURED_AT,
+        fingerprint: 'a'.repeat(64),
+      }),
+    );
+  });
+
+  it('rejects restricted-empty live authority before insert, generation, baseline, mutation, or success audit', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    siteScopeState.result = { ok: false, reason: 'empty_scope' } as any;
+    vi.mocked(db.select).mockReturnValueOnce(
+      selectChain([definitionMetadata()]),
+    );
+
+    const res = await app.request(`/reports/${REPORT_ID}/generate`, {
+      method: 'POST',
+    });
+
+    expect([403, 404]).toContain(res.status);
+    expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      ORG_A,
+      'read',
+    );
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(generateReport).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a saved config outside the immutable authority before insert, audit, or mutation', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    siteScopeState.result = authority('restricted', [SITE_A]) as any;
+    const narrowedScope = {
+      version: 1 as const,
+      kind: 'restricted' as const,
+      orgId: ORG_A,
+      siteIds: [SITE_A],
+    };
+    vi.mocked(intersectSiteScopes).mockReturnValue(narrowedScope);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definitionMetadata()]))
+      .mockReturnValueOnce(selectChain([definition({
+        config: { filters: { siteIds: [SITE_B] } },
+      })]));
+
+    const res = await app.request(`/reports/${REPORT_ID}/generate`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(generateReport).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      mode: 'organization exact scope',
+      configure: () => {
+        authState.auth = authState.makeDefault();
+        siteScopeState.result = authority('restricted', [SITE_A]) as any;
+      },
+      predicate: () => siteScopeState.exactRunPredicate,
+      resolver: () => resolveRequestReportAuthority,
+    },
+    {
+      mode: 'partner per-organization composite scope',
+      configure: () => {
+        authState.auth = {
+          ...authState.makeDefault(),
+          scope: 'partner',
+          partnerId: 'partner-a',
+          orgId: null,
+          accessibleOrgIds: [ORG_A, ORG_B],
+          canAccessOrg: (orgId: string) =>
+            orgId === ORG_A || orgId === ORG_B,
+        };
+        siteScopeState.mapResult = new Map([
+          [ORG_A, authority('unrestricted', [], ORG_A)],
+          [ORG_B, authority('restricted', [SITE_B], ORG_B)],
+        ]) as any;
+      },
+      predicate: () => siteScopeState.compositeRunPredicate,
+      resolver: () => resolveRequestReportAuthorityMap,
+    },
+    {
+      mode: 'system unrestricted provenance scope',
+      configure: () => {
+        authState.auth = {
+          ...authState.makeDefault(),
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          accessibleOrgIds: [],
+          canAccessOrg: () => true,
+        };
+      },
+      predicate: () => siteScopeState.systemRunPredicate,
+      resolver: () => unrestrictedReportRunScopeSqlPredicate,
+    },
+  ])(
+    'uses one $mode predicate for count/page and exact 2/2/1 pagination',
+    async ({ configure, predicate, resolver }) => {
+      configure();
+      const visiblePages = [
+        [{ id: 'visible-1' }, { id: 'visible-2' }],
+        [{ id: 'visible-3' }, { id: 'visible-4' }],
+        [{ id: 'visible-5' }],
+      ];
+      const capturedConditions: unknown[] = [];
+
+      for (let index = 0; index < visiblePages.length; index += 1) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(
+            capturedSelectChain([{ count: 5 }], capturedConditions),
+          )
+          .mockReturnValueOnce(
+            capturedSelectChain(visiblePages[index]!, capturedConditions),
+          );
+        const app = new Hono();
+        app.route('/reports', reportRoutes);
+        const res = await app.request(
+          `/reports/runs?page=${index + 1}&limit=2`,
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual(visiblePages[index]);
+        expect(body.pagination).toEqual({
+          page: index + 1,
+          limit: 2,
+          total: 5,
+        });
+      }
+
+      expect(resolver()).toHaveBeenCalled();
+      expect(capturedConditions).toHaveLength(6);
+      for (const condition of capturedConditions) {
+        expect(
+          conditionContainsIdentity(condition, predicate()),
+        ).toBe(true);
+      }
+      expect(capturedConditions[0]).toBe(capturedConditions[1]);
+      expect(capturedConditions[2]).toBe(capturedConditions[3]);
+      expect(capturedConditions[4]).toBe(capturedConditions[5]);
+    },
+  );
+
+  it('omits denied and restricted-empty partner organizations from the run composite', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    authState.auth = {
+      ...authState.makeDefault(),
+      scope: 'partner',
+      partnerId: 'partner-a',
+      orgId: null,
+      accessibleOrgIds: [ORG_A, ORG_B],
+      canAccessOrg: (orgId: string) =>
+        orgId === ORG_A || orgId === ORG_B,
+    };
+    siteScopeState.mapResult = new Map([
+      [ORG_A, { ok: false, reason: 'permission_removed' }],
+      [ORG_B, { ok: false, reason: 'empty_scope' }],
+    ]) as any;
+    const capturedConditions: unknown[] = [];
+    vi.mocked(db.select)
+      .mockReturnValueOnce(
+        capturedSelectChain([{ count: 0 }], capturedConditions),
+      )
+      .mockReturnValueOnce(capturedSelectChain([], capturedConditions));
+
+    const res = await app.request('/reports/runs?limit=2');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      data: [],
+      pagination: { total: 0 },
+    });
+    expect(reportRunMultiOrgScopeSqlPredicate).toHaveBeenCalledWith(
+      'reports.orgId',
+      expect.anything(),
+      [],
+    );
+  });
+
+  it('filters recentRuns in SQL before limiting and never materializes hidden result payloads', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    siteScopeState.result = authority('restricted', [SITE_A]) as any;
+    const authorizedRows = [1, 2, 3, 4, 5].map((value) => ({
+      id: `site-a-${value}`,
+      reportId: REPORT_ID,
+      status: 'completed',
+      rowCount: value,
+      createdAt: new Date(`2026-07-2${value}T00:00:00.000Z`),
+    }));
+    const hiddenRows = [
+      {
+        id: 'site-b-hidden',
+        reportId: REPORT_ID,
+        status: 'completed',
+        result: { rows: [{ secret: 'site-b' }] },
+        createdAt: new Date('2026-07-31T00:00:00.000Z'),
+      },
+      ...authorizedRows,
+    ];
+    const capturedConditions: unknown[] = [];
+    const observedConditions: unknown[] = [];
+    const projections: unknown[] = [];
+    vi.mocked(db.select).mockImplementation((projection?: unknown) => {
+      projections.push(projection);
+      if (projections.length === 1) {
+        return selectChain([definitionMetadata()]) as any;
+      }
+      if (projections.length === 2) {
+        return selectChain([definition()]) as any;
+      }
+      return conditionalRecentRunsChain(
+        authorizedRows,
+        hiddenRows,
+        capturedConditions,
+        observedConditions,
+      ) as any;
+    });
+
+    const res = await app.request(`/reports/${REPORT_ID}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recentRuns).toHaveLength(5);
+    expect(body.recentRuns.map((run: any) => run.id)).toEqual(
+      authorizedRows.map((run) => run.id),
+    );
+    expect(JSON.stringify(body.recentRuns)).not.toContain('site-b');
+    expect(reportRunScopeSqlPredicate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: 'restricted',
+        siteIds: [SITE_A],
+      }),
+    );
+    expect(
+      conditionContainsIdentity(
+        capturedConditions[0],
+        siteScopeState.exactRunPredicate,
+      ),
+    ).toBe(true);
+    expect(projections[2]).toBeDefined();
+    expect(Object.values(projections[2] as Record<string, unknown>))
+      .not.toContain('reportRuns.result');
+  });
+
+  it.each([
+    {
+      route: (id: string) => `/reports/runs/${id}`,
+      action: 'read',
+    },
+    {
+      route: (id: string) => `/reports/runs/${id}/download?format=json`,
+      action: 'export',
+    },
+  ])(
+    'uses metadata-only exact-row rebinding and a predicate-guarded payload lookup for $action',
+    async ({ route, action }) => {
+      const app = new Hono();
+      app.route('/reports', reportRoutes);
+      siteScopeState.result = authority('restricted', [SITE_A]) as any;
+      const projections: unknown[] = [];
+      const conditions: unknown[] = [];
+      vi.mocked(db.select).mockImplementation((projection?: unknown) => {
+        projections.push(projection);
+        if (projections.length === 1) {
+          return capturedSelectChain([{
+            ...runMetadata(),
+            status: 'completed',
+            createdAt: CAPTURED_AT,
+          }], conditions) as any;
+        }
+        return capturedSelectChain([{
+          ...runMetadata(),
+          status: 'completed',
+          createdAt: CAPTURED_AT,
+          reportName: 'Scoped Inventory',
+          reportType: 'device_inventory',
+          reportFormat: 'json',
+          result: { rows: [{ hostname: 'site-a-device' }] },
+        }], conditions) as any;
+      });
+
+      const res = await app.request(route(RUN_ID));
+
+      expect(res.status).toBe(200);
+      expect(Object.values(projections[0] as Record<string, unknown>))
+        .not.toContain('reportRuns.result');
+      expect(Object.keys(projections[0] as Record<string, unknown>).sort())
+        .toEqual([
+          'executionScopeCapturedAt',
+          'executionScopeFingerprint',
+          'executionScopeKind',
+          'executionScopeSiteIds',
+          'executionScopeUserId',
+          'executionScopeVersion',
+          'id',
+          'orgId',
+          'reportId',
+        ]);
+      expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+        expect.anything(),
+        ORG_A,
+        action,
+      );
+      expect(decodeSiteScope).toHaveBeenCalledWith(
+        expect.objectContaining({ id: RUN_ID }),
+        ORG_A,
+      );
+      expect(isSiteScopeSubset).toHaveBeenCalled();
+      expect(reportRunScopeSqlPredicate).toHaveBeenCalled();
+      expect(
+        conditionContainsIdentity(
+          conditions[1],
+          siteScopeState.exactRunPredicate,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    {
+      mode: 'partner',
+      configure: () => {
+        authState.auth = {
+          ...authState.makeDefault(),
+          scope: 'partner',
+          partnerId: 'partner-a',
+          orgId: null,
+          accessibleOrgIds: [ORG_A, ORG_B],
+          canAccessOrg: (orgId: string) =>
+            orgId === ORG_A || orgId === ORG_B,
+        };
+      },
+    },
+    {
+      mode: 'system',
+      configure: () => {
+        authState.auth = {
+          ...authState.makeDefault(),
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          accessibleOrgIds: [],
+          canAccessOrg: () => true,
+        };
+      },
+    },
+  ])(
+    '$mode known-ID access rebinds to the target organization instead of reusing list scope',
+    async ({ configure }) => {
+      configure();
+      const app = new Hono();
+      app.route('/reports', reportRoutes);
+      siteScopeState.result = authority(
+        'restricted',
+        [SITE_B],
+        ORG_B,
+      ) as any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(capturedSelectChain([{
+          ...runMetadata({ orgId: ORG_B, executionScopeSiteIds: [SITE_B] }),
+          status: 'completed',
+        }], []))
+        .mockReturnValueOnce(capturedSelectChain([{
+          ...runMetadata({ orgId: ORG_B, executionScopeSiteIds: [SITE_B] }),
+          status: 'completed',
+          reportName: 'B1 inventory',
+          reportType: 'device_inventory',
+          reportFormat: 'json',
+        }], []));
+
+      const res = await app.request(`/reports/runs/${RUN_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+        expect.anything(),
+        ORG_B,
+        'read',
+      );
+      expect(resolveRequestReportAuthorityMap).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      route: (id: string) => `/reports/runs/${id}`,
+      action: 'read',
+    },
+    {
+      route: (id: string) => `/reports/runs/${id}/download?format=json`,
+      action: 'export',
+    },
+  ])(
+    'makes a known Site B $action response identical to a nonexistent run and selects no hidden payload',
+    async ({ route }) => {
+      const app = new Hono();
+      app.route('/reports', reportRoutes);
+      siteScopeState.result = authority('restricted', [SITE_A]) as any;
+      vi.mocked(isSiteScopeSubset).mockReturnValue(false);
+      const projections: unknown[] = [];
+      vi.mocked(db.select).mockImplementation((projection?: unknown) => {
+        projections.push(projection);
+        if (projections.length === 1) {
+          return selectChain([{
+            ...runMetadata({
+              executionScopeSiteIds: [SITE_B],
+              executionScopeFingerprint: 'b'.repeat(64),
+            }),
+            status: 'completed',
+          }]) as any;
+        }
+        return selectChain([{
+          ...runMetadata({
+            executionScopeSiteIds: [SITE_B],
+            executionScopeFingerprint: 'b'.repeat(64),
+          }),
+          status: 'completed',
+          result: { rows: [{ secret: 'site-b' }] },
+          reportType: 'device_inventory',
+          reportName: 'Hidden',
+          reportFormat: 'json',
+        }]) as any;
+      });
+
+      const hidden = await app.request(route(RUN_ID));
+      const hiddenBody = await hidden.text();
+
+      projections.length = 0;
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.select).mockReturnValueOnce(selectChain([]));
+      const missing = await app.request(route(MISSING_RUN_ID));
+      const missingBody = await missing.text();
+
+      expect(hidden.status).toBe(missing.status);
+      expect(hiddenBody).toBe(missingBody);
+      expect(hidden.status).toBe(404);
+      expect(projections).toHaveLength(0);
+    },
+  );
+
+  it('binds report/status filters alongside the same immutable run predicate', async () => {
+    const app = new Hono();
+    app.route('/reports', reportRoutes);
+    const capturedConditions: unknown[] = [];
+    vi.mocked(db.select)
+      .mockReturnValueOnce(
+        capturedSelectChain([{ count: 1 }], capturedConditions),
+      )
+      .mockReturnValueOnce(
+        capturedSelectChain([{ id: RUN_ID }], capturedConditions),
+      );
+
+    const res = await app.request(
+      `/reports/runs?reportId=${REPORT_ID}&status=completed`,
+    );
+
+    expect(res.status).toBe(200);
+    for (const condition of capturedConditions) {
+      expect(
+        conditionContainsIdentity(
+          condition,
+          siteScopeState.exactRunPredicate,
+        ),
+      ).toBe(true);
+      expect(conditionValues(condition, 'reportRuns.reportId'))
+        .toContain(REPORT_ID);
+      expect(conditionValues(condition, 'reportRuns.status'))
+        .toContain('completed');
+    }
   });
 });

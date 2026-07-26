@@ -6,8 +6,12 @@ import {
   decodeSiteScope,
   isSiteScopeSubset,
   reportDefinitionScopeSqlPredicate,
+  reportRunScopeSqlPredicate,
   resolveRequestReportAuthority,
+  type LiveSiteScopeV1,
   type PersistedSiteScopeColumns,
+  type ReportAction,
+  type ReportExecutionAuthority,
 } from '../../services/siteScope';
 
 export { getPagination } from '../../utils/pagination';
@@ -130,37 +134,72 @@ export function tenantAuthorizedReportCondition(
 
 export async function getReportRunWithOrgCheck(
   runId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+  auth: AuthContext,
+  action: ReportAction,
 ) {
-  const [run] = await db
-    .select({
-      id: reportRuns.id,
-      reportId: reportRuns.reportId,
-      status: reportRuns.status,
-      startedAt: reportRuns.startedAt,
-      completedAt: reportRuns.completedAt,
-      outputUrl: reportRuns.outputUrl,
-      errorMessage: reportRuns.errorMessage,
-      rowCount: reportRuns.rowCount,
-      createdAt: reportRuns.createdAt,
-      orgId: reports.orgId
-    })
+  const tenantConditions: SQL<unknown>[] = [eq(reportRuns.id, runId)];
+  if (auth.scope === 'organization') {
+    if (!auth.orgId) return null;
+    tenantConditions.push(eq(reports.orgId, auth.orgId));
+  } else if (auth.scope === 'partner') {
+    const orgIds = auth.accessibleOrgIds ?? [];
+    if (orgIds.length === 0) return null;
+    tenantConditions.push(inArray(reports.orgId, orgIds));
+  }
+
+  const [metadata] = await db
+    .select(reportRunMetadataProjection)
     .from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
-    .where(eq(reportRuns.id, runId))
+    .where(and(...tenantConditions))
     .limit(1);
 
-  if (!run) {
+  if (!metadata) return null;
+
+  const authorityResult = await resolveRequestReportAuthority(
+    auth,
+    metadata.orgId,
+    action,
+  );
+  if (!authorityResult.ok || authorityResult.authority.scope.kind === 'legacy_unscoped') {
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(run.orgId, auth);
-  if (!hasAccess) {
+  try {
+    const storedScope = decodeSiteScope(
+      metadata as unknown as PersistedSiteScopeColumns,
+      metadata.orgId,
+    );
+    if (!isSiteScopeSubset(storedScope, authorityResult.authority.scope)) {
+      return null;
+    }
+  } catch {
     return null;
   }
 
-  return run;
+  return {
+    metadata,
+    authority: authorityResult.authority as ReportExecutionAuthority & {
+      scope: LiveSiteScopeV1;
+    },
+    runScopePredicate: reportRunScopeSqlPredicate(
+      reportRuns,
+      authorityResult.authority.scope,
+    ),
+  };
 }
+
+export const reportRunMetadataProjection = {
+  id: reportRuns.id,
+  reportId: reportRuns.reportId,
+  orgId: reports.orgId,
+  executionScopeVersion: reportRuns.executionScopeVersion,
+  executionScopeKind: reportRuns.executionScopeKind,
+  executionScopeSiteIds: reportRuns.executionScopeSiteIds,
+  executionScopeUserId: reportRuns.executionScopeUserId,
+  executionScopeFingerprint: reportRuns.executionScopeFingerprint,
+  executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+};
 
 export async function getOrgIdsForAuth(
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds'>

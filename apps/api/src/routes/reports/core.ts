@@ -25,6 +25,7 @@ import {
   persistedSiteScopeValues,
   reportDefinitionMultiOrgScopeSqlPredicate,
   reportDefinitionScopeSqlPredicate,
+  reportRunScopeSqlPredicate,
   resolveRequestReportAuthority,
   resolveRequestReportAuthorityMap,
   unrestrictedReportDefinitionScopeSqlPredicate,
@@ -308,11 +309,40 @@ coreRoutes.get(
       return c.json({ error: 'Report not found' }, 404);
     }
 
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      report.orgId,
+      'read',
+    );
+    if (!authorityResult.ok || authorityResult.authority.scope.kind === 'legacy_unscoped') {
+      return c.json({ error: 'Report not found' }, 404);
+    }
+    const runScopePredicate = reportRunScopeSqlPredicate(
+      reportRuns,
+      authorityResult.authority.scope,
+    );
+
     // Get recent runs for this report
     const recentRuns = await db
-      .select()
+      .select({
+        id: reportRuns.id,
+        reportId: reportRuns.reportId,
+        status: reportRuns.status,
+        startedAt: reportRuns.startedAt,
+        completedAt: reportRuns.completedAt,
+        outputUrl: reportRuns.outputUrl,
+        errorMessage: reportRuns.errorMessage,
+        rowCount: reportRuns.rowCount,
+        createdAt: reportRuns.createdAt,
+        executionScopeVersion: reportRuns.executionScopeVersion,
+        executionScopeKind: reportRuns.executionScopeKind,
+        executionScopeSiteIds: reportRuns.executionScopeSiteIds,
+        executionScopeUserId: reportRuns.executionScopeUserId,
+        executionScopeFingerprint: reportRuns.executionScopeFingerprint,
+        executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+      })
       .from(reportRuns)
-      .where(eq(reportRuns.reportId, reportId))
+      .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
       .orderBy(desc(reportRuns.createdAt))
       .limit(5);
 
