@@ -85,6 +85,34 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
+// Partner-cap enforcement (#2776 task 3.4, fix round 2). Mocked at the wiring
+// level — see enrollmentKeys.test.ts's identically-named helper for
+// rationale. Permissive by default so every pre-existing test in this file
+// (which predates the cap gate on rotate) keeps passing.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+vi.mock('../services/enrollmentDefaults', () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+}));
+
+/**
+ * Configure the mocked partner-cap gate for the current test. Mirrors the
+ * real assertTtlWithinCap contract: null when ttlMinutes is undefined or at/
+ * under the cap, an error string naming the cap when it's exceeded.
+ */
+function mockEnrollmentDefaults(opts: { maxTtlMinutes: number }) {
+  assertTtlWithinCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number | undefined) => {
+      if (ttlMinutes === undefined) return null;
+      return ttlMinutes > opts.maxTtlMinutes
+        ? `ttlMinutes exceeds the partner maximum of ${opts.maxTtlMinutes} minutes`
+        : null;
+    },
+  );
+}
+
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
@@ -160,6 +188,10 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.clearAllMocks clears call history but NOT implementations — restore
+    // the permissive default every test (mirrors the other route suites).
+    assertTtlWithinCapMock.mockReset();
+    assertTtlWithinCapMock.mockImplementation(async () => null);
     mfaGate.deny = false;
     permissionGate.deny = false;
     app = new Hono();
@@ -269,6 +301,69 @@ describe('enrollment key routes — get, rotate, delete', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    // #2776 task 3.4 fix round 2 — a sixth uncapped path: rotate re-mints the
+    // key value via generateEnrollmentKey(), so an uncapped expiresAt here
+    // would let a caller bound by a short partner cap create a key at the
+    // cap and immediately rotate it past it. rotateEnrollmentKeySchema has
+    // no ttlMinutes field (verified: only `maxUsage` and `expiresAt`), so
+    // expiresAt is the only path to cover.
+    it('rejects an expiresAt whose implied duration exceeds the partner cap', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      const updateSet = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+      // 30 days out — far above a 1440-minute (24h) cap.
+      const expiresAt = new Date(Date.now() + 43200 * 60 * 1000).toISOString();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ expiresAt }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('1440');
+      expect(updateSet).not.toHaveBeenCalled();
+      // The route must derive an implied minutes value from expiresAt and
+      // check IT against the cap — there is no ttlMinutes field on this route.
+      const [, impliedMinutes] = assertTtlWithinCapMock.mock.calls[0]!;
+      expect(impliedMinutes).toBeGreaterThan(43199);
+      expect(impliedMinutes).toBeLessThanOrEqual(43201);
+    });
+
+    it('allows rotating with an expiresAt at or under the partner cap', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey' })]);
+
+      // Exactly at the 1440-minute cap.
+      const expiresAt = new Date(Date.now() + 1440 * 60 * 1000).toISOString();
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ expiresAt }),
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('does not consult the cap when expiresAt is omitted (preserves the existing key\'s own expiry, not a new choice)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockUpdateSetWhereReturning([makeEnrollmentKey({ key: 'hashed_newkey' })]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ maxUsage: 5 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(assertTtlWithinCapMock).toHaveBeenCalledWith(ORG_ID, undefined);
     });
   });
 

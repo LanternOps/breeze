@@ -7,13 +7,30 @@ import { enrollmentKeys, organizations } from "../db/schema/orgs";
 import { hashEnrollmentKey } from "../services/enrollmentKeySecurity";
 import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
-
-const CHILD_TTL_MIN = Number(
-  process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES ?? 24 * 60,
-);
+import { clampTtlToCap } from "../services/enrollmentDefaults";
+import { envInt } from "../utils/envInt";
 
 /**
- * Returns the child enrollment key expiry: now + CHILD_TTL_MIN.
+ * Base lifetime for a child enrollment key minted at redemption, in minutes.
+ *
+ * Read via `envInt`, never `Number(process.env.X ?? default)`: compose threads
+ * this in as `${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-}`, which renders as the
+ * empty STRING when the operator hasn't set it. `??` doesn't fire on `''` and
+ * `Number('') === 0`, so the naive form made every redeemed child enrollment
+ * key expire the instant it was minted — agent enrollment stopped working
+ * entirely on any self-host that pulled the release without adding the key to
+ * its .env (#2776).
+ *
+ * Resolved per call rather than at module load so the fallback is directly
+ * testable; the env is fixed at boot in production, so this is the same value
+ * every time.
+ */
+export function childEnrollmentKeyTtlMinutes(): number {
+  return envInt("CHILD_ENROLLMENT_KEY_TTL_MINUTES", 24 * 60);
+}
+
+/**
+ * Returns the child enrollment key expiry: now + childEnrollmentKeyTtlMinutes().
  *
  * The parent's expiry is deliberately NOT an upper bound. The parent created
  * by the Add Device modal is a transient 60-minute container (PR #739 review
@@ -33,9 +50,15 @@ const CHILD_TTL_MIN = Number(
  * that job before its own expiry (or full consumption). If you're reading
  * this because you found that job and are wondering whether it re-clamps
  * this TTL, it doesn't — see its header comment for the exemption predicate.
+ *
+ * `ttlMinutes`, when supplied, overrides the env default — used to pass an
+ * already partner-cap-clamped value (fix round 3, #2776; see the call site
+ * below) without duplicating the "now + minutes" arithmetic.
  */
-function freshChildExpiresAt(): Date {
-  return new Date(Date.now() + CHILD_TTL_MIN * 60 * 1000);
+function freshChildExpiresAt(
+  ttlMinutes: number = childEnrollmentKeyTtlMinutes(),
+): Date {
+  return new Date(Date.now() + ttlMinutes * 60 * 1000);
 }
 
 function generateChildEnrollmentKey(): string {
@@ -148,7 +171,18 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    const childExpiresAt = freshChildExpiresAt();
+    // Clamp (never reject — this is the device-enrollment redemption path;
+    // the token IS the auth, there is no interactive caller to show an
+    // error to) the child's default TTL to the partner cap (fix round 3,
+    // #2776): the cap bounds KEY LIFETIME, not just interactively-chosen
+    // input, so this hot path must not hand out a child key longer-lived
+    // than the partner allows just because it uses the server-constant
+    // default.
+    const cappedTtlMinutes = await clampTtlToCap(
+      row.orgId,
+      childEnrollmentKeyTtlMinutes(),
+    );
+    const childExpiresAt = freshChildExpiresAt(cappedTtlMinutes);
 
     // ── 3. INSERT child key BEFORE recording the redemption (C1 reorder) ──
     // If the consume UPDATE loses a race, we'll DELETE this row below.

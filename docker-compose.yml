@@ -249,6 +249,16 @@ services:
       JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-}
       WS_TICKET_BIND_IP: ${WS_TICKET_BIND_IP:-}
       ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: ${ENROLLMENT_KEY_DEFAULT_TTL_MINUTES:-}
+      # Real defaults, not `:-}` — an unset var rendered as `VAR: ""` reaches the
+      # container SET to an empty string, and any reader doing
+      # `Number(process.env.X ?? default)` then gets 0 (`??` skips '', and
+      # Number('') is 0). The readers all use utils/envInt now, which treats ''
+      # as absent; these baked defaults are the second line of defence (#2776).
+      CHILD_ENROLLMENT_KEY_TTL_MINUTES: ${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-1440}
+      INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-1440}
+      INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
+      ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
+      ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
       AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
       # Email — SMTP extras + Mailgun provider
       SMTP_FROM: ${SMTP_FROM:-}

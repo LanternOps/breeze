@@ -70,6 +70,20 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
+// Partner-cap enforcement (#2776 task 3.4, fix round 1). Mocked at the wiring
+// level — see enrollmentKeys.test.ts's identically-named helper for
+// rationale. None of the tests in this file exercise a partner-configured
+// cap (that's covered in enrollmentKeys.test.ts's dedicated "partner cap
+// enforcement" describe block); this permissive default just keeps every
+// pre-existing test in this file — which predates the cap gate — passing.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+vi.mock('../services/enrollmentDefaults', () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+}));
+
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
@@ -155,6 +169,10 @@ describe('enrollment key routes — list & create', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.clearAllMocks clears call history but NOT implementations — restore
+    // the permissive default every test (mirrors the other route suites).
+    assertTtlWithinCapMock.mockReset();
+    assertTtlWithinCapMock.mockImplementation(async () => null);
     app = new Hono();
     app.route('/enrollment-keys', enrollmentKeyRoutes);
   });
