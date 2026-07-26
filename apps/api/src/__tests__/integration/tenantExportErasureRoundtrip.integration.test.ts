@@ -68,7 +68,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       ${userId}, ${partnerId}, ${orgA},
       ${'roundtrip-' + suffix + '@breeze.test'}, 'Roundtrip User',
       ${prohibitedSentinels[0]}, ${prohibitedSentinels[1]},
-      jsonb_build_array(${prohibitedSentinels[2]})
+      jsonb_build_array(${prohibitedSentinels[2]}::text)
     )
   `);
   await db.execute(sql`
