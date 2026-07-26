@@ -13,6 +13,17 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn()
 }));
 
+// GET /orgs/sites rides the org's resolved enrollment defaults along for the
+// Add Device modal (#2776). Mocked so these route tests don't depend on the
+// org⋈partner settings join.
+vi.mock('../services/enrollmentDefaults', () => ({
+  getEnrollmentDefaultsForOrg: vi.fn(async () => ({
+    ttlMinutes: 10080,
+    deviceCount: 25,
+    maxTtlMinutes: 43200
+  }))
+}));
+
 vi.mock('../services/ipAllowlist', () => ({
   clearPartnerAllowlistCache: vi.fn(),
   ipAllowlistMode: vi.fn(() => 'enforce'),
@@ -185,6 +196,7 @@ vi.mock('../middleware/auth', () => ({
 import { inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { sites } from '../db/schema';
+import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
@@ -1939,6 +1951,72 @@ describe('org routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
+    // issue #2776: defaultEnrollmentTtlMinutes/defaultEnrollmentDeviceCount are
+    // inherit-with-override, same contract as agentVersionPins above — a
+    // partner-set value must NOT block an org override via assertNotLocked.
+    it('lets an org override the partner TTL default without a 403', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], { defaults: { defaultEnrollmentTtlMinutes: 10080 } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: 60 } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    // maxEnrollmentLinkTtlMinutes is the hard ceiling — partner-only, deliberately
+    // NOT exempt from assertNotLocked. An org attempting to raise it must 403.
+    it('403s when an org tries to set the partner-owned cap', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], { defaults: { maxEnrollmentLinkTtlMinutes: 129600 } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { maxEnrollmentLinkTtlMinutes: 525600 } } })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // The org `settings` blob is z.any() — nothing structurally validates it
+    // except the explicit enrollmentDefaultsSchema.safeParse check added for
+    // issue #2776. An out-of-range value must 400 before any DB work.
+    it('400s on an out-of-range org enrollment default (org settings are z.any())', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: 525601 } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // Carried-forward edge case from the Task 3.1 review: `'field' in obj` is
+    // true even when the value is explicitly `null`, which would make the
+    // resolver fall through to the product default instead of the partner's
+    // value. A stored null must be unreachable — reject it at write time.
+    it('400s on a null enrollment default value instead of storing it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: null } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     // SR2-05: `security.allowedMfaMethods` is a legacy input alias — it must be
     // folded into the canonical `security.allowedMethods` before the write and
     // never persisted as a second key (the dead spelling the SMS-enable reader
@@ -2069,6 +2147,29 @@ describe('org routes', () => {
       })
     }) as any;
 
+  // The three db.select calls GET /orgs/sites makes for one page of results:
+  // count, the page itself, then the grouped device counts.
+  const mockSitesPage = () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 1 }])
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+              })
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 4 }]));
+  };
+
   describe('GET /orgs/sites', () => {
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -2140,6 +2241,74 @@ describe('org routes', () => {
       const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
 
       expect(res.status).toBe(403);
+    });
+
+    it('carries the org\'s resolved enrollment defaults for the Add Device modal (#2776)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+
+      const res = await app.request(
+        '/orgs/sites?orgId=11111111-1111-1111-1111-111111111111&includeEnrollmentDefaults=1'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Seeds the modal's pickers without a second round trip on the
+      // device-add path.
+      expect(body.enrollmentDefaults).toEqual({
+        ttlMinutes: 10080,
+        deviceCount: 25,
+        maxTtlMinutes: 43200
+      });
+      expect(getEnrollmentDefaultsForOrg).toHaveBeenCalledWith(
+        '11111111-1111-1111-1111-111111111111'
+      );
+    });
+
+    it('does NOT resolve enrollment defaults unless the caller opts in', async () => {
+      // The resolver escapes to a system context, taking a SECOND pooled
+      // connection while this request still holds the first. postgres-js has no
+      // acquire timeout, so at N concurrent requests >= DB_POOL_MAX the API
+      // stalls indefinitely. This route fires on org switch, on Discovery, and
+      // on every Add Device modal open — so only the caller that needs the
+      // values pays for them.
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect('enrollmentDefaults' in (await res.json())).toBe(false);
+      expect(getEnrollmentDefaultsForOrg).not.toHaveBeenCalled();
+    });
+
+    it('omits enrollment defaults when no single org is in scope', async () => {
+      // A cross-org list has no one org whose defaults would be correct.
+      setAuthContext({ scope: 'system' });
+      mockSitesPage();
+
+      const res = await app.request('/orgs/sites?includeEnrollmentDefaults=1');
+
+      expect(res.status).toBe(200);
+      expect('enrollmentDefaults' in (await res.json())).toBe(false);
+      expect(getEnrollmentDefaultsForOrg).not.toHaveBeenCalled();
+    });
+
+    it('still serves the site list when the enrollment-defaults read fails', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+      vi.mocked(getEnrollmentDefaultsForOrg).mockRejectedValueOnce(new Error('pg down'));
+
+      const res = await app.request(
+        '/orgs/sites?orgId=11111111-1111-1111-1111-111111111111&includeEnrollmentDefaults=1'
+      );
+
+      // A settings read must never take down a sites list — the client falls
+      // back to the product defaults.
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect('enrollmentDefaults' in body).toBe(false);
     });
 
     it('should return empty list for partner with no accessible orgs', async () => {
@@ -3034,6 +3203,60 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.error).toContain('9.9.9');
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // issue #2776: the partner `defaults` Zod block has no `.passthrough()`, so
+    // unlisted keys are silently stripped rather than rejected — a partner PATCH
+    // would appear to succeed while discarding the values unless all three
+    // enrollment fields are listed explicitly in the schema.
+    it('persists partner enrollment defaults through PATCH /partners/me', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      // Capture the ACTUAL settings object the handler sends to db.update rather
+      // than trusting a hardcoded mock return value — otherwise this test can't
+      // distinguish "persisted" from "silently stripped by zod then echoed back
+      // by the mock" (the exact trap this task calls out: the partner `defaults`
+      // block has no `.passthrough()`).
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                settings: data.settings,
+              }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: {
+          defaultEnrollmentTtlMinutes: 10080,
+          maxEnrollmentLinkTtlMinutes: 43200,
+        } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.settings.defaults.defaultEnrollmentTtlMinutes).toBe(10080);
+      expect(capturedUpdateData.settings.defaults.maxEnrollmentLinkTtlMinutes).toBe(43200);
+      const body = await res.json();
+      expect(body.settings.defaults.defaultEnrollmentTtlMinutes).toBe(10080);
+      expect(body.settings.defaults.maxEnrollmentLinkTtlMinutes).toBe(43200);
     });
 
     it('accepts a valid branding update within size limits', async () => {

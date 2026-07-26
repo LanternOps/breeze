@@ -27,8 +27,9 @@ import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/o
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
-import type { IpAllowlistStatus, SupportedLocale } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema } from '@breeze/shared';
+import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
+import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -196,7 +197,11 @@ const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
   organizationId: z.string().guid().optional(), // Alias for orgId (frontend compatibility)
   page: z.string().optional(),
-  limit: z.string().optional()
+  limit: z.string().optional(),
+  // Opt-in: resolve and attach the org's enrollment defaults (#2776). Costs an
+  // extra org⋈partner settings read that runs in an escaped system context, so
+  // it is OFF by default — see the call site for the pool-exhaustion reason.
+  includeEnrollmentDefaults: z.enum(['1', 'true']).optional()
 });
 
 // IANA timezone validation lives in @breeze/shared (`isValidIanaTimezone`) so
@@ -542,6 +547,12 @@ const partnerSettingsSchema = z.object({
     // the "version must be registered" check needs a DB lookup and is done in
     // the handler via validateAgentVersionPins (same as the org PATCH path).
     agentVersionPins: agentVersionPinsSchema.optional(),
+    // Enrollment link defaults/cap (issue #2776). Spread the shared schema's
+    // shape rather than redefining bounds here — this block has no
+    // `.passthrough()`, so without these three keys listed explicitly a
+    // partner PATCH carrying them would have them silently stripped, not
+    // rejected.
+    ...enrollmentDefaultsSchema.shape,
   }).optional(),
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
@@ -1390,6 +1401,21 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
       if (pinError) {
         return c.json({ error: pinError }, 400);
       }
+
+      // Enrollment link defaults/cap (issue #2776) — same reason as the window
+      // and pin checks above: the org `settings` blob is z.any(), so nothing
+      // validates these three fields structurally until here. A `null` value is
+      // rejected (not treated as "clear my override") rather than stored: the
+      // schema's fields are optional-only, not nullable, so `null` fails parse
+      // and this 400s before reaching the DB — keeping the resolver's `'field'
+      // in obj` presence check safe from a stored null that would otherwise
+      // fall through to the product default instead of the partner's value.
+      const enrollmentParsed = enrollmentDefaultsSchema.safeParse(
+        (defaults as Record<string, unknown>) ?? {},
+      );
+      if (!enrollmentParsed.success) {
+        return c.json({ error: 'Invalid enrollment defaults', details: enrollmentParsed.error.issues }, 400);
+      }
     }
 
     // Enforce partner locks on settings categories (after auth check).
@@ -1402,8 +1428,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
         // exempt from the lock model here; a partner pin is only a default, and
         // getOrgAgentUpdateConfig resolves org-over-partner. Do NOT "fix" this
         // back to a lock without a per-field enforcement flag.
+        //
+        // Issue #2776: the two enrollment default VALUES are likewise
+        // inherit-with-override — a partner sets a house default, an org may
+        // deviate for a customer with different staging needs. The CAP
+        // (maxEnrollmentLinkTtlMinutes) is deliberately NOT exempt: a ceiling
+        // an org can raise is not a ceiling.
         if (category === 'defaults') {
-          fields = fields.filter((f) => f !== 'agentVersionPins');
+          fields = fields.filter((f) =>
+            f !== 'agentVersionPins' &&
+            f !== 'defaultEnrollmentTtlMinutes' &&
+            f !== 'defaultEnrollmentDeviceCount',
+          );
         }
         await assertNotLocked(id, category, fields);
       }
@@ -1525,7 +1561,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
 orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { orgId, organizationId, ...pagination } = c.req.valid('query');
+  const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
 
   // Precedence: the explicit `organizationId` (the resource the page is
   // managing) MUST win over `orgId`. `orgId` may be an *ambient* value the web
@@ -1621,9 +1657,56 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     deviceCount: deviceCountBySite.get(site.id) ?? 0
   }));
 
+  // Ride the org's resolved enrollment defaults along on this response (#2776).
+  //
+  // The Add Device modal needs the partner/org default TTL + device count and
+  // the partner TTL cap to seed its pickers, and it is on the device-add hot
+  // path — a dedicated GET would be a second round trip on every open. This
+  // sites list IS the org read that modal already performs (orgStore.fetchSites
+  // fires from the modal's open effect, always with `organizationId=<current>`),
+  // so the values arrive with data the client is already waiting on.
+  //
+  // Deliberately NOT hung off GET /organizations, the other candidate: that
+  // route returns a LIST, so resolving per row would be one org⋈partner join
+  // per organization on a partner-wide fetch, and its organization-scope branch
+  // returns a name-only projection that carries no settings at all.
+  //
+  // OPT-IN, and that is load-bearing — not a nicety. getEnrollmentDefaultsForOrg
+  // runs its join in a system context reached via runOutsideDbContext, which
+  // opens a SECOND transaction on a SECOND pooled connection while this
+  // request's own withDbAccessContext transaction still holds the first. The
+  // hazard is cross-request, not self-deadlock: at N concurrent requests >=
+  // DB_POOL_MAX (default 30; the US region sits nearer 25) every connection is
+  // held by a request queued for a connection only a peer can release, and
+  // postgres-js has NO acquire timeout — `connect_timeout` governs the TCP
+  // connect, not the queue wait — so the API stalls indefinitely rather than
+  // degrading. This is the same failure mode as the HIGH finding fixed in
+  // #2776 round 4. GET /orgs/sites is not low-frequency admin traffic: it fires
+  // on every org switch, on the Discovery page, and on every Add Device modal
+  // open. So only the caller that actually needs the values asks for them
+  // (orgStore.fetchSites); every other caller pays exactly nothing.
+  //
+  // Also requires a single org in scope — an unfiltered cross-org sites list has
+  // no one org whose defaults would be correct. Soft-fails to an omitted field
+  // (the client falls back to the product defaults) rather than 500ing a sites
+  // list over a settings read, matching the org-ordering read above.
+  let enrollmentDefaults: ResolvedEnrollmentDefaults | undefined;
+  if (includeEnrollmentDefaults && effectiveOrgId) {
+    try {
+      enrollmentDefaults = await getEnrollmentDefaultsForOrg(effectiveOrgId);
+    } catch (err) {
+      console.error('[orgs.sites.enrollmentDefaults] Failed to resolve enrollment defaults', {
+        orgId: effectiveOrgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c);
+    }
+  }
+
   return c.json({
     data: dataWithCounts,
-    pagination: { page, limit, total: Number(count) }
+    pagination: { page, limit, total: Number(count) },
+    ...(enrollmentDefaults && { enrollmentDefaults })
   });
 });
 

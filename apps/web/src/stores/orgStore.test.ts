@@ -67,7 +67,9 @@ describe('org store', () => {
     await flushAsync();
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations?partnerId=partner-1');
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1'
+    );
     expect(useOrgStore.getState().currentOrgId).toBe('org-1');
     expect(useOrgStore.getState().sites).toHaveLength(1);
     expect(getCurrentOrganization()?.id).toBe('org-1');
@@ -209,8 +211,48 @@ describe('org store', () => {
 
     await useOrgStore.getState().fetchSites();
 
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/sites?organizationId=org-1');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      '/orgs/sites?organizationId=org-1&includeEnrollmentDefaults=1'
+    );
     expect(useOrgStore.getState().sites.map((s) => s.id)).toEqual(['site-1']);
+  });
+
+  it('captures the enrollment defaults riding along on the sites response (#2776)', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({
+        data: [],
+        enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 25, maxTtlMinutes: 43200 }
+      })
+    );
+
+    await useOrgStore.getState().fetchSites();
+
+    // No second round trip — the Add Device modal reads these straight off the
+    // store when it opens. This store is the ONLY caller that opts in to the
+    // extra settings read, so other GET /orgs/sites callers pay nothing.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchWithAuthMock.mock.calls[0][0])).toContain(
+      'includeEnrollmentDefaults=1'
+    );
+    expect(useOrgStore.getState().enrollmentDefaults).toEqual({
+      ttlMinutes: 10080,
+      deviceCount: 25,
+      maxTtlMinutes: 43200
+    });
+  });
+
+  it('drops the previous org\'s enrollment defaults when the selection changes', () => {
+    useOrgStore.setState({
+      currentOrgId: 'org-1',
+      enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 25, maxTtlMinutes: 43200 }
+    });
+
+    // Showing org-1's cap while minting a link for org-2 would be a
+    // cross-tenant misstatement.
+    useOrgStore.getState().selectOrganization('org-2');
+    expect(useOrgStore.getState().enrollmentDefaults).toBeNull();
   });
 
   it('sets error when organization fetch fails', async () => {
