@@ -1,5 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnceMock,
+  enqueueDesktopSessionFinalizationMock,
+  ensureDesktopStreamStoppedMock,
+} = vi.hoisted(() => ({
+  persistDesktopFinalizationIntentMock: vi.fn(async ({ finalization }: any) => ({
+    input: finalization,
+    canonicalPayload: JSON.stringify(finalization),
+    payloadSha256: 'a'.repeat(64),
+  })),
+  finalizeDesktopSessionOnceMock: vi.fn(async () => 'finalized' as const),
+  enqueueDesktopSessionFinalizationMock: vi.fn(async ({ sessionId, finalizationId }: any) => ({
+    acknowledged: true as const,
+    jobId: `desktop-finalize-${sessionId}-${finalizationId}`,
+  })),
+  ensureDesktopStreamStoppedMock: vi.fn(async ({ finalizationId }: any) => ({
+    state: 'pending',
+    commandId: finalizationId,
+    reason: 'delivery_unacknowledged',
+  })),
+}));
+
+vi.mock('../services/desktopSessionFinalization', () => ({
+  persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,
+}));
+
+vi.mock('../jobs/desktopSessionFinalizationWorker', () => ({
+  enqueueDesktopSessionFinalization: enqueueDesktopSessionFinalizationMock,
+}));
+
+vi.mock('../services/desktopSessionStop', () => ({
+  ensureDesktopStreamStopped: ensureDesktopStreamStoppedMock,
+}));
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
 // -------------------------------------------------------------------
@@ -95,7 +131,10 @@ import {
   unregisterDesktopFrameCallback,
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
-  getActiveDesktopSessionCount
+  getActiveDesktopSessionCount,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
+  closeDesktopSessionLifecycle,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -140,7 +179,9 @@ function mockSelectChain(result: unknown) {
 function mockUpdateNoReturn() {
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+      }),
     })
   } as any;
 }
@@ -156,7 +197,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases: __createDesktopSharedLeasesForTest(),
+  });
 
   const fakeContext = {
     req: {
@@ -243,6 +286,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   // ==========================================
@@ -250,6 +294,135 @@ describe('desktopWs', () => {
   // ==========================================
 
   describe('onClose', () => {
+    it('publishes one cleanup promise and removes the local owner only after finalization', async () => {
+      setupSuccessfulValidation();
+      let finishFinalization!: (result: 'finalized') => void;
+      finalizeDesktopSessionOnceMock.mockImplementationOnce(
+        () => new Promise((resolve) => {
+          finishFinalization = resolve;
+        }),
+      );
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      const options = {
+        expectedWs: ws as never,
+        connection: {
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          generation: 1,
+          instanceId: '44444444-4444-4444-8444-444444444444',
+          leaseToken: '55555555-5555-4555-8555-555555555555',
+        },
+        reason: 'client_close' as const,
+        terminalStatus: 'disconnected' as const,
+        notifyAgent: true,
+      };
+      const first = closeDesktopSessionLifecycle(SESSION_ID, options);
+      const duplicate = closeDesktopSessionLifecycle(SESSION_ID, options);
+
+      expect(duplicate).toBe(first);
+      await vi.waitFor(() => {
+        expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
+      });
+      expect(getActiveDesktopSessionCount()).toBe(1);
+
+      finishFinalization('finalized');
+      await first;
+
+      expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(1);
+      expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
+      expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('persists write-ahead intent before detaching the exact viewer socket', async () => {
+      setupSuccessfulValidation();
+      let acknowledgeIntent!: () => void;
+      let finishFinalization!: (result: 'finalized') => void;
+      persistDesktopFinalizationIntentMock.mockImplementationOnce(
+        ({ finalization }: any) => new Promise((resolve) => {
+          acknowledgeIntent = () => resolve({
+            input: finalization,
+            canonicalPayload: JSON.stringify(finalization),
+            payloadSha256: 'a'.repeat(64),
+          });
+        }),
+      );
+      finalizeDesktopSessionOnceMock.mockImplementationOnce(
+        () => new Promise((resolve) => {
+          finishFinalization = resolve;
+        }),
+      );
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      ws.close.mockClear();
+
+      const cleanup = closeDesktopSessionLifecycle(SESSION_ID, {
+        expectedWs: ws as never,
+        connection: {
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          generation: 1,
+          instanceId: '44444444-4444-4444-8444-444444444444',
+          leaseToken: '55555555-5555-4555-8555-555555555555',
+        },
+        reason: 'revoked',
+        terminalStatus: 'failed',
+        notifyAgent: true,
+      });
+
+      await Promise.resolve();
+      expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(1);
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(finalizeDesktopSessionOnceMock).not.toHaveBeenCalled();
+
+      acknowledgeIntent();
+      await vi.waitFor(() => {
+        expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
+      });
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
+
+      finishFinalization('finalized');
+      await cleanup;
+    });
+
+    it('retries the frozen cleanup identity while a write-ahead failure remains closing', async () => {
+      vi.useFakeTimers();
+      setupSuccessfulValidation();
+      persistDesktopFinalizationIntentMock.mockRejectedValueOnce(
+        new Error('redis intent unavailable'),
+      );
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+
+      await expect(closeDesktopSessionLifecycle(SESSION_ID, {
+        expectedWs: ws as never,
+        connection: {
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          generation: 1,
+          instanceId: '44444444-4444-4444-8444-444444444444',
+          leaseToken: '55555555-5555-4555-8555-555555555555',
+        },
+        reason: 'socket_error',
+        terminalStatus: 'failed',
+        notifyAgent: true,
+      })).rejects.toThrow('redis intent unavailable');
+
+      expect(getActiveDesktopSessionCount()).toBe(1);
+      expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(1);
+      expect(finalizeDesktopSessionOnceMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => {
+        expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(2);
+      });
+      expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
+      expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
     it('cleans up session and sends stop command to agent', async () => {
       setupSuccessfulValidation();
 
@@ -268,17 +441,8 @@ describe('desktopWs', () => {
       // Session should be removed
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
 
-      // Should send desktop_stream_stop to agent
-      expect(sendCommandToAgent).toHaveBeenCalledWith(
-        AGENT_ID,
-        expect.objectContaining({
-          type: 'desktop_stream_stop',
-          payload: expect.objectContaining({ sessionId: SESSION_ID })
-        })
-      );
-
-      // Should update database with disconnected status
-      expect(db.update).toHaveBeenCalled();
+      expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(1);
+      expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
     });
 
     it('handles close for non-existent session gracefully', async () => {
@@ -312,16 +476,8 @@ describe('desktopWs', () => {
 
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
 
-      // Should send stop command to agent
-      expect(sendCommandToAgent).toHaveBeenCalledWith(
-        AGENT_ID,
-        expect.objectContaining({
-          type: 'desktop_stream_stop'
-        })
-      );
-
-      // Should update database
-      expect(db.update).toHaveBeenCalled();
+      expect(persistDesktopFinalizationIntentMock).toHaveBeenCalledTimes(1);
+      expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
     });
 
     it('handles error for non-existent session gracefully', async () => {
@@ -340,18 +496,15 @@ describe('desktopWs', () => {
 
       await handlers.onOpen({}, ws);
 
-      // Make DB update fail during error handler
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockRejectedValue(new Error('DB down'))
-        })
-      } as any);
+      finalizeDesktopSessionOnceMock.mockRejectedValueOnce(new Error('DB down'));
 
       // Should not throw even when DB fails
       await handlers.onError(new Error('ws error'), ws);
 
-      // Session should still be cleaned from memory
+      // A durable queue acknowledgement permits exact ownership release while
+      // the persisted intent remains the admission barrier.
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
+      expect(enqueueDesktopSessionFinalizationMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -468,6 +621,30 @@ describe('desktopWs', () => {
 
       expect(ws.close).toHaveBeenCalledWith(4003, 'Session revocation check failed');
       expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('safely detaches and attempts the stable stop when write-ahead persistence fails', async () => {
+      vi.useFakeTimers();
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      ws.close.mockClear();
+
+      persistDesktopFinalizationIntentMock.mockRejectedValueOnce(
+        new Error('redis intent unavailable'),
+      );
+      mockIsViewerSessionRevoked.mockResolvedValue(true);
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
+      expect(ensureDesktopStreamStoppedMock).toHaveBeenCalledTimes(1);
+      expect(finalizeDesktopSessionOnceMock).not.toHaveBeenCalled();
+      expect(getActiveDesktopSessionCount()).toBe(1);
     });
   });
 

@@ -1,5 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  revokeViewerSessionMock,
+  persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnceMock,
+} = vi.hoisted(() => {
+  const revokeViewerSessionMock = vi.fn(async (_sessionId: string) => undefined);
+  return {
+    revokeViewerSessionMock,
+    persistDesktopFinalizationIntentMock: vi.fn(async ({ finalization }: any) => ({
+      input: finalization,
+      canonicalPayload: JSON.stringify(finalization),
+      payloadSha256: 'd'.repeat(64),
+    })),
+    finalizeDesktopSessionOnceMock: vi.fn(async (input: { sessionId: string }) => {
+      await revokeViewerSessionMock(input.sessionId);
+      return 'finalized' as const;
+    }),
+  };
+});
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
 // -------------------------------------------------------------------
@@ -46,7 +66,35 @@ vi.mock('../services/jwt', () => ({
 vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerJtiRevoked: vi.fn(async () => false),
   isViewerSessionRevoked: vi.fn(async () => false),
-  revokeViewerSession: vi.fn(async () => undefined),
+  revokeViewerSession: revokeViewerSessionMock,
+}));
+
+vi.mock('../services/desktopSessionFinalization', () => ({
+  persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,
+}));
+
+vi.mock('../jobs/desktopSessionFinalizationWorker', () => ({
+  enqueueDesktopSessionFinalization: vi.fn(async ({
+    sessionId,
+    finalizationId,
+  }: {
+    sessionId: string;
+    finalizationId: string;
+  }) => ({
+    acknowledged: true as const,
+    jobId: `desktop-finalize-${sessionId}-${finalizationId}`,
+  })),
+}));
+
+vi.mock('../services/desktopSessionStop', () => ({
+  ensureDesktopStreamStopped: vi.fn(async ({ finalizationId }: {
+    finalizationId: string;
+  }) => ({
+    state: 'pending',
+    commandId: finalizationId,
+    reason: 'delivery_unacknowledged',
+  })),
 }));
 
 vi.mock('./agentWs', () => ({
@@ -90,7 +138,9 @@ import {
   unregisterDesktopFrameCallback,
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
-  getActiveDesktopSessionCount
+  getActiveDesktopSessionCount,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -98,14 +148,16 @@ import {
 // -------------------------------------------------------------------
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
-const DEVICE_ID = 'device-xyz';
+const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+const ORG_ID = '33333333-3333-4333-8333-333333333333';
 const AGENT_ID = 'agent-xyz';
 
 // Use a unique user ID per successful onOpen to avoid the in-memory
 // rate limiter (10 connections per user per 60s) blocking later tests.
 let userIdCounter = 0;
 function nextUserId(): string {
-  return `user-desk-${++userIdCounter}`;
+  userIdCounter += 1;
+  return `44444444-4444-4444-8444-${userIdCounter.toString().padStart(12, '0')}`;
 }
 
 function wsMock() {
@@ -149,7 +201,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases: __createDesktopSharedLeasesForTest(),
+  });
 
   const fakeContext = {
     req: {
@@ -192,7 +246,8 @@ function setupSuccessfulValidation() {
     agentId: AGENT_ID,
     hostname: 'test-host',
     osType: 'windows',
-    status: 'online'
+    status: 'online',
+    orgId: ORG_ID,
   };
 
   vi.mocked(db.select)
@@ -232,6 +287,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   // ==========================================

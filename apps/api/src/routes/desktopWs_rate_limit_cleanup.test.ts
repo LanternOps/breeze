@@ -1,5 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnceMock,
+} = vi.hoisted(() => ({
+  persistDesktopFinalizationIntentMock: vi.fn(async ({ finalization }: any) => ({
+    input: finalization,
+    canonicalPayload: JSON.stringify(finalization),
+    payloadSha256: 'c'.repeat(64),
+  })),
+  finalizeDesktopSessionOnceMock: vi.fn(async () => 'finalized' as const),
+}));
+
+vi.mock('../services/desktopSessionFinalization', () => ({
+  persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,
+}));
+
+vi.mock('../jobs/desktopSessionFinalizationWorker', () => ({
+  enqueueDesktopSessionFinalization: vi.fn(async ({ sessionId, finalizationId }: any) => ({
+    acknowledged: true as const,
+    jobId: `desktop-finalize-${sessionId}-${finalizationId}`,
+  })),
+}));
+
+vi.mock('../services/desktopSessionStop', () => ({
+  ensureDesktopStreamStopped: vi.fn(async ({ finalizationId }: any) => ({
+    state: 'pending',
+    commandId: finalizationId,
+    reason: 'delivery_unacknowledged',
+  })),
+}));
+
 // -------------------------------------------------------------------
 // Mocks
 // -------------------------------------------------------------------
@@ -86,6 +118,8 @@ import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 const SESSION_ID = 'session-desktop-rate-001';
@@ -127,7 +161,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
   // createDesktopWsRoutes mounts routes + the WS upgrade.
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases: __createDesktopSharedLeasesForTest(),
+  });
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
@@ -179,6 +215,7 @@ function setupSuccessfulValidation() {
 describe('desktopWs — E1 Redis rate limiter for WS connections', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
     rateLimiterMock.mockReset();
     rateLimiterMock.mockImplementation(async () => ({
       allowed: true,
@@ -224,6 +261,7 @@ describe('desktopWs — E1 Redis rate limiter for WS connections', () => {
 describe('desktopWs — E3 onOpen try/catch cleanup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
     rateLimiterMock.mockReset();
     rateLimiterMock.mockImplementation(async () => ({
       allowed: true,
