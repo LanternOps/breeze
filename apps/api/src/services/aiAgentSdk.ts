@@ -422,18 +422,14 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       }
 
       // Action plan / hybrid plan mode: check if tool matches an approved plan step.
-      // Secret-bearing tools are excluded — they must fall through to the tier-3
-      // createActionIntent branch so the minted credential has an immutable intent
-      // row to be sealed into. (The general case, where any tier-3 tool can execute
-      // via an approved plan with no intent row, is tracked separately in
-      // internal/security/tier3-plan-mode-intent-bypass.md.)
-      if (
-        (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan')
-        && session.activePlanId
-        && !isSecretBearingTool(toolName)
-      ) {
+      // Secret-bearing tools never take this shortcut — they must fall through to
+      // the tier-3 createActionIntent branch so the minted credential has an
+      // immutable intent row to be sealed into. (The general case, where any
+      // tier-3 tool can execute via an approved plan with no intent row, is
+      // tracked separately in internal/security/tier3-plan-mode-intent-bypass.md.)
+      if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
-        if (match.matches) {
+        if (match.matches && !isSecretBearingTool(toolName)) {
           // Emit plan_step_start event
           session.eventBus.publish({
             type: 'plan_step_start',
@@ -459,7 +455,29 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           session.currentPlanStepIndex = match.stepIndex + 1;
           return { allowed: true };
         }
-        // Deviation from plan — fall through to per-step approval
+        if (match.matches) {
+          // Matched the plan, but it's a secret-bearing tool: decline the
+          // shortcut (fall through below) while still keeping plan bookkeeping
+          // coherent. `currentPlanStepIndex` is the ONLY place matchPlanStep
+          // (above) and the completion check (`currentPlanStepIndex >=
+          // approvedPlanSteps.size`, createSessionPostToolUse) read progress
+          // from, and the shortcut branch above is the sole place that
+          // normally advances it — which this tool never reaches. Without
+          // this, a plan containing a secret-bearing step desyncs every
+          // subsequent step into a false "deviation" (matched against the
+          // wrong index) and a plan ENDING on one never auto-completes.
+          //
+          // Deliberately do NOT emit plan_step_start or insert an
+          // aiToolExecutions row here: the tier-3 branch below creates its
+          // own approval-record row for this exact call (with its own
+          // approval_required SSE event), so doing either here would
+          // duplicate the audit trail / double-signal the UI for one
+          // physical tool call. postToolUse's plan_step_complete event still
+          // fires correctly off the advanced index once this call finishes,
+          // regardless of which branch below actually ran it.
+          session.currentPlanStepIndex = match.stepIndex + 1;
+        }
+        // No match at all — deviation from plan — fall through to per-step approval
       }
 
       // Per-step approval flow (default behavior). ONLY Tier 3 chat tools
