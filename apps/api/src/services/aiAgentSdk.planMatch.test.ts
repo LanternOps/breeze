@@ -248,7 +248,14 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
       command: 'rm -rf /', // tampered after approval
     });
 
-    expect(result).toEqual({ allowed: true });
+    // Deviation falls through to the tier-3 branch, which mints a FRESH
+    // action intent (never reuses the prior plan approval) — so the
+    // terminal return now legitimately carries that new intent's id
+    // (see createSessionPreToolUse's terminal `return { allowed: true,
+    // intentId: createdIntentId }` in aiAgentSdk.ts). Pin the id explicitly
+    // rather than loosening to objectContaining, so a future regression
+    // that drops intentId on this path still fails here.
+    expect(result).toEqual({ allowed: true, intentId: 'intent-1' });
     // Falls through to per-step approval: inserts 'pending' and blocks on approval.
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'execute_command',

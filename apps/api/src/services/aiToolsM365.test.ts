@@ -111,18 +111,75 @@ describe('m365_reset_password', () => {
   it('requires a reason argument and never calls Delegant without it', async () => {
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
     (loadConnection as any).mockResolvedValue(activeConn);
-    const out = await m365ResetPasswordHandler({ userIdentifier: 'u1' }, auth, 'sess-1');
-    expect(JSON.parse(out).error).toBeDefined();
+    const result = await m365ResetPasswordHandler({ userIdentifier: 'u1' }, auth, 'sess-1');
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('expected error');
+    expect(JSON.parse(result.llmText).error).toBeDefined();
     expect(invokeDelegantTool).not.toHaveBeenCalled();
   });
 
-  it('calls reset_user_password and surfaces the temp password', async () => {
+  it('calls reset_user_password and carries the temp password out of llmText', async () => {
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
     (loadConnection as any).mockResolvedValue(activeConn);
     (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: { temporaryPassword: 'Temp123!' } });
-    const out = await m365ResetPasswordHandler({ userIdentifier: 'u1', reason: 'forgot' }, auth, 'sess-1');
+    const result = await m365ResetPasswordHandler({ userIdentifier: 'u1', reason: 'forgot' }, auth, 'sess-1');
     expect((invokeDelegantTool as any).mock.calls.at(-1)[0].toolName).toBe('reset_user_password');
-    expect(out).toContain('Temp123!');
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('expected success');
+    expect(result.secrets.temporaryPassword).toBe('Temp123!');
+    expect(result.llmText).not.toContain('Temp123!');
+  });
+});
+
+describe('m365ResetPasswordHandler carrier', () => {
+  it('keeps the credential out of llmText and carries it in secrets, threading the Delegant toolCallId', async () => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+    (invokeDelegantTool as any).mockResolvedValue({
+      kind: 'ok',
+      data: { temporaryPassword: 'Xy7#kLp2Qm' },
+      toolCallId: 'dtc-9',
+    });
+
+    const result = await m365ResetPasswordHandler(
+      { userIdentifier: 'a@b.com', reason: 'ticket 5' },
+      auth,
+      'sess-1',
+    );
+
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('expected success');
+    expect(result.secrets.temporaryPassword).toBe('Xy7#kLp2Qm');
+    expect(result.llmText).not.toContain('Xy7#kLp2Qm');
+    expect(result.meta?.delegantToolCallId).toBe('dtc-9');
+  });
+
+  it('returns an error carrier when the user cannot be resolved', async () => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'error', code: 'not_found', message: 'no such user' });
+
+    const result = await m365ResetPasswordHandler(
+      { userIdentifier: 'ghost@b.com', reason: 'ticket 6' },
+      auth,
+      'sess-1',
+    );
+    expect(result.kind).toBe('error');
+    expect(result).not.toHaveProperty('secrets');
+  });
+
+  it('returns an error carrier when the backend reports success but no credential', async () => {
+    (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: 'c1' });
+    (loadConnection as any).mockResolvedValue(activeConn);
+    (invokeDelegantTool as any).mockResolvedValue({ kind: 'ok', data: {} });
+
+    const result = await m365ResetPasswordHandler(
+      { userIdentifier: 'u1', reason: 'ticket 7' },
+      auth,
+      'sess-1',
+    );
+    expect(result.kind).toBe('error');
+    expect(result).not.toHaveProperty('secrets');
   });
 });
 
@@ -197,14 +254,19 @@ describe('direct Graph backend (no Delegant)', () => {
     (hasDirectM365Connection as any).mockResolvedValue(true);
     (loadSession as any).mockResolvedValue({ id: 'sess-1', orgId: 'org-A', delegantM365ConnectionId: null });
     const missing = await m365ResetPasswordHandler({ userIdentifier: 'jane@x.com' }, auth, 'sess-1');
-    expect(JSON.parse(missing).error).toBe('missing_reason');
+    expect(missing.kind).toBe('error');
+    if (missing.kind !== 'error') throw new Error('expected error');
+    expect(JSON.parse(missing.llmText).error).toBe('missing_reason');
 
     (invokeDirect as any).mockResolvedValue({ kind: 'ok', data: { ok: true, temporaryPassword: 'Tmp!1234' } });
-    const out = await m365ResetPasswordHandler({ userIdentifier: 'jane@x.com', reason: 'lockout' }, auth, 'sess-1');
+    const result = await m365ResetPasswordHandler({ userIdentifier: 'jane@x.com', reason: 'lockout' }, auth, 'sess-1');
     const names = (invokeDirect as any).mock.calls.map((c: any[]) => c[1]);
     expect(names).toContain('reset_user_password');
     expect(invokeDelegantTool as any).not.toHaveBeenCalled();
-    expect(out).toBeTruthy();
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('expected success');
+    expect(result.secrets.temporaryPassword).toBe('Tmp!1234');
+    expect(result.llmText).not.toContain('Tmp!1234');
   });
 });
 

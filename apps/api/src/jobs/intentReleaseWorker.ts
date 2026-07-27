@@ -15,6 +15,8 @@ import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
   executeGoogleToolHeadless,
+  executeGoogleSecretToolHeadless,
+  GOOGLE_HEADLESS_SECRET_ACTIONS,
   GoogleConnectionUnavailableError,
 } from '../services/googleToolsHeadless';
 import {
@@ -23,6 +25,13 @@ import {
   M365ConnectionUnavailableError,
 } from '../services/m365ToolsHeadless';
 import { sealActionResultSecrets, TEMP_PASSWORD_ENC_KEY } from '../services/actionIntents/resultSecrets';
+import {
+  sealToolSecrets,
+  assertNoPlaintextSecret,
+  SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+  MAX_RESULT_BYTES,
+  type SecretToolResult,
+} from '../services/actionIntents/secretBearingTools';
 
 /**
  * Durable release worker (spec
@@ -52,7 +61,10 @@ import { sealActionResultSecrets, TEMP_PASSWORD_ENC_KEY } from '../services/acti
  */
 
 const ACTION_INTENTS_QUEUE_NAME = 'action-intents';
-const MAX_RESULT_BYTES = 64 * 1024; // 64 KiB (spec §5 step 4)
+// MAX_RESULT_BYTES (spec §5 step 4) is imported from secretBearingTools.ts,
+// shared with the inline (chat-session) completion path in aiAgentSdk.ts, so
+// the two paths that persist to the same action_intents.result column
+// cannot drift apart on the size cap.
 
 type IntentReleaseJobData = { intentId: string; eventType: string };
 
@@ -157,9 +169,11 @@ function auditReleaseFailure(
 /**
  * CAS `executing -> failed` with the given `error_code`, then (only if the
  * CAS actually won) writes the failure audit/metric. `executed: true` also
- * stamps `executedAt` — used only for `execution_error`, where a real
- * attempt was made; the earlier revalidation stops (digest/tier/actor/org)
- * never touched execution, so they leave `executedAt` null.
+ * stamps `executedAt` — used for `execution_error` and
+ * `secret_seal_invariant_violated`, both of which mean a real attempt was
+ * made (the provider-side call happened); the earlier revalidation stops
+ * (digest/tier/actor/org) never touched execution, so they leave
+ * `executedAt` null.
  */
 async function failIntent(
   intent: ActionIntent,
@@ -178,6 +192,47 @@ async function failIntent(
     return;
   }
   auditReleaseFailure(intent, errorCode, options.details);
+}
+
+/**
+ * `assertNoPlaintextSecret` is defense-in-depth that should never fire in
+ * practice — `sealToolSecrets`/`sealActionResultSecrets` always either seal
+ * the credential or drop it (fail closed) before a result reaches either
+ * persistence call site. If it DOES fire, that means a bug let a plaintext
+ * credential reach the persistence boundary — and by that point the
+ * provider-side action already happened (the password WAS reset; this is
+ * not a validation stop that ran before execution). Two things follow from
+ * that, both required by the "fail closed on confidentiality" + "tell the
+ * operator to re-reset" global constraints:
+ *
+ * 1. `executed: true` MUST be passed to `failIntent` so `executedAt` gets
+ *    stamped. Without it, the stale-executing reaper later reaps this intent
+ *    to `failed:execution_lost` with `executedAt` still null — which the
+ *    reaper's own contract defines as "the worker died mid-flight, unknown
+ *    whether the tool ran." That is false here (it definitely ran) and is
+ *    the OPPOSITE of the fail-closed signal an operator needs on the one
+ *    action class where "did the reset actually happen" matters most. It
+ *    would also delay any signal at all for up to the reaper's full sweep
+ *    window instead of failing immediately.
+ * 2. No `result` (i.e. not the guarded value itself) is ever passed as
+ *    `details` — `failIntent` already never sets `result`, and this
+ *    deliberately omits it from `details` too, so neither the intent's
+ *    `result` column nor the audit event's `details` column can carry the
+ *    plaintext this guard exists to keep out of both. `err.message` IS safe
+ *    to log/capture as-is: `assertNoPlaintextSecret`'s thrown messages are
+ *    static text plus the tool name only — they never interpolate the
+ *    offending value.
+ */
+async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): Promise<void> {
+  console.error(
+    `[IntentReleaseWorker] plaintext-secret guard tripped for intent ${intent.id} — refusing to persist:`,
+    err,
+  );
+  captureException(err instanceof Error ? err : new Error(String(err)));
+  await failIntent(intent, SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE, {
+    details: { actionName: intent.actionName },
+    executed: true,
+  });
 }
 
 /**
@@ -276,22 +331,40 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // OAuth connection by intent.orgId (fresh + re-authorized at execution);
   // headless M365 tools resolve their customer-graph-actions connection the
   // same way via the control-plane write-action service; everything else runs
-  // through executeTool.
-  const invoke = isHeadlessGoogleTool(intent.actionName)
-    ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
-    : isHeadlessM365Tool(intent.actionName)
-    ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
-    : () => executeTool(intent.actionName, intent.arguments, auth);
+  // through executeTool. A secret-bearing Google tool (google_reset_password)
+  // is checked FIRST and dispatched through executeGoogleSecretToolHeadless,
+  // which returns a SecretToolResult carrier instead of a plain string — this
+  // is what lets Step 4 below seal the credential instead of storing the
+  // tool's prose (`{raw: "...Temporary password: X..."}`) verbatim, which is
+  // the confirmed plaintext leak this change closes.
+  const secretAction = GOOGLE_HEADLESS_SECRET_ACTIONS[intent.actionName];
 
+  let carrier: SecretToolResult | null = null;
   let rawResult: string;
   try {
-    rawResult = await withToolTimeout(
-      runOutsideDbContext(() =>
-        withDbAccessContext(dbAccessContextFromAuth(auth), invoke),
-      ),
-      getToolTimeout(intent.actionName),
-      intent.actionName,
-    );
+    if (secretAction) {
+      carrier = await withToolTimeout(
+        runOutsideDbContext(() =>
+          withDbAccessContext(dbAccessContextFromAuth(auth), () =>
+            executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
+          ),
+        ),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      );
+      rawResult = carrier.llmText;
+    } else {
+      const invoke = isHeadlessGoogleTool(intent.actionName)
+        ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
+        : isHeadlessM365Tool(intent.actionName)
+        ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
+        : () => executeTool(intent.actionName, intent.arguments, auth);
+      rawResult = await withToolTimeout(
+        runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), invoke)),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      );
+    }
   } catch (err) {
     if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
       // The org's Google/M365 connection is missing/rotated/inactive (or the
@@ -312,15 +385,38 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
 
   // Step 4: cap the result to 64 KiB; oversize -> {truncated:true}, which
-  // still counts as a completion, never a failure.
+  // still counts as a completion, never a failure. A carrier result (secret-
+  // bearing Google tool) is sealed HERE via sealToolSecrets rather than
+  // normalized as prose — this is the fix for the confirmed leak: previously
+  // normalizeToolResult wrapped the carrier's llmText prose as {raw: "..."},
+  // which sealActionResultSecrets below is a no-op on (its `result.action`
+  // gate only matches the M365 structured shape), so the credential was
+  // stored in the clear.
   const resultBytes = Buffer.byteLength(rawResult, 'utf8');
   const truncated = resultBytes > MAX_RESULT_BYTES;
-  const storedResult: Record<string, unknown> = truncated ? { truncated: true } : normalizeToolResult(rawResult);
+
+  let storedResult: Record<string, unknown>;
+  if (truncated) {
+    storedResult = { truncated: true };
+  } else if (carrier) {
+    storedResult = sealToolSecrets(carrier).sealedResult;
+  } else {
+    storedResult = normalizeToolResult(rawResult);
+  }
 
   // A tool that returned an error body (not a throw) is a FAILED release, not a
   // completion — mirrors the chat SDK's isError handling. Store the result for
-  // diagnosis but terminalize as failed:tool_returned_error.
+  // diagnosis but terminalize as failed:tool_returned_error. For a carrier this
+  // checks rawResult === carrier.llmText: an error carrier's llmText keeps the
+  // errorString() JSON shape ({error, message}), so the existing detection
+  // still applies unchanged.
   if (!truncated && isReturnedToolError(rawResult)) {
+    try {
+      assertNoPlaintextSecret(intent.actionName, storedResult);
+    } catch (err) {
+      await failOnPlaintextSecretGuard(intent, err);
+      return;
+    }
     const failed = await transitionIntent(intent.id, 'executing', 'failed', {
       executedAt: new Date(),
       errorCode: 'tool_returned_error',
@@ -339,6 +435,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 
   // Seal any secret fields (reset_password temporaryPassword) before storage.
   // Re-check the size cap afterwards: ciphertext is larger than plaintext.
+  // sealActionResultSecrets is a no-op on an already-sealed carrier result
+  // (its `result.action` gate does not match), so this cannot double-seal —
+  // it still covers the M365 structured shape, which is sealed independently.
   let finalResult = sealActionResultSecrets(storedResult);
   if (Buffer.byteLength(JSON.stringify(finalResult), 'utf8') > MAX_RESULT_BYTES) {
     if (TEMP_PASSWORD_ENC_KEY in finalResult) {
@@ -347,6 +446,12 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
     finalResult = { truncated: true };
+  }
+  try {
+    assertNoPlaintextSecret(intent.actionName, finalResult);
+  } catch (err) {
+    await failOnPlaintextSecretGuard(intent, err);
+    return;
   }
   const completed = await transitionIntent(intent.id, 'executing', 'completed', {
     executedAt: new Date(),

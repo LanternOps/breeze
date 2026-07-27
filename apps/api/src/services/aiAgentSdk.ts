@@ -29,6 +29,14 @@ import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
+import {
+  assertNoPlaintextSecret,
+  isSecretBearingTool,
+  SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+  MAX_RESULT_BYTES as MAX_INLINE_RESULT_BYTES,
+} from './actionIntents/secretBearingTools';
+import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
+import { captureException } from './sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -57,6 +65,12 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  * free-form) goes in `result` instead, never in `error_code`.
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
+
+// SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE and MAX_RESULT_BYTES (aliased
+// here as MAX_INLINE_RESULT_BYTES for readability at call sites below) are
+// shared with the durable release worker via secretBearingTools.ts, rather
+// than declared independently here, so the two paths cannot drift apart —
+// see the doc comments at their declaration site.
 
 function stripMcpPrefix(toolName: string): string {
   if (!toolName.startsWith('mcp__')) return toolName;
@@ -247,6 +261,11 @@ export async function runPreFlightChecks(
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input) => {
+    // Set only by the tier-3 branch below when it creates a durable intent;
+    // carried on the terminal `return` so postToolUse can seal against the
+    // right intent without relying solely on pendingIntentBySession.
+    let createdIntentId: string | undefined;
+
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
     if (!TOOL_TIERS[toolName]) {
       return { allowed: false, error: `Unknown tool: ${toolName}` };
@@ -401,10 +420,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         return { allowed: true };
       }
 
-      // Action plan / hybrid plan mode: check if tool matches an approved plan step
+      // Action plan / hybrid plan mode: check if tool matches an approved plan step.
+      // Secret-bearing tools never take this shortcut — they must fall through to
+      // the tier-3 createActionIntent branch so the minted credential has an
+      // immutable intent row to be sealed into. (The general case, where any
+      // tier-3 tool can execute via an approved plan with no intent row, is
+      // tracked separately in internal/security/tier3-plan-mode-intent-bypass.md.)
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
-        if (match.matches) {
+        if (match.matches && !isSecretBearingTool(toolName)) {
           // Emit plan_step_start event
           session.eventBus.publish({
             type: 'plan_step_start',
@@ -430,7 +454,29 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           session.currentPlanStepIndex = match.stepIndex + 1;
           return { allowed: true };
         }
-        // Deviation from plan — fall through to per-step approval
+        if (match.matches) {
+          // Matched the plan, but it's a secret-bearing tool: decline the
+          // shortcut (fall through below) while still keeping plan bookkeeping
+          // coherent. `currentPlanStepIndex` is the ONLY place matchPlanStep
+          // (above) and the completion check (`currentPlanStepIndex >=
+          // approvedPlanSteps.size`, createSessionPostToolUse) read progress
+          // from, and the shortcut branch above is the sole place that
+          // normally advances it — which this tool never reaches. Without
+          // this, a plan containing a secret-bearing step desyncs every
+          // subsequent step into a false "deviation" (matched against the
+          // wrong index) and a plan ENDING on one never auto-completes.
+          //
+          // Deliberately do NOT emit plan_step_start or insert an
+          // aiToolExecutions row here: the tier-3 branch below creates its
+          // own approval-record row for this exact call (with its own
+          // approval_required SSE event), so doing either here would
+          // duplicate the audit trail / double-signal the UI for one
+          // physical tool call. postToolUse's plan_step_complete event still
+          // fires correctly off the advanced index once this call finishes,
+          // regardless of which branch below actually ran it.
+          session.currentPlanStepIndex = match.stepIndex + 1;
+        }
+        // No match at all — deviation from plan — fall through to per-step approval
       }
 
       // Per-step approval flow (default behavior). ONLY Tier 3 chat tools
@@ -717,6 +763,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // CAS it executing -> completed|failed once the inline tool call
         // actually finishes (see pendingIntentBySession above).
         pendingIntentBySession.set(session, intent.id);
+        createdIntentId = intent.id;
 
         // Mark as executing
         try {
@@ -871,7 +918,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       }
     }
 
-    return { allowed: true };
+    return { allowed: true, intentId: createdIntentId };
   };
 }
 
@@ -896,7 +943,7 @@ function isScriptApplyTool(toolName: string): boolean {
  * session and publishes tool_result events to the session's event bus.
  */
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs) => {
+  return async (toolName, input, output, isError, durationMs, sealed) => {
     const toolUseId = session.toolUseIdQueue.shift();
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
@@ -977,6 +1024,21 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     }
 
     // 2b. Create/update aiToolExecutions record
+    //
+    // delegantToolCallId correlates this row to Delegant's own audit ledger.
+    // Secret-bearing tools (m365_reset_password) no longer emit it inside
+    // parsedOutput's JSON — the handler returns prose llmText and the id
+    // travels in the sealed carrier's `meta` instead (sealToolSecrets folds
+    // `meta` into `sealedResult`). Fall back to that sealed blob so the
+    // column is still populated for those tools; parsedOutput.delegantToolCallId
+    // remains the source of truth for every other tool that still emits it
+    // as JSON.
+    const delegantToolCallId =
+      typeof parsedOutput.delegantToolCallId === 'string'
+        ? parsedOutput.delegantToolCallId
+        : (typeof sealed?.sealedResult.delegantToolCallId === 'string'
+          ? sealed.sealedResult.delegantToolCallId
+          : undefined);
     if (guardrailCheck.tier < 2) {
       try {
         await withDbAccessContext(
@@ -989,7 +1051,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
               errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-              delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
+              delegantToolCallId,
               durationMs,
               completedAt: new Date(),
             })
@@ -1008,7 +1070,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                 status: isError ? 'failed' : 'completed',
                 toolOutput: parsedOutput,
                 errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-                delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
+                delegantToolCallId,
                 durationMs,
                 completedAt: new Date(),
               })
@@ -1031,21 +1093,87 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // execution is authorized would be wrong, since the tool hasn't run
       // yet at that point. A lost CAS here just means a reaper or the worker
       // already terminalized the intent first; nothing more to do.
-      const pendingIntentId = pendingIntentBySession.get(session);
+      const pendingIntentId = sealed?.intentId ?? pendingIntentBySession.get(session);
       if (pendingIntentId) {
         pendingIntentBySession.delete(session);
+        // Secret-bearing tools (Task 1/5) hand back a `sealed` result whose
+        // credential is already v3/AAD-sealed for action_intents.result — that
+        // MUST be what gets persisted, never the plaintext-bearing parsedOutput
+        // the model saw. Non-secret tier-3 tools have no `sealed` and keep
+        // persisting parsedOutput as before.
+        const intentResult: Record<string, unknown> = sealed
+          ? sealed.sealedResult
+          : (parsedOutput as Record<string, unknown>);
+
+        // Parity with the worker's MAX_RESULT_BYTES re-check (spec §6.3):
+        // ciphertext is larger than plaintext, so the cap must be applied
+        // AFTER sealing. Mirrors intentReleaseWorker.ts's warn: dropping a
+        // sealed credential for size reasons must leave a forensic trail —
+        // the operator was already told "credential available for one-time
+        // reveal" and this is the only copy of an irreversibly-reset
+        // password, so silently discarding it with no signal is worse than
+        // the truncation itself.
+        let sizedResult: Record<string, unknown>;
+        if (Buffer.byteLength(JSON.stringify(intentResult), 'utf8') > MAX_INLINE_RESULT_BYTES) {
+          if (TEMP_PASSWORD_ENC_KEY in intentResult) {
+            console.warn(`[AI-SDK] Dropping sealed credential for intent ${pendingIntentId} — result exceeded the size cap`);
+          }
+          sizedResult = { truncated: true };
+        } else {
+          sizedResult = intentResult;
+        }
+
+        // Post-condition guard (Task 1) on the value actually about to be
+        // persisted. If it trips, a plaintext credential almost reached
+        // action_intents.result — confidentiality is preserved either way
+        // (we refuse to write it), but this must not be a silent abort:
+        // mirror the durable worker's failOnPlaintextSecretGuard
+        // (jobs/intentReleaseWorker.ts) — log, captureException, and CAS the
+        // intent straight to failed with the SAME error_code the worker uses
+        // (queryable together) and NO `result` field (the guarded value must
+        // never reach the result column). Unlike the worker (which returns
+        // immediately after), this function keeps going afterward so steps
+        // 2c-2e below (session auto-flag, plan completion, audit event)
+        // still run for this postToolUse call instead of being silently
+        // skipped by an uncaught throw.
+        let plaintextGuardTripped = false;
         try {
-          await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
-            executedAt: new Date(),
-            // error_code is always the stable short code (matches the
-            // release worker's vocabulary); the raw tool error text is
-            // unbounded free-form and belongs in `result`, not `error_code`.
-            ...(isError
-              ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: parsedOutput as Record<string, unknown> }
-              : { result: parsedOutput as Record<string, unknown> }),
-          });
+          assertNoPlaintextSecret(toolName, sizedResult);
         } catch (err) {
-          console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+          console.error(
+            `[AI-SDK] plaintext-secret guard tripped for intent ${pendingIntentId} — refusing to persist:`,
+            err,
+          );
+          captureException(err instanceof Error ? err : new Error(String(err)));
+          plaintextGuardTripped = true;
+          try {
+            await transitionIntent(pendingIntentId, 'executing', 'failed', {
+              executedAt: new Date(),
+              errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+            });
+          } catch (transitionErr) {
+            console.error(
+              `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
+              pendingIntentId,
+              transitionErr,
+            );
+          }
+        }
+
+        if (!plaintextGuardTripped) {
+          try {
+            await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
+              executedAt: new Date(),
+              // error_code is always the stable short code (matches the
+              // release worker's vocabulary); the raw tool error text is
+              // unbounded free-form and belongs in `result`, not `error_code`.
+              ...(isError
+                ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                : { result: sizedResult }),
+            });
+          } catch (err) {
+            console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+          }
         }
       }
     }
