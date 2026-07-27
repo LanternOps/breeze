@@ -475,6 +475,20 @@ describe('enrollment key routes — installer download', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('passes the ttlMinutes query param through to the bootstrap token (windows) (#2775)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?count=5&ttlMinutes=43200`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ maxUsage: 5, ttlMinutes: 43200 }),
+      );
+    });
+
     it('child key honors the ttlMinutes query param (per-link picker) (macos)', async () => {
       const parentKey = makeEnrollmentKey(); // parent: 1h remaining
       mockSelectFromWhereLimit([parentKey]);

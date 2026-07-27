@@ -153,6 +153,13 @@ export default defineConfig({
       // (real Redis; no Postgres fixtures used). Belongs to
       // vitest.integration.config.ts, not the no-Redis unit runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Co-located real-DB integration test for the #2775 live-bootstrap-token
+      // exemption in the nightly enrollment-key purge sweep: proves Postgres
+      // itself evaluates the correlated NOT EXISTS subquery per row (the
+      // mocked unit suite only asserts the generated SQL's shape). Only
+      // BullMQ's Queue/Worker classes are mocked; imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      'src/jobs/enrollmentKeyCleanup.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

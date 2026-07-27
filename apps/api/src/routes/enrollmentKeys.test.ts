@@ -1017,6 +1017,46 @@ describe("GET /public-download/:platform", () => {
     issueSpy.mockRestore();
   });
 
+  it("returns 410 without issuing a bootstrap token when parent key is within the min-remaining window (#2775 fix-round-1)", async () => {
+    // Public/unauthenticated path (shared serveInstaller helper). Before this
+    // guard, a near-dead parent would still mint a bootstrap token — which,
+    // post #2775 fix, gets a full independent TTL uncapped by the parent.
+    // Must refuse outright, and must NOT leak parent-key name/id in the
+    // public error response.
+    const row = makeKeyRow({
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
+      maxUsage: 1,
+      usageCount: 0,
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi.spyOn(
+      installerBootstrapTokenIssuance,
+      "issueBootstrapTokenForKey",
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toMatch(/expiring too soon/i);
+    expect(body.error).not.toMatch(/Test Key/);
+    expect(issueSpy).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
+  });
+
   it("rejects legacy raw token query downloads by default", async () => {
     const res = await app.request(
       `/enrollment-keys/public-download/windows?token=${"a".repeat(64)}`,
@@ -1357,6 +1397,91 @@ describe("POST /:id/bootstrap-token", () => {
 
     expect(res.status).toBe(410);
   });
+
+  it("refuses to issue a bootstrap token when parent key is within 60s of expiry (#2775 fix-round-1)", async () => {
+    // Parent with only 30s of life left. Before this guard, the route called
+    // issueBootstrapTokenForKey directly, which (post #2775 fix) mints a
+    // fresh, independent TTL uncapped by the parent — so a near-dead parent
+    // would produce a token that outlives it. Refuse outright instead,
+    // matching the /installer-link and /installer/:platform guards.
+    const parent = makeKeyRow({
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
+
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toContain("expires too soon");
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("honours ttlMinutes on the bootstrap-token route (#2775)", async () => {
+    const parent = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValue({
+        id: "token-row-uuid-2",
+        token: "ABCDE12345",
+        expiresAt: new Date(Date.now() + 129_600 * 60 * 1000),
+        parentKeyName: "Test Key",
+      } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 3, ttlMinutes: 129_600 }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ ttlMinutes: 129_600 }),
+    );
+
+    issueSpy.mockRestore();
+  });
+
+  it("rejects ttlMinutes above the cap on the bootstrap-token route (#2775)", async () => {
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ttlMinutes: 525_601 }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+  });
 });
 
 // ============================================================
@@ -1443,6 +1568,35 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
           },
         ],
       }),
+    );
+  });
+
+  it("passes the ttlMinutes query param through to the bootstrap token (macos app bundle) (#2775)", async () => {
+    const parentRow = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+      Buffer.from("renamed-app-zip"),
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=2&ttlMinutes=10080`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ maxUsage: 2, ttlMinutes: 10080 }),
     );
   });
 

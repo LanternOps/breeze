@@ -13,23 +13,29 @@ const CHILD_TTL_MIN = Number(
 );
 
 /**
- * Returns the child enrollment key expiry: the earlier of
- *   (a) the parent's own expiry, or
- *   (b) now + CHILD_TTL_MIN
+ * Returns the child enrollment key expiry: now + CHILD_TTL_MIN.
  *
- * This prevents a child key from outliving its parent, which would
- * implicitly extend access for a revoked/expired parent key.
+ * The parent's expiry is deliberately NOT an upper bound. The parent created
+ * by the Add Device modal is a transient 60-minute container (PR #739 review
+ * finding #1); bounding the child by it made a 30-day installer link die in an
+ * hour (#2775). The bootstrap token carries its own independent expiry, which
+ * is checked before this is called — that is the authority on whether the
+ * installer is still valid.
  *
- * Returns null if the parent is already expired — callers should treat
- * null as a signal to reject the request.
+ * Revocation is unaffected: installer_bootstrap_tokens.parent_enrollment_key_id
+ * is ON DELETE CASCADE, so deleting the parent destroys outstanding tokens
+ * before they can ever reach this function. A deliberate admin delete is the
+ * ONLY thing that does this — the scheduled `enrollmentKeyCleanup` sweep job
+ * (jobs/enrollmentKeyCleanup.ts) that hard-purges long-expired enrollment
+ * keys is NOT a second silent ceiling on this TTL: it explicitly exempts any
+ * parent key that still has a live, unexhausted bootstrap token, so a
+ * 30-day/1-year token cannot be cascade-deleted out from under itself by
+ * that job before its own expiry (or full consumption). If you're reading
+ * this because you found that job and are wondering whether it re-clamps
+ * this TTL, it doesn't — see its header comment for the exemption predicate.
  */
-function freshChildExpiresAt(parentExpiresAt: Date): Date | null {
-  const now = Date.now();
-  if (parentExpiresAt.getTime() <= now) {
-    return null; // parent already expired — reject
-  }
-  const childTtlMs = CHILD_TTL_MIN * 60 * 1000;
-  return new Date(Math.min(parentExpiresAt.getTime(), now + childTtlMs));
+function freshChildExpiresAt(): Date {
+  return new Date(Date.now() + CHILD_TTL_MIN * 60 * 1000);
 }
 
 function generateChildEnrollmentKey(): string {
@@ -142,22 +148,7 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // If the parent has no expiry set, fall back to the child TTL only
-    // (no upper bound from parent). If it does have an expiry, bound by it.
-    const parentExpiresAt = parent.expiresAt
-      ? new Date(parent.expiresAt)
-      : null;
-    const childExpiresAt = parentExpiresAt
-      ? freshChildExpiresAt(parentExpiresAt)
-      : new Date(Date.now() + CHILD_TTL_MIN * 60 * 1000);
-    if (!childExpiresAt) {
-      console.error("[installer] bootstrap 404", {
-        reason: "parent_already_expired",
-        tokenId: row.id,
-        ip,
-      });
-      return null;
-    }
+    const childExpiresAt = freshChildExpiresAt();
 
     // ── 3. INSERT child key BEFORE recording the redemption (C1 reorder) ──
     // If the consume UPDATE loses a race, we'll DELETE this row below.

@@ -9,6 +9,7 @@ const {
   deleteMock,
   whereMock,
   returningMock,
+  selectMock,
   withSystemDbAccessContextMock,
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const {
   deleteMock: vi.fn(),
   whereMock: vi.fn(),
   returningMock: vi.fn(),
+  selectMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   capturedWorkerProcessor: { current: null as null | ((job: unknown) => Promise<unknown>) },
 }));
@@ -54,6 +56,7 @@ vi.mock('../db', async (importOriginal) => {
     withSystemDbAccessContext: (fn: () => Promise<unknown>) => withSystemDbAccessContextMock(fn),
     db: {
       delete: (...args: unknown[]) => deleteMock(...(args as [])),
+      select: (...args: unknown[]) => selectMock(...(args as [])),
     },
   };
 });
@@ -68,6 +71,7 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+import { sql } from 'drizzle-orm';
 import {
   __testOnly,
   createEnrollmentKeyCleanupWorker,
@@ -87,6 +91,15 @@ const ORIGINAL_PURGE_DAYS = process.env.ENROLLMENT_KEY_PURGE_AFTER_DAYS;
  * drizzle column objects (which carry a `columnType` + `name`) to their
  * column name instead of recursing into the table they belong to (which is
  * circular).
+ *
+ * Also resolves the correlated NOT EXISTS subquery added for #2775: `and`/
+ * `notExists` embed the subquery as an opaque `SQLWrapper` chunk (an object
+ * exposing only `getSQL()`, per drizzle's own `isSQLWrapper` duck-typing —
+ * `sql/sql.js`), which none of the shape checks above recognize. The
+ * `getSQL` fallback below is checked LAST (after the queryChunks/value/name
+ * branches, which real `SQL`/`Column` instances always satisfy first) so it
+ * only ever fires for this kind of otherwise-unhandled wrapper, then
+ * recurses into whatever real `SQL` object `getSQL()` returns.
  */
 function sqlText(q: unknown): string {
   if (q == null) return '';
@@ -97,6 +110,7 @@ function sqlText(q: unknown): string {
     value?: unknown;
     name?: string;
     columnType?: unknown;
+    getSQL?: () => unknown;
   };
   if (typeof obj.name === 'string' && 'columnType' in obj) {
     return obj.name;
@@ -113,6 +127,9 @@ function sqlText(q: unknown): string {
   if (typeof obj.value === 'string' || typeof obj.value === 'number') {
     return String(obj.value);
   }
+  if (typeof obj.getSQL === 'function') {
+    return sqlText(obj.getSQL());
+  }
   return '';
 }
 
@@ -128,6 +145,21 @@ describe('enrollmentKeyCleanup worker', () => {
     returningMock.mockResolvedValue([]);
     whereMock.mockImplementation(() => ({ returning: returningMock }));
     deleteMock.mockImplementation(() => ({ where: whereMock }));
+    // The exemption subquery (#2775) calls db.select(...).from(...).where(cond)
+    // to build a correlated NOT EXISTS subquery. This never executes for
+    // real here (no Postgres in this suite) — it only needs to satisfy
+    // drizzle's SQLWrapper contract (a `getSQL()` method) so `notExists(...)`
+    // can embed it. Wrapping the REAL `cond` built by production code (via
+    // the real `and`/`eq`/`gt`/`lt` from drizzle-orm, not mocked) in a `sql`
+    // template means the flattened where-clause text below genuinely
+    // reflects what the code built, not a canned stand-in.
+    selectMock.mockImplementation(() => ({
+      from: () => ({
+        where: (cond: unknown) => ({
+          getSQL: () => sql`select 1 from installer_bootstrap_tokens where ${cond}`,
+        }),
+      }),
+    }));
     capturedWorkerProcessor.current = null;
     delete process.env.ENROLLMENT_KEY_CLEANUP_ENABLED;
     delete process.env.ENROLLMENT_KEY_PURGE_AFTER_DAYS;
@@ -269,6 +301,92 @@ describe('enrollmentKeyCleanup worker', () => {
       expect(text).toContain('is not null');
       expect(text).toContain('and');
       expect(text).toContain('<');
+    });
+
+    // #2775 fix-round-1: the enrollment_keys DELETE now exempts any key that
+    // still has a live, unexhausted installer_bootstrap_tokens row pointing
+    // at it (see hasNoLiveUnexhaustedBootstrapToken in enrollmentKeyCleanup.ts).
+    // Like the two tests above, these are SQL-shape assertions on the built
+    // WHERE clause — this suite has no real Postgres, so the mocked
+    // `where()`/`returning()` chain can't itself evaluate a NOT EXISTS
+    // subquery per row (`returningMock`'s resolved value is whatever the
+    // test tells it to be, independent of the predicate). What IS
+    // meaningfully verifiable here — and would fail if the exemption were
+    // removed, miswired to the wrong columns, or bound to the wrong "now" —
+    // is that the generated predicate matches the owner-approved shape for
+    // each of the four required scenarios.
+    describe('live bootstrap token exemption (#2775)', () => {
+      it('(a) a live, unexhausted token exempts its parent key — subquery correlates on parent_enrollment_key_id and requires the TOKEN itself to still be unexpired', async () => {
+        vi.useFakeTimers();
+        const now = new Date('2026-07-10T12:00:00.000Z');
+        vi.setSystemTime(now);
+
+        createEnrollmentKeyCleanupWorker();
+        await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j-2775-a' });
+
+        const cond = whereMock.mock.calls[0]![0];
+        const text = sqlText(cond);
+
+        expect(text).toContain('not exists');
+        expect(text).toContain('parent_enrollment_key_id');
+        expect(text).toContain('id'); // correlated column on the outer enrollment_keys row
+        // The token-liveness bound is "now" at call time, not the outer
+        // days-based purge cutoff — proven by both distinct timestamps
+        // appearing, so a 30-day/1-year token isn't accidentally re-clamped
+        // to the 7-day purge window.
+        const expectedCutoff = new Date(now.getTime() - __testOnly.DEFAULT_PURGE_AFTER_DAYS * 86_400_000);
+        expect(text).toContain(expectedCutoff.toISOString());
+        expect(text).toContain(now.toISOString());
+      });
+
+      it('(b) a token whose own expiry has passed does NOT exempt the key — the liveness check is a strict now() boundary, not a grace window', async () => {
+        vi.useFakeTimers();
+        const now = new Date('2026-07-10T12:00:00.000Z');
+        vi.setSystemTime(now);
+
+        createEnrollmentKeyCleanupWorker();
+        await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j-2775-b' });
+
+        const cond = whereMock.mock.calls[0]![0];
+        const text = sqlText(cond);
+
+        // Extract the operator immediately preceding the bound "now" value:
+        // must be strict `>`, not `>=` — an expired token (expires_at <= now)
+        // must fail this predicate so NOT EXISTS is satisfied and the key
+        // still gets deleted, exactly as before #2775.
+        const match = text.match(/expires_at\s+(\S+)\s+2026-07-10T12:00:00\.000Z/);
+        expect(match).not.toBeNull();
+        expect(match![1]).toBe('>');
+      });
+
+      it('(c) a fully-consumed token does NOT exempt the key — subquery requires consumed_count < max_usage', async () => {
+        createEnrollmentKeyCleanupWorker();
+        await capturedWorkerProcessor.current!({ name: 'enrollment-key-cleanup', id: 'j-2775-c' });
+
+        const cond = whereMock.mock.calls[0]![0];
+        const text = sqlText(cond);
+
+        expect(text).toContain('consumed_count');
+        expect(text).toContain('max_usage');
+        expect(text).toMatch(/consumed_count\s+<\s+max_usage/);
+      });
+
+      it('(d) a key with no bootstrap tokens at all is still deleted — existing count-reporting behaviour is unchanged with the guard wired in', async () => {
+        returningMock.mockResolvedValue([{ id: 'k1' }, { id: 'k2' }, { id: 'k3' }]);
+        createEnrollmentKeyCleanupWorker();
+
+        const result = await capturedWorkerProcessor.current!({
+          name: 'enrollment-key-cleanup',
+          id: 'j-2775-d',
+        });
+
+        // NOT EXISTS against zero correlated token rows is trivially true in
+        // standard SQL — a key with no bootstrap tokens is unaffected by the
+        // new guard and is deleted exactly as it was pre-#2775.
+        const cond = whereMock.mock.calls[0]![0];
+        expect(sqlText(cond)).toContain('not exists');
+        expect(result).toMatchObject({ deletedCount: 3 });
+      });
     });
 
     it('ignores unknown job names without touching the DB', async () => {

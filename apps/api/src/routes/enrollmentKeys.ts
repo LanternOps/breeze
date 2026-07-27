@@ -1087,6 +1087,7 @@ enrollmentKeyRoutes.get(
             parentEnrollmentKeyId: parentKey.id,
             createdByUserId: auth.user.id,
             maxUsage: childMaxUsage,
+            ttlMinutes: childTtlMinutes,
           });
         } catch (err) {
           if (err instanceof BootstrapTokenIssuanceError) {
@@ -1203,6 +1204,7 @@ enrollmentKeyRoutes.get(
           parentEnrollmentKeyId: parentKey.id,
           createdByUserId: auth.user.id,
           maxUsage: childMaxUsage,
+          ttlMinutes: childTtlMinutes,
           installerPlatform: "windows",
         });
       } catch (err) {
@@ -1417,6 +1419,7 @@ enrollmentKeyRoutes.get(
 
 const bootstrapTokenBodySchema = z.object({
   maxUsage: z.number().int().min(1).max(1000).default(1),
+  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
 enrollmentKeyRoutes.post(
@@ -1433,7 +1436,7 @@ enrollmentKeyRoutes.post(
   async (c) => {
     const auth = c.get("auth");
     const { id: keyId } = c.req.valid("param");
-    const { maxUsage } = c.req.valid("json");
+    const { maxUsage, ttlMinutes } = c.req.valid("json");
 
     const [parent] = await db
       .select()
@@ -1450,6 +1453,16 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    if (parentKeyTooCloseToExpiry(parent.expiresAt)) {
+      return c.json(
+        {
+          error:
+            "Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL",
+        },
+        410,
+      );
+    }
+
     try {
       const {
         id: tokenId,
@@ -1459,6 +1472,7 @@ enrollmentKeyRoutes.post(
         parentEnrollmentKeyId: parent.id,
         createdByUserId: auth.user.id,
         maxUsage,
+        ttlMinutes,
       });
 
       writeEnrollmentKeyAudit(c, auth, {
@@ -1808,6 +1822,14 @@ async function serveInstaller(
       410,
     );
   }
+  if (parentKeyTooCloseToExpiry(keyRow.expiresAt)) {
+    // Public/unauthenticated path — no parent-key detail (name, id) in the
+    // response, matching the other rejection messages in this function.
+    return c.json(
+      { error: "This download link is expiring too soon to build an installer" },
+      410,
+    );
+  }
   if (!keyRow.siteId) {
     return c.json({ error: "Invalid enrollment key configuration" }, 400);
   }
@@ -1849,6 +1871,12 @@ async function serveInstaller(
         // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
         createdByUserId: keyRow.createdBy ?? null,
         maxUsage: 1,
+        // Short-link downloads carry no per-request picker (the link was
+        // generated once, by an admin who already chose a TTL for the CHILD
+        // key at /installer-link time). There is no ttlMinutes in scope here
+        // to forward, so the bootstrap token deliberately takes the 24h base
+        // rather than inheriting a stale selection. Deliberate — not an
+        // oversight (#2775).
         installerPlatform: "windows",
       });
     } catch (err) {

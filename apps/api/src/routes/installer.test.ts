@@ -234,6 +234,89 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(res.status).toBe(404);
   });
 
+  it("consumes a live token whose parent key has already expired (#2775)", async () => {
+    // The token itself has 7 days left; the parent enrollment key (the
+    // deliberately transient 60-minute container created by the Add Device
+    // modal) died an hour ago. The token's own expiry is the sole authority —
+    // redemption must still succeed and the child key must get a fresh TTL,
+    // not the parent's dead one.
+    const tokenRow = {
+      id: "t-2775",
+      token: "EEEEEEEEEE",
+      orgId: "o1",
+      parentEnrollmentKeyId: "pk-dead",
+      siteId: "s1",
+      maxUsage: 10,
+      consumedCount: 0,
+      createdBy: "u1",
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600_000),
+    };
+    const parentKey = {
+      id: "pk-dead",
+      name: "Acme parent",
+      orgId: "o1",
+      siteId: "s1",
+      keySecretHash: "parent-secret-hash",
+      expiresAt: new Date(Date.now() - 3600_000), // parent: dead an hour ago
+    };
+    const org = { id: "o1", name: "Acme Corp" };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([tokenRow]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([org]) }),
+        }),
+      } as any);
+
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return {
+          returning: () =>
+            Promise.resolve([{ id: "ck-2775", orgId: "o1", siteId: "s1" }]),
+        };
+      },
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: () =>
+            Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+        }),
+      }),
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "EEEEEEEEEE" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enrollmentKey).toMatch(/^[a-f0-9]{64}$/);
+    // Child key gets its own fresh TTL, not the parent's dead one.
+    expect(capturedChildKeyValues).not.toBeNull();
+    const childExpiresAt = (
+      capturedChildKeyValues as unknown as { expiresAt: Date }
+    ).expiresAt;
+    expect(childExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(childExpiresAt.getTime()).toBeGreaterThan(
+      parentKey.expiresAt.getTime(),
+    );
+  });
+
   it("partially-consumed multi-use token still redeems and mints a single-use child key", async () => {
     process.env.PUBLIC_API_URL = "https://us.2breeze.app";
     process.env.AGENT_ENROLLMENT_SECRET = "shared-secret-test";
