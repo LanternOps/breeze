@@ -102,6 +102,20 @@ const CANONICAL_GATE_NAMES = [
   // tickets routes, alerts create-from-alert, and aiToolsTicketing.
   'ticketSiteScopeCondition',
   'deviceInSiteScope',
+  // Report-data alert aggregates (Wave 2 tenant/site scope). Both emit the
+  // device-site predicate itself — `alertsDeviceSiteCondition` returns
+  // `inArray(devices.siteId, …)` for a restricted scope, and
+  // `alertsMultiOrgDeviceCondition` composes one `(org AND site)` branch per
+  // authorized organization. They are file-local to routes/reports/data.ts
+  // today, exactly as ticketSiteScopeCondition/deviceInSiteScope once were.
+  //
+  // Deliberately NOT listed: `resolveRequestReportAuthority(Map)`. Those
+  // RESOLVE a scope but do not APPLY it, so accepting them as gate tokens
+  // would let a future handler resolve authority, never build a predicate,
+  // and still scan clean — the exact false negative this detector exists to
+  // prevent.
+  'alertsDeviceSiteCondition',
+  'alertsMultiOrgDeviceCondition',
   // NOTE: `getDeviceWithOrgCheck` (routes/remote/helpers.ts) is a cross-file
   // site-aware resolver, but it is deliberately NOT listed as a gate token.
   // It gates only the code path where a deviceId is supplied — e.g.

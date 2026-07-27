@@ -183,9 +183,12 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // per-device rows), so no cross-site device data is disclosed (returns
   // re-verified 2026-05-31). NB: totals still span the org incl. other
   // sites — site-scoping the aggregates themselves is a separate product call.
+  // routes/metrics.ts:GET / and GET /trends were exempted here as org-wide
+  // aggregates with the note that site-scoping them was "a separate product
+  // call". Wave 2 made that call: GET / now applies the allowed-site
+  // predicate to every aggregate and GET /trends denies site-restricted
+  // callers outright, so the ratchet correctly demands these entries go.
   'routes/huntress.ts:GET /status',
-  'routes/metrics.ts:GET /',
-  'routes/metrics.ts:GET /trends',
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
@@ -220,8 +223,6 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // re-verification test (added in #1041) accepts them. (Site-scoping the
   // aggregate totals themselves is a separate product call.)
   'routes/huntress.ts:GET /status',
-  'routes/metrics.ts:GET /',
-  'routes/metrics.ts:GET /trends',
   'routes/sentinelOne.ts:GET /status',
   'routes/softwarePolicies.ts:GET /compliance/overview',
   'routes/updateRings.ts:GET /:id/compliance',
