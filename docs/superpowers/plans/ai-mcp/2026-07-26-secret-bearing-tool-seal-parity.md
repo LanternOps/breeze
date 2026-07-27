@@ -179,6 +179,41 @@ describe('assertNoPlaintextSecret', () => {
       raw: 'Temporary password: whatever',
     })).not.toThrow();
   });
+
+  it('accepts an error result that carries no credential and no marker', () => {
+    // A secret-bearing tool that fails legitimately persists an error result
+    // with no marker. Requiring one here would throw on every error release.
+    expect(() => assertNoPlaintextSecret('google_reset_password', {
+      raw: JSON.stringify({ error: 'not_found', message: 'no such user' }),
+    })).not.toThrow();
+  });
+
+  it('accepts an already-redacted historical row', () => {
+    expect(() => assertNoPlaintextSecret('google_reset_password', {
+      raw: 'Reset the password for a@b.com. Temporary password: [REDACTED] (the user must change it at next sign-in).',
+    })).not.toThrow();
+  });
+});
+
+describe('seal invariant', () => {
+  it('a success carrier always yields exactly one of enc or seal-failed', () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+    process.env.APP_ENCRYPTION_KEY_ID = 'test-key-1';
+    const withKey = sealToolSecrets({
+      kind: 'success', llmText: 'ok', secrets: { temporaryPassword: PW },
+    }).sealedResult;
+
+    delete process.env.APP_ENCRYPTION_KEY_ID;
+    const withoutKey = sealToolSecrets({
+      kind: 'success', llmText: 'ok', secrets: { temporaryPassword: PW },
+    }).sealedResult;
+
+    for (const r of [withKey, withoutKey]) {
+      const markers = [TEMP_PASSWORD_ENC_KEY, TEMP_PASSWORD_SEAL_FAILED_KEY]
+        .filter((k) => k in r);
+      expect(markers).toHaveLength(1);
+    }
+  });
 });
 ```
 
@@ -315,20 +350,17 @@ export function assertNoPlaintextSecret(
       );
     }
   }
-
-  const hasMarker =
-    TEMP_PASSWORD_ENC_KEY in result
-    || TEMP_PASSWORD_SEAL_FAILED_KEY in result
-    || TEMP_PASSWORD_EXPIRED_KEY in result
-    || result.truncated === true;
-
-  if (!hasMarker) {
-    throw new Error(
-      `[secretBearingTools] refusing to persist result for ${toolName}: `
-      + 'no sealed credential, seal-failure, or expiry marker present',
-    );
-  }
 }
+```
+
+**Do not add a "must carry a seal marker" check here.** A secret-bearing tool
+that fails (user not found, connection unavailable) legitimately persists an
+error result with no credential and therefore no marker; requiring one would
+throw on every error release. The "sealing actually happened" invariant is
+guaranteed by construction instead — `sealToolSecrets` always emits either
+`temporaryPasswordEnc` or `temporaryPasswordSealFailed` for a success carrier —
+and is pinned by the unit test below rather than by a runtime check that cannot
+distinguish success from failure.
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1089,13 +1121,28 @@ Expected: FAIL — the callback takes five parameters.
 
 - [ ] **Step 3: Return the intentId from preToolUse**
 
-At `apps/api/src/services/aiAgentSdk.ts:719`, `pendingIntentBySession.set(session, intent.id)` already runs. Immediately after the tier-3 branch finishes authorizing, change its success return to carry the id:
+The tier-3 branch does **not** return — every branch falls through to one shared terminal `return { allowed: true };` at `apps/api/src/services/aiAgentSdk.ts:874`. So thread the id through a local:
+
+Declare it near the top of the preToolUse callback body, beside the other locals:
 
 ```ts
-return { allowed: true, intentId: intent.id };
+let createdIntentId: string | undefined;
 ```
 
-Leave `pendingIntentBySession` in place — the completion CAS still uses it for non-secret tier-3 tools.
+Set it at `:719`, next to the existing WeakMap write:
+
+```ts
+pendingIntentBySession.set(session, intent.id);
+createdIntentId = intent.id;
+```
+
+And carry it on the terminal return at `:874`:
+
+```ts
+return { allowed: true, intentId: createdIntentId };
+```
+
+`intentId` stays `undefined` for every non-tier-3 path, which is exactly what Task 5's fail-closed branch keys on. Leave `pendingIntentBySession` in place — the completion CAS still uses it for non-secret tier-3 tools.
 
 - [ ] **Step 4: Accept and use `sealed` in the postToolUse implementation**
 
