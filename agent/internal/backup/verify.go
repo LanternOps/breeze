@@ -3,7 +3,6 @@ package backup
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -92,7 +91,7 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 		if err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-verify] temp file create failed for %s: %v", file.BackupPath, err)
+			log.Warn("temp file create failed", "phase", "verify", "backupPath", file.BackupPath, "error", err.Error())
 			continue
 		}
 		tempPath := tempFile.Name()
@@ -104,7 +103,7 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 			os.Remove(tempPath)
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-verify] download failed for %s: %v", file.BackupPath, dlErr)
+			log.Warn("download failed", "phase", "verify", "backupPath", file.BackupPath, "error", dlErr.Error())
 			continue
 		}
 
@@ -121,15 +120,15 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 			os.Remove(tempPath)
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-verify] stat failed for %s: %v", file.BackupPath, statErr)
+			log.Warn("stat failed", "phase", "verify", "backupPath", file.BackupPath, "error", errString(statErr))
 			continue
 		}
 		if info.Size() != file.Size {
 			os.Remove(tempPath)
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-verify] size mismatch for %s: manifest %d, stored %d",
-				file.BackupPath, file.Size, info.Size())
+			log.Warn("size mismatch", "phase", "verify", "backupPath", file.BackupPath,
+				"expectedBytes", file.Size, "actualBytes", info.Size())
 			continue
 		}
 		if file.Checksum != "" {
@@ -137,8 +136,8 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 				os.Remove(tempPath)
 				result.FilesFailed++
 				result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-				log.Printf("[backup-verify] checksum mismatch for %s (manifest %s)",
-					file.BackupPath, file.Checksum)
+				log.Warn("checksum mismatch", "phase", "verify", "backupPath", file.BackupPath,
+					"expected", file.Checksum)
 				continue
 			}
 		} else {
@@ -165,6 +164,17 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 
 	result.DurationMs = time.Since(start).Milliseconds()
 	return result, nil
+}
+
+// errString renders an error for a structured log attribute. The log shipper
+// JSON-marshals attrs and a raw error marshals to {}, so errors are logged as
+// strings. Used where the error may be nil (a stat that returned nil info
+// without an error), which err.Error() would panic on.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 const restoreTestPrefix = "breeze-restore-test"
@@ -223,7 +233,7 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-restore] create target dir failed for %s: %v", destPath, err)
+			log.Warn("create target dir failed", "phase", "restore", "destPath", destPath, "error", err.Error())
 			if progressFn != nil {
 				progressFn(i+1, total)
 			}
@@ -236,22 +246,23 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 		case dlErr != nil:
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-restore] download failed for %s: %v", file.BackupPath, dlErr)
+			log.Warn("download failed", "phase", "restore", "backupPath", file.BackupPath, "error", dlErr.Error())
 		case statErr != nil || info == nil:
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-restore] stat failed for %s: %v", file.BackupPath, statErr)
+			log.Warn("stat failed", "phase", "restore", "backupPath", file.BackupPath, "error", errString(statErr))
 		case info.Size() != file.Size:
 			// A real test-restore must confirm the bytes came back intact, not
 			// just that a file appeared (same blind spot as VerifyIntegrity).
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-restore] size mismatch for %s: manifest %d, restored %d",
-				file.BackupPath, file.Size, info.Size())
+			log.Warn("size mismatch", "phase", "restore", "backupPath", file.BackupPath,
+				"expectedBytes", file.Size, "actualBytes", info.Size())
 		case file.Checksum != "" && !checksumMatches(destPath, file.Checksum):
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.BackupPath)
-			log.Printf("[backup-restore] checksum mismatch for %s", file.BackupPath)
+			log.Warn("checksum mismatch", "phase", "restore", "backupPath", file.BackupPath,
+				"expected", file.Checksum)
 		default:
 			result.FilesVerified++
 			result.SizeBytes += info.Size()
@@ -279,7 +290,7 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 
 	// Cleanup
 	if cleanErr := os.RemoveAll(restoreDir); cleanErr != nil {
-		log.Printf("[backup-restore] cleanup failed for %s: %v", restoreDir, cleanErr)
+		log.Warn("cleanup failed", "phase", "restore", "path", restoreDir, "error", cleanErr.Error())
 		result.CleanedUp = false
 	} else {
 		result.CleanedUp = true

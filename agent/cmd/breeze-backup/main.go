@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,11 +22,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/spf13/cobra"
 )
 
@@ -95,30 +99,110 @@ func main() {
 	}
 }
 
-func runBackupHelper() {
-	slog.Info("breeze-backup starting", "version", version, "pid", os.Getpid(), "platform", runtime.GOOS)
+// initLogging wires this process into the agent's logging stack: a rotating
+// file at <logdir>/backup.log plus the shared log shipper.
+//
+// Until this existed, breeze-backup relied on the package-level slog default
+// (stdout) and the backup packages used stdlib log.Printf (stderr). The agent
+// spawns us with inherited stdio (sessionbroker/backup.go), which under a
+// Windows service or a launchd daemon is NUL — so every line a backup run
+// produced was discarded, on disk and over the wire alike. A multi-hour hung
+// backup left three lines in agent.log and nothing else (#2790).
+//
+// Returns a close func the caller must run before exiting, including on the
+// os.Exit paths below: the shipper batches on a 60s ticker and only drains on
+// an explicit Stop, so skipping it loses whatever is buffered.
+func initLogging(cfg *config.Config) func() {
+	logDir := filepath.Dir(cfg.LogFile)
+	_ = os.MkdirAll(logDir, 0700)
 
+	var output io.Writer = os.Stdout
+	if rw, err := logging.NewRotatingWriter(
+		filepath.Join(logDir, "backup.log"),
+		cfg.LogMaxSizeMB,
+		cfg.LogMaxBackups,
+	); err == nil {
+		// Spawned from the service with no console, stdout is invalid — a
+		// TeeWriter would abort the whole write on the stdout leg, so go
+		// file-only unless we actually have a console.
+		if hasConsole() {
+			output = logging.TeeWriter(os.Stdout, rw)
+		} else {
+			output = rw
+		}
+	}
+	logging.Init(cfg.LogFormat, cfg.LogLevel, output)
+
+	// Go runtime panics write to fd 2, which bypasses slog entirely and would
+	// otherwise go to NUL under the service. Point stderr at its own plain
+	// file rather than the rotating writer: rotation renames the file out from
+	// under any handle we hand off, and a panic trace split across a rotation
+	// boundary is worse than useless. Panics are rare, so this stays tiny.
+	if pf, err := os.OpenFile(
+		filepath.Join(logDir, "backup-panic.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600,
+	); err == nil {
+		redirectStderr(pf)
+	}
+
+	// We are spawned by the agent service and run as SYSTEM/root, so the full
+	// config.Load already gave us the real agent credentials. Unlike the user
+	// helper we don't need the helper-scoped token.
+	if cfg.AgentID == "" || cfg.ServerURL == "" || cfg.AuthToken == "" {
+		return func() {}
+	}
+	token := secmem.NewSecureString(cfg.AuthToken)
+	cfg.AuthToken = ""
+	logging.InitShipper(logging.ShipperConfig{
+		ServerURL:    config.NewPersistedServerURLProvider("", cfg.ServerURL, 0),
+		AgentID:      cfg.AgentID,
+		AuthToken:    token,
+		AgentVersion: version + "-backup",
+		MinLevel:     cfg.LogShippingLevel,
+		AuthMonitor:  authstate.NewMonitor(3),
+	})
+	return logging.StopShipper
+}
+
+func runBackupHelper() {
 	if socketPath == "" {
 		socketPath = ipc.DefaultSocketPath()
 	}
 
-	cfg, err := config.Load("")
-	if err != nil {
-		slog.Warn("failed to load config, using defaults", "error", err.Error())
+	// Config first: it carries the log file path, level and shipping
+	// credentials, so there is nowhere useful to send a load failure until
+	// after logging is up. Stash it and log once we can.
+	cfg, cfgErr := config.Load("")
+	if cfgErr != nil {
 		cfg = config.Default()
 	}
+
+	stopLogging := initLogging(cfg)
+	log := logging.L("backup-helper")
+	if cfgErr != nil {
+		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
+	}
+	log.Info("breeze-backup starting",
+		"version", version,
+		"pid", os.Getpid(),
+		"platform", runtime.GOOS,
+		"logFile", filepath.Join(filepath.Dir(cfg.LogFile), "backup.log"),
+		"logLevel", cfg.LogLevel,
+	)
 
 	// Connect to main agent via IPC
 	conn, err := dialAgent(socketPath)
 	if err != nil {
-		slog.Error("failed to connect to agent", "error", err.Error())
+		log.Error("failed to connect to agent", "error", err.Error())
+		stopLogging()
 		os.Exit(1)
 	}
 	defer conn.Close()
 
 	// Authenticate
 	if err := authenticate(conn); err != nil {
-		slog.Error("authentication failed", "error", err.Error())
+		log.Error("authentication failed", "error", err.Error())
+		stopLogging()
 		os.Exit(1)
 	}
 
@@ -136,7 +220,8 @@ func runBackupHelper() {
 		caps.SupportsVault = true
 	}
 	if err := conn.SendTyped("caps", backupipc.TypeBackupReady, caps); err != nil {
-		slog.Error("failed to send capabilities", "error", err.Error())
+		log.Error("failed to send capabilities", "error", err.Error())
+		stopLogging()
 		os.Exit(1)
 	}
 
@@ -146,7 +231,7 @@ func runBackupHelper() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		slog.Info("received shutdown signal")
+		log.Info("received shutdown signal")
 		cancel()
 	}()
 
@@ -157,7 +242,8 @@ func runBackupHelper() {
 	if mgr != nil {
 		mgr.Stop()
 	}
-	slog.Info("breeze-backup exiting")
+	log.Info("breeze-backup exiting")
+	stopLogging()
 }
 
 func dialAgent(path string) (*ipc.Conn, error) {

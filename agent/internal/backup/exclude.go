@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"log"
 	"path"
 	"runtime"
 	"strings"
@@ -57,7 +56,7 @@ func newExcludeMatcherForOS(patterns []string, caseInsensitive bool) *excludeMat
 		if strings.Contains(p, "/") {
 			segs := strings.Split(p, "/")
 			if !validGlobSegments(segs) {
-				log.Printf("[backup] ignoring invalid exclusion pattern %q", raw)
+				log.Warn("ignoring invalid exclusion pattern", "pattern", raw)
 				continue
 			}
 			// Implicit leading "**/" so patterns match at any depth
@@ -65,7 +64,7 @@ func newExcludeMatcherForOS(patterns []string, caseInsensitive bool) *excludeMat
 			m.relPath = append(m.relPath, append([]string{"**"}, segs...))
 		} else {
 			if _, err := path.Match(p, "probe"); err != nil {
-				log.Printf("[backup] ignoring invalid exclusion pattern %q: %v", raw, err)
+				log.Warn("ignoring invalid exclusion pattern", "pattern", raw, "error", err.Error())
 				continue
 			}
 			m.baseName = append(m.baseName, p)
