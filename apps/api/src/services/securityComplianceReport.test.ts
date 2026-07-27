@@ -5,13 +5,14 @@ const vulnerabilityMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
-vi.mock('./reportGenerationService', () => ({
-  resolveSiteAllowedDeviceIds: vi.fn(async () => null)
-}));
+vi.mock('./reportGenerationService', () => ({}));
 vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
 
 import { db } from '../db';
-import { generateSecurityCompliancePostureReport } from './securityComplianceReport';
+import {
+  generateSecurityCompliancePostureReport as generateSecurityCompliancePostureReportWithAuthority,
+} from './securityComplianceReport';
+import type { ReportExecutionAuthority } from './siteScope';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: any) {
@@ -23,6 +24,31 @@ function selectChain(rows: any) {
 }
 
 const ORG = '00000000-0000-0000-0000-000000000001';
+const USER_ID = '11111111-1111-4111-8111-111111111111';
+const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+function authority(siteIds?: string[]): ReportExecutionAuthority {
+  return {
+    scope: siteIds === undefined
+      ? { version: 1, kind: 'unrestricted', orgId: ORG }
+      : { version: 1, kind: 'restricted', orgId: ORG, siteIds },
+    principalUserId: USER_ID,
+    capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+    fingerprint: siteIds === undefined ? 'f'.repeat(64) : 'a'.repeat(64),
+  };
+}
+
+function generateSecurityCompliancePostureReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  executionAuthority: ReportExecutionAuthority = authority(),
+) {
+  return generateSecurityCompliancePostureReportWithAuthority(
+    orgId,
+    config,
+    executionAuthority,
+  );
+}
 
 /**
  * The generator issues selects in this fixed order:
@@ -96,6 +122,36 @@ describe('generateSecurityCompliancePostureReport', () => {
     ]);
     expect(rows['pc-1']).toMatchObject({ openVulnHigh: 2, openVulnCritical: 1 });
     expect(rows['pc-2']).toMatchObject({ openVulnHigh: 1, openVulnCritical: 0 });
+  });
+
+  it('does not query or expose organization-wide posture evidence to a site-restricted caller', async () => {
+    const sequences = [
+      [{ id: ORG, name: 'Acme Co', partnerId: 'p1' }],
+      [{ id: 'dev-a', hostname: 'site-a-device', osType: 'windows', siteName: 'Site A' }],
+      [], // security_status
+      [], // s1_agents
+      [], // huntress_agents
+      [], // outstanding device patches
+      [], // patch-assessed device set
+    ];
+    const select = vi.mocked(db.select);
+    select.mockReset();
+    for (const rows of sequences) select.mockReturnValueOnce(selectChain(rows));
+    select.mockReturnValue(selectChain([]));
+
+    const result = await generateSecurityCompliancePostureReport(
+      ORG,
+      { includeCis: false },
+      authority([SITE_A]),
+    );
+    const summary = result.summary as any;
+
+    expect(select).toHaveBeenCalledTimes(sequences.length);
+    expect(summary.controls).not.toHaveProperty('identityProviderConnected');
+    expect(summary.controls).not.toHaveProperty('backupConfigured');
+    expect(summary.controls).not.toHaveProperty('dnsFilteringActive');
+    expect(summary).not.toHaveProperty('privilegedAccess');
+    expect(summary).not.toHaveProperty('postureScore');
   });
 
   it('merges managed EDR with native AV and flags unprotected devices', async () => {
@@ -465,10 +521,12 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('returns empty rows but a valid summary when no devices in scope', async () => {
-    const svc = await import('./reportGenerationService');
-    vi.mocked(svc.resolveSiteAllowedDeviceIds).mockResolvedValueOnce([]);
     mockGeneratorQueries();
-    const r = await generateSecurityCompliancePostureReport(ORG, { backupRequired: false });
+    const r = await generateSecurityCompliancePostureReport(
+      ORG,
+      { backupRequired: false },
+      authority([]),
+    );
     expect(r.rows).toEqual([]);
     expect((r.summary as any).deviceCount).toBe(0);
     expect((r.summary as any).controls.backupRequired).toBe(false);

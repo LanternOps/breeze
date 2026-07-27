@@ -20,12 +20,27 @@
  *   other queue workers.
  */
 
-import { and, eq, ne } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  not,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
 import { reports, reportRuns, organizations, partners } from '../db/schema';
-import { generateReport, previousBaselineFor, type ReportResult } from '../services/reportGenerationService';
+import {
+  assertReportExecutionPreflight,
+  generateReport,
+  previousBaselineFor,
+  type ReportResult,
+} from '../services/reportGenerationService';
 import { getEmailService } from '../services/email';
 import { renderLayout, renderButton, renderParagraph, escapeHtml } from '../services/emailLayout';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
@@ -43,6 +58,15 @@ import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { loadReportBrandingForOrg } from '../services/reportBranding';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
+import {
+  decodeSiteScope,
+  intersectSiteScopes,
+  persistedSiteScopeValues,
+  resolveLiveReportAuthority,
+  siteScopeFingerprint,
+  type PersistedSiteScopeColumns,
+  type ReportExecutionAuthority,
+} from '../services/siteScope';
 
 // Re-exported so the occurrence-math tests colocated with this worker keep
 // importing from here; the implementation lives in @breeze/shared so the web
@@ -124,6 +148,23 @@ function timezoneFor(
 }
 
 export async function findDueReports(now: Date): Promise<Array<{ id: string; occurrenceKey: number }>> {
+  const completeExecutableScope = and(
+    eq(reports.executionScopeVersion, 1),
+    inArray(reports.executionScopeKind, ['unrestricted', 'restricted']),
+    isNotNull(reports.executionScopeUserId),
+    isNotNull(reports.executionScopeFingerprint),
+    isNotNull(reports.executionScopeCapturedAt),
+    or(
+      and(
+        eq(reports.executionScopeKind, 'unrestricted'),
+        isNull(reports.executionScopeSiteIds),
+      ),
+      and(
+        eq(reports.executionScopeKind, 'restricted'),
+        isNotNull(reports.executionScopeSiteIds),
+      ),
+    ),
+  )!;
   const rows = await db
     .select({
       id: reports.id,
@@ -137,7 +178,19 @@ export async function findDueReports(now: Date): Promise<Array<{ id: string; occ
     .from(reports)
     .innerJoin(organizations, eq(reports.orgId, organizations.id))
     .leftJoin(partners, eq(organizations.partnerId, partners.id))
-    .where(ne(reports.schedule, 'one_time'));
+    .where(and(ne(reports.schedule, 'one_time'), completeExecutableScope));
+
+  const [skipped] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(reports)
+    .where(and(ne(reports.schedule, 'one_time'), not(completeExecutableScope)));
+  const skippedCount = Number(skipped?.count ?? 0);
+  if (skippedCount > 0) {
+    console.warn(
+      '[ReportScheduleWorker] Scheduled reports require scope reauthorization',
+      { count: skippedCount },
+    );
+  }
 
   const due: Array<{ id: string; occurrenceKey: number }> = [];
   for (const row of rows) {
@@ -340,9 +393,93 @@ export async function processRunScheduledReport(
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
+  const deny = async (reason: string): Promise<void> => {
+    await db
+      .insert(reportRuns)
+      .values({
+        reportId: report.id,
+        status: 'failed',
+        completedAt: new Date(),
+        errorMessage: reason,
+      })
+      .returning();
+  };
+
+  let persistedScope;
+  try {
+    persistedScope = decodeSiteScope(
+      report as unknown as PersistedSiteScopeColumns,
+      report.orgId,
+    );
+  } catch {
+    await deny('scope_unverifiable');
+    return;
+  }
+  if (persistedScope.kind === 'legacy_unscoped') {
+    await deny('scope_legacy_unscoped');
+    return;
+  }
+
+  if (!report.executionScopeUserId) {
+    await deny('scope_unverifiable');
+    return;
+  }
+
+  let liveResult;
+  try {
+    liveResult = await resolveLiveReportAuthority(
+      report.executionScopeUserId,
+      report.orgId,
+      'read',
+    );
+  } catch {
+    await deny('scope_unverifiable');
+    return;
+  }
+  if (!liveResult.ok || liveResult.authority.scope.kind === 'legacy_unscoped') {
+    await deny(`scope_${liveResult.ok ? 'unverifiable_scope' : liveResult.reason}`);
+    return;
+  }
+
+  const effectiveScope = intersectSiteScopes(
+    persistedScope,
+    liveResult.authority.scope,
+  );
+  if (!effectiveScope) {
+    await deny('scope_no_intersection');
+    return;
+  }
+  if (effectiveScope.kind === 'legacy_unscoped') {
+    await deny('scope_legacy_unscoped');
+    return;
+  }
+  if (effectiveScope.kind === 'restricted' && effectiveScope.siteIds.length === 0) {
+    await deny('scope_empty');
+    return;
+  }
+
+  const executionAuthority: ReportExecutionAuthority = {
+    scope: effectiveScope,
+    principalUserId: liveResult.authority.principalUserId,
+    capturedAt: liveResult.authority.capturedAt,
+    fingerprint: siteScopeFingerprint(effectiveScope),
+  };
+
+  try {
+    assertReportExecutionPreflight(report.orgId, config, executionAuthority);
+  } catch {
+    await deny('scope_config_outside_authority');
+    return;
+  }
+
   const [run] = await db
     .insert(reportRuns)
-    .values({ reportId: report.id, status: 'running', startedAt: new Date() })
+    .values({
+      reportId: report.id,
+      status: 'running',
+      startedAt: new Date(),
+      ...persistedSiteScopeValues(executionAuthority),
+    })
     .returning();
   if (!run) throw new Error(`Failed to create run for scheduled report ${report.id}`);
 
@@ -354,10 +491,16 @@ export async function processRunScheduledReport(
     .where(eq(reports.id, report.id));
 
   try {
-    // System context: scheduled runs execute with full org scope (no user
-    // site-permission filter — parity with a report owner generating it).
-    const result = await generateReport(report.type, report.orgId, config, undefined);
-    const previous = await previousBaselineFor(report.id);
+    const previous = await previousBaselineFor(
+      report.id,
+      executionAuthority.fingerprint,
+    );
+    const result = await generateReport(
+      report.type,
+      report.orgId,
+      config,
+      executionAuthority,
+    );
     if (previous) result.previous = previous;
     const rows = Array.isArray(result.rows) ? result.rows : [];
     const rowCount = result.rowCount ?? rows.length;

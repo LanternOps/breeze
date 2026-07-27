@@ -1,6 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { deleteSpy } = vi.hoisted(() => ({ deleteSpy: vi.fn() }));
+const { deleteSpy, reportScopeMocks, reportPreflightMock } = vi.hoisted(() => ({
+  deleteSpy: vi.fn(),
+  reportPreflightMock: vi.fn(),
+  reportScopeMocks: {
+    resolveRequestReportAuthority: vi.fn(),
+    resolveRequestReportAuthorityMap: vi.fn(),
+    decodeSiteScope: vi.fn(),
+    isSiteScopeSubset: vi.fn(),
+    intersectSiteScopes: vi.fn(),
+    siteScopeFingerprint: vi.fn(),
+    persistedSiteScopeValues: vi.fn(),
+    reportDefinitionScopeSqlPredicate: vi.fn(),
+    reportDefinitionMultiOrgScopeSqlPredicate: vi.fn(),
+    unrestrictedReportDefinitionScopeSqlPredicate: vi.fn(),
+    reportRunScopeSqlPredicate: vi.fn(),
+    reportRunMultiOrgScopeSqlPredicate: vi.fn(),
+    unrestrictedReportRunScopeSqlPredicate: vi.fn(),
+  },
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -17,20 +37,31 @@ vi.mock('./automationRuntime', async (importOriginal) => {
 });
 vi.mock('./reportGenerationService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./reportGenerationService')>();
-  return { ...actual, siteScopeRequestAllowed: vi.fn() };
+  return {
+    ...actual,
+    assertReportExecutionPreflight: (...args: unknown[]) => reportPreflightMock(...args),
+  };
 });
+vi.mock('./siteScope', () => reportScopeMocks);
 
 import { db } from '../db';
 import { registerFleetTools } from './aiToolsFleet';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
-import { siteScopeRequestAllowed } from './reportGenerationService';
+import {
+  reportRunScopeSqlPredicate,
+  resolveRequestReportAuthority,
+} from './siteScope';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
 const mockCheck = checkAutomationTargetsWithinSiteScope as unknown as ReturnType<typeof vi.fn>;
-const mockSiteScopeReq = siteScopeRequestAllowed as unknown as ReturnType<typeof vi.fn>;
 
-const mockDb = db as unknown as { select: ReturnType<typeof vi.fn>; insert: ReturnType<typeof vi.fn> };
+const mockDb = db as unknown as {
+  select: ReturnType<typeof vi.fn>;
+  insert: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
+  transaction: ReturnType<typeof vi.fn>;
+};
 function handlerFor(name: string): AiTool['handler'] {
   const reg = new Map<string, AiTool>();
   registerFleetTools(reg);
@@ -44,6 +75,20 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     allowedSiteIds, canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
   };
 }
+
+reportScopeMocks.resolveRequestReportAuthority.mockImplementation(
+  async (auth: AuthContext, orgId: string) => ({
+    ok: true,
+    authority: {
+      scope: auth.allowedSiteIds === undefined
+        ? { version: 1, kind: 'unrestricted', orgId }
+        : { version: 1, kind: 'restricted', orgId, siteIds: auth.allowedSiteIds },
+      principalUserId: auth.user.id,
+      capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      fingerprint: auth.allowedSiteIds === undefined ? 'f'.repeat(64) : 'a'.repeat(64),
+    },
+  }),
+);
 
 describe('manage_patches — per-device site scoping', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -140,17 +185,24 @@ describe('report data device_inventory — site narrowing', () => {
 
   it('site-restricted caller with no in-scope devices gets empty inventory', async () => {
     let inventoryRan = false;
+    let inventoryCondition: SQL | undefined;
     mockDb.select.mockImplementation((cols?: unknown) => {
       if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object) && Object.keys(cols as object).length === 2) {
         return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-FORBIDDEN' }]) }) };
       }
       inventoryRan = true;
-      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) }) };
+      return { from: () => ({ leftJoin: () => ({ where: (condition: SQL) => {
+        inventoryCondition = condition;
+        return { orderBy: () => ({ limit: () => Promise.resolve([]) }) };
+      } }) }) };
     });
     const r = await handlerFor('generate_report')({ action: 'data', reportType: 'device_inventory' }, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(0);
-    expect(inventoryRan).toBe(false);
+    expect(inventoryRan).toBe(true);
+    const rendered = new PgDialect().sqlToQuery(inventoryCondition!);
+    expect(rendered.params).toContain('site-A');
+    expect(rendered.params).not.toContain('site-FORBIDDEN');
   });
 });
 
@@ -304,29 +356,186 @@ describe('SR5-05 manage_automations — target site scoping', () => {
 
 // ── SR5-06: generate_report (history/download scope gate) ──────────────────────
 describe('SR5-06 generate_report — run scope gating', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
+      ok: true,
+      authority: {
+        scope: { version: 1, kind: 'unrestricted', orgId: 'org-1' },
+        principalUserId: 'u1',
+        capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+        fingerprint: 'f'.repeat(64),
+      },
+    });
+    reportScopeMocks.decodeSiteScope.mockReturnValue({
+      version: 1,
+      kind: 'unrestricted',
+      orgId: 'org-1',
+    });
+    reportScopeMocks.isSiteScopeSubset.mockReturnValue(true);
+    reportScopeMocks.reportRunScopeSqlPredicate.mockReturnValue({
+      op: 'run-scope',
+    });
+  });
 
-  const runRow = { id: 'run1', reportId: 'rep1', status: 'completed', reportOrgId: 'org-1', reportConfig: {}, outputUrl: 'u', reportName: 'N', reportType: 't', reportFormat: 'csv', rowCount: 1, completedAt: null };
+  const runRow = {
+    id: 'run1',
+    reportId: 'rep1',
+    status: 'completed',
+    orgId: 'org-1',
+    reportOrgId: 'org-1',
+    outputUrl: 'u',
+    reportName: 'N',
+    reportType: 't',
+    reportFormat: 'csv',
+    rowCount: 1,
+    completedAt: null,
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: 'u1',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-25T12:00:00.000Z'),
+  };
+
+  const definitionRow = {
+    id: 'rep1',
+    orgId: 'org-1',
+    name: 'Scoped report',
+    type: 'device_inventory',
+    config: { filters: { siteIds: ['site-B'] } },
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: 'u1',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-25T12:00:00.000Z'),
+  };
+
+  function definitionSelectChain() {
+    return {
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve([definitionRow]) }),
+      }),
+    };
+  }
 
   it('download denies when the report scope exceeds the caller sites', async () => {
-    mockSiteScopeReq.mockResolvedValue(false);
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValueOnce({
+      ok: false,
+      reason: 'permission_removed',
+    });
     mockDb.select.mockReturnValue({ from: () => ({ innerJoin: () => ({ where: () => ({ limit: () => Promise.resolve([runRow]) }) }) }) });
     const r = await handlerFor('generate_report')({ action: 'download', reportRunId: 'run1' }, makeAuth(['site-A']));
-    expect(r).toContain('report scope denied');
+    expect(r).toContain('Report run not found');
+    expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      'org-1',
+      'export',
+    );
+    expect(reportRunScopeSqlPredicate).not.toHaveBeenCalled();
   });
 
   it('download allows an unrestricted caller (no regression)', async () => {
-    mockSiteScopeReq.mockResolvedValue(true);
     mockDb.select.mockReturnValue({ from: () => ({ innerJoin: () => ({ where: () => ({ limit: () => Promise.resolve([runRow]) }) }) }) });
     const r = await handlerFor('generate_report')({ action: 'download', reportRunId: 'run1' }, makeAuth(undefined));
     expect(JSON.parse(r).outputUrl).toBe('u');
+    expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      'org-1',
+      'export',
+    );
+    expect(reportRunScopeSqlPredicate).toHaveBeenCalled();
   });
 
   it('report data alert_summary zeroes out for a zero-site restricted caller', async () => {
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValueOnce({
+      ok: true,
+      authority: {
+        scope: { version: 1, kind: 'restricted', orgId: 'org-1', siteIds: [] },
+        principalUserId: 'u1',
+        capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+        fingerprint: 'a'.repeat(64),
+      },
+    });
     // resolveSiteAllowedDeviceIds → org devices, all filtered out by the empty allowlist.
     mockDb.select.mockReturnValue({ from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-A' }]) }) });
     const r = await handlerFor('generate_report')({ action: 'data', reportType: 'alert_summary' }, makeAuth([]));
     expect(JSON.parse(r).data.total).toBe(0);
+  });
+
+  it('does not report update success when the guarded definition mutation loses its scope race', async () => {
+    reportScopeMocks.reportDefinitionScopeSqlPredicate.mockReturnValue({ op: 'definition-scope' });
+    mockDb.select.mockReturnValue(definitionSelectChain());
+    const returning = vi.fn(async () => []);
+    mockDb.update.mockReturnValue({
+      set: () => ({ where: () => ({ returning }) }),
+    });
+
+    const result = JSON.parse(await handlerFor('generate_report')(
+      { action: 'update', reportId: 'rep1', name: 'Renamed' },
+      makeAuth(undefined),
+    ));
+
+    expect(returning).toHaveBeenCalled();
+    expect(result.success).not.toBe(true);
+  });
+
+  it('rejects saved generation config before inserting a run or updating the definition', async () => {
+    const restrictedScope = {
+      version: 1,
+      kind: 'restricted',
+      orgId: 'org-1',
+      siteIds: ['site-A'],
+    };
+    reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
+      ok: true,
+      authority: {
+        scope: restrictedScope,
+        principalUserId: 'u1',
+        capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+        fingerprint: 'a'.repeat(64),
+      },
+    });
+    reportScopeMocks.decodeSiteScope.mockReturnValue(restrictedScope);
+    reportScopeMocks.intersectSiteScopes.mockReturnValue(restrictedScope);
+    reportScopeMocks.isSiteScopeSubset.mockReturnValue(true);
+    reportScopeMocks.siteScopeFingerprint.mockReturnValue('a'.repeat(64));
+    mockDb.select.mockReturnValue(definitionSelectChain());
+    reportPreflightMock.mockImplementationOnce(() => {
+      throw new Error('outside authority');
+    });
+
+    const result = JSON.parse(await handlerFor('generate_report')(
+      { action: 'generate', reportId: 'rep1' },
+      makeAuth(['site-A']),
+    ));
+
+    expect(reportPreflightMock).toHaveBeenCalled();
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(result.success).not.toBe(true);
+  });
+
+  it('rolls back run deletion when the guarded definition delete loses its scope race', async () => {
+    reportScopeMocks.reportDefinitionScopeSqlPredicate.mockReturnValue({ op: 'definition-scope' });
+    mockDb.select.mockReturnValue(definitionSelectChain());
+    const definitionReturning = vi.fn(async () => []);
+    let deleteCall = 0;
+    const txDelete = vi.fn(() => ++deleteCall === 1
+      ? { where: () => Promise.resolve([]) }
+      : { where: () => ({ returning: definitionReturning }) });
+    mockDb.transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      delete: txDelete,
+    }));
+
+    const result = JSON.parse(await handlerFor('generate_report')(
+      { action: 'delete', reportId: 'rep1' },
+      makeAuth(undefined),
+    ));
+
+    expect(definitionReturning).toHaveBeenCalled();
+    expect(result.success).not.toBe(true);
   });
 });
 

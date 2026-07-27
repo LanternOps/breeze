@@ -9,7 +9,7 @@ import {
   partitionLedgerRows,
 } from './autoMigrate';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -256,6 +256,22 @@ describe('CHECKSUM_RECONCILIATIONS', () => {
       expect(rec.to).toMatch(/^[0-9a-f]{64}$/);
       expect(rec.reason.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('core migration ordering', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+
+  it('discovers the report site-scope migration exactly once in lexical order', () => {
+    const filenames = readdirSync(migrationsDir)
+      .filter((filename) => /^\d{4}-.*\.sql$/.test(filename))
+      .sort((a, b) => a.localeCompare(b));
+    const ledgerNames = planMigrations(filenames).map((migration) => migration.ledgerName);
+    const reserved = '2026-08-06-a-report-site-scope.sql';
+
+    expect(ledgerNames.filter((filename) => filename === reserved)).toHaveLength(1);
+    expect(ledgerNames).toEqual([...ledgerNames].sort((a, b) => a.localeCompare(b)));
+    expect(ledgerNames.at(-1)).toBe(reserved);
   });
 });
 
