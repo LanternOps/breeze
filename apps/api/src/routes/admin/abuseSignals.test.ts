@@ -116,6 +116,10 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
 // context); mirror the REAL requireMfa() behavior so the step-up gate is
 // exercised deterministically — see abuse.test.ts for the rationale.
 vi.mock('../../middleware/auth', () => ({
+  // Wave 4 added desktop-finalization routes to admin/index.ts, which pulls
+  // routes/monitors.ts into this suite's import graph; it calls requireScope at
+  // module scope, so the mock must provide it or the file fails to load.
+  requireScope: vi.fn(() => async (_c: any, next: () => Promise<void>) => next()),
   authMiddleware: vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
   requireMfa: vi.fn(() => async (c: any, next: () => Promise<void>) => {
     const auth = c.get('auth');
