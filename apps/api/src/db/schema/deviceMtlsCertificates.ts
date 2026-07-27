@@ -55,11 +55,17 @@ export const deviceMtlsCertificates = pgTable('device_mtls_certificates', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
+  // ON UPDATE CASCADE lets POST /devices/:id/move-org flip devices.org_id
+  // without violating this composite FK (Wave 5 Task 2). Note: the
+  // migration also declares this constraint DEFERRABLE INITIALLY DEFERRED
+  // — drizzle-orm's foreignKey() builder has no deferrable option, so that
+  // detail lives in the migration only (this schema is for type-safe
+  // queries; db:check-drift does not compare FK options against the DB).
   foreignKey({
     columns: [table.deviceId, table.orgId],
     foreignColumns: [devices.id, devices.orgId],
     name: 'device_mtls_certificates_device_org_fkey',
-  }).onDelete('cascade'),
+  }).onUpdate('cascade').onDelete('cascade'),
   uniqueIndex('device_mtls_certificates_provider_uq').on(table.providerCertificateId),
   uniqueIndex('device_mtls_certificates_org_serial_uq').on(table.orgId, table.serialNumber),
   uniqueIndex('device_mtls_certificates_one_active_uq')

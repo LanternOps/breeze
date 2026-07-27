@@ -59,18 +59,30 @@ CREATE TABLE IF NOT EXISTS device_mtls_certificates (
 
 -- Composite FK: a certificate's org must equal its device's org (same-org
 -- invariant), enforced structurally against devices(id, org_id).
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'device_mtls_certificates_device_org_fkey'
-  ) THEN
-    ALTER TABLE device_mtls_certificates
-      ADD CONSTRAINT device_mtls_certificates_device_org_fkey
-      FOREIGN KEY (device_id, org_id)
-      REFERENCES devices(id, org_id)
-      ON DELETE CASCADE;
-  END IF;
-END $$;
+--
+-- Wave 5 Task 2 (security remediation) — ON UPDATE CASCADE + DEFERRABLE
+-- INITIALLY DEFERRED: POST /devices/:id/move-org flips devices.org_id in
+-- the same transaction that re-tenants every device-scoped child table
+-- (see getDeviceOrgDenormalizedTables() in routes/devices/core.ts). Without
+-- ON UPDATE CASCADE, that single UPDATE devices SET org_id=... would
+-- immediately violate this FK for any existing certificate row (the
+-- referenced (id, org_id) tuple changes out from under it). This exactly
+-- mirrors the composite (device_id, org_id) -> devices(id, org_id) FKs
+-- added for device_hardware/device_disks/device_network/device_ip_history/
+-- software_inventory/device_warranty/hyperv_vms in
+-- 2026-07-23-partner-export-material-state-hardening.sql. DROP+ADD
+-- (unconditional, not an IF-NOT-EXISTS guard) so re-running this
+-- unshipped migration against a database that already created the
+-- constraint under its prior (task 1) definition still converges on the
+-- corrected one.
+ALTER TABLE device_mtls_certificates
+  DROP CONSTRAINT IF EXISTS device_mtls_certificates_device_org_fkey;
+ALTER TABLE device_mtls_certificates
+  ADD CONSTRAINT device_mtls_certificates_device_org_fkey
+  FOREIGN KEY (device_id, org_id)
+  REFERENCES devices(id, org_id)
+  ON UPDATE CASCADE ON DELETE CASCADE
+  DEFERRABLE INITIALLY DEFERRED;
 
 CREATE UNIQUE INDEX IF NOT EXISTS device_mtls_certificates_provider_uq
   ON device_mtls_certificates(provider_certificate_id);
