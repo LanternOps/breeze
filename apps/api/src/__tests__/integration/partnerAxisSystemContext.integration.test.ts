@@ -286,10 +286,13 @@ describe('#2822 — assertNotLocked (a WRITE gate, so a wrong answer is worse th
     // requireScope('organization','partner','system'). Pre-fix the partner read
     // returned zero rows and this threw 404 "Partner not found" before it could
     // decide anything — so the gate never actually ran for org callers. Now it
-    // resolves and correctly refuses: the partner set security.sessionTimeoutMinutes.
+    // resolves and correctly refuses: the partner set security.sessionTimeoutMinutes
+    // to 15, and the org submits a DIVERGING value (#2752 made assertNotLocked
+    // value-aware — echoing the partner's own value back is a permitted no-op,
+    // so the block only fires on an actual change).
     await expect(
       withDbAccessContext(orgContext(fx.orgId, fx.partnerId), () =>
-        assertNotLocked(fx.orgId, 'security', ['sessionTimeoutMinutes']),
+        assertNotLocked(fx.orgId, 'security', { sessionTimeoutMinutes: 60 }),
       ),
     ).rejects.toMatchObject({ status: 403 });
   });
@@ -297,7 +300,7 @@ describe('#2822 — assertNotLocked (a WRITE gate, so a wrong answer is worse th
   runDb('an org-scoped caller may still write a field the partner has NOT set', async () => {
     await expect(
       withDbAccessContext(orgContext(fx.orgId, fx.partnerId), () =>
-        assertNotLocked(fx.orgId, 'security', ['someUnlockedField']),
+        assertNotLocked(fx.orgId, 'security', { someUnlockedField: 'org-value' }),
       ),
     ).resolves.toBeUndefined();
   });
