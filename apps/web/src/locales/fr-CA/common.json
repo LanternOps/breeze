@@ -641,7 +641,7 @@
       }
     },
     "search": {
-      "prompt": "Rechercher des appareils, scripts, alertes, utilisateurs et paramètres",
+      "prompt": "Rechercher dans Breeze",
       "placeholder": "Rechercher des appareils, scripts, alertes, utilisateurs et paramètres...",
       "searching": "Cherche...",
       "startTyping": "Commencez à saisir du texte pour rechercher parmi les appareils, scripts, alertes, utilisateurs et paramètres.",

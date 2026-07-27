@@ -641,7 +641,7 @@
       }
     },
     "search": {
-      "prompt": "Search devices, scripts, alerts, users, settings",
+      "prompt": "Search Breeze",
       "placeholder": "Search devices, scripts, alerts, users, settings…",
       "searching": "Searching…",
       "startTyping": "Start typing to search across devices, scripts, alerts, users, and settings.",

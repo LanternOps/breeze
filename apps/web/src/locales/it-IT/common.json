@@ -641,7 +641,7 @@
       }
     },
     "search": {
-      "prompt": "Cerca dispositivi, script, avvisi, utenti, impostazioni",
+      "prompt": "Cerca in Breeze",
       "placeholder": "Cerca dispositivi, script, avvisi, utenti, impostazioni...",
       "searching": "Ricerca…",
       "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi, utenti e impostazioni.",
