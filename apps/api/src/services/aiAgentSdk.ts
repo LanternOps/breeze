@@ -30,6 +30,8 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { assertNoPlaintextSecret } from './actionIntents/secretBearingTools';
+import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
+import { captureException } from './sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -58,6 +60,14 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  * free-form) goes in `result` instead, never in `error_code`.
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
+
+/**
+ * Same short code the durable release worker uses when
+ * `assertNoPlaintextSecret` trips (jobs/intentReleaseWorker.ts,
+ * `failOnPlaintextSecretGuard`) — kept identical so both paths are
+ * queryable together on `action_intents.error_code`.
+ */
+const SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE = 'secret_seal_invariant_violated';
 
 /** Mirrors MAX_RESULT_BYTES in intentReleaseWorker.ts — the inline path had no
  *  cap before, so an oversize sealed result could exceed the column budget. */
@@ -1056,25 +1066,73 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
 
         // Parity with the worker's MAX_RESULT_BYTES re-check (spec §6.3):
         // ciphertext is larger than plaintext, so the cap must be applied
-        // AFTER sealing.
-        const sizedResult: Record<string, unknown> =
-          Buffer.byteLength(JSON.stringify(intentResult), 'utf8') > MAX_INLINE_RESULT_BYTES
-            ? { truncated: true }
-            : intentResult;
+        // AFTER sealing. Mirrors intentReleaseWorker.ts's warn: dropping a
+        // sealed credential for size reasons must leave a forensic trail —
+        // the operator was already told "credential available for one-time
+        // reveal" and this is the only copy of an irreversibly-reset
+        // password, so silently discarding it with no signal is worse than
+        // the truncation itself.
+        let sizedResult: Record<string, unknown>;
+        if (Buffer.byteLength(JSON.stringify(intentResult), 'utf8') > MAX_INLINE_RESULT_BYTES) {
+          if (TEMP_PASSWORD_ENC_KEY in intentResult) {
+            console.warn(`[AI-SDK] Dropping sealed credential for intent ${pendingIntentId} — result exceeded the size cap`);
+          }
+          sizedResult = { truncated: true };
+        } else {
+          sizedResult = intentResult;
+        }
 
-        assertNoPlaintextSecret(toolName, sizedResult);
+        // Post-condition guard (Task 1) on the value actually about to be
+        // persisted. If it trips, a plaintext credential almost reached
+        // action_intents.result — confidentiality is preserved either way
+        // (we refuse to write it), but this must not be a silent abort:
+        // mirror the durable worker's failOnPlaintextSecretGuard
+        // (jobs/intentReleaseWorker.ts) — log, captureException, and CAS the
+        // intent straight to failed with the SAME error_code the worker uses
+        // (queryable together) and NO `result` field (the guarded value must
+        // never reach the result column). Unlike the worker (which returns
+        // immediately after), this function keeps going afterward so steps
+        // 2c-2e below (session auto-flag, plan completion, audit event)
+        // still run for this postToolUse call instead of being silently
+        // skipped by an uncaught throw.
+        let plaintextGuardTripped = false;
         try {
-          await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
-            executedAt: new Date(),
-            // error_code is always the stable short code (matches the
-            // release worker's vocabulary); the raw tool error text is
-            // unbounded free-form and belongs in `result`, not `error_code`.
-            ...(isError
-              ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
-              : { result: sizedResult }),
-          });
+          assertNoPlaintextSecret(toolName, sizedResult);
         } catch (err) {
-          console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+          console.error(
+            `[AI-SDK] plaintext-secret guard tripped for intent ${pendingIntentId} — refusing to persist:`,
+            err,
+          );
+          captureException(err instanceof Error ? err : new Error(String(err)));
+          plaintextGuardTripped = true;
+          try {
+            await transitionIntent(pendingIntentId, 'executing', 'failed', {
+              executedAt: new Date(),
+              errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+            });
+          } catch (transitionErr) {
+            console.error(
+              `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
+              pendingIntentId,
+              transitionErr,
+            );
+          }
+        }
+
+        if (!plaintextGuardTripped) {
+          try {
+            await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
+              executedAt: new Date(),
+              // error_code is always the stable short code (matches the
+              // release worker's vocabulary); the raw tool error text is
+              // unbounded free-form and belongs in `result`, not `error_code`.
+              ...(isError
+                ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                : { result: sizedResult }),
+            });
+          } catch (err) {
+            console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+          }
         }
       }
     }
