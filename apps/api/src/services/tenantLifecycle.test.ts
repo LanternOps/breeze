@@ -223,8 +223,11 @@ describe('tenantLifecycle — agent fleet severance', () => {
 
       const result = await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
 
-      // No devices UPDATE: agent tokens stay valid for the drain window.
-      expect(updateLog.some((u) => u.table === devices)).toBe(false);
+      // The ONLY devices UPDATE is the #2785 unsuspend — never a suspend. Agent
+      // tokens must stay valid for the drain window.
+      const deviceUpdates = updateLog.filter((u) => u.table === devices);
+      expect(deviceUpdates).toHaveLength(1);
+      expect(deviceUpdates[0]!.values.agentTokenSuspendedAt).toBeNull();
       // Enrollment keys still expire — no NEW devices during a drain.
       expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(true);
       expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1']);
@@ -249,9 +252,116 @@ describe('tenantLifecycle — agent fleet severance', () => {
 
       const result = await revokePartnerTenantAccess('partner-1', { agentChannel: 'drain' });
 
-      expect(updateLog.some((u) => u.table === devices)).toBe(false);
+      const deviceUpdates = updateLog.filter((u) => u.table === devices);
+      expect(deviceUpdates).toHaveLength(1);
+      expect(deviceUpdates[0]!.values.agentTokenSuspendedAt).toBeNull();
       expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(true);
       expect(result.agentTokensSuspended).toBe(0);
+    });
+
+    // #2785 — entering the drain from suspended/churned. agentAuthMiddleware
+    // 401s on devices.agentTokenSuspendedAt BEFORE it reaches the drain
+    // narrowing, so a drain that leaves a prior sever's suspension in place
+    // queues self_uninstalls that can never be delivered.
+    describe('#2785 supersedes a prior token suspension', () => {
+      it('clears the tenant-suspension so the queued self_uninstall is deliverable', async () => {
+        queueSelect([{ userId: 'u1' }]); // organizationUsers
+        returningByTable.set(devices, [{ id: 'd1' }, { id: 'd2' }]);
+
+        await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+        const deviceUpdate = updateLog.find((u) => u.table === devices)!;
+        expect(deviceUpdate.values.agentTokenSuspendedAt).toBeNull();
+        expect(deviceUpdate.values.agentTokenSuspendedReason).toBeNull();
+      });
+
+      it('scopes the unsuspend to the draining orgs AND the tenant_suspended reason tag', async () => {
+        queueSelect([{ userId: 'u1' }]); // organizationUsers
+
+        await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+        const deviceUpdate = updateLog.find((u) => u.table === devices)!;
+        const clauses = andClauses(deviceUpdate.where);
+        // Tenant isolation: only the orgs being drained.
+        expect(clauses).toContainEqual({ inArray: ['devices.orgId', ['org-1']] });
+        // Reason-tag isolation: a cross-tenant-probe (or any other) suspension
+        // must survive the transition. Dropping this predicate would turn the
+        // drain into a fleet-wide unsuspend — assert it explicitly.
+        expect(clauses).toContainEqual({
+          eq: ['devices.agentTokenSuspendedReason', 'tenant_suspended'],
+        });
+        // ...and the UPDATE writes nothing beyond lifting the suspension.
+        expect(Object.keys(deviceUpdate.values).sort()).toEqual([
+          'agentTokenSuspendedAt',
+          'agentTokenSuspendedReason',
+        ]);
+      });
+
+      it('never writes a suspension timestamp in drain mode', async () => {
+        queueSelect([{ userId: 'u1' }]); // organizationUsers
+
+        await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+        for (const update of updateLog.filter((u) => u.table === devices)) {
+          expect(update.values.agentTokenSuspendedAt).toBeNull();
+          expect(update.values.agentTokenSuspendedReason).toBeNull();
+        }
+      });
+
+      it('lifts the suspension AFTER the socket sever, before the final cache drop', async () => {
+        const order: string[] = [];
+        queueSelect([{ userId: 'u1' }]); // organizationUsers
+        queueSelect([{ agentId: 'agent-live' }]); // devices in org (socket sweep)
+        vi.mocked(getConnectedAgentIds).mockReturnValueOnce(['agent-live']);
+        // ...Once variants so these implementations can't leak into later tests
+        // (vi.clearAllMocks in beforeEach clears calls, not implementations).
+        vi.mocked(disconnectAgent).mockImplementationOnce(() => {
+          order.push('disconnect');
+          return 'closed';
+        });
+        const recordInvalidate = async () => {
+          order.push('invalidate');
+        };
+        vi.mocked(invalidateAgentTenantCache)
+          .mockImplementationOnce(recordInvalidate)
+          .mockImplementationOnce(recordInvalidate);
+        const baseUpdate = vi.mocked(db.update).getMockImplementation()!;
+        vi.mocked(db.update).mockImplementation((table: any) => {
+          if (table === devices) order.push('unsuspend');
+          return baseUpdate(table);
+        });
+
+        await revokeOrganizationTenantAccess('org-1', { agentChannel: 'drain' });
+
+        // Restore must not re-open the auth gate before live sockets are torn
+        // down, and the cache invalidation stays the LAST write (in drain mode
+        // the cache IS the narrowing gate).
+        expect(order.indexOf('unsuspend')).toBeGreaterThan(order.indexOf('disconnect'));
+        expect(order[order.length - 1]).toBe('invalidate');
+      });
+
+      it('partner drain lifts suspensions across every org under the partner', async () => {
+        queueSelect([{ id: 'org-1' }, { id: 'org-2' }]); // organizations under partner
+        queueSelect([{ userId: 'pu1' }]); // partnerUsers
+        queueSelect([{ userId: 'ou1' }]); // org memberships
+
+        await revokePartnerTenantAccess('partner-1', { agentChannel: 'drain' });
+
+        const clauses = andClauses(updateLog.find((u) => u.table === devices)!.where);
+        expect(clauses).toContainEqual({ inArray: ['devices.orgId', ['org-1', 'org-2']] });
+        expect(clauses).toContainEqual({
+          eq: ['devices.agentTokenSuspendedReason', 'tenant_suspended'],
+        });
+      });
+
+      it('drain with no orgs under the partner touches no devices', async () => {
+        queueSelect([]); // organizations under partner
+        queueSelect([{ userId: 'pu1' }]); // partnerUsers
+
+        await revokePartnerTenantAccess('partner-1', { agentChannel: 'drain' });
+
+        expect(updateLog.some((u) => u.table === devices)).toBe(false);
+      });
     });
   });
 });

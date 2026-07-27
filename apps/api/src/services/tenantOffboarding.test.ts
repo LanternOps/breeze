@@ -67,7 +67,10 @@ const REVOCATION_RESULT = {
 
 vi.mock('./tenantLifecycle', () => ({
   disconnectLiveAgentSocketsForOrgIds: vi.fn(async () => undefined),
-  prepareAgentDrainForOrgIds: vi.fn(async () => ({ enrollmentKeysInvalidated: 0 })),
+  prepareAgentDrainForOrgIds: vi.fn(async () => ({
+    enrollmentKeysInvalidated: 0,
+    agentTokensRestored: 0,
+  })),
   revokeOrganizationTenantAccess: vi.fn(async () => ({
     apiKeysRevoked: 0,
     userSessionsRevoked: 0,
@@ -106,6 +109,7 @@ import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { writeAuditEvent } from './auditEvents';
 import {
   disconnectLiveAgentSocketsForOrgIds,
+  prepareAgentDrainForOrgIds,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
@@ -519,6 +523,28 @@ describe('sweepOffboardingTenants', () => {
       expect.objectContaining({ action: 'organization.offboarding_entry_repaired' })
     );
     expect(severAgentCredentialsForOrgIds).not.toHaveBeenCalled();
+  });
+
+  // #2785: the drain prep is what lifts a superseded token suspension, so the
+  // repair path must run it BEFORE queueing — same order as begin*Offboarding.
+  // Queue-first would leave the uninstall pending against a fleet still 401ing.
+  it('runs drain prep before queueing uninstalls when repairing an entry', async () => {
+    let insertsAtPrepareTime = -1;
+    vi.mocked(prepareAgentDrainForOrgIds).mockImplementationOnce(async () => {
+      insertsAtPrepareTime = insertLog.length;
+      return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
+    });
+    queueCandidates([{ id: 'org-1', startedAt: null }], []);
+    queueSelect([{ id: 'd1' }]); // devices to queue
+    queueSelect([]); // no existing uninstalls
+
+    await sweepOffboardingTenants(NOW);
+
+    expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(['org-1']);
+    // Nothing had been queued yet when the prep (the #2785 unsuspend) ran...
+    expect(insertsAtPrepareTime).toBe(0);
+    // ...and the uninstall was queued after it, not skipped.
+    expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
   });
 
   // One bad tenant must not starve every other draining tenant's finalization
