@@ -87,6 +87,7 @@ deployment env vars.
 | `PUBLIC_APP_URL` | — | | Public-facing app URL |
 | `PUBLIC_PORTAL_URL` | `https://${BREEZE_DOMAIN}/portal` (bundled compose only) | | Public origin for customer-portal links in outbound email (e.g. invoice emails). Falls back to `PUBLIC_APP_URL` if unset. The portal is served under `/portal` on the main domain. |
 | `PORTAL_BASE_PATH` | `/portal` | | Base path the customer portal is served under. Baked into the portal image at build time — changing it requires rebuilding the portal image and keeping the Caddy `/portal` route in sync. |
+| `OFFBOARDING_DRAIN_WINDOW_HOURS` | `72` | | Grace window (hours, minimum 1) an organization stays in the **offboarding** state before it is finalized to **churned**. Setting an org's status to `offboarding` locks its users out immediately but keeps its agents reachable for this window so a queued uninstall can actually be delivered and run; once the fleet drains or the window closes, remaining commands are cancelled and the tenant is closed out. |
 
 ## Email
 
