@@ -1114,7 +1114,7 @@ export function createBreezeMcpServer(
 
     tool(
       'get_security_posture',
-      'Get fleet-wide or device-level security posture scores with recommendations.',
+      'Get fleet-wide or device-level security posture scores with recommendations. Posture is a scored summary of security CONTROLS (AV, firewall, encryption, patch currency) — it does NOT list CVEs or vulnerability findings. For CVEs, vulnerable software, or vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (one device).',
       {
         deviceId: uuid.optional(),
         orgId: uuid.optional(),
@@ -1399,6 +1399,42 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Vulnerability management (BE-16). These were registered in the aiTools
+    // execution registry + TOOL_TIERS but NEVER given tool() definitions here,
+    // so the in-product chat never saw them and routed every CVE question to
+    // posture/patch tools (#2605). Descriptions are duplicated here (as for
+    // every other tool in this file); aiToolsVulnerability.ts carries the copy
+    // served to external MCP clients via getToolDefinitions(). Both are pinned
+    // by tests so the CVE vocabulary cannot drift out of either surface.
+    tool(
+      'get_vulnerability_report',
+      'THE tool for CVE and vulnerability questions across the fleet: open CVE findings from vulnerability scanning, counts by severity, and the highest-risk CVEs with how many devices each affects (CVSS, known-exploited/CISA KEV). Use this for "vulnerabilities", "vulnerability report", "vulnerability findings", "CVEs", "vulnerable software", "exploitable", or "known exploited" — NOT get_security_posture (control scores) and NOT manage_patches (patch/KB inventory). Optionally filter by finding status (default: open) or severity.',
+      {
+        status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+      },
+      makeHandler('get_vulnerability_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_vulnerabilities',
+      "List one device's CVE / vulnerability findings: CVE id, severity, CVSS, EPSS, risk score, exploited-in-the-wild (CISA KEV) flag and patch availability. Use this for per-device \"which CVEs / vulnerabilities does this device have\" questions instead of get_security_posture or manage_patches. Defaults to open findings.",
+      {
+        deviceId: uuid,
+        status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+      },
+      makeHandler('get_device_vulnerabilities', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_vulnerability',
+      'Remediate CVE / vulnerability findings by queueing the approved patch that fixes each CVE on its device. High-risk: requires approval. Takes the finding ids returned by get_vulnerability_report / get_device_vulnerabilities. Only partner-approved patches install; unapproved, unavailable or out-of-site findings come back in "skipped".',
+      {
+        deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
+      },
+      makeHandler('remediate_vulnerability', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
