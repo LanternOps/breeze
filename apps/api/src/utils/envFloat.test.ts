@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { envFloat } from './envFloat';
+import { envInt } from './envInt';
 
 describe('envFloat', () => {
   afterEach(() => {
@@ -42,5 +43,29 @@ describe('envFloat', () => {
   it('returns the default for Infinity', () => {
     vi.stubEnv('__TEST_ENV_FLOAT', 'Infinity');
     expect(envFloat('__TEST_ENV_FLOAT', 1.5)).toBe(1.5);
+  });
+
+  it('accepts a negative value (callers clamp if they need a floor)', () => {
+    vi.stubEnv('__TEST_ENV_FLOAT', '-5');
+    expect(envFloat('__TEST_ENV_FLOAT', 1.5)).toBe(-5);
+  });
+
+  it('rejects trailing garbage rather than prefix-parsing it', () => {
+    vi.stubEnv('__TEST_ENV_FLOAT', '2.75abc');
+    expect(envFloat('__TEST_ENV_FLOAT', 1.5)).toBe(1.5);
+  });
+
+  it('returns the default for the literal NaN', () => {
+    vi.stubEnv('__TEST_ENV_FLOAT', 'NaN');
+    expect(envFloat('__TEST_ENV_FLOAT', 1.5)).toBe(1.5);
+  });
+
+  // The reason to reach for envFloat over envInt is not only truncation:
+  // exponent notation is legitimate float syntax, and envInt deliberately
+  // rejects it rather than prefix-parsing `1e3` to 1.
+  it('accepts exponent notation, where envInt rejects it', () => {
+    vi.stubEnv('__TEST_ENV_FLOAT', '1e3');
+    expect(envFloat('__TEST_ENV_FLOAT', 1.5)).toBe(1000);
+    expect(envInt('__TEST_ENV_FLOAT', 1440)).toBe(1440);
   });
 });

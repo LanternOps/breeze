@@ -47,4 +47,25 @@ describe('envInt', () => {
     vi.stubEnv('__TEST_ENV_INT', '0');
     expect(envInt('__TEST_ENV_INT', 1440)).toBe(0);
   });
+
+  it('accepts a negative value (callers clamp if they need a floor)', () => {
+    vi.stubEnv('__TEST_ENV_INT', '-5');
+    expect(envInt('__TEST_ENV_INT', 1440)).toBe(-5);
+  });
+
+  // A bare `parseInt` takes any valid PREFIX, which re-admits the very failure
+  // this helper exists to prevent — silently acting on a wrong small number.
+  // `parseInt('5e3')` is 5 (a 5ms drain, not 5000ms) and `parseInt('0x10', 10)`
+  // is 0 (which some callers read as "unlimited").
+  it.each([
+    ['1e3', 'exponent notation'],
+    ['5e3', 'exponent notation'],
+    ['0x10', 'hex'],
+    ['12abc', 'trailing garbage'],
+    ['1,000', 'thousands separator'],
+    ['Infinity', 'non-finite'],
+  ])('rejects %s (%s) rather than prefix-parsing it', (value) => {
+    vi.stubEnv('__TEST_ENV_INT', value);
+    expect(envInt('__TEST_ENV_INT', 1440)).toBe(1440);
+  });
 });

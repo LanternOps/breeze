@@ -39,13 +39,16 @@ const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 // `.limit(0)` returns zero rows, which would silently disable the
 // reaper. Normalize to `Number.MAX_SAFE_INTEGER` so the consistent
 // "cap=0 == unlimited" knob actually behaves that way here.
-const RAW_MAX_REAP = envInt('STALE_REAPER_MAX_PER_RUN', 5000);
-const MAX_REAP_PER_RUN =
-  Number.isFinite(RAW_MAX_REAP) && RAW_MAX_REAP > 0
-    ? RAW_MAX_REAP
-    : RAW_MAX_REAP === 0
-      ? Number.MAX_SAFE_INTEGER
-      : 5000; // negative / NaN fall back to default rather than disabling the reaper
+//
+// Exported (and pure) so the mapping is testable without re-importing this
+// module: the env read stays at module scope, only the derivation moves.
+export function resolveMaxReapPerRun(raw: number): number {
+  if (raw > 0) return raw;
+  if (raw === 0) return Number.MAX_SAFE_INTEGER;
+  return 5000; // negative falls back to the default rather than disabling the reaper
+}
+
+const MAX_REAP_PER_RUN = resolveMaxReapPerRun(envInt('STALE_REAPER_MAX_PER_RUN', 5000));
 const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 
 // Backup-related command types — used to guard backup-specific Prometheus metrics

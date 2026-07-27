@@ -32,13 +32,37 @@
  * violations, and no genuinely-correct exception is known. If one ever
  * appears, adding an allowlist is a reviewed change to this file.
  *
+ * SCOPE, stated precisely so the "zero violations" claim is not over-read:
+ * this scans `apps/api/src` only. That is where the bug class lives — the API
+ * container is what compose threads these variables into. `apps/api/scripts`
+ * is clean, and the web/portal apps read `import.meta.env` (Vite substitutes
+ * at build time, different semantics). Verified zero instances elsewhere in
+ * the repo at the time of writing.
+ *
+ * KNOWN BLIND SPOTS (accepted, not oversights). All of these are silent
+ * against the rules above, and each needs real dataflow analysis to catch —
+ * which would trade a precise, zero-exemption guard for a fuzzy one:
+ *
+ *   - Aliasing: `const env = process.env; Number(env.FOO ?? 5)`. Two files
+ *     already bind such an alias (`config/validate.ts`, `routes/system.ts`),
+ *     neither for a numeric read.
+ *   - Indirection: `const raw = process.env.X ?? '5000'; Number(raw)`.
+ *   - Other coercions: `+process.env.X`, `process.env.X * 1`,
+ *     `Number(\`${process.env.X ?? 5000}\`)`.
+ *   - The STRING form of the same trap (`process.env.X ?? 'default'`, which
+ *     yields `''`) is NOT guarded — `envStr` exists for it, but the shape is
+ *     too common and usually fail-safe to ban outright. Judge those by hand.
+ *
+ * The residual risk is that a future author has to go out of their way to
+ * reintroduce the bug, rather than fall into it by writing the obvious thing.
+ *
  * The self-check block at the bottom is load-bearing. A grep guard whose
  * pattern silently matches nothing is the classic failure mode here, so the
  * detector is exercised against synthetic violating AND non-violating sources,
  * and the file walk asserts it actually saw the tree.
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -60,26 +84,55 @@ function listSourceFiles(dir: string, acc: string[] = []): string[] {
 }
 
 /**
- * Blank out comment bodies while leaving string literals intact.
+ * Neutralise everything that is not executable code: comment bodies and
+ * string/template literal bodies.
  *
- * Both matter. Comments must be blanked because the helper docs (and this
- * file) quote the forbidden pattern verbatim as the thing NOT to write —
- * a naive grep flags its own documentation. String literals must be kept
- * because rule 2 needs to see whether a `??` fallback is `''`, and because
- * a `//` inside a string (`'http://host/v1'`) must not swallow the rest of
- * the line and hide a real violation after it.
+ * Both matter, for opposite reasons. Comments must be blanked because the
+ * helper docs (and this file) quote the forbidden pattern verbatim as the
+ * thing NOT to write — a naive grep flags its own documentation. Literal
+ * bodies must be blanked because a string may legitimately CONTAIN the
+ * pattern (an error message, a usage line) without being a violation.
+ *
+ * Literals cannot simply be deleted or space-filled, though: rule 2 has to
+ * distinguish the safe `?? ''` from the broken `?? '15'`, so delimiters are
+ * preserved and bodies are filled with `x`. Tracking literals is also what
+ * keeps a `//` inside a string (`'http://host/v1'`) from being read as a
+ * comment and swallowing the rest of the line.
  *
  * Regex literals are tracked too, so the `//` inside `/^https?:\/\//` is not
- * mistaken for a line comment (which would blank the rest of that line and
- * could hide a real violation after it).
+ * mistaken for a line comment.
  *
- * Newlines are preserved so reported line numbers stay accurate.
+ * Two constructs in this repo make a naive tokenizer desync, and BOTH have
+ * live instances, so both are handled explicitly:
+ *
+ *   - A `/` inside a regex character class does NOT end the regex.
+ *     `routes/devices/softwareActions.ts` has `/[\\/\x00\r\n']/`; reading that
+ *     inner `/` as the terminator drops us into code at `']`, which opens a
+ *     phantom string and mispairs every quote for the rest of the file.
+ *   - `${...}` re-enters code inside a template literal, and templates nest.
+ *     `services/email.ts` and `services/invoicePdf.ts` are full of
+ *     `${cond ? \`x\` : ''}`; without a stack the inner backtick is read as
+ *     closing the outer template and parity never recovers.
+ *
+ * Desync is not merely untidy: a mispaired quote means a `/*` sitting in a
+ * string can open block-comment state and blank hundreds of lines of real
+ * code, or an innocent comment can be read as code and reported as a
+ * violation — reddening a required CI job on a file nobody touched.
+ *
+ * Newlines are preserved so reported line numbers stay accurate, and the
+ * function is length-preserving (it substitutes spaces, never deletes).
  */
 export function blankComments(source: string): string {
   let out = '';
   let i = 0;
   type State = 'code' | 'line' | 'block' | 'single' | 'double' | 'template' | 'regex';
   let state: State = 'code';
+
+  // Brace depth per open `${` in a template literal. Empty => not inside a
+  // template expression. Nesting is why this is a stack and not a boolean.
+  const templateExprDepth: number[] = [];
+  // Whether the regex cursor is inside a `[...]` character class.
+  let inCharClass = false;
 
   // Rolling tail of the last few emitted code characters, so the regex-literal
   // heuristic below is O(1) per character rather than re-scanning `out`.
@@ -108,6 +161,7 @@ export function blankComments(source: string): string {
         i += 2;
       } else if (c === '/' && regexAllowedAfter.test(tail.trimEnd())) {
         state = 'regex';
+        inCharClass = false;
         out += c;
         pushTail(c);
         i += 1;
@@ -115,6 +169,20 @@ export function blankComments(source: string): string {
         if (c === "'") state = 'single';
         else if (c === '"') state = 'double';
         else if (c === '`') state = 'template';
+        else if (templateExprDepth.length > 0) {
+          // Track braces so the `}` that closes `${` returns us to the
+          // template, and an inner object/block literal does not steal it.
+          if (c === '{') {
+            templateExprDepth[templateExprDepth.length - 1]! += 1;
+          } else if (c === '}') {
+            if (templateExprDepth[templateExprDepth.length - 1]! === 0) {
+              templateExprDepth.pop();
+              state = 'template';
+            } else {
+              templateExprDepth[templateExprDepth.length - 1]! -= 1;
+            }
+          }
+        }
         out += c;
         pushTail(c);
         i += 1;
@@ -145,26 +213,57 @@ export function blankComments(source: string): string {
       continue;
     }
 
-    // Inside a string / template / regex literal: copy through verbatim.
     if (c === '\\') {
-      out += source.slice(i, i + 2);
+      out += state === 'regex' ? source.slice(i, i + 2) : 'xx';
       pushTail(' ');
       i += 2;
       continue;
     }
+
+    if (state === 'template' && c === '$' && next === '{') {
+      templateExprDepth.push(0);
+      state = 'code';
+      out += '${';
+      pushTail('{');
+      i += 2;
+      continue;
+    }
+
+    if (state === 'regex') {
+      if (c === '[') inCharClass = true;
+      else if (c === ']') inCharClass = false;
+      // `/` only terminates outside a character class; a regex cannot span
+      // lines, so a newline bails out (a misclassified division operator can
+      // then never swallow the rest of the file).
+      else if ((c === '/' && !inCharClass) || c === '\n') state = 'code';
+      out += c;
+      pushTail(c === '\n' ? ' ' : c);
+      i += 1;
+      continue;
+    }
+
+    // Closing delimiter of a string / template literal — kept, see below.
     if (
       (state === 'single' && c === "'") ||
       (state === 'double' && c === '"') ||
-      (state === 'template' && c === '`') ||
-      (state === 'regex' && c === '/') ||
-      // A regex literal cannot span lines; bail out so a misclassified
-      // division operator can never swallow the rest of the file.
-      (state === 'regex' && c === '\n')
+      (state === 'template' && c === '`')
     ) {
       state = 'code';
+      out += c;
+      pushTail(c);
+      i += 1;
+      continue;
     }
-    out += c;
-    pushTail(c === '\n' ? ' ' : c);
+
+    // String/template BODY. Replaced with a filler rather than copied: a
+    // string that happens to contain the banned pattern verbatim (an error
+    // message, a usage line, a doc string) is not a violation and must not
+    // red CI. The delimiters are kept and the filler is `x` rather than a
+    // space, so rule 2 can still tell the safe `?? ''` from `?? '15'` — it
+    // tests for a literally EMPTY fallback, and spaces would erase that
+    // distinction.
+    out += c === '\n' ? '\n' : 'x';
+    pushTail('x');
     i += 1;
   }
 
@@ -195,11 +294,29 @@ function snippetAt(source: string, index: number): string {
   return source.slice(index, index + 110).replace(/\s+/g, ' ').trim();
 }
 
-/** Read the balanced argument list of a call whose `(` sits at `openIndex`. */
+/**
+ * Read the balanced argument list of a call whose `(` sits at `openIndex`.
+ *
+ * String literals are skipped rather than scanned: `blankComments` deliberately
+ * preserves their contents, so a lone paren inside one (`s.split('(')`) would
+ * otherwise inflate the depth, run past the real closing paren, and swallow
+ * following lines into these args — reporting a violation on innocent code.
+ */
 function readCallArgs(source: string, openIndex: number): string | null {
   let depth = 0;
   for (let i = openIndex; i < source.length; i += 1) {
     const c = source[i];
+
+    if (c === "'" || c === '"' || c === '`') {
+      const quote = c;
+      i += 1;
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\') i += 1;
+        i += 1;
+      }
+      continue;
+    }
+
     if (c === '(') depth += 1;
     else if (c === ')') {
       depth -= 1;
@@ -213,11 +330,15 @@ export function findRawEnvCoercions(source: string): EnvCoercionViolation[] {
   const code = blankComments(source);
   const violations: EnvCoercionViolation[] = [];
 
+  // Matching happens on `code`, but line numbers and snippets are reported
+  // from the ORIGINAL `source` — the offsets are interchangeable because
+  // blanking substitutes characters rather than deleting them, so a reported
+  // snippet shows the developer their real text, not the `x` filler.
   for (const match of code.matchAll(NUMBER_CALL)) {
     violations.push({
-      line: lineOf(code, match.index),
+      line: lineOf(source, match.index),
       rule: 'number-coercion',
-      snippet: snippetAt(code, match.index),
+      snippet: snippetAt(source, match.index),
     });
   }
 
@@ -231,9 +352,9 @@ export function findRawEnvCoercions(source: string): EnvCoercionViolation[] {
     if (EMPTY_STRING_FALLBACK.test(args.slice(nullishIndex + 2))) continue;
 
     violations.push({
-      line: lineOf(code, match.index),
+      line: lineOf(source, match.index),
       rule: 'nullish-fallback',
-      snippet: snippetAt(code, match.index),
+      snippet: snippetAt(source, match.index),
     });
   }
 
@@ -243,13 +364,67 @@ export function findRawEnvCoercions(source: string): EnvCoercionViolation[] {
 describe('no raw numeric coercion of process.env (#2823)', () => {
   const files = listSourceFiles(SRC_ROOT);
 
-  // Vacuity guard: if the walk breaks (wrong root, over-eager skip list) the
-  // scan below passes trivially. Pin a floor well under the real count (~1225)
-  // but far above anything a broken walk would return.
-  it('walks the apps/api source tree', () => {
-    expect(files.length).toBeGreaterThan(500);
-    expect(files.some((f) => f.endsWith(join('utils', 'envInt.ts')))).toBe(true);
-    expect(files.some((f) => f.endsWith(join('jobs', 'offlineDetector.ts')))).toBe(true);
+  // Vacuity guard #1: if the walk breaks the scan below passes trivially.
+  //
+  // A single total-count floor is not enough. `services/` alone is 43% of the
+  // tree (and holds several of the readers this PR fixed), so a walk that
+  // silently stopped descending into it would still clear a "> 500" floor
+  // having scanned barely half the source. Census each major directory.
+  it('walks the whole apps/api source tree, not just part of it', () => {
+    expect(files.length).toBeGreaterThan(1000); // real count ~1225
+
+    const countIn = (dir: string) =>
+      files.filter((f) => f.includes(`${sep}${dir}${sep}`)).length;
+
+    for (const [dir, floor] of [
+      ['services', 400],
+      ['routes', 300],
+      ['db', 80],
+      ['jobs', 60],
+      ['middleware', 10],
+      ['utils', 5],
+    ] as const) {
+      expect(countIn(dir), `the walk lost ${dir}/`).toBeGreaterThan(floor);
+    }
+  });
+
+  // Vacuity guard #2: the dangerous direction of a comment-stripper bug.
+  //
+  // Blanking too LITTLE is harmless — the violation stays visible. Blanking
+  // too MUCH is silent: if the tokenizer wrongly believes it is in code while
+  // inside a literal, a `/*` in that literal opens block-comment state and
+  // erases everything up to the next `*/`, hiding every violation in between.
+  // Nothing else in this file couples the stripper to the real corpus, so
+  // assert against it directly: `process.env` reads must survive blanking,
+  // and blanking must be length-preserving (it substitutes, never deletes).
+  it('blanks comments without eating real code', () => {
+    let rawReads = 0;
+    let survivingReads = 0;
+
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      const blanked = blankComments(source);
+      expect(blanked, relative(SRC_ROOT, file)).toHaveLength(source.length);
+      rawReads += (source.match(/process\.env/g) ?? []).length;
+      survivingReads += (blanked.match(/process\.env/g) ?? []).length;
+    }
+
+    // Measured: 550 raw, 533 surviving (the 17 lost are genuine doc comments).
+    expect(rawReads).toBeGreaterThan(400);
+    expect(survivingReads).toBeGreaterThan(rawReads * 0.9);
+  });
+
+  // Vacuity guard #3: the self-checks below all feed the detector short
+  // synthetic strings. This proves the same detector still fires on a real
+  // file — with its real comments, imports, templates and regex literals —
+  // which is what the scan actually does.
+  it('flags a violation injected into a real source file', () => {
+    const real = readFileSync(join(SRC_ROOT, 'jobs', 'offlineDetector.ts'), 'utf8');
+    const found = findRawEnvCoercions(
+      `${real}\nconst __canary = Number(process.env.__CANARY ?? '5');\n`
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('number-coercion');
   });
 
   it('has no violations in apps/api/src', () => {
@@ -373,6 +548,76 @@ describe('no raw numeric coercion of process.env (#2823)', () => {
         `const re = /^https?:\\/\\//; const n = Number(process.env.X ?? 5);`
       );
       expect(found).toHaveLength(1);
+    });
+
+    // Live shape: routes/devices/softwareActions.ts has /[\\/\x00\r\n']/.
+    // Reading the `/` inside the character class as the terminator drops the
+    // tokenizer into code at `']`, opening a phantom string that mispairs
+    // every quote in the rest of the file.
+    it('does not end a regex literal at a / inside a character class', () => {
+      const found = findRawEnvCoercions(
+        `const RE = /[\\\\/']/;\n// bad: Number(process.env.X ?? 5)\nconst ok = 1;`
+      );
+      expect(found).toEqual([]);
+    });
+
+    // Live shape: services/email.ts and services/invoicePdf.ts are full of
+    // `${cond ? \`x\` : ''}`. Without a stack the inner backtick reads as
+    // closing the outer template and parity never recovers.
+    it('handles a nested template literal inside ${} without desyncing', () => {
+      const found = findRawEnvCoercions(
+        'const s = `a ${cond ? `b` : \'\'} c`;\n// bad: Number(process.env.X ?? 5)\nconst ok = 1;'
+      );
+      expect(found).toEqual([]);
+    });
+
+    it('still flags real code after a nested template literal', () => {
+      const found = findRawEnvCoercions(
+        'const s = `a ${cond ? `b` : \'\'} c`;\nconst n = Number(process.env.X ?? 5);'
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]!.line).toBe(2);
+    });
+
+    it('returns to the template after a ${} expression containing an object', () => {
+      const found = findRawEnvCoercions(
+        'const s = `${fn({ a: 1 })} // Number(process.env.A ?? 1)`;\nconst ok = 1;'
+      );
+      expect(found).toEqual([]);
+    });
+
+    // A string may legitimately CONTAIN the banned pattern — an error
+    // message, a migration note, a usage line — without being a violation.
+    it('ignores the pattern inside a string literal', () => {
+      expect(
+        findRawEnvCoercions(`const msg = 'do not write Number(process.env.X ?? 5)';`)
+      ).toEqual([]);
+    });
+
+    it('ignores the pattern inside a template literal body', () => {
+      expect(
+        findRawEnvCoercions('const msg = `avoid Number(process.env.X ?? 5) here`;')
+      ).toEqual([]);
+    });
+
+    // Blanking literal bodies must not erase the ''-vs-'15' distinction that
+    // rule 2 depends on, which is why the filler is `x` and not a space.
+    it("still distinguishes ?? '' from ?? '15' after blanking", () => {
+      expect(findRawEnvCoercions(`parseInt(process.env.A ?? '', 10);`)).toEqual([]);
+      expect(findRawEnvCoercions(`parseInt(process.env.A ?? '15', 10);`)).toHaveLength(1);
+      expect(findRawEnvCoercions(`parseInt(process.env.A ?? "", 10);`)).toEqual([]);
+    });
+
+    // readCallArgs must skip string contents; a lone paren inside one would
+    // otherwise run the scan past the real closing paren and pull the NEXT
+    // statement's `process.env` + `??` into these args.
+    it('does not over-read call args past a paren inside a string literal', () => {
+      const found = findRawEnvCoercions(
+        `const n = parseInt(s.split('(')[0], 10);\n` +
+          `const t = Number.parseInt(process.env.TTL ?? '15', 10);`
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]!.line).toBe(2);
     });
 
     it('does not treat division as a regex literal', () => {

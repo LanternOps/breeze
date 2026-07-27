@@ -16,9 +16,20 @@
  * For a TTL that means every token is born already expired. Use this instead
  * of hand-rolling `Number(process.env.X ?? default)`.
  */
+/**
+ * Plain decimal integers only (a trailing fraction is tolerated and truncated).
+ * `parseInt` alone takes any valid PREFIX, which re-admits the same class of
+ * silent wrong-small-number this helper exists to prevent: `parseInt('5e3')`
+ * is `5`, not `5000`, and `parseInt('0x10', 10)` is `0`. Reject those outright
+ * and fall back to the default rather than acting on a misread value (#2823).
+ */
+const DECIMAL_INT = /^[+-]?\d+(?:\.\d+)?$/;
+
 export function envInt(name: string, defaultValue: number): number {
   const raw = process.env[name];
   if (!raw) return defaultValue;
-  const parsed = Number.parseInt(raw, 10);
+  const trimmed = raw.trim();
+  if (!DECIMAL_INT.test(trimmed)) return defaultValue;
+  const parsed = Number.parseInt(trimmed, 10);
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }

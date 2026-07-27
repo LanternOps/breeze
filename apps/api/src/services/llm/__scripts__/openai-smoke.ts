@@ -7,7 +7,7 @@
  *   - terminaison propre via message_end avec usage
  *
  * Usage :
- *   MCP_LLM_BASE_URL=http://192.168.30.121:8000/v1 \
+ *   MCP_LLM_BASE_URL=http://your-vllm-host:8000/v1 \
  *   MCP_LLM_API_KEY=changeme \
  *   MCP_LLM_MODEL=qwen3.6-27b \
  *   pnpm --filter @breeze/api exec tsx src/services/llm/__scripts__/openai-smoke.ts
@@ -18,7 +18,7 @@ import type { ChatMessage } from '../types';
 import { envFloat } from '../../../utils/envFloat';
 import { envStr } from '../../../utils/envStr';
 
-const BASE_URL = envStr('MCP_LLM_BASE_URL', 'http://192.168.30.121:8000/v1');
+const BASE_URL = envStr('MCP_LLM_BASE_URL', 'http://localhost:8000/v1');
 const API_KEY = envStr('MCP_LLM_API_KEY', 'changeme');
 const MODEL = envStr('MCP_LLM_MODEL', 'qwen3.6-27b');
 // Prices are per-million-token decimals — envFloat, not envInt (which truncates).

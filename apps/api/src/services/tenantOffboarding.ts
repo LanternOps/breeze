@@ -30,9 +30,10 @@ import { envInt } from '../utils/envInt';
  * adversarial suspensions must sever immediately (see tenantLifecycle.ts).
  */
 
+// `envInt` cannot return a non-finite number, so the old `Number.isFinite`
+// arm here was unfalsifiable; the `>= 1` floor is the part that matters.
 const RAW_WINDOW_HOURS = envInt('OFFBOARDING_DRAIN_WINDOW_HOURS', 72);
-export const OFFBOARDING_DRAIN_WINDOW_HOURS =
-  Number.isFinite(RAW_WINDOW_HOURS) && RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
+export const OFFBOARDING_DRAIN_WINDOW_HOURS = RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
 
 const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
 
