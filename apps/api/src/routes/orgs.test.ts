@@ -2023,6 +2023,61 @@ describe('org routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    // #2752 — the org defaults editor posts the WHOLE category on every save, so a
+    // partner-set `autoEnrollment` was re-submitted even when the operator only
+    // touched the device group. The old presence-only lock check 403'd the entire
+    // request, making every org-level default in the category unsaveable. Echoing
+    // the partner's own value back is a no-op and must be accepted.
+    it('accepts a save that re-sends a partner-locked field unchanged alongside edited fields (200)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const enforced = { enabled: false, requireApproval: false, sendWelcome: false };
+      primeAcceptSelect([], { defaults: { autoEnrollment: enforced } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            defaults: {
+              autoEnrollment: enforced, // untouched, locked by the partner
+              deviceGroup: 'Contractors', // the field the operator actually changed
+              alertThreshold: 'medium',
+              agentUpdatePolicy: 'manual',
+              maintenanceWindow: '24/7',
+            },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('still rejects a save that changes a partner-locked field (403)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], {
+        defaults: { autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false } },
+      });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            defaults: {
+              autoEnrollment: { enabled: true, requireApproval: false, sendWelcome: false },
+              deviceGroup: 'Contractors',
+            },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      // HTTPException surfaces its message as plain text, not a JSON envelope.
+      expect(await res.text()).toContain('defaults.autoEnrollment');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     // SR2-05: `security.allowedMfaMethods` is a legacy input alias — it must be
     // folded into the canonical `security.allowedMethods` before the write and
     // never persisted as a second key (the dead spelling the SMS-enable reader

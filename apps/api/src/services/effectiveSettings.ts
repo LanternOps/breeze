@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
@@ -211,14 +212,29 @@ export async function getEffectiveOrgSettings(
 /**
  * Guard for org-level PATCH routes.
  *
- * Loads the partner's settings for the given org and checks whether any of the
- * `patchFields` are locked (i.e. set in the partner's category). Throws a 403
- * HTTPException listing the locked fields if any are found.
+ * `patch` maps each submitted field name to the value the org is trying to write.
+ * A field is rejected only when the partner has set it AND the org is submitting
+ * a *different* value — i.e. the org is genuinely attempting to change a locked
+ * field. Re-submitting the value the partner already mandates is a no-op and is
+ * allowed.
+ *
+ * That distinction matters because the org settings editors PUT the whole
+ * `settings` blob on every save (see handleSaveSettings in OrgSettingsPage), so
+ * every stored category is re-submitted even when the operator only touched one
+ * field. Under the old presence-only test (`field in partnerCat`) a single
+ * partner-set field therefore 403'd the entire request, blocking unrelated
+ * fields the partner never intended to enforce (issue #2752 — `autoEnrollment`
+ * is always present in the `defaults` payload, so it locked the whole category).
+ *
+ * Note this deliberately does NOT change `mergeCategory`/`locked` reporting: a
+ * partner-set field is still advertised as locked, and getOrgAgentUpdateConfig's
+ * presence-based resolution stays in lockstep with it. Only the write guard's
+ * strictness changes, from "field present" to "value actually diverges".
  */
 export async function assertNotLocked(
   orgId: string,
   category: string,
-  patchFields: string[],
+  patch: Record<string, unknown>,
 ): Promise<void> {
   const org = await db
     .select({ partnerId: organizations.partnerId })
@@ -250,7 +266,9 @@ export async function assertNotLocked(
   const partnerSettings = asRecord(partner.settings);
   const partnerCat = asRecord(partnerSettings[category]);
 
-  const lockedFields = patchFields.filter((f) => f in partnerCat);
+  const lockedFields = Object.keys(patch).filter(
+    (f) => f in partnerCat && !isDeepStrictEqual(patch[f], partnerCat[f]),
+  );
 
   if (lockedFields.length > 0) {
     throw new HTTPException(403, {
