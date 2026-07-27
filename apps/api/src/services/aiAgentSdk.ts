@@ -29,7 +29,12 @@ import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
-import { assertNoPlaintextSecret, isSecretBearingTool } from './actionIntents/secretBearingTools';
+import {
+  assertNoPlaintextSecret,
+  isSecretBearingTool,
+  SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+  MAX_RESULT_BYTES as MAX_INLINE_RESULT_BYTES,
+} from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 
@@ -61,17 +66,11 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 
-/**
- * Same short code the durable release worker uses when
- * `assertNoPlaintextSecret` trips (jobs/intentReleaseWorker.ts,
- * `failOnPlaintextSecretGuard`) — kept identical so both paths are
- * queryable together on `action_intents.error_code`.
- */
-const SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE = 'secret_seal_invariant_violated';
-
-/** Mirrors MAX_RESULT_BYTES in intentReleaseWorker.ts — the inline path had no
- *  cap before, so an oversize sealed result could exceed the column budget. */
-const MAX_INLINE_RESULT_BYTES = 64 * 1024;
+// SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE and MAX_RESULT_BYTES (aliased
+// here as MAX_INLINE_RESULT_BYTES for readability at call sites below) are
+// shared with the durable release worker via secretBearingTools.ts, rather
+// than declared independently here, so the two paths cannot drift apart —
+// see the doc comments at their declaration site.
 
 function stripMcpPrefix(toolName: string): string {
   if (!toolName.startsWith('mcp__')) return toolName;
@@ -1025,6 +1024,21 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     }
 
     // 2b. Create/update aiToolExecutions record
+    //
+    // delegantToolCallId correlates this row to Delegant's own audit ledger.
+    // Secret-bearing tools (m365_reset_password) no longer emit it inside
+    // parsedOutput's JSON — the handler returns prose llmText and the id
+    // travels in the sealed carrier's `meta` instead (sealToolSecrets folds
+    // `meta` into `sealedResult`). Fall back to that sealed blob so the
+    // column is still populated for those tools; parsedOutput.delegantToolCallId
+    // remains the source of truth for every other tool that still emits it
+    // as JSON.
+    const delegantToolCallId =
+      typeof parsedOutput.delegantToolCallId === 'string'
+        ? parsedOutput.delegantToolCallId
+        : (typeof sealed?.sealedResult.delegantToolCallId === 'string'
+          ? sealed.sealedResult.delegantToolCallId
+          : undefined);
     if (guardrailCheck.tier < 2) {
       try {
         await withDbAccessContext(
@@ -1037,7 +1051,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               toolOutput: parsedOutput,
               status: isError ? 'failed' : 'completed',
               errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-              delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
+              delegantToolCallId,
               durationMs,
               completedAt: new Date(),
             })
@@ -1056,7 +1070,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                 status: isError ? 'failed' : 'completed',
                 toolOutput: parsedOutput,
                 errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-                delegantToolCallId: typeof parsedOutput.delegantToolCallId === 'string' ? parsedOutput.delegantToolCallId : undefined,
+                delegantToolCallId,
                 durationMs,
                 completedAt: new Date(),
               })

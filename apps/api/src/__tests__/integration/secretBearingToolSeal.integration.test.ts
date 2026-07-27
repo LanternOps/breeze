@@ -625,6 +625,17 @@ describe('secret-bearing tool seal parity (real PG)', () => {
       // "rows exist and contain no plaintext".
       expect(messages.length).toBeGreaterThan(0);
       expect(executions.length).toBeGreaterThan(0);
+
+      if (toolName === 'm365_reset_password') {
+        // ai_tool_executions.delegantToolCallId correlates this row to
+        // Delegant's own audit ledger (spec §4.2, must-preserve). The M365
+        // handler no longer returns JSON containing delegantToolCallId —
+        // it returns prose llmText and carries the id in the sealed
+        // carrier's meta instead — so createSessionPostToolUse must fall
+        // back to the sealed blob rather than leaving the column NULL.
+        const execRow = executions[0] as { delegantToolCallId?: string | null };
+        expect(execRow.delegantToolCallId).toBe('delegant-call-1');
+      }
     } else {
       // Durable path: releaseApprovedIntent never touches ai_messages/
       // ai_tool_executions — there is no chat session to write to. Asserted

@@ -28,6 +28,8 @@ import { sealActionResultSecrets, TEMP_PASSWORD_ENC_KEY } from '../services/acti
 import {
   sealToolSecrets,
   assertNoPlaintextSecret,
+  SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
+  MAX_RESULT_BYTES,
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
 
@@ -59,7 +61,10 @@ import {
  */
 
 const ACTION_INTENTS_QUEUE_NAME = 'action-intents';
-const MAX_RESULT_BYTES = 64 * 1024; // 64 KiB (spec §5 step 4)
+// MAX_RESULT_BYTES (spec §5 step 4) is imported from secretBearingTools.ts,
+// shared with the inline (chat-session) completion path in aiAgentSdk.ts, so
+// the two paths that persist to the same action_intents.result column
+// cannot drift apart on the size cap.
 
 type IntentReleaseJobData = { intentId: string; eventType: string };
 
@@ -224,7 +229,7 @@ async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): P
     err,
   );
   captureException(err instanceof Error ? err : new Error(String(err)));
-  await failIntent(intent, 'secret_seal_invariant_violated', {
+  await failIntent(intent, SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE, {
     details: { actionName: intent.actionName },
     executed: true,
   });

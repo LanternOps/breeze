@@ -19,6 +19,27 @@
 -- fact. Do not "fix" this back to a conditional guard. Never log values, row
 -- ids, or org ids here — counts and static table labels only.
 --
+-- SCOPE OF "CLEAN" — read this before citing this migration's output as
+-- forensic evidence. Every predicate below excludes rows already containing
+-- `[redacted]`/`[REDACTED]`, which is required for idempotency (re-running
+-- must be a no-op) and MUST NOT be weakened. But that same exclusion also
+-- hides a real residual class: the inline log-redaction regex
+-- (logRedaction.ts) that produced some historical rows terminates at the
+-- first whitespace/`,`/`;`/`&`, so a Delegant-brokered password containing
+-- one of those characters can already appear as a PARTIALLY redacted row —
+-- e.g. `Temporary password: [REDACTED] <tail-of-the-real-password> (the
+-- user must change it at next sign-in).` — where a plaintext tail survives
+-- after the `[REDACTED]` token. Such rows match the `[REDACTED]` exclusion
+-- above, are therefore never touched by the UPDATEs below, and are NOT
+-- covered by this migration. "post-condition clean, 0 residual plaintext
+-- rows" below means exactly what it says: no FULLY unredacted
+-- `Temporary password: <plaintext>` row remains matching this migration's
+-- pattern. It does NOT mean no credential material remains anywhere —
+-- partially-redacted tails are a known, uncovered gap. It also does not
+-- cover `ai_messages.content` (assistant-turn free text), which is not
+-- touched by this migration at all; only `ai_messages.tool_output` /
+-- `ai_tool_executions.tool_output` / `action_intents.result` are in scope.
+--
 -- Re-running is a no-op: every predicate excludes already-redacted rows.
 --
 -- POST-CONDITION on ALL THREE tables, not just action_intents: GET

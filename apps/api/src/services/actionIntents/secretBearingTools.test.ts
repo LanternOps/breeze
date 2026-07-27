@@ -22,6 +22,15 @@ describe('isSecretBearingTool', () => {
     expect(isSecretBearingTool('m365_disable_user')).toBe(false);
     expect(isSecretBearingTool('google_suspend_user')).toBe(false);
   });
+
+  it('normalizes any mcp__<server>__ prefix, not just mcp__breeze__', () => {
+    // Regression: a narrower local normalization here fails OPEN — it gates
+    // both the pre-execution refusal and assertNoPlaintextSecret, so a tool
+    // name this predicate fails to recognize as secret-bearing silently
+    // turns both guards into no-ops.
+    expect(isSecretBearingTool('mcp__anything__google_reset_password')).toBe(true);
+    expect(isSecretBearingTool('mcp__anything__m365_reset_password')).toBe(true);
+  });
 });
 
 describe('sealToolSecrets', () => {

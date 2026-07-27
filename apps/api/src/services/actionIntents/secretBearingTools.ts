@@ -24,6 +24,24 @@ const SECRET_BEARING_TOOLS = ['m365_reset_password', 'google_reset_password'] as
 
 const ENC_V3_PREFIX = 'enc:v3:';
 
+/**
+ * Shared `action_intents.error_code` used by both the inline (chat-session)
+ * completion path (aiAgentSdk.ts) and the durable release worker
+ * (jobs/intentReleaseWorker.ts's failOnPlaintextSecretGuard) when
+ * assertNoPlaintextSecret trips. Exported from here — rather than declared
+ * independently in each call site — so the two paths cannot drift apart;
+ * the whole point of a shared code is that both are queryable together on
+ * `action_intents.error_code`.
+ */
+export const SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE = 'secret_seal_invariant_violated';
+
+/**
+ * Shared cap on the serialized size of a sealed action_intents.result,
+ * enforced by both the inline path (aiAgentSdk.ts) and the durable release
+ * worker (jobs/intentReleaseWorker.ts), which persist to the same column.
+ */
+export const MAX_RESULT_BYTES = 64 * 1024;
+
 /** Shown to the operator whenever the credential could not be made revealable. */
 export const SECRET_UNAVAILABLE_TEXT =
   'The password was reset, but the temporary credential could not be stored securely and is '
@@ -34,10 +52,18 @@ const PROSE_CREDENTIAL_PATTERN = /Temporary password:\s*(?!\[REDACTED\]|\[redact
 
 /**
  * Local copy of aiAgentSdk's stripMcpPrefix. Duplicated rather than imported
- * to avoid an import cycle (aiAgentSdk imports this module).
+ * to avoid an import cycle (aiAgentSdk imports this module). Must stay in
+ * sync with the canonical algorithm: this predicate gates both the
+ * pre-execution refusal (aiAgentSdkTools.ts) and assertNoPlaintextSecret
+ * below, so a narrower normalization here (e.g. only literal
+ * "mcp__breeze__") lets a differently-prefixed tool name slip past both
+ * checks and fails OPEN — reinstating the plaintext-leak class this module
+ * exists to close.
  */
 function stripMcpPrefix(toolName: string): string {
-  return toolName.startsWith('mcp__breeze__') ? toolName.slice('mcp__breeze__'.length) : toolName;
+  if (!toolName.startsWith('mcp__')) return toolName;
+  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
+  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
 }
 
 export function isSecretBearingTool(toolName: string): boolean {
