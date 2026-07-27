@@ -72,6 +72,41 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     expect(q!.firstViewedAt).toBeTruthy();
   });
 
+  runDb('GET returns the exact customer quote header keyset', async () => {
+    const { token } = await seedQuote();
+    const res = await app().request(`/quotes/public/${token}`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { quote: Record<string, unknown> } };
+
+    expect(Object.keys(body.data.quote)).toEqual([
+      'id',
+      'quoteNumber',
+      'title',
+      'status',
+      'currencyCode',
+      'issueDate',
+      'expiryDate',
+      'subtotal',
+      'taxRate',
+      'taxTotal',
+      'total',
+      'oneTimeTotal',
+      'monthlyRecurringTotal',
+      'annualRecurringTotal',
+      'depositType',
+      'depositAmount',
+      'dueOnAcceptanceTotal',
+      'depositDueTotal',
+      'categoryBreakdown',
+      'billToName',
+      'introNotes',
+      'terms',
+      'sellerSnapshot',
+      'coverPage',
+      'termsAndConditions',
+    ]);
+  });
+
   runDb('GET on a draft quote returns 404 (a draft is never visible via token)', async () => {
     const { token } = await seedQuote({ status: 'draft' });
     const res = await app().request(`/quotes/public/${token}`);

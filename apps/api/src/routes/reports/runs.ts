@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { reports, reportRuns } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   assertReportExecutionPreflight,
@@ -35,6 +36,25 @@ import {
 export const runsRoutes = new Hono();
 
 runsRoutes.use('*', authMiddleware);
+
+function asStoredReportResult(value: unknown): ReportResult | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.rows !== undefined && !Array.isArray(candidate.rows)) return null;
+  if (
+    candidate.summary !== undefined
+    && (candidate.summary === null || typeof candidate.summary !== 'object' || Array.isArray(candidate.summary))
+  ) {
+    return null;
+  }
+  return candidate as ReportResult;
+}
+
+function hasMeaningfulReportContent(result: ReportResult): boolean {
+  const hasRows = Array.isArray(result.rows) && result.rows.length > 0;
+  const hasSummary = result.summary !== undefined && Object.keys(result.summary).length > 0;
+  return hasRows || hasSummary;
+}
 
 // POST /reports/:id/generate - Generate report now
 runsRoutes.post(
@@ -316,15 +336,30 @@ runsRoutes.get(
       return c.json({ error: 'Report run is not completed' }, 409);
     }
 
-    const result = (row?.result ?? null) as ReportResult | null;
-    const rows = Array.isArray(result?.rows) ? (result!.rows as unknown[]) : [];
+    const result = asStoredReportResult(row?.result);
+    const rows = Array.isArray(result?.rows) ? result.rows : [];
     const format = requestedFormat ?? row?.reportFormat ?? 'csv';
     const dateStr = new Date().toISOString().split('T')[0];
     const baseName = `${row?.reportType ?? 'report'}-report-${dateStr}`;
 
     // PDF / JSON: hand the snapshot to the client to render (avoids a server PDF engine).
     if (format === 'pdf' || format === 'json') {
-      return c.json({ type: row?.reportType, format, data: result });
+      if (!result || !hasMeaningfulReportContent(result)) {
+        return c.json({ error: 'Report run has no result data to download' }, 409);
+      }
+      const payload = { type: row?.reportType, format, data: result };
+      const body = JSON.stringify(payload);
+      c.header('Content-Type', 'application/json; charset=UTF-8');
+      auditSensitiveRead(c, {
+        action: 'report.run.download',
+        orgId: row.orgId,
+        resourceType: 'report_run',
+        resourceId: runId,
+        format,
+        rowCount: rows.length,
+        byteCount: Buffer.byteLength(body, 'utf8'),
+      });
+      return c.body(body);
     }
 
     if (rows.length === 0) {
@@ -332,14 +367,34 @@ runsRoutes.get(
     }
 
     if (format === 'excel') {
+      const body = rowsToTsv(rows);
       c.header('Content-Type', 'application/vnd.ms-excel');
       c.header('Content-Disposition', `attachment; filename="${baseName}.xls"`);
-      return c.body(rowsToTsv(rows));
+      auditSensitiveRead(c, {
+        action: 'report.run.download',
+        orgId: row.orgId,
+        resourceType: 'report_run',
+        resourceId: runId,
+        format,
+        rowCount: rows.length,
+        byteCount: Buffer.byteLength(body, 'utf8'),
+      });
+      return c.body(body);
     }
 
+    const body = rowsToCsv(rows);
     c.header('Content-Type', 'text/csv;charset=utf-8;');
     c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
-    return c.body(rowsToCsv(rows));
+    auditSensitiveRead(c, {
+      action: 'report.run.download',
+      orgId: row.orgId,
+      resourceType: 'report_run',
+      resourceId: runId,
+      format,
+      rowCount: rows.length,
+      byteCount: Buffer.byteLength(body, 'utf8'),
+    });
+    return c.body(body);
   }
 );
 

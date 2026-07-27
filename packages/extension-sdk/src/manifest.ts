@@ -111,6 +111,13 @@ function uniqueBy<T>(values: readonly T[], key: (value: T) => string | undefined
 
 const tenancySchema = z.object({
   orgCascadeDeleteTables: z.array(z.string()).default([]),
+  orgExportColumns: z.record(
+    z.string(),
+    z.object({
+      include: z.array(z.string()),
+      exclude: z.array(z.string()),
+    }).strict(),
+  ).default({}),
   deviceCascadeDeleteTables: z.array(z.string()).default([]),
   deviceOrgDenormalizedTables: z.array(z.string()).default([]),
   deviceOrgMoveDeleteTables: z.array(z.string()).optional(),
@@ -202,6 +209,7 @@ const manifestSchemaV1 = z.object({
   aiTools: z.array(aiToolSchema),
   tenancy: tenancySchema.default({
     orgCascadeDeleteTables: [],
+    orgExportColumns: {},
     deviceCascadeDeleteTables: [],
     deviceOrgDenormalizedTables: [],
   }),
@@ -249,8 +257,15 @@ const manifestSchemaV1 = z.object({
 });
 
 export type ExtensionCapability = (typeof SUPPORTED_EXTENSION_CAPABILITIES)[number];
-export type ExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
-export type ExtensionManifestV1 = z.infer<typeof manifestSchemaV1>;
+type ParsedExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
+export type ExtensionTenancyDeclaration =
+  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>
+  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>>;
+
+type ParsedExtensionManifestV1 = z.infer<typeof manifestSchemaV1>;
+export type ExtensionManifestV1 =
+  Omit<ParsedExtensionManifestV1, 'tenancy'>
+  & { tenancy: ExtensionTenancyDeclaration };
 
 export function parseExtensionManifestV1(raw: unknown): ExtensionManifestV1 {
   try {

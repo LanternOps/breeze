@@ -1,27 +1,32 @@
 import type { MiddlewareHandler } from 'hono';
+import {
+  newRequestCorrelationId,
+  safeMatchedRouteLabel,
+} from '../services/safeRequestLabel';
 
 type LogSink = (message: string) => void;
 
-function elapsed(startedAt: number): string {
-  const milliseconds = Date.now() - startedAt;
-  return milliseconds < 1_000
-    ? `${milliseconds.toLocaleString('en-US')}ms`
-    : `${Math.round(milliseconds / 1_000).toLocaleString('en-US')}s`;
-}
-
 /**
- * Request logger that deliberately excludes the query string. OAuth and other
- * callback query parameters can contain bearer-equivalent state and codes.
+ * Request logger that never exposes a raw request path. Before routing it emits
+ * only a correlation ID; after routing it uses the bounded matched template.
  */
 export function requestPathLogger(
   print: LogSink = (message) => console.log(message),
 ): MiddlewareHandler {
   return async (c, next) => {
     const method = c.req.method;
-    const pathname = new URL(c.req.url).pathname;
-    print(`<-- ${method} ${pathname}`);
+    const requestId = newRequestCorrelationId(c.req.header('X-Request-Id'));
     const startedAt = Date.now();
-    await next();
-    print(`--> ${method} ${pathname} ${c.res.status} ${elapsed(startedAt)}`);
+    c.header('X-Request-Id', requestId);
+    print(`<-- ${method} request_id=${requestId}`);
+
+    try {
+      await next();
+    } finally {
+      print(
+        `--> ${method} route=${safeMatchedRouteLabel(c)} status=${c.res.status} ` +
+          `duration_ms=${Date.now() - startedAt} request_id=${requestId}`,
+      );
+    }
   };
 }

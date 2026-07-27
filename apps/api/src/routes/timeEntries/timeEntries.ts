@@ -13,8 +13,9 @@ const idParam = z.object({ id: z.string().guid() });
 import {
   createTimeEntry, startTimer, stopTimer, updateTimeEntry, deleteTimeEntry,
   approveTimeEntries, listTimeEntries, getRunningTimer, getTimesheet,
-  TimeEntryServiceError, type TimeEntryActor
+  TimeEntryServiceError, type TimeEntryActor, type TimeEntryAuditMutation
 } from '../../services/timeEntryService';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const timeEntriesApiRoutes = new Hono();
 
@@ -26,7 +27,10 @@ const writePerm = requirePermission(PERMISSIONS.TIME_ENTRIES_WRITE.resource, PER
 
 type Ctx = { get: (k: 'auth' | 'permissions') => unknown };
 
-export function timeActorFrom(c: Ctx): TimeEntryActor {
+export function timeActorFrom(
+  c: Ctx,
+  recordAuditMutation?: (mutation: TimeEntryAuditMutation) => void,
+): TimeEntryActor {
   const auth = c.get('auth') as AuthContext;
   const perms = c.get('permissions') as UserPermissions | undefined;
   return {
@@ -39,8 +43,83 @@ export function timeActorFrom(c: Ctx): TimeEntryActor {
     // closes a cross-org ticket write for orgAccess='selected' partner users.
     accessibleOrgIds: auth.accessibleOrgIds,
     // v1 admin proxy (plan decision): wildcard-permission roles approve + manage others
-    manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false)
+    manageAll: auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false),
+    recordAuditMutation,
   };
+}
+
+function timeEntryAuditCollector(c: Ctx): {
+  actor: TimeEntryActor;
+  mutations: TimeEntryAuditMutation[];
+} {
+  const mutations: TimeEntryAuditMutation[] = [];
+  return {
+    actor: timeActorFrom(c, (mutation) => mutations.push(mutation)),
+    mutations,
+  };
+}
+
+function safelyWriteTimeEntryAudit(
+  c: Parameters<typeof writeRouteAudit>[0],
+  event: Parameters<typeof writeRouteAudit>[1],
+): void {
+  try {
+    writeRouteAudit(c, event);
+  } catch {
+    console.error('[timeEntries] failed to enqueue audit');
+  }
+}
+
+function writeSimpleTimeEntryAudits(
+  c: Parameters<typeof writeRouteAudit>[0],
+  mutations: readonly TimeEntryAuditMutation[],
+): void {
+  for (const mutation of mutations) {
+    safelyWriteTimeEntryAudit(c, {
+      orgId: mutation.orgId,
+      action: mutation.action,
+      resourceType: 'time_entry',
+      resourceId: mutation.entryId,
+      details: { entryIds: [mutation.entryId], count: 1 },
+    });
+  }
+}
+
+function writeBulkTimeEntryAudits(
+  c: Parameters<typeof writeRouteAudit>[0],
+  mutations: readonly TimeEntryAuditMutation[],
+): void {
+  const groups: Array<{
+    action: TimeEntryAuditMutation['action'];
+    orgId: string | null;
+    entryIds: string[];
+  }> = [];
+
+  for (const mutation of mutations) {
+    let group = groups.find(
+      (candidate) =>
+        candidate.action === mutation.action
+        && candidate.orgId === mutation.orgId,
+    );
+    if (!group) {
+      group = {
+        action: mutation.action,
+        orgId: mutation.orgId,
+        entryIds: [],
+      };
+      groups.push(group);
+    }
+    group.entryIds.push(mutation.entryId);
+  }
+
+  for (const group of groups) {
+    safelyWriteTimeEntryAudit(c, {
+      orgId: group.orgId,
+      action: group.action,
+      resourceType: 'time_entry',
+      details: { entryIds: group.entryIds, count: group.entryIds.length },
+    });
+  }
 }
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
@@ -60,7 +139,9 @@ timeEntriesApiRoutes.get('/running', scopes, readPerm, async (c) => {
 
 timeEntriesApiRoutes.post('/start', scopes, writePerm, zValidator('json', startTimerSchema), async (c) => {
   try {
-    const entry = await startTimer(c.req.valid('json'), timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    const entry = await startTimer(c.req.valid('json'), audit.actor);
+    writeSimpleTimeEntryAudits(c, audit.mutations);
     return c.json({ data: entry }, 201);
   } catch (err) {
     return handleServiceError(c, err);
@@ -69,7 +150,9 @@ timeEntriesApiRoutes.post('/start', scopes, writePerm, zValidator('json', startT
 
 timeEntriesApiRoutes.post('/stop', scopes, writePerm, zValidator('json', stopTimerSchema), async (c) => {
   try {
-    const entry = await stopTimer(c.req.valid('json'), timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    const entry = await stopTimer(c.req.valid('json'), audit.actor);
+    writeSimpleTimeEntryAudits(c, audit.mutations);
     return c.json({ data: entry });
   } catch (err) {
     return handleServiceError(c, err);
@@ -79,7 +162,9 @@ timeEntriesApiRoutes.post('/stop', scopes, writePerm, zValidator('json', stopTim
 timeEntriesApiRoutes.post('/bulk-approve', scopes, writePerm, zValidator('json', bulkApproveSchema), async (c) => {
   try {
     const body = c.req.valid('json');
-    const result = await approveTimeEntries(body.ids, body.approve, timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    const result = await approveTimeEntries(body.ids, body.approve, audit.actor);
+    writeBulkTimeEntryAudits(c, audit.mutations);
     return c.json({ data: { ...result, total: body.ids.length } });
   } catch (err) {
     return handleServiceError(c, err);
@@ -121,7 +206,9 @@ timeEntriesApiRoutes.get('/', scopes, readPerm, zValidator('query', listTimeEntr
 
 timeEntriesApiRoutes.post('/', scopes, writePerm, zValidator('json', createTimeEntrySchema), async (c) => {
   try {
-    const entry = await createTimeEntry(c.req.valid('json'), timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    const entry = await createTimeEntry(c.req.valid('json'), audit.actor);
+    writeSimpleTimeEntryAudits(c, audit.mutations);
     return c.json({ data: entry }, 201);
   } catch (err) {
     return handleServiceError(c, err);
@@ -131,7 +218,9 @@ timeEntriesApiRoutes.post('/', scopes, writePerm, zValidator('json', createTimeE
 timeEntriesApiRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateTimeEntrySchema), async (c) => {
   try {
     const { id } = c.req.valid('param');
-    const entry = await updateTimeEntry(id, c.req.valid('json'), timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    const entry = await updateTimeEntry(id, c.req.valid('json'), audit.actor);
+    writeSimpleTimeEntryAudits(c, audit.mutations);
     return c.json({ data: entry });
   } catch (err) {
     return handleServiceError(c, err);
@@ -141,7 +230,9 @@ timeEntriesApiRoutes.patch('/:id', scopes, writePerm, zValidator('param', idPara
 timeEntriesApiRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
   try {
     const { id } = c.req.valid('param');
-    await deleteTimeEntry(id, timeActorFrom(c));
+    const audit = timeEntryAuditCollector(c);
+    await deleteTimeEntry(id, audit.actor);
+    writeSimpleTimeEntryAudits(c, audit.mutations);
     return c.json({ data: { deleted: true } });
   } catch (err) {
     return handleServiceError(c, err);

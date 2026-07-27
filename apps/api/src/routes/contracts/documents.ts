@@ -9,6 +9,7 @@ import {
   linkContractDocument,
   ContractDocumentServiceError,
 } from '../../services/contractDocumentService';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 // Executed contract-document surfaces (Task 18): list per-contract or
 // unattached, stream the raw PDF, and link a document to a contract after
@@ -61,7 +62,7 @@ contractDocumentRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idP
   try {
     const { id } = c.req.valid('param');
     const doc = await getContractDocumentPdf(authFrom(c), id);
-    return new Response(new Uint8Array(doc.pdfData), {
+    const response = new Response(new Uint8Array(doc.pdfData), {
       status: 200,
       headers: {
         'Content-Type': doc.mime,
@@ -70,6 +71,16 @@ contractDocumentRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idP
         'Cache-Control': 'private, max-age=300',
       },
     });
+    auditSensitiveRead(c, {
+      action: 'contract.document.download',
+      orgId: doc.orgId,
+      resourceType: 'contract_document',
+      resourceId: id,
+      format: 'pdf',
+      rowCount: 1,
+      byteCount: doc.byteSize,
+    });
+    return response;
   } catch (err) {
     return handleDocumentError(c, err);
   }

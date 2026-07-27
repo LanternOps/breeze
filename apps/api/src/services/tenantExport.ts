@@ -24,6 +24,12 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getOrgCascadeDeleteOrder } from './tenantCascade';
 import { createAuditLog } from './auditService';
+import {
+  buildTenantExportPlan,
+  type ExportTablePlan,
+  type TenantExportPolicyRegistry,
+} from './tenantExportPolicy';
+import { getTenantExportPolicyRegistry } from './tenantExportPolicyRegistry';
 
 export interface ExportManifestEntry {
   name: string;
@@ -56,7 +62,19 @@ export async function buildOrgExportZip(
   orgId: string,
   performedBy: string,
   performedByEmail?: string,
+  policyRegistry: TenantExportPolicyRegistry = getTenantExportPolicyRegistry(),
 ): Promise<TenantExportResult> {
+  if (!policyRegistry) {
+    throw new Error('[tenantExport] export policy registry is required');
+  }
+
+  const tables = getOrgCascadeDeleteOrder();
+  const exportPlan = await withFreshSystemDbAccessContext(async () => {
+    return buildTenantExportPlan(tables, policyRegistry);
+  });
+
+  // Policy and information-schema classification must finish before archive
+  // creation. A failure therefore cannot return or append a partial ZIP.
   const exportedAt = new Date().toISOString();
   const archive = archiver('zip', { zlib: { level: 6 } });
   const chunks: Buffer[] = [];
@@ -71,26 +89,14 @@ export async function buildOrgExportZip(
 
   // Fetch + append each table sequentially. Sequential keeps memory bounded
   // and gives a deterministic file ordering inside the ZIP.
-  for (const table of getOrgCascadeDeleteOrder()) {
-    let rows: unknown[];
-    try {
-      rows = await dbModule.withSystemDbAccessContext(async () => {
-        return readOrgRows(table, orgId);
-      });
-    } catch (err) {
-      const code = (err as { code?: string })?.code;
-      if (code === '42P01') {
-        // Table doesn't exist in this deployment — skip it. The cascade
-        // list is canonical across deployments but optional features
-        // (e.g. TimescaleDB hypertables) might be absent.
-        continue;
-      }
-      throw err;
-    }
+  for (const tablePlan of exportPlan) {
+    const rows = await withFreshSystemDbAccessContext(async () => {
+      return readOrgRows(tablePlan, orgId);
+    });
 
     const json = JSON.stringify(rows, null, 2);
     const sha256 = createHash('sha256').update(json).digest('hex');
-    const fileName = `${table}.json`;
+    const fileName = `${tablePlan.table}.json`;
     archive.append(json, { name: fileName });
     files.push({ name: fileName, sha256, rowCount: rows.length });
   }
@@ -135,25 +141,32 @@ export async function buildOrgExportZip(
   return { manifest, zipBuffer: Buffer.concat(chunks) };
 }
 
-async function readOrgRows(table: string, orgId: string): Promise<unknown[]> {
-  // SELECT * is fine here — the export is meant to mirror raw schema for
-  // forensic / portability use. `organizations` is id-keyed; everything
-  // else is org_id-keyed.
-  if (table === 'organizations') {
-    const rows = (await dbModule.db.execute(
-      sql`SELECT * FROM organizations WHERE id = ${orgId}`,
-    )) as unknown as unknown[];
-    return Array.isArray(rows) ? rows : [];
-  }
+function withFreshSystemDbAccessContext<T>(fn: () => Promise<T>): Promise<T> {
+  return dbModule.runOutsideDbContext(
+    () => dbModule.withSystemDbAccessContext(fn),
+  );
+}
+
+async function readOrgRows(
+  plan: ExportTablePlan,
+  orgId: string,
+): Promise<unknown[]> {
+  const projection = plan.includedColumns
+    .map((column) => quoteIdent(column))
+    .join(', ');
   const rows = (await dbModule.db.execute(
-    sql`SELECT * FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`,
+    sql`
+      SELECT ${sql.raw(projection)}
+      FROM ${sql.raw(quoteIdent(plan.table))}
+      WHERE ${sql.raw(quoteIdent(plan.organizationKey))} = ${orgId}
+    `,
   )) as unknown as unknown[];
   return Array.isArray(rows) ? rows : [];
 }
 
-function quoteIdent(table: string): string {
-  if (!/^[a-z_][a-z0-9_]*$/i.test(table)) {
-    throw new Error(`[tenantExport] refusing to quote unsafe identifier: ${table}`);
+function quoteIdent(identifier: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(identifier)) {
+    throw new Error(`[tenantExport] refusing to quote unsafe identifier: ${identifier}`);
   }
-  return `"${table}"`;
+  return `"${identifier}"`;
 }

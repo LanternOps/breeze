@@ -791,3 +791,4 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './loginContext';
+export * from './publicQuote';

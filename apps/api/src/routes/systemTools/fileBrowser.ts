@@ -5,6 +5,7 @@ import { authMiddleware, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import {
   isCommandFailure,
@@ -132,6 +133,11 @@ fileBrowserRoutes.get(
       if (!encodedContent) {
         return c.json({ error: 'Invalid file payload from agent' }, 502);
       }
+      if (
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encodedContent)
+      ) {
+        return c.json({ error: 'Invalid file payload from agent' }, 502);
+      }
 
       const fileData = Buffer.from(encodedContent, 'base64');
       const filename = basename(typeof payload.path === 'string' ? payload.path : path) || 'download.bin';
@@ -146,6 +152,15 @@ fileBrowserRoutes.get(
       c.header('Content-Type', 'application/octet-stream');
       c.header('Content-Disposition', `attachment; filename="${safeFilename}"`);
       c.header('Content-Length', String(fileData.length));
+      auditSensitiveRead(c, {
+        action: 'file.download',
+        orgId: device.orgId,
+        resourceType: 'device_file',
+        resourceId: deviceId,
+        format: 'binary',
+        rowCount: 1,
+        byteCount: fileData.length,
+      });
       return c.body(fileData);
     } catch (error) {
       console.error('Failed to parse agent response for file download:', error);
