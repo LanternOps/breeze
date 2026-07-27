@@ -54,6 +54,7 @@ import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentW
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
+import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
 import {
   withExtensionDeviceCascade,
   withExtensionDeviceOrgDenormalized,
@@ -327,6 +328,29 @@ coreRoutes.post(
       return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
     }
 
+    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
+    // command is frequently pasted onto several machines during a migration;
+    // without these the historical hard-coded single-use token failed on every
+    // machine after the first. Defaults preserve the old single-use, 60-min
+    // behaviour for callers that send no body.
+    const data = c.req.valid('json');
+    const rawCount = Number((data as { count?: unknown }).count);
+    const maxUsage = Number.isFinite(rawCount)
+      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
+      : 1;
+    // Explicit-ttl-vs-default is distinguished BEFORE the default is applied:
+    // assertTtlWithinCap must see what the caller actually asked for (an
+    // omitted ttlMinutes stays `undefined`, which the gate never rejects — an
+    // unset value has no chooser to hold to a cap). No coercion or clamping is
+    // needed here: the Zod schema already guarantees an integer in 1..525_600
+    // and REJECTS anything outside it rather than silently reducing it.
+    const explicitTtlMinutes = data.ttlMinutes;
+
+    // Reject (never clamp) a caller-supplied TTL above the partner cap
+    // (#2776 task 3.4). Runs after org resolution — orgId is required.
+    const capError = await assertTtlWithinCap(orgId, explicitTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     // Pick the first site in the org for the enrollment key
     const [site] = await db
       .select({ id: sites.id })
@@ -338,17 +362,7 @@ coreRoutes.post(
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
-    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
-    // command is frequently pasted onto several machines during a migration;
-    // without these the historical hard-coded single-use token failed on every
-    // machine after the first. Defaults preserve the old single-use, 60-min
-    // behaviour for callers that send no body.
-    const data = c.req.valid('json');
-    const rawCount = Number((data as { count?: unknown }).count);
-    const maxUsage = Number.isFinite(rawCount)
-      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
-      : 1;
-    const ttlMinutes = data.ttlMinutes
+    const ttlMinutes = explicitTtlMinutes
       ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;

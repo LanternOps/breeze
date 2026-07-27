@@ -24,6 +24,34 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 
+// Partner-cap enforcement (#2776 task 3.4). Mocked at the wiring level — see
+// enrollmentKeys.test.ts's identically-named helper for rationale.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+vi.mock('../services/enrollmentDefaults', () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+}));
+
+/**
+ * Configure the mocked partner-cap gate for the current test. Mirrors the
+ * real assertTtlWithinCap contract: null when ttlMinutes is undefined or at/
+ * under the cap, an error string naming the cap when it's exceeded. Default
+ * (set in the outer beforeEach) models "no partner cap configured" — the
+ * product-default ceiling of 525_600 minutes.
+ */
+function mockEnrollmentDefaults(opts: { maxTtlMinutes: number }) {
+  assertTtlWithinCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number | undefined) => {
+      if (ttlMinutes === undefined) return null;
+      return ttlMinutes > opts.maxTtlMinutes
+        ? `ttlMinutes exceeds the partner maximum of ${opts.maxTtlMinutes} minutes`
+        : null;
+    },
+  );
+}
+
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: new Proxy({} as Record<string, { resource: string; action: string }>, {
     get(_target, prop: string) {
@@ -200,6 +228,10 @@ describe('device routes', () => {
       where: vi.fn(() => Promise.resolve())
     }) as any);
     vi.mocked(db.execute).mockImplementation(() => Promise.resolve([]) as any);
+    // resetAllMocks above also wipes assertTtlWithinCapMock's implementation —
+    // restore the permissive default (mirrors "no partner cap configured",
+    // i.e. the product-default 525_600-minute ceiling from resolveEnrollmentDefaults).
+    mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
     app = new Hono();
     app.route('/devices', deviceRoutes);
   });
@@ -441,18 +473,72 @@ describe('device routes', () => {
       expect(res.status).toBe(200);
       expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(1439);
       expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(1441);
+    });
 
-      // Over-cap ttlMinutes is now REJECTED rather than clamped (#2777) — a
-      // silently reduced expiry is exactly the failure mode #2775 was filed
-      // for. (This sub-case used to assert a 200 with the value clamped to
-      // 525_600; that behaviour is precisely what this fix removes.)
-      captureExpiry();
-      res = await app.request('/devices/onboarding-token', {
+    // #2776 task 3.4 (CRITICAL follow-up): this route used to silently clamp
+    // an over-cap ttlMinutes down to ENROLL_TOKEN_MAX_TTL_MINUTES (365 days)
+    // instead of rejecting it — exactly the silent-discard bypass the
+    // enrollment-defaults plan was written to close. It must now 400 and
+    // name the cap, same as the enrollment-keys mint routes. Since #2777 the
+    // rejection is issued by the request schema itself, before the handler.
+    it('rejects an over-cap ttlMinutes instead of silently clamping it (#2776)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlMinutes: 99_999_999 })
       });
+
       expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('525600');
+      // Rejected before the site lookup / insert ever fire.
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicit ttlMinutes above a partner-configured cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 43200 })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('1440');
+      expect(assertTtlWithinCapMock).toHaveBeenCalledWith('org-123', 43200);
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('allows an explicit ttlMinutes at exactly a partner-configured cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 1440 })
+      });
+
+      expect(res.status).toBe(200);
+      expect(valuesMock).toHaveBeenCalled();
     });
 
     it('honours ttlMinutes from the request body', async () => {
