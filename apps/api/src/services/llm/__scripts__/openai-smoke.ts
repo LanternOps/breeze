@@ -15,12 +15,15 @@
 
 import { OpenAICompatibleProvider } from '../openaiCompatibleProvider';
 import type { ChatMessage } from '../types';
+import { envFloat } from '../../../utils/envFloat';
+import { envStr } from '../../../utils/envStr';
 
-const BASE_URL = process.env.MCP_LLM_BASE_URL ?? 'http://192.168.30.121:8000/v1';
-const API_KEY = process.env.MCP_LLM_API_KEY ?? 'changeme';
-const MODEL = process.env.MCP_LLM_MODEL ?? 'qwen3.6-27b';
-const PRICE_IN = Number(process.env.MCP_LLM_PRICE_INPUT_PER_M_USD ?? '0');
-const PRICE_OUT = Number(process.env.MCP_LLM_PRICE_OUTPUT_PER_M_USD ?? '0');
+const BASE_URL = envStr('MCP_LLM_BASE_URL', 'http://192.168.30.121:8000/v1');
+const API_KEY = envStr('MCP_LLM_API_KEY', 'changeme');
+const MODEL = envStr('MCP_LLM_MODEL', 'qwen3.6-27b');
+// Prices are per-million-token decimals — envFloat, not envInt (which truncates).
+const PRICE_IN = envFloat('MCP_LLM_PRICE_INPUT_PER_M_USD', 0);
+const PRICE_OUT = envFloat('MCP_LLM_PRICE_OUTPUT_PER_M_USD', 0);
 
 async function main(): Promise<void> {
   console.log('==========================================');

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { envStr } from '../utils/envStr';
 
 export const incidentSeveritySchema = z.enum(['p1', 'p2', 'p3', 'p4']);
 export const incidentStatusSchema = z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']);
@@ -91,7 +92,7 @@ export const HIGH_RISK_CONTAINMENT_ACTIONS = new Set([
 ]);
 
 export const ALLOWED_EVIDENCE_STORAGE_SCHEMES = new Set(
-  (process.env.EVIDENCE_STORAGE_ALLOWED_SCHEMES ?? 's3,gs,r2,azblob,immutable,https')
+  envStr('EVIDENCE_STORAGE_ALLOWED_SCHEMES', 's3,gs,r2,azblob,immutable,https')
     .split(',')
     .map((value) => value.trim().toLowerCase())
     .filter((value) => value.length > 0)

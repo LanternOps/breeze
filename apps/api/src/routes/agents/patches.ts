@@ -6,6 +6,7 @@ import { db, type Database } from '../../db';
 import { devices, patches, devicePatches } from '../../db/schema';
 import { enqueueWingetReleaseTest } from '../../jobs/wingetReleaseTestWorker';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { envInt } from '../../utils/envInt';
 import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitInstalledPatchesSchema, submitPatchesSchema, submitPendingPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
@@ -293,7 +294,10 @@ export async function pruneStaleTombstones(
   executor: Database,
   deviceId: string,
   orgId: string,
-  pruneAfterHours = Number(process.env.PATCH_TOMBSTONE_PRUNE_AFTER_HOURS) || 168,
+  // `|| 168` is deliberate and preserves the pre-#2823 semantics: a 0-hour
+  // window would prune every `missing` tombstone on the very next scan, so 0
+  // is treated as "unset" rather than honoured.
+  pruneAfterHours = envInt('PATCH_TOMBSTONE_PRUNE_AFTER_HOURS', 168) || 168,
 ): Promise<void> {
   await executor
     .delete(devicePatches)

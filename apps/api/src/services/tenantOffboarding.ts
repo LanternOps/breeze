@@ -12,6 +12,7 @@ import {
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
+import { envInt } from '../utils/envInt';
 
 /**
  * Offboarding drain state (#2774).
@@ -29,7 +30,7 @@ import { invalidateAgentTenantCache } from './tenantStatus';
  * adversarial suspensions must sever immediately (see tenantLifecycle.ts).
  */
 
-const RAW_WINDOW_HOURS = Number(process.env.OFFBOARDING_DRAIN_WINDOW_HOURS ?? '72');
+const RAW_WINDOW_HOURS = envInt('OFFBOARDING_DRAIN_WINDOW_HOURS', 72);
 export const OFFBOARDING_DRAIN_WINDOW_HOURS =
   Number.isFinite(RAW_WINDOW_HOURS) && RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
 

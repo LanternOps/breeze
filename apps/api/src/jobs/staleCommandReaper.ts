@@ -24,6 +24,7 @@ import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { queueBackupStopCommand } from '../services/commandQueue';
+import { envInt } from '../utils/envInt';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
@@ -38,7 +39,7 @@ const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 // `.limit(0)` returns zero rows, which would silently disable the
 // reaper. Normalize to `Number.MAX_SAFE_INTEGER` so the consistent
 // "cap=0 == unlimited" knob actually behaves that way here.
-const RAW_MAX_REAP = Number(process.env.STALE_REAPER_MAX_PER_RUN ?? '5000');
+const RAW_MAX_REAP = envInt('STALE_REAPER_MAX_PER_RUN', 5000);
 const MAX_REAP_PER_RUN =
   Number.isFinite(RAW_MAX_REAP) && RAW_MAX_REAP > 0
     ? RAW_MAX_REAP

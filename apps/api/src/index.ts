@@ -303,6 +303,7 @@ import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
+import { envInt } from './utils/envInt';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -1495,7 +1496,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     // Bounded grace for in-flight requests to finish, then force-close stragglers
     // so server.close() can't hang on keep-alive connections.
     await new Promise<void>((resolve) =>
-      setTimeout(resolve, Number(process.env.SHUTDOWN_DRAIN_MS ?? '5000'))
+      setTimeout(resolve, envInt('SHUTDOWN_DRAIN_MS', 5000))
     );
     if (typeof httpServer.closeAllConnections === 'function') {
       httpServer.closeAllConnections();

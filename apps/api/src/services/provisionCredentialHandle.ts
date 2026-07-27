@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { envInt } from '../utils/envInt';
 
 /**
  * Canonical shape of a provision credential-handle token: 64 chars of
@@ -19,6 +20,6 @@ export function generateProvisionHandleToken(): string {
  * Tunable via env for testing; production default is 5 minutes.
  */
 export function provisionHandleExpiresAt(): Date {
-  const ttlMin = Number(process.env.PROVISION_HANDLE_TTL_MINUTES ?? 5);
+  const ttlMin = envInt('PROVISION_HANDLE_TTL_MINUTES', 5);
   return new Date(Date.now() + ttlMin * 60 * 1000);
 }
