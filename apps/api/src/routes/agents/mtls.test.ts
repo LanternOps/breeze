@@ -150,8 +150,11 @@ vi.mock('../../services/tenantStatus', () => ({
   isAgentTenantActive: tenantActiveMock,
 }));
 
+const { writeAuditEventMock } = vi.hoisted(() => ({
+  writeAuditEventMock: vi.fn(),
+}));
 vi.mock('../../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
+  writeAuditEvent: writeAuditEventMock,
 }));
 
 const { issueCertMock, revokeCertMock } = vi.hoisted(() => ({
@@ -339,6 +342,7 @@ const TOKEN = 'brz_test_token';
 const TOKEN_HASH = createHash('sha256').update(TOKEN).digest('hex');
 const NEW_CERT_ROW_ID = '33333333-3333-4333-8333-333333333333';
 const OLD_ACTIVE_CERT_ROW_ID = '44444444-4444-4444-8444-444444444444';
+const ORPHAN_MARKER_ROW_ID = '55555555-5555-4555-8555-555555555555';
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -692,11 +696,15 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     expect(issueCertMock).not.toHaveBeenCalled();
   });
 
-  it('fails closed (500) and returns NO cert material when the transaction fails, and revokes the orphan cert', async () => {
+  it('fails closed (500), returns NO cert material, and revokes the orphan cert DURABLY when the transaction fails', async () => {
     // A failed activation transaction (e.g. the legacy devices update affects
     // 0 rows under FORCE RLS) must not leave an untracked, unrevoked
     // provider certificate — nor return cert material for a renewal that
-    // never actually persisted.
+    // never actually persisted. Fix round 1 (Important #1): the orphan is
+    // now revoked through Task 3's durable lifecycle (a minted
+    // pending_revocation marker row + revokeCertificateNowOrEnqueue), not a
+    // one-shot inline best-effort call, so a provider 5xx/timeout at revoke
+    // time is retried by the sweep instead of being silently dropped.
     issueCertMock.mockResolvedValue({
       id: 'cf-cert-untracked',
       certificate: NEW_CERT_PEM,
@@ -711,6 +719,7 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     mockTxActiveLookup(null);
     mockTxInsertOk();
     mockTxUpdateOk(0); // activation update affects 0 rows → transaction throws
+    mockDbInsertOk(ORPHAN_MARKER_ROW_ID); // durable marker-row insert (outer db.insert, outside the failed tx)
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -722,8 +731,10 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     // Crucially, no certificate/privateKey is handed back on the fail-closed path.
     expect(body.mtls).toBeUndefined();
     expect(body.error).toMatch(/failed/i);
-    // The untracked cert is revoked so it can't be used.
-    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-untracked');
+    // Durable path: a marker row is minted and handed to the lifecycle
+    // service — NOT a one-shot inline revoke.
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(ORPHAN_MARKER_ROW_ID);
+    expect(revokeCertMock).not.toHaveBeenCalled();
   });
 
   it('Finding #1: fails closed (500) when the org policy row is missing (no auto_reissue fallback)', async () => {
@@ -991,7 +1002,13 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
     expect(revokeCertificateNowOrEnqueueMock).not.toHaveBeenCalled();
   });
 
-  it('revokes the orphan provider cert when the pending row fails to persist', async () => {
+  it('revokes the orphan provider cert DURABLY when the pending row fails to persist', async () => {
+    // Fix round 1 (Important #1): a failed pending-row insert now mints a
+    // pending_revocation marker row (fingerprint/serial/SPKI are available —
+    // the leaf parsed successfully) and hands it to
+    // revokeCertificateNowOrEnqueue, rather than a one-shot inline revoke
+    // that would leave the orphan permanently unrevoked on a provider
+    // 5xx/timeout.
     issueCertMock.mockResolvedValue({
       id: 'cf-cert-v2-orphan',
       certificate: NEW_CERT_PEM,
@@ -1003,7 +1020,8 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
     mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup();
     mockActiveCertLookup(null);
-    mockDbInsertOk(null); // insert returns 0 rows
+    mockDbInsertOk(null); // the pending_activation insert returns 0 rows
+    mockDbInsertOk(ORPHAN_MARKER_ROW_ID); // the durable marker-row insert succeeds
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -1012,7 +1030,69 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
     });
 
     expect(res.status).toBe(500);
-    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-v2-orphan');
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(ORPHAN_MARKER_ROW_ID);
+    expect(revokeCertMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a single inline best-effort revoke when the durable marker-row insert ALSO fails', async () => {
+    // Defensive fallback-of-a-fallback: this is NOT the accepted
+    // cert-parse-failure exception (the leaf parsed fine here) — it's an
+    // unexpected second failure on top of an already-failing path, logged
+    // distinctly ("falling back to inline best-effort revoke").
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-v2-double-orphan',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-V2',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup(null);
+    mockDbInsertOk(null); // the pending_activation insert returns 0 rows
+    mockDbInsertOk(null); // the durable marker-row insert ALSO returns 0 rows
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2 }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-v2-double-orphan');
+    expect(revokeCertificateNowOrEnqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('cert-parse-failure keeps the inline best-effort revoke and mints NO durable row (accepted scoped exception)', async () => {
+    // A serial/fingerprint are unavailable when the leaf never parsed, so a
+    // durable device_mtls_certificates row is impossible (fingerprint check
+    // constraint requires a NOT NULL fingerprint_sha256 for
+    // legacy_provenance=false rows, and inventing one is explicitly against
+    // this codebase's principles). This is the one accepted exception to the
+    // durable-revoke requirement.
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-unparseable',
+      certificate: 'not a real certificate PEM',
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: 'sn-unparseable',
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup(null);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(500);
+    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-unparseable');
+    // No durable row is ever attempted for this path.
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(revokeCertificateNowOrEnqueueMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1237,6 +1317,87 @@ describe('POST /renew-cert — mode-gated proof/binding (AGENT_MTLS_BINDING_MODE
     const body = await res.json();
     expect(body.error).toMatch(/re-enrollment/i);
     expect(issueCertMock).not.toHaveBeenCalled();
+  });
+
+  it('enforce: expired active cert WITH a recorded public key but NO recovery proof is denied (P1-MTLS-002 closure branch)', async () => {
+    // Distinct from the SPKI-missing/re-enrollment branch above: here the
+    // active row DOES have a public_key_spki on file (so a recovery proof
+    // would be possible), the caller just didn't supply one. This is the
+    // generic "requires a valid recovery proof" 401 branch.
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toMatch(/recovery proof/i);
+    expect(body.error).not.toMatch(/re-enrollment/i);
+    expect(issueCertMock).not.toHaveBeenCalled();
+  });
+
+  it('audit: expired active cert with no proof succeeds and emits a bounded renewal_proof_missing observation', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockSuccessfulLegacyIssuance();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.mtls.renew.binding_observed',
+        details: expect.objectContaining({ reason: 'renewal_proof_missing', mode: 'audit' }),
+      }),
+    );
+  });
+
+  it('off: expired active cert with no proof preserves legacy bearer-only renewal', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'off';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockSuccessfulLegacyIssuance();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+    // off never emits a binding-observation audit event.
+    expect(writeAuditEventMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'agent.mtls.renew.binding_observed' }),
+    );
   });
 });
 

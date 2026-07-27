@@ -12,7 +12,12 @@ import { devices, organizations, deviceMtlsCertificates } from '../../db/schema'
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
+import {
+  CloudflareMtlsService,
+  parseIssuedLeafCertificate,
+  type CfCertResult,
+  type ParsedIssuedCertificate,
+} from '../../services/cloudflareMtls';
 import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSettingsSchema } from '@breeze/shared';
 import { getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
 import { disconnectAgent } from '../agentWs';
@@ -511,6 +516,92 @@ async function parseOptionalCapableRenewBody(
   return { ok: true, data: result.data };
 }
 
+/**
+ * Fix round 1 (code review, Important #1): inserts a minimal
+ * `device_mtls_certificates` marker row for an orphan provider certificate
+ * — one that was issued but never became the device's persisted
+ * certificate (a failed pending-row insert on the v2 path, or a failed
+ * activation transaction on the legacy path) — in state `pending_revocation`
+ * with `next_revoke_attempt_at = now()` so it's immediately due. This is
+ * ONLY possible when the leaf was parsed successfully (both callers here
+ * have `parsedCert`), since `fingerprint_sha256` is NOT NULL for
+ * `legacy_provenance = false` rows via the fingerprint check constraint.
+ *
+ * Never `active` (so the one-active-per-device partial unique index is
+ * never at risk) and uses the device's real `orgId`/`id` (so the composite
+ * `(device_id, org_id) -> devices(id, org_id)` FK is always satisfied).
+ *
+ * Returns the new row's id, or `null` if the insert itself failed (in which
+ * case the caller falls back to an inline best-effort provider revoke).
+ */
+async function insertOrphanRevocationMarkerRow(
+  device: AuthenticatedMtlsDevice,
+  cert: CfCertResult,
+  parsedCert: ParsedIssuedCertificate,
+): Promise<string | null> {
+  const now = new Date();
+  try {
+    return await withSystemDbAccessContext(async () => {
+      const [inserted] = await db
+        .insert(deviceMtlsCertificates)
+        .values({
+          orgId: device.orgId,
+          deviceId: device.id,
+          providerCertificateId: cert.id,
+          serialNumber: parsedCert.serialNumber,
+          fingerprintSha256: parsedCert.fingerprintSha256,
+          publicKeySpki: parsedCert.publicKeySpkiBase64,
+          legacyProvenance: false,
+          state: 'pending_revocation',
+          issuedAt: new Date(cert.issuedOn),
+          expiresAt: new Date(cert.expiresOn),
+          nextRevokeAttemptAt: now,
+        })
+        .returning({ id: deviceMtlsCertificates.id });
+      return inserted?.id ?? null;
+    });
+  } catch (err) {
+    console.error(
+      '[agents] mTLS renew: failed to insert durable orphan-revoke marker row:',
+      err instanceof Error ? err.name : 'unknown',
+    );
+    return null;
+  }
+}
+
+/**
+ * Revokes an orphan provider certificate through Task 3's durable lifecycle
+ * machinery (`revokeCertificateNowOrEnqueue`) by first minting the marker
+ * row above, so a provider 5xx/timeout at revoke time is retried by the
+ * 5-minute sweep instead of being permanently unrevoked and untracked.
+ * Falls back to a single inline best-effort revoke ONLY if the marker-row
+ * insert itself fails (defensive fallback-of-a-fallback — logged distinctly
+ * from the accepted cert-parse-failure exception, since this case is an
+ * unexpected SECOND failure on top of an already-failing path).
+ */
+async function revokeOrphanCertificateDurably(
+  device: AuthenticatedMtlsDevice,
+  cert: CfCertResult,
+  parsedCert: ParsedIssuedCertificate,
+  cfService: CloudflareMtlsService,
+): Promise<void> {
+  const markerRowId = await insertOrphanRevocationMarkerRow(device, cert, parsedCert);
+  if (markerRowId) {
+    await revokeCertificateNowOrEnqueue(markerRowId);
+    return;
+  }
+
+  console.error(
+    '[agents] mTLS renew: durable orphan-revoke marker row unavailable, falling back to inline best-effort revoke:',
+    device.id,
+  );
+  try {
+    await cfService.revokeCertificate(cert.id);
+  } catch (revokeErr) {
+    console.error('[agents] failed to revoke orphan mTLS cert via inline fallback:', String(revokeErr));
+  }
+}
+
 mtlsRoutes.post('/renew-cert/challenge', agentBearerAuthMiddleware, async (c) => {
   const device = c.get('mtlsAgentDevice') as AuthenticatedMtlsDevice;
 
@@ -785,6 +876,18 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
       '[agents] mTLS renew: failed to parse issued certificate, revoking orphan cert:',
       err instanceof Error ? err.name : 'unknown',
     );
+    // ACCEPTED SCOPED EXCEPTION (fix round 1, Important #1): every OTHER
+    // orphan-cert path below parses successfully and revokes durably via
+    // revokeOrphanCertificateDurably. This is the one path that cannot: a
+    // durable `device_mtls_certificates` row requires a NOT NULL
+    // `serial_number` and (for `legacy_provenance = false`) a NOT NULL
+    // `fingerprint_sha256` via the fingerprint check constraint — both come
+    // ONLY from parsing the leaf we just failed to parse. Inventing either
+    // value to satisfy the constraint would violate the same
+    // never-fabricate-identity principle Task 1's migration documents for
+    // legacy-imported rows. A bounded marker (no cert material) is logged so
+    // this scoped exception is observable without leaking anything.
+    console.error('[agents] ORPHAN_PROVIDER_CERT (cert-parse-failure, no durable row possible):', device.id);
     try {
       await cfService.revokeCertificate(cert.id);
     } catch (revokeErr) {
@@ -836,12 +939,11 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
     }
 
     if (!insertedId) {
-      console.error('[agents] mTLS renew (v2): failed to persist pending certificate row, revoking orphan cert:', device.id);
-      try {
-        await cfService.revokeCertificate(cert.id);
-      } catch (revokeErr) {
-        console.error('[agents] failed to revoke orphan v2 mTLS cert:', String(revokeErr));
-      }
+      console.error(
+        '[agents] mTLS renew (v2): failed to persist pending certificate row, revoking orphan cert durably:',
+        device.id,
+      );
+      await revokeOrphanCertificateDurably(device, cert, parsedCert, cfService);
       writeAuditEvent(c, {
         orgId: device.orgId,
         actorType: 'agent',
@@ -963,14 +1065,10 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
     );
   } catch (txErr) {
     console.error(
-      '[agents] mTLS renew: transaction failed, revoking orphan cert:',
+      '[agents] mTLS renew: transaction failed, revoking orphan cert durably:',
       txErr instanceof Error ? txErr.message : 'unknown',
     );
-    try {
-      await cfService.revokeCertificate(cert.id);
-    } catch (revokeErr) {
-      console.error('[agents] failed to revoke orphan legacy mTLS cert:', String(revokeErr));
-    }
+    await revokeOrphanCertificateDurably(device, cert, parsedCert, cfService);
     writeAuditEvent(c, {
       orgId: device.orgId,
       actorType: 'agent',
