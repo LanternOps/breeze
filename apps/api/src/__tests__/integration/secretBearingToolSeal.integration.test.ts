@@ -41,6 +41,7 @@ import {
   aiMessages,
   aiSessions,
   aiToolExecutions,
+  auditLogs,
   delegantM365Connections,
   googleWorkspaceConnections,
   m365Connections,
@@ -54,10 +55,7 @@ import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth'
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
-import {
-  ACTION_INTENT_RESULT_AAD,
-  unsealTemporaryPassword,
-} from '../../services/actionIntents/resultSecrets';
+import { unsealTemporaryPassword } from '../../services/actionIntents/resultSecrets';
 import { encryptSecret } from '../../services/secretCrypto';
 import { PERMISSIONS } from '../../services/permissions';
 import { approvalRoutes } from '../../routes/approvals';
@@ -402,7 +400,15 @@ function makeActiveSession(s: Scenario, breezeSessionId: string): ActiveSession 
 interface ExecuteResult {
   intentId: string;
   plaintext: string;
-  sessionId: string;
+  /**
+   * The real seeded ai_sessions.id for the inline path — the chat session
+   * whose ai_messages/ai_tool_executions rows must be checked for a leak.
+   * null for the durable path, which never creates a chat session at all
+   * (releaseApprovedIntent has no session/chat concept); callers must NOT
+   * substitute a fabricated id here — a query keyed to a nonexistent id
+   * trivially "passes" without checking anything real.
+   */
+  sessionId: string | null;
 }
 
 /**
@@ -435,7 +441,7 @@ async function executeApprovedReset(
       });
       await findAndApprove(s, toolName, approverToken);
       await releaseApprovedIntent(intent.id);
-      return { intentId: intent.id, plaintext: capturedPassword, sessionId: randomUUID() };
+      return { intentId: intent.id, plaintext: capturedPassword, sessionId: null };
     }
 
     // inline
@@ -484,7 +490,7 @@ async function executeApprovedReset(
     });
     await findAndApprove(s, toolName, approverToken);
     await releaseApprovedIntent(intent.id);
-    return { intentId: intent.id, plaintext, sessionId: randomUUID() };
+    return { intentId: intent.id, plaintext, sessionId: null };
   }
 
   // inline — Delegant backend (no 'legacy-direct' m365Connections row seeded
@@ -576,18 +582,70 @@ describe('secret-bearing tool seal parity (real PG)', () => {
     // plan left unproven.
     const decrypted = unsealTemporaryPassword(row!.result as Record<string, unknown>);
     expect(decrypted).toBe(plaintext);
-    expect(ACTION_INTENT_RESULT_AAD).toBe('action_intents.result');
 
-    const messages = await withSystemDbAccessContext(() =>
-      db.select().from(aiMessages).where(eq(aiMessages.sessionId, sessionId)),
-    );
-    const executions = await withSystemDbAccessContext(() =>
-      db.select().from(aiToolExecutions).where(eq(aiToolExecutions.sessionId, sessionId)),
-    );
+    // The tool's own recorded arguments (the INPUT, not the result) must
+    // never carry the credential either — cheap, free assertion.
+    expect(JSON.stringify(row!.arguments)).not.toContain(plaintext);
+
+    // Scoped by org (never by a fabricated id): for the inline path `sessionId`
+    // is the real seeded ai_sessions.id, so this returns genuine rows. For the
+    // durable path there is no chat session at all — releaseApprovedIntent has
+    // no session/chat concept — so the join is legitimately empty; that empty
+    // result is asserted explicitly below rather than silently relied on.
+    const messages = sessionId
+      ? await withSystemDbAccessContext(() =>
+          db.select().from(aiMessages).where(eq(aiMessages.sessionId, sessionId)),
+        )
+      : await withSystemDbAccessContext(() =>
+          db
+            .select({ id: aiMessages.id, toolOutput: aiMessages.toolOutput, content: aiMessages.content })
+            .from(aiMessages)
+            .innerJoin(aiSessions, eq(aiMessages.sessionId, aiSessions.id))
+            .where(eq(aiSessions.orgId, s.orgId)),
+        );
+    const executions = sessionId
+      ? await withSystemDbAccessContext(() =>
+          db.select().from(aiToolExecutions).where(eq(aiToolExecutions.sessionId, sessionId)),
+        )
+      : await withSystemDbAccessContext(() =>
+          db
+            .select({ id: aiToolExecutions.id, toolOutput: aiToolExecutions.toolOutput })
+            .from(aiToolExecutions)
+            .innerJoin(aiSessions, eq(aiToolExecutions.sessionId, aiSessions.id))
+            .where(eq(aiSessions.orgId, s.orgId)),
+        );
+
+    if (sessionId) {
+      // Inline path: createSessionPostToolUse's DB writes are best-effort
+      // (wrapped in a try/catch that only console.errors on failure —
+      // aiAgentSdk.ts's tool_result-message insert and the aiToolExecutions
+      // update). If either silently failed, the "no plaintext" assertions
+      // below would become vacuously true over an empty result. Asserting
+      // real rows exist first converts the claim from "nothing found" to
+      // "rows exist and contain no plaintext".
+      expect(messages.length).toBeGreaterThan(0);
+      expect(executions.length).toBeGreaterThan(0);
+    } else {
+      // Durable path: releaseApprovedIntent never touches ai_messages/
+      // ai_tool_executions — there is no chat session to write to. Asserted
+      // explicitly so this is a documented, verified fact rather than an
+      // assumption baked silently into an unconditionally-empty query.
+      expect(messages).toHaveLength(0);
+      expect(executions).toHaveLength(0);
+    }
+
     expect(JSON.stringify(messages)).not.toContain(plaintext);
     expect(JSON.stringify(executions)).not.toContain(plaintext);
     expect(JSON.stringify(messages)).not.toContain('Temporary password:');
     expect(JSON.stringify(executions)).not.toContain('Temporary password:');
+
+    // Audit trail (action_intent.created / .executed / decide events) must
+    // never carry the credential either — cheap, free assertion the plan's
+    // global constraints name explicitly ("never in logs, audit details").
+    const auditRows = await withSystemDbAccessContext(() =>
+      db.select().from(auditLogs).where(eq(auditLogs.orgId, s.orgId)),
+    );
+    expect(JSON.stringify(auditRows)).not.toContain(plaintext);
   });
 
   it('reveals the credential exactly once', async () => {
