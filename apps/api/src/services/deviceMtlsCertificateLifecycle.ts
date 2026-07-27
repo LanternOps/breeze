@@ -47,6 +47,15 @@ import {
   type CloudflareMtlsErrorCategory,
 } from './cloudflareMtls';
 
+/**
+ * The type of a drizzle transaction handle (`tx` inside `db.transaction(async
+ * (tx) => ...)`), extracted the same way authLifecycle.ts's `Tx` does. Lets
+ * `queueCertificateRevocationCore` compose into a CALLER's transaction (e.g. a
+ * future activation-confirmation route that must activate-new/demote-old/
+ * update-legacy-columns atomically) instead of always opening its own.
+ */
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 const BASE_RETRY_DELAY_MS = 60_000; // 60s
 const MAX_RETRY_DELAY_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -99,12 +108,21 @@ export function __resetMtlsCertificateRevocationQueueForTests(): void {
  * must never contain a colon, repo-wide rule) so a duplicate enqueue for the
  * same row while a job is still waiting/active/delayed is deduped by BullMQ
  * itself rather than double-processed.
+ *
+ * `delayMs` lets a caller that just computed a backoff (e.g.
+ * `revokeCertificateNowOrEnqueue` after an inline provider failure) hand the
+ * SAME delay to BullMQ, so the worker doesn't hammer the provider again
+ * immediately. Callers that already know the row is due NOW (the five-minute
+ * sweep) omit it — `add()`'s default `delay` is 0.
  */
-export async function enqueueCertificateRevocationJob(certificateId: string): Promise<void> {
+export async function enqueueCertificateRevocationJob(certificateId: string, delayMs?: number): Promise<void> {
   await getMtlsCertificateRevocationQueue().add(
     'revoke',
     { certificateId },
-    { jobId: `mtls-revoke-${certificateId}` },
+    {
+      jobId: `mtls-revoke-${certificateId}`,
+      ...(delayMs !== undefined ? { delay: Math.max(0, delayMs) } : {}),
+    },
   );
 }
 
@@ -117,52 +135,74 @@ export async function enqueueCertificateRevocationJob(certificateId: string): Pr
  * to strand a device with zero certificates in flight. Returns whether the
  * transition actually happened.
  *
- * Intended to run as part of the caller's replacement-activation sequence
- * (e.g. demote the outgoing cert immediately before promoting the incoming
- * one to `active` — required ordering given the partial unique index allows
- * only one `active` row per device at a time).
+ * Takes an injected transaction handle so a caller with its own atomic
+ * sequence (e.g. Task 4's activation-confirmation route: activate the new
+ * cert + demote the old one + update the device's legacy mTLS columns, all
+ * atomically) can compose this INTO that transaction — required ordering
+ * anyway, since the partial unique index allows only one `active` row per
+ * device at a time, so the demote must land before the promote in the same
+ * transaction. `queueCertificateRevocation` below is a thin
+ * self-transacting wrapper for standalone callers.
+ *
+ * Sets `nextRevokeAttemptAt = now()` on the demotion write — the column has
+ * no DB default, and the sweep's due-query is `nextRevokeAttemptAt <= now()`
+ * (NULL never matches `lte`). Without this, a crash between this commit and
+ * the row's first outcome write would leave it `pending_revocation` but
+ * permanently invisible to the five-minute sweep.
+ */
+export async function queueCertificateRevocationCore(tx: Tx, certificateId: string): Promise<boolean> {
+  const [current] = await tx
+    .select({
+      id: deviceMtlsCertificates.id,
+      deviceId: deviceMtlsCertificates.deviceId,
+      state: deviceMtlsCertificates.state,
+    })
+    .from(deviceMtlsCertificates)
+    .where(eq(deviceMtlsCertificates.id, certificateId))
+    .limit(1);
+
+  if (!current || current.state !== 'active') {
+    return false;
+  }
+
+  const [replacement] = await tx
+    .select({ id: deviceMtlsCertificates.id })
+    .from(deviceMtlsCertificates)
+    .where(and(
+      eq(deviceMtlsCertificates.deviceId, current.deviceId),
+      ne(deviceMtlsCertificates.id, certificateId),
+      inArray(deviceMtlsCertificates.state, ['pending_activation', 'active']),
+    ))
+    .limit(1);
+
+  if (!replacement) {
+    return false;
+  }
+
+  const now = new Date();
+  const updated = await tx
+    .update(deviceMtlsCertificates)
+    .set({ state: 'pending_revocation', nextRevokeAttemptAt: now, updatedAt: now })
+    .where(and(
+      eq(deviceMtlsCertificates.id, certificateId),
+      eq(deviceMtlsCertificates.state, 'active'),
+    ))
+    .returning({ id: deviceMtlsCertificates.id });
+
+  return updated.length === 1;
+}
+
+/**
+ * Self-transacting wrapper around `queueCertificateRevocationCore` for
+ * standalone callers (and this module's own tests). Opens its own system-
+ * scoped transaction via `db.transaction(...)` — mirroring
+ * `authEmailWorker.ts`'s `withSystemDbAccessContext(() => db.transaction(...))`
+ * composition — rather than duplicating the guard+demote logic.
  */
 export async function queueCertificateRevocation(certificateId: string): Promise<boolean> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const [current] = await db
-      .select({
-        id: deviceMtlsCertificates.id,
-        deviceId: deviceMtlsCertificates.deviceId,
-        state: deviceMtlsCertificates.state,
-      })
-      .from(deviceMtlsCertificates)
-      .where(eq(deviceMtlsCertificates.id, certificateId))
-      .limit(1);
-
-    if (!current || current.state !== 'active') {
-      return false;
-    }
-
-    const [replacement] = await db
-      .select({ id: deviceMtlsCertificates.id })
-      .from(deviceMtlsCertificates)
-      .where(and(
-        eq(deviceMtlsCertificates.deviceId, current.deviceId),
-        ne(deviceMtlsCertificates.id, certificateId),
-        inArray(deviceMtlsCertificates.state, ['pending_activation', 'active']),
-      ))
-      .limit(1);
-
-    if (!replacement) {
-      return false;
-    }
-
-    const updated = await db
-      .update(deviceMtlsCertificates)
-      .set({ state: 'pending_revocation', updatedAt: new Date() })
-      .where(and(
-        eq(deviceMtlsCertificates.id, certificateId),
-        eq(deviceMtlsCertificates.state, 'active'),
-      ))
-      .returning({ id: deviceMtlsCertificates.id });
-
-    return updated.length === 1;
-  }));
+  return runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.transaction((tx) => queueCertificateRevocationCore(tx, certificateId)),
+  ));
 }
 
 async function markCertificateRevoked(certificateId: string): Promise<void> {
@@ -285,8 +325,13 @@ export async function revokeCertificateNowOrEnqueue(certificateId: string): Prom
     return;
   }
 
+  // Match the enqueue's delay to the backoff we just computed — without
+  // this, the worker would retry Cloudflare almost immediately after a
+  // 429/5xx, defeating computeNextRevokeAttemptAt on the very first hop.
+  const delayMs = Math.max(0, outcome.nextRevokeAttemptAt.getTime() - Date.now());
+
   try {
-    await enqueueCertificateRevocationJob(certificateId);
+    await enqueueCertificateRevocationJob(certificateId, delayMs);
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error(

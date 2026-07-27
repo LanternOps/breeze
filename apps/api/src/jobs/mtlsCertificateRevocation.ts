@@ -112,6 +112,13 @@ export async function sweepDueMtlsCertificateRevocations(): Promise<{
 
 async function enqueueRevocationBestEffort(certificateId: string): Promise<void> {
   try {
+    // No delay here, deliberately: every row this sweep enqueues was already
+    // selected because it's due NOW (next_revoke_attempt_at <= now(), or an
+    // expired pending_activation row just transitioned straight to due). The
+    // "match the enqueue delay to the backoff" logic belongs to the INLINE
+    // failure branch (revokeCertificateNowOrEnqueue), which enqueues right
+    // after computing a FUTURE backoff — that's the case where an undelayed
+    // enqueue would defeat the backoff on its first hop.
     await enqueueCertificateRevocationJob(certificateId);
   } catch (err) {
     // Best-effort: if Redis is down for the whole sweep pass, the row's

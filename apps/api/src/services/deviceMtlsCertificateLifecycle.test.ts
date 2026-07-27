@@ -7,11 +7,22 @@ const { fromEnvMock, revokeCertificateMock, captureExceptionMock, queueAddMock }
   queueAddMock: vi.fn(async (_name: string, _data: unknown, _opts?: Record<string, unknown>) => undefined),
 }));
 
-vi.mock('../db', () => ({
-  db: { select: vi.fn(), update: vi.fn() },
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+vi.mock('../db', () => {
+  const dbMock: { select: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; transaction: ReturnType<typeof vi.fn> } = {
+    select: vi.fn(),
+    update: vi.fn(),
+    // `db.transaction(fn)` just invokes `fn` with the SAME mocked db object as
+    // `tx` — queueCertificateRevocationCore's tx.select/tx.update calls then
+    // hit the exact same mockSelectOnce/mockUpdate wiring the rest of this
+    // file already uses.
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(dbMock)),
+  };
+  return {
+    db: dbMock,
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('./cloudflareMtls', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./cloudflareMtls')>();
@@ -42,6 +53,7 @@ import {
   computeNextRevokeAttemptAt,
   enqueueCertificateRevocationJob,
   queueCertificateRevocation,
+  queueCertificateRevocationCore,
   revokeCertificateNowOrEnqueue,
   __resetMtlsCertificateRevocationQueueForTests,
 } from './deviceMtlsCertificateLifecycle';
@@ -228,6 +240,20 @@ describe('revokeCertificateNowOrEnqueue', () => {
     expect(jobId).not.toContain(':');
   });
 
+  it('passes a BullMQ delay matching the computed backoff on the inline-failure enqueue (IMPORTANT 1) — first retry is NOT immediate', async () => {
+    mockSelectOnce([pendingRevocationRow({ revokeAttempts: 0 })]);
+    mockUpdate();
+    revokeCertificateMock.mockRejectedValue(new CloudflareMtlsError('revoke', 503, true, 'x'));
+
+    await revokeCertificateNowOrEnqueue(OLD_CERT_ID);
+
+    const opts = queueAddMock.mock.calls[0]![2] as { delay?: number };
+    expect(opts.delay).toBeDefined();
+    // First failure (priorAttempts=0) backs off ~60s — allow scheduling slop.
+    expect(opts.delay).toBeGreaterThan(55_000);
+    expect(opts.delay).toBeLessThanOrEqual(60_000);
+  });
+
   it('on Redis enqueue failure after the DB commit, forces next_revoke_attempt_at to now so the sweep repairs the handoff', async () => {
     mockSelectOnce([pendingRevocationRow()]);
     const firstUpdate = mockUpdate();
@@ -272,6 +298,25 @@ describe('queueCertificateRevocation', () => {
     expect(update.set).toHaveBeenCalledWith(expect.objectContaining({ state: 'pending_revocation' }));
   });
 
+  it('CRITICAL regression: the demotion write sets nextRevokeAttemptAt (no DB default; NULL never matches the sweep\'s lte due-query, so a crash right after this commit would otherwise strand the row invisibly)', async () => {
+    mockSelectOnce([{ id: OLD_CERT_ID, deviceId: DEVICE_ID, state: 'active' }]);
+    mockSelectOnce([{ id: NEW_CERT_ID }]);
+    const update = mockUpdate();
+    update.returning.mockResolvedValue([{ id: OLD_CERT_ID }]);
+
+    const before = Date.now();
+    await queueCertificateRevocation(OLD_CERT_ID);
+    const after = Date.now();
+
+    expect(update.set).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'pending_revocation',
+      nextRevokeAttemptAt: expect.any(Date),
+    }));
+    const setPayload = update.set.mock.calls[0]![0] as { nextRevokeAttemptAt: Date };
+    expect(setPayload.nextRevokeAttemptAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(setPayload.nextRevokeAttemptAt.getTime()).toBeLessThanOrEqual(after);
+  });
+
   it('no-ops when the row is not currently active', async () => {
     mockSelectOnce([{ id: OLD_CERT_ID, deviceId: DEVICE_ID, state: 'pending_revocation' }]);
 
@@ -289,6 +334,44 @@ describe('queueCertificateRevocation', () => {
     mockSelectOnce([]);
 
     await expect(queueCertificateRevocation(OLD_CERT_ID)).resolves.toBe(false);
+  });
+});
+
+describe('queueCertificateRevocationCore (injected tx — IMPORTANT 2)', () => {
+  it('composes into a CALLER-supplied transaction handle instead of opening its own', async () => {
+    // A standalone fake tx — deliberately NOT the module-level `db` mock —
+    // proving the core takes whatever transaction handle a caller (e.g. a
+    // future activation-confirmation route) passes in.
+    const forUpdateRows = [{ id: OLD_CERT_ID, deviceId: DEVICE_ID, state: 'active' }];
+    const replacementRows = [{ id: NEW_CERT_ID }];
+    let selectCall = 0;
+
+    const returning = vi.fn(async () => [{ id: OLD_CERT_ID }]);
+    const updateWhere = vi.fn(() => ({ returning }));
+    const updateSet = vi.fn(() => ({ where: updateWhere }));
+
+    const fakeTx = {
+      select: vi.fn(() => {
+        selectCall += 1;
+        const rows = selectCall === 1 ? forUpdateRows : replacementRows;
+        const limit = vi.fn(() => rows);
+        const where = vi.fn(() => ({ limit }));
+        return { from: vi.fn(() => ({ where })) };
+      }),
+      update: vi.fn(() => ({ set: updateSet })),
+    };
+
+    // db.select/db.update (the module-level mock) must NEVER be touched —
+    // everything routes through fakeTx.
+    await expect(queueCertificateRevocationCore(fakeTx as never, OLD_CERT_ID)).resolves.toBe(true);
+
+    expect(fakeTx.select).toHaveBeenCalledTimes(2);
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'pending_revocation',
+      nextRevokeAttemptAt: expect.any(Date),
+    }));
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 

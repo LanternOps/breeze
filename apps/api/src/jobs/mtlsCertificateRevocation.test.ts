@@ -45,7 +45,14 @@ vi.mock('../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, lte: vi.fn(actual.lte) };
+});
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { lte } from 'drizzle-orm';
+import { deviceMtlsCertificates } from '../db/schema';
 import { CloudflareMtlsError } from '../services/cloudflareMtls';
 import {
   initializeMtlsCertificateRevocationWorker,
@@ -189,6 +196,26 @@ describe('sweepDueMtlsCertificateRevocations', () => {
       { certificateId: CERT_ID },
       expect.objectContaining({ jobId: expect.any(String) }),
     );
+  });
+
+  it('IMPORTANT 1 (audit): the sweep enqueues WITHOUT a delay — rows found here are already due, unlike the inline-failure branch which intentionally delays', async () => {
+    mockSelectOnce([{ id: CERT_ID }]);
+    mockUpdate([]);
+
+    await sweepDueMtlsCertificateRevocations();
+
+    const opts = queueAddMock.mock.calls[0]![2] as { delay?: number };
+    expect(opts.delay).toBeUndefined();
+  });
+
+  it('CRITICAL regression: the due-query is built from lte(nextRevokeAttemptAt, now) — the exact column queueCertificateRevocationCore\'s demotion write now populates (a NULL there would never match `lte` and would permanently hide the row from this sweep)', async () => {
+    mockSelectOnce([{ id: CERT_ID }]);
+    mockUpdate([]);
+
+    await sweepDueMtlsCertificateRevocations();
+
+    const lteCalls = vi.mocked(lte).mock.calls;
+    expect(lteCalls.some(([column]) => column === deviceMtlsCertificates.nextRevokeAttemptAt)).toBe(true);
   });
 
   it('transitions expired pending_activation rows to pending_revocation and queues them, without a separate touch of any active row', async () => {
