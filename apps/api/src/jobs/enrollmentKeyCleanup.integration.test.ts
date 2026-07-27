@@ -23,6 +23,12 @@
  *   (c) token fully consumed (>= max_usage) -> key is DELETED
  *   (d) no bootstrap tokens at all          -> key is DELETED (regression
  *       guard on the pre-existing behaviour)
+ *
+ * Cases (e)-(g) pin the `deployment_invites` cascade lifetime (#2821). That
+ * issue asked whether invites need the same exemption bootstrap tokens got.
+ * They do NOT, and these tests are what makes that answer durable rather than
+ * a one-time reading of the code — see the describe block's own comment for
+ * the invariant and for the two ways a future change could break it.
  */
 import '../__tests__/integration/setup';
 
@@ -64,7 +70,14 @@ vi.mock('../services/redis', () => ({
 }));
 
 import { db, withSystemDbAccessContext } from '../db';
-import { enrollmentKeys, installerBootstrapTokens, organizations, partners, sites } from '../db/schema';
+import {
+  deploymentInvites,
+  enrollmentKeys,
+  installerBootstrapTokens,
+  organizations,
+  partners,
+  sites,
+} from '../db/schema';
 import { createEnrollmentKeyCleanupWorker } from './enrollmentKeyCleanup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -131,6 +144,54 @@ async function tokenRowExists(id: string): Promise<boolean> {
       .from(installerBootstrapTokens)
       .where(eq(installerBootstrapTokens.id, id));
     return !!row;
+  });
+}
+
+async function inviteRowExists(id: string): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ id: deploymentInvites.id })
+      .from(deploymentInvites)
+      .where(eq(deploymentInvites.id, id));
+    return !!row;
+  });
+}
+
+/**
+ * Seed an `enrollment_keys` row with the given expiry plus a
+ * `deployment_invites` row cascading off it — the exact pair the MCP tool
+ * `send_deployment_invites` creates (mintChildEnrollmentKey -> insert invite
+ * referencing that key's id).
+ */
+async function createInviteFixture(
+  ids: { partnerId: string; orgId: string; siteId: string },
+  unique: string,
+  expiresAt: Date,
+): Promise<{ keyId: string; inviteId: string }> {
+  return withSystemDbAccessContext(async () => {
+    const [key] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId: ids.orgId,
+        siteId: ids.siteId,
+        name: `mcp-invite invitee-${unique}@example.com`,
+        key: `sweep-inv-key-${unique}`,
+        shortCode: unique.slice(-10),
+        expiresAt,
+        maxUsage: 1,
+      })
+      .returning({ id: enrollmentKeys.id });
+    const [invite] = await db
+      .insert(deploymentInvites)
+      .values({
+        partnerId: ids.partnerId,
+        orgId: ids.orgId,
+        enrollmentKeyId: key!.id,
+        invitedEmail: `invitee-${unique}@example.com`,
+        status: 'sent',
+      })
+      .returning({ id: deploymentInvites.id });
+    return { keyId: key!.id, inviteId: invite!.id };
   });
 }
 
@@ -279,6 +340,105 @@ describe('enrollment-key cleanup sweep — live bootstrap token exemption (#2775
       await runSweep();
 
       expect(await keyRowExists(keyId)).toBe(false);
+    } finally {
+      await cleanupFixture(ids);
+    }
+  });
+});
+
+/**
+ * #2821 asked whether `deployment_invites` — which also carries ON DELETE
+ * CASCADE against `enrollment_keys` — needs the same exemption the
+ * bootstrap-token case (a)-(d) above got for #2775.
+ *
+ * It does not, and the reason is structural rather than incidental. #2775 was
+ * reachable because an `installer_bootstrap_tokens` row has its OWN
+ * `expires_at`, decoupled from the transient 60-minute parent key it hangs
+ * off: the child could still be live long after the parent aged past the
+ * purge cutoff. `deployment_invites` has NO expiry column at all
+ * (db/schema/deploymentInvites.ts) — an invite is redeemable exactly while
+ * its one `enrollment_keys` row is, because both `peekShortCode` and
+ * `redeemShortCode` (routes/enrollmentKeys.ts) gate on that same
+ * `expires_at`. And the sweep's cutoff is EXPIRY-relative
+ * (`expires_at < now() - purgeAfterDays`), never age-relative, with
+ * `getPurgeAfterDays()` clamping to >= 1. So the purge can only ever reach a
+ * key that stopped working at least a full grace period earlier, whatever
+ * TTL the invite was minted with.
+ *
+ * The invariant these three cases pin: THE SWEEP NEVER DELETES AN ENROLLMENT
+ * KEY A DEPLOYMENT INVITE COULD STILL REDEEM. Two plausible future changes
+ * would break it and are exactly what (e)/(f) are here to catch — making the
+ * purge age-relative (keying on `created_at`), or giving `deployment_invites`
+ * its own independent `expires_at` the way bootstrap tokens have. (g) is the
+ * control: it proves the CASCADE is genuinely wired, so (e)/(f) can't pass
+ * vacuously because invites are somehow untouched by key deletion.
+ */
+describe('enrollment-key cleanup sweep — deployment_invites cascade lifetime (#2821, real Postgres)', () => {
+  runDb('(e) a LIVE invite key survives the sweep even when its TTL far exceeds the purge window', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ids = await createFixture(unique);
+    try {
+      // 30-day TTL — deliberately much longer than both the MCP tool's
+      // 7-day CHILD_KEY_TTL_SECONDS and the 7-day purge grace period. This
+      // is the precise scenario #2821 hypothesised as a silent-death bug.
+      // It is not one: the cutoff is expiry-relative, so a key that has not
+      // expired is unreachable by the DELETE no matter how long it lives.
+      const { keyId, inviteId } = await createInviteFixture(
+        ids,
+        unique,
+        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      );
+
+      await runSweep();
+
+      expect(await keyRowExists(keyId)).toBe(true);
+      expect(await inviteRowExists(inviteId)).toBe(true);
+    } finally {
+      await cleanupFixture(ids);
+    }
+  });
+
+  runDb('(f) an invite key that expired INSIDE the grace window survives with its invite row intact', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ids = await createFixture(unique);
+    try {
+      // Expired 1 day ago: already unredeemable, but not yet past the
+      // 7-day grace period, so the row is still held for a later sweep.
+      const { keyId, inviteId } = await createInviteFixture(
+        ids,
+        unique,
+        new Date(Date.now() - 24 * 60 * 60 * 1000),
+      );
+
+      await runSweep();
+
+      expect(await keyRowExists(keyId)).toBe(true);
+      expect(await inviteRowExists(inviteId)).toBe(true);
+    } finally {
+      await cleanupFixture(ids);
+    }
+  });
+
+  runDb('(g) an invite key expired BEYOND the grace window is purged and cascades its invite row away', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ids = await createFixture(unique);
+    try {
+      // Expired 10 days ago — 3 days past the cutoff, and 10 days after the
+      // invite stopped being redeemable. Deleting it is correct, not the
+      // silent death #2821 was worried about. Asserting the invite row goes
+      // WITH it is what proves the ON DELETE CASCADE is real, which is what
+      // makes (e) and (f) meaningful assertions rather than vacuous ones.
+      const { keyId, inviteId } = await createInviteFixture(
+        ids,
+        unique,
+        EXPIRED_PAST_CUTOFF,
+      );
+      expect(await inviteRowExists(inviteId)).toBe(true);
+
+      await runSweep();
+
+      expect(await keyRowExists(keyId)).toBe(false);
+      expect(await inviteRowExists(inviteId)).toBe(false);
     } finally {
       await cleanupFixture(ids);
     }
