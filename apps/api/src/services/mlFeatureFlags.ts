@@ -163,32 +163,46 @@ export async function resolveMlFeatureFlagForOrg(
   // partner-axis `partners` table — the invisible partner row erased the ENTIRE
   // result row, and the function reported every ML feature as
   // `{ enabled: false, source: 'org_not_found' }`, a statement that is false on
-  // both counts. Pinned by the caller-supplied orgId; the join only widens which
-  // COLUMNS resolve, not which org is selected.
-  return readWithPartnerAxisVisibility(async () => {
-    const [row] = await db
-      .select({
-        orgSettings: organizations.settings,
-        orgType: organizations.type,
-        partnerSettings: partners.settings,
-        partnerType: partners.type,
-      })
-      .from(organizations)
-      .innerJoin(partners, eq(organizations.partnerId, partners.id))
-      .where(eq(organizations.id, orgId))
-      .limit(1);
+  // both counts.
+  //
+  // The org read stays in the CALLER'S context and the partner read is escaped
+  // separately (the split `effectiveSettings.ts` already uses). Escaping the
+  // whole `organizations INNER JOIN partners` instead would make the ORG row
+  // selectable system-wide, demoting org isolation on this path to app-layer-only
+  // — which CLAUDE.md forbids — for a caller-supplied `?orgId=`. RLS must stay
+  // the thing that decides WHICH org resolves; the escape only makes the
+  // partner's COLUMNS legible.
+  const [org] = await db
+    .select({ settings: organizations.settings, type: organizations.type, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
 
-    if (!row) {
-      const defaultEnabled = defaultMlFeatureFlagValue(flag);
-      return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
-    }
+  if (!org) {
+    const defaultEnabled = defaultMlFeatureFlagValue(flag);
+    return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
+  }
 
-    return resolveMlFeatureFlag(flag, {
-      orgSettings: row.orgSettings,
-      orgType: row.orgType,
-      partnerSettings: row.partnerSettings,
-      partnerType: row.partnerType,
-    });
+  const [partner] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ settings: partners.settings, type: partners.type })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId))
+      .limit(1)
+  );
+
+  // Preserves the old innerJoin semantics: no partner row => treat as
+  // org_not_found rather than silently resolving against partner defaults.
+  if (!partner) {
+    const defaultEnabled = defaultMlFeatureFlagValue(flag);
+    return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
+  }
+
+  return resolveMlFeatureFlag(flag, {
+    orgSettings: org.settings,
+    orgType: org.type,
+    partnerSettings: partner.settings,
+    partnerType: partner.type,
   });
 }
 
@@ -209,8 +223,26 @@ export async function shouldProduceMlOutput(
 export async function resolveAllMlFeatureFlagsForOrg(
   orgId: string,
 ): Promise<Record<MlFeatureFlagName, MlFeatureFlagResolution>> {
-  const entries = await Promise.all(
-    ML_FEATURE_FLAGS.map(async (flag) => [flag, await resolveMlFeatureFlagForOrg(orgId, flag)] as const),
+  // ONE system context for the whole fan-out (#2822 review). There are 11
+  // ML_FEATURE_FLAGS and this resolves them concurrently, so leaving each
+  // `resolveMlFeatureFlagForOrg` to take its own partner-axis escape would open
+  // 11 SIMULTANEOUS `baseDb.transaction`s — 11 pooled connections — on top of
+  // the request's own held connection, for a single
+  // `GET /config/ml-feature-flags`. Against the 25-connection ceiling that is a
+  // self-deadlock: postgres-js has no acquire timeout, so the requests hang
+  // rather than error (#1105 class). Entering once here makes every nested
+  // escape observe `scope === 'system'` and take its skip branch, so the whole
+  // fan-out costs exactly one extra connection.
+  //
+  // The org read inside each resolver is then system-scoped too. That is safe
+  // ONLY because this function takes a single `orgId` that its callers have
+  // already gated (routes/config.ts checks `auth.canAccessOrg`) — it is not a
+  // per-flag widening. Callers that resolve a single flag keep the org read
+  // under RLS.
+  const entries = await readWithPartnerAxisVisibility(() =>
+    Promise.all(
+      ML_FEATURE_FLAGS.map(async (flag) => [flag, await resolveMlFeatureFlagForOrg(orgId, flag)] as const),
+    ),
   );
   return Object.fromEntries(entries) as Record<MlFeatureFlagName, MlFeatureFlagResolution>;
 }

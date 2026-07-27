@@ -404,43 +404,45 @@ function partnerTimezoneFrom(
 }
 
 export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
-  // System context (#2822). The leftJoin below keeps the DEVICE row alive when
-  // the partner is RLS-invisible, but it does not make the partner's timezone
-  // legible: under an org-scoped caller `partnerTimezone`/`partnerSettings`
-  // simply came back null and the chain silently fell through to
-  // site -> org -> 'UTC'. Every caller of this resolver
-  // (resolvePatchConfigDetailsForDevice, resolveBackupConfigForDevice,
-  // resolveAllBackupAssignedDevices) is reached from
-  // requireScope('organization','partner','system') routes AND from the
-  // system-scoped scheduler — so the SAME device resolved a different
+  // The device/site/org half stays in the CALLER'S context so RLS still decides
+  // which device is legible; only the partner row is escaped (#2822).
+  //
+  // leftJoin (not inner) on sites: a device may have no site. The `partners`
+  // join was previously here as a leftJoin so that an RLS-invisible partner
+  // could not drop the whole device row (#1318) — but that only prevented a
+  // regression, it never made the partner's timezone legible. Under an
+  // org-scoped caller `partnerTimezone`/`partnerSettings` simply came back null
+  // and the chain silently fell through to site -> org -> 'UTC'. Callers reach
+  // this from requireScope('organization','partner','system') routes AND from
+  // the system-scoped scheduler, so the SAME device resolved a DIFFERENT
   // maintenance window depending on who triggered the job, with no error
-  // anywhere. `withPartnerWideVisibility` (same skip-when-system shape) is
-  // already applied to the sibling policy joins in this file; this resolver was
-  // missed. Pinned by the caller-supplied deviceId — device visibility itself is
-  // still gated upstream by the caller's own context.
-  const [row] = await readWithPartnerAxisVisibility(() => db
+  // anywhere.
+  const [row] = await db
     .select({
       siteTimezone: sites.timezone,
       orgSettings: organizations.settings,
-      partnerTimezone: partners.timezone,
-      partnerSettings: partners.settings,
+      partnerId: organizations.partnerId,
     })
     .from(devices)
     .innerJoin(organizations, eq(devices.orgId, organizations.id))
-    // leftJoin (not inner) on partners: the partners SELECT RLS policy is
-    // breeze_has_partner_access(id), which is FALSE for an ORG-scoped request
-    // (computeAccessiblePartnerIds returns [] for org scope). An inner join
-    // would make the partner row RLS-invisible and drop the ENTIRE device row,
-    // sending resolveDeviceTimezone down its missing-row branch -> 'UTC', a
-    // regression of the prior site->org->UTC behavior. With a left join the
-    // device row survives, partnerTimezone is simply null, and
-    // resolveEffectiveTimezone falls through site -> org -> UTC. For
-    // system/partner-scoped requests the partner row is visible and contributes
-    // to the chain as intended (#1318).
-    .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(eq(devices.id, deviceId))
-    .limit(1));
+    .limit(1);
+
+  // Escaped separately, pinned to the partnerId of an `organizations` row the
+  // caller could already see. Escaping the whole join instead would make the
+  // DEVICE row selectable system-wide, demoting device isolation on this path
+  // to app-layer-only — which CLAUDE.md forbids — even though today's three
+  // callers all resolve the device under the caller's context first.
+  const [partner] = row?.partnerId
+    ? await readWithPartnerAxisVisibility(() =>
+      db
+        .select({ timezone: partners.timezone, settings: partners.settings })
+        .from(partners)
+        .where(eq(partners.id, row.partnerId))
+        .limit(1)
+    )
+    : [];
 
   const orgTimezone =
     row?.orgSettings && typeof row.orgSettings === 'object'
@@ -461,7 +463,7 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
   return resolveEffectiveTimezone({
     siteTz: row?.siteTimezone,
     orgTz: typeof orgTimezone === 'string' ? orgTimezone : null,
-    partnerTz: partnerTimezoneFrom(row?.partnerTimezone, row?.partnerSettings),
+    partnerTz: partnerTimezoneFrom(partner?.timezone, partner?.settings),
   });
 }
 
@@ -1606,14 +1608,29 @@ export async function resolveAllBackupAssignedDevices(
     }
   }
 
-  const resolved = await Promise.all(
-    Array.from(seen.values()).map(async (entry) => ({
-      ...entry,
-      resolvedTimezone: await resolveDeviceTimezone(entry.deviceId),
-    }))
+  // ONE system context for the whole fan-out (#2822). `resolveDeviceTimezone`
+  // now takes a partner-axis escape of its own, and each escape opens a fresh
+  // `baseDb.transaction` on its own pooled connection. Left bare inside this
+  // `Promise.all` that is N SIMULTANEOUS connection acquires — one per assigned
+  // device — on top of the caller's own held request transaction. This resolver
+  // is called from org-scoped REQUEST routes (routes/backup/{jobs,dashboard,
+  // hyperv,mssql}.ts, routes/backup/readinessCalculator.ts), where the
+  // skip-when-system branch does NOT fire, so an org with a few dozen
+  // backup-assigned devices loading the backup dashboard would exhaust the
+  // 25-connection pool — and postgres-js has no acquire timeout, so it hangs
+  // rather than erroring (#1105 class).
+  //
+  // Entering the system context ONCE here makes every nested
+  // `readWithPartnerAxisVisibility` observe `scope === 'system'` and take its
+  // skip branch, so the whole fan-out costs exactly one extra connection
+  // regardless of device count. Device expansion above already happened in the
+  // caller's context, so RLS still decided which devices are in `seen`.
+  const entries = Array.from(seen.values());
+  const timezones = await readWithPartnerAxisVisibility(() =>
+    Promise.all(entries.map((entry) => resolveDeviceTimezone(entry.deviceId)))
   );
 
-  return resolved;
+  return entries.map((entry, i) => ({ ...entry, resolvedTimezone: timezones[i]! }));
 }
 
 export async function resolveBackupProtectionForDevice(

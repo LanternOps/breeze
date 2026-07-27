@@ -46,13 +46,39 @@ import {
 
 const ORIGINAL_ENV = { ...process.env };
 
-function mockOrgSettingsRow(row: unknown | null) {
+/**
+ * `resolveMlFeatureFlagForOrg` issues TWO queries (#2822): the `organizations`
+ * read stays in the CALLER'S context so RLS still decides which org resolves,
+ * and only the partner-axis `partners` read is escaped to a system context.
+ * (Escaping the old `organizations INNER JOIN partners` wholesale would have
+ * made any org id selectable system-wide for a caller-supplied `?orgId=`.)
+ *
+ * The fixture keeps the original single-row shape and this helper fans it out
+ * across the two calls, so the existing cases read unchanged.
+ */
+function mockOrgSettingsRow(row: (Record<string, unknown>) | null) {
+  // 1. organizations — caller context.
   dbSelect.mockReturnValueOnce({
     from: vi.fn(() => ({
-      innerJoin: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue(row ? [row] : []),
-        })),
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(
+          row
+            ? [{ settings: row.orgSettings, type: row.orgType, partnerId: 'partner-1' }]
+            : []
+        ),
+      })),
+    })),
+  } as any);
+
+  if (!row) return; // no org => the partner read is never issued
+
+  // 2. partners — inside readWithPartnerAxisVisibility.
+  dbSelect.mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue([
+          { settings: row.partnerSettings, type: row.partnerType },
+        ]),
       })),
     })),
   } as any);

@@ -9,6 +9,11 @@ const { authMiddlewareMock, requireScopeMock, requirePermissionMock, requireMfaM
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+// The partner device-limit check reads `partners` through
+// `readWithPartnerAxisVisibility` (#2822), which needs these three context
+// helpers. Without them vitest throws "No <name> export is defined on the mock"
+// the moment a test drives a non-null partnerId — which is exactly how the cap
+// tests below stay honest rather than silently skipping the code.
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -17,6 +22,13 @@ vi.mock('../../db', () => ({
     update: vi.fn(),
     delete: vi.fn(),
   },
+  getCurrentDbAccessContext: vi.fn(() => ({
+    scope: 'organization',
+    orgId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    accessibleOrgIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+  })),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -128,23 +140,46 @@ function mockSelectRows(rows: any[]) {
 }
 
 function mockTransactionSuccess(insertedRow: any) {
-  vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
-    const tx = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: ORG_ID, partnerId: null }]),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([insertedRow]),
-        }),
-      }),
-    };
-    return cb(tx);
+  const txInsert = vi.fn().mockReturnValue({
+    values: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([insertedRow]),
+    }),
   });
+  vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb({ insert: txInsert }));
+  return { txInsert };
+}
+
+/** Stages the target-org lookup that precedes the device-limit check. */
+function mockTargetOrg(partnerId: string | null) {
+  mockSelectRows([{ id: ORG_ID, partnerId }]);
+}
+
+/**
+ * Stages the reads the partner device-limit block makes inside its system
+ * context (#2822): the `partners.maxDevices` lookup, then — only when a cap
+ * exists — the partner-wide active-device count.
+ */
+function mockPartnerCap(opts: { maxDevices: number | null; activeCount?: number }) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue([{ maxDevices: opts.maxDevices }]),
+      })),
+    })),
+  } as any);
+
+  if (opts.maxDevices == null) return;
+
+  // The `partnerOrgIds` subquery: db.select().from().where(), never awaited.
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({ where: vi.fn(() => ({})) })),
+  } as any);
+  // The count: db.select().from().where() awaited directly (no .limit()).
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn().mockResolvedValue([{ count: opts.activeCount ?? 0 }]),
+    })),
+  } as any);
 }
 
 /** Mocks `db.insert(...).values(...)` resolving successfully (handle persist). */
@@ -210,10 +245,114 @@ describe('POST /devices/provision', () => {
     });
   });
 
+  // BEHAVIOUR CHANGE (#2822). The partner `max_devices` cap used to be INERT for
+  // org-scoped callers: `partners` is partner-axis, an org-scoped caller has
+  // accessiblePartnerIds = [], the read returned zero rows, `maxDevices`
+  // collapsed to null and the whole block was skipped. So the same action was
+  // capped for a partner admin and uncapped for an org admin — a silent,
+  // scope-dependent bypass of a billing/entitlement control. These tests pin the
+  // enforcement that now actually happens.
+  describe('partner device limit', () => {
+    const PARTNER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+    it('rejects with 403 DEVICE_LIMIT_REACHED when the partner fleet is at the cap', async () => {
+      mockSelectRows([{ id: SITE_ID }]);   // site-in-org check
+      mockSelectRows([]);                   // hostname collision (none)
+      mockTargetOrg(PARTNER_ID);
+      mockPartnerCap({ maxDevices: 5, activeCount: 5 });
+      const { txInsert } = mockTransactionSuccess({ id: 'should-not-be-created' });
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        code: 'DEVICE_LIMIT_REACHED',
+        currentDevices: 5,
+        maxDevices: 5,
+      });
+      // The cap is checked BEFORE the insert transaction opens, so no device
+      // row is created and no transaction is even started.
+      expect(txInsert).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('allows provisioning while the partner fleet is below the cap', async () => {
+      mockSelectRows([{ id: SITE_ID }]);
+      mockSelectRows([]);
+      mockTargetOrg(PARTNER_ID);
+      mockPartnerCap({ maxDevices: 5, activeCount: 4 });
+      mockTransactionSuccess({
+        id: 'device-under-cap',
+        orgId: ORG_ID,
+        siteId: SITE_ID,
+        hostname: BASE_BODY.hostname,
+        agentId: 'agent-prov-1',
+        status: 'pending',
+      });
+      mockInsertSuccess();
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('skips the fleet count entirely when the partner has no cap set', async () => {
+      mockSelectRows([{ id: SITE_ID }]);
+      mockSelectRows([]);
+      mockTargetOrg(PARTNER_ID);
+      // maxDevices null → mockPartnerCap stages ONLY the partners lookup. If the
+      // resolver did not short-circuit it would consume the credential-handle
+      // insert mock next and the request would not reach 201 — so this asserts
+      // the early return, not just the status code.
+      mockPartnerCap({ maxDevices: null });
+      mockTransactionSuccess({
+        id: 'device-uncapped',
+        orgId: ORG_ID,
+        siteId: SITE_ID,
+        hostname: BASE_BODY.hostname,
+        agentId: 'agent-prov-1',
+        status: 'pending',
+      });
+      mockInsertSuccess();
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('404s when the target org row does not resolve', async () => {
+      mockSelectRows([{ id: SITE_ID }]);
+      mockSelectRows([]);
+      mockSelectRows([]); // target org lookup finds nothing
+
+      const res = await app.request('/devices/provision', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BASE_BODY),
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe('happy path', () => {
     it('creates a device and returns a one-time fetch URL (no inline secrets)', async () => {
       mockSelectRows([{ id: SITE_ID }]);     // site-in-org check
       mockSelectRows([]);                     // hostname collision check (none)
+      mockTargetOrg(null);                    // target org (no partner → no cap)
       mockTransactionSuccess({
         id: 'device-prov-id',
         orgId: ORG_ID,
@@ -269,6 +408,7 @@ describe('POST /devices/provision', () => {
         setAuth();
         mockSelectRows([{ id: SITE_ID }]);
         mockSelectRows([]);
+        mockTargetOrg(null);
         mockTransactionSuccess({
           id: `device-${os}`,
           orgId: ORG_ID,
@@ -405,6 +545,7 @@ describe('POST /devices/provision', () => {
       setAuth({ allowedSiteIds: [SITE_ID] });
       mockSelectRows([{ id: SITE_ID }]); // site-in-org check
       mockSelectRows([]);                 // hostname collision (none)
+      mockTargetOrg(null);                // target org (no partner → no cap)
       mockTransactionSuccess({
         id: 'device-in-scope',
         orgId: ORG_ID,
@@ -431,6 +572,7 @@ describe('POST /devices/provision', () => {
       setAuth(); // no allowedSiteIds → unrestricted
       mockSelectRows([{ id: SITE_ID }]);
       mockSelectRows([]);
+      mockTargetOrg(null);
       mockTransactionSuccess({
         id: 'device-unrestricted',
         orgId: ORG_ID,

@@ -1394,20 +1394,23 @@ async function dispatchBootstrapAuthTool(
   // success. The narrow escalation of this one pinned single-column lookup is
   // deliberate: it does NOT widen accessiblePartnerIds, which those middlewares
   // withhold on purpose.
-  let partnerAdminEmail = '';
-  try {
-    const partnerId = auth.partnerId;
-    const [row] = await readWithPartnerAxisVisibility(() =>
-      db
-        .select({ billingEmail: partners.billingEmail })
-        .from(partners)
-        .where(eq(partners.id, partnerId))
-        .limit(1)
-    );
-    partnerAdminEmail = row?.billingEmail ?? '';
-  } catch (err) {
-    console.error('[MCP] Failed to load partner billing email:', err);
-  }
+  //
+  // Deliberately NOT wrapped in a try/catch. The catch that used to be here
+  // never actually fired — RLS returns zero rows without raising, so the ''
+  // came from `row?.billingEmail ?? ''`, not from an exception. Now that the
+  // read is correct, the only way it can throw is a genuine DB fault, and
+  // swallowing that would degrade to the exact same '' the rest of this fix
+  // exists to eliminate. A DB fault is not a business outcome; let it surface
+  // through the JSON-RPC error path.
+  const partnerId = auth.partnerId;
+  const [row] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ billingEmail: partners.billingEmail })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1)
+  );
+  const partnerAdminEmail = row?.billingEmail ?? '';
 
   const bootstrapCtx = {
     ip: requestIp(c),

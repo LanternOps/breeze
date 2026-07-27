@@ -215,10 +215,21 @@ export async function assertApprovalAssurance(input: {
   // 2. Apply the partner policy floor (raise-only) to the REQUIRED level, then
   //    enforce — but ONLY for an approve. A deny/report is always allowed
   //    through (spec §12 fail-safe): a technician must never be unable to REFUSE.
-  const policy = await loadPartnerPolicy(input.partnerId ?? null);
+  //
+  // The policy load is gated on `isApprove` so the fail-safe actually holds
+  // (#2822 review). `loadPartnerPolicy` now takes a system-context DB escape,
+  // which introduces a real failure mode (pool exhaustion, transaction abort)
+  // where previously the org-scoped read just returned zero rows. Both callers
+  // — routes/pam.ts and routes/approvals.ts — re-classify ANY throw out of this
+  // function as an assertion failure and return 401, so loading the policy
+  // unconditionally would make a transient DB fault block a technician from
+  // REFUSING a request. That is exactly the state spec §12 says must never
+  // occur. A deny therefore never touches the partner policy at all.
+  const isApprove = (input.decision ?? 'approved') === 'approved';
+  const policy = isApprove ? await loadPartnerPolicy(input.partnerId ?? null) : null;
   decision.requiredLevel = requiredAssurance(input.riskTier, policy?.floorOverrides ?? null);
 
-  if ((input.decision ?? 'approved') === 'approved' && decision.decidedAssuranceLevel < decision.requiredLevel) {
+  if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
     if (isEnforcing(policy, new Date())) {
       throw new StepUpRequiredError(decision.requiredLevel, decision.decidedAssuranceLevel);
     }

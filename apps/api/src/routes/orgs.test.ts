@@ -122,7 +122,13 @@ vi.mock('../db', () => ({
     })
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // PATCH /orgs/organizations/:id calls assertNotLocked, whose partner-axis
+  // read now goes through readWithPartnerAxisVisibility (#2822). That helper
+  // probes the ambient scope, so the factory must export it — `undefined`
+  // (no ambient context) makes it take the escape, which these pass-through
+  // stubs then flatten.
+  getCurrentDbAccessContext: vi.fn(() => undefined)
 }));
 
 vi.mock('../services/ticketConfigService', () => ({

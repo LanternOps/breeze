@@ -45,30 +45,39 @@ import {
   patchPolicies,
   sites,
 } from '../../db/schema';
+import { buildDbAccessContext } from '../../middleware/auth';
 import { loadPartnerPolicy, isEnforcing } from '../../services/authenticatorPolicy';
 import { resolveDeviceTimezone } from '../../services/featureConfigResolver';
-import { getEffectiveOrgSettings } from '../../services/effectiveSettings';
+import { getEffectiveOrgSettings, assertNotLocked } from '../../services/effectiveSettings';
 import { resolveMlFeatureFlagForOrg } from '../../services/mlFeatureFlags';
 import { resolvePatchPolicyReference } from '../../services/configPolicyPatching';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 /**
- * Exactly what `buildDbAccessContext` produces for a JWT whose scope is
- * 'organization': `accessiblePartnerIds` is `[]` even though `currentPartnerId`
- * is populated. `partners` has no `breeze_current_partner_id()` read branch
- * (apps/api/migrations/2026-04-11-partners-rls.sql), so that GUC buys nothing
- * on this axis — which is precisely the trap.
+ * The context a real org-scoped JWT request runs under.
+ *
+ * Built with the PRODUCTION builder rather than a hand-rolled literal, on
+ * purpose: `buildDbAccessContext` is what `authMiddleware` calls, so if
+ * `computeAccessiblePartnerIds` ever changes for org scope this fixture changes
+ * with it. A literal would keep asserting `accessiblePartnerIds: []` forever and
+ * every test below would go on passing against a context production no longer
+ * produces — the same hand-rolled-context drift this PR fixes in
+ * `aiAgentSdkTools.ts`.
+ *
+ * Note it yields `accessiblePartnerIds: []` even though `currentPartnerId` IS
+ * populated: `partners` has no `breeze_current_partner_id()` read branch
+ * (apps/api/migrations/2026-04-11-partners-rls.sql), so that GUC buys nothing on
+ * this axis — which is precisely the trap.
  */
 function orgContext(orgId: string, partnerId: string): DbAccessContext {
-  return {
+  return buildDbAccessContext({
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
-    accessiblePartnerIds: [],
+    partnerId,
     userId: null,
-    currentPartnerId: partnerId,
-  };
+  });
 }
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -268,6 +277,29 @@ describe('#2822 — getEffectiveOrgSettings', () => {
     expect(result.effective.security).toMatchObject({ sessionTimeoutMinutes: 15 });
     // The partner set it, so the field must come back LOCKED.
     expect(result.locked).toContain('security.sessionTimeoutMinutes');
+  });
+});
+
+describe('#2822 — assertNotLocked (a WRITE gate, so a wrong answer is worse than a read)', () => {
+  runDb('an org-scoped caller is still blocked from writing a partner-LOCKED field', async () => {
+    // Reached from PUT /ai/budget, which is
+    // requireScope('organization','partner','system'). Pre-fix the partner read
+    // returned zero rows and this threw 404 "Partner not found" before it could
+    // decide anything — so the gate never actually ran for org callers. Now it
+    // resolves and correctly refuses: the partner set security.sessionTimeoutMinutes.
+    await expect(
+      withDbAccessContext(orgContext(fx.orgId, fx.partnerId), () =>
+        assertNotLocked(fx.orgId, 'security', ['sessionTimeoutMinutes']),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  runDb('an org-scoped caller may still write a field the partner has NOT set', async () => {
+    await expect(
+      withDbAccessContext(orgContext(fx.orgId, fx.partnerId), () =>
+        assertNotLocked(fx.orgId, 'security', ['someUnlockedField']),
+      ),
+    ).resolves.toBeUndefined();
   });
 });
 
