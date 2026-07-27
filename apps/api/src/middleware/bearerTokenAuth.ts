@@ -1,10 +1,20 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
 import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
-import { OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { oauthClientBlocks, organizations, partnerUsers } from '../db/schema';
+import {
+  OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
+  OAUTH_ISSUER,
+  OAUTH_RESOURCE_URL,
+} from '../config/env';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+} from '../db';
+import { oauthClientBlocks, organizations, partnerUsers, users } from '../db/schema';
 import { isGrantRevoked, isJtiRevoked } from '../oauth/revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
@@ -22,6 +32,103 @@ interface OAuthApiKeyContext {
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+export type LiveOAuthUserResult =
+  | { ok: true; userId: string; authEpoch: number; legacyClaim: boolean }
+  | {
+      ok: false;
+      status: 401 | 503;
+      reason:
+        | 'user_missing'
+        | 'user_inactive'
+        | 'auth_epoch_mismatch'
+        | 'legacy_claim_expired'
+        | 'live_state_unavailable';
+    };
+
+type LiveOAuthAuthorizationReason = LiveOAuthUserResult extends infer Result
+  ? Result extends { reason: infer Reason }
+    ? Reason
+    : never
+  : never;
+
+function recordLiveOAuthAuthorization(
+  reason: 'authorized' | LiveOAuthAuthorizationReason,
+  legacyClaim: boolean,
+): void {
+  Sentry.metrics.count('breeze.oauth.live_authorization', 1, {
+    attributes: { reason, legacyClaim },
+  });
+}
+
+export async function assertLiveOAuthUser(
+  payload: JWTPayload,
+  now: Date,
+): Promise<LiveOAuthUserResult> {
+  const userId = typeof payload.sub === 'string' && payload.sub.length > 0
+    ? payload.sub
+    : null;
+  if (!userId) {
+    return { ok: false, status: 401, reason: 'user_missing' };
+  }
+
+  let liveUser: { id: string; status: string; authEpoch: number } | undefined;
+  try {
+    [liveUser] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({
+            id: users.id,
+            status: users.status,
+            authEpoch: users.authEpoch,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1),
+      ),
+    );
+  } catch {
+    return { ok: false, status: 503, reason: 'live_state_unavailable' };
+  }
+
+  if (!liveUser) {
+    return { ok: false, status: 401, reason: 'user_missing' };
+  }
+  if (liveUser.status !== 'active') {
+    return { ok: false, status: 401, reason: 'user_inactive' };
+  }
+
+  const claimedEpoch = payload.auth_epoch;
+  if (claimedEpoch === undefined) {
+    if (
+      OAUTH_AUTH_EPOCH_ENFORCE_AFTER
+      && now.getTime() >= OAUTH_AUTH_EPOCH_ENFORCE_AFTER.getTime()
+    ) {
+      return { ok: false, status: 401, reason: 'legacy_claim_expired' };
+    }
+    return {
+      ok: true,
+      userId,
+      authEpoch: liveUser.authEpoch,
+      legacyClaim: true,
+    };
+  }
+
+  if (
+    typeof claimedEpoch !== 'number'
+    || !Number.isSafeInteger(claimedEpoch)
+    || claimedEpoch !== liveUser.authEpoch
+  ) {
+    return { ok: false, status: 401, reason: 'auth_epoch_mismatch' };
+  }
+
+  return {
+    ok: true,
+    userId,
+    authEpoch: liveUser.authEpoch,
+    legacyClaim: false,
+  };
+}
 
 function getJwks() {
   if (!cachedJwks) cachedJwks = createRemoteJWKSet(new URL(`${OAUTH_ISSUER}/.well-known/jwks.json`));
@@ -210,6 +317,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     partner_id?: string | null;
     org_id?: string | null;
     grant_id?: string | null;
+    auth_epoch?: number;
     scope?: string;
   };
 
@@ -235,6 +343,21 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     }
     throw new HTTPException(401, { message: `invalid token: ${code ?? (e as Error).message}` });
   }
+
+  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    recordLiveOAuthAuthorization('user_missing', payload.auth_epoch === undefined);
+    throw new HTTPException(401, { message: 'token missing required claims' });
+  }
+
+  const liveUser = await assertLiveOAuthUser(payload, new Date());
+  if (!liveUser.ok) {
+    recordLiveOAuthAuthorization(liveUser.reason, payload.auth_epoch === undefined);
+    const message = liveUser.status === 503
+      ? `oauth live authorization temporarily unavailable: ${liveUser.reason}`
+      : `oauth live authorization denied: ${liveUser.reason}`;
+    throw new HTTPException(liveUser.status, { message });
+  }
+  recordLiveOAuthAuthorization('authorized', liveUser.legacyClaim);
 
   if (typeof payload.jti === 'string' && await isJtiRevoked(payload.jti)) {
     throw new HTTPException(401, { message: 'token revoked' });
@@ -262,7 +385,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
       throw new HTTPException(403, { message: 'oauth client blocked for this organization' });
     }
   }
-  if (!payload.partner_id || !payload.sub) {
+  if (!payload.partner_id) {
     throw new HTTPException(401, { message: 'token missing required claims' });
   }
   try {

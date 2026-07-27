@@ -4,7 +4,7 @@ import { revokeGrant, revokeJti } from './revocationCache';
 import { revokeClientFamilies } from './revocationService';
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  db: { select: vi.fn(), update: vi.fn(), delete: vi.fn(), insert: vi.fn() },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -17,6 +17,7 @@ vi.mock('./revocationCache', () => ({
 const selectMock = vi.mocked(db.select);
 const updateMock = vi.mocked(db.update);
 const deleteMock = vi.mocked(db.delete);
+const insertMock = vi.mocked(db.insert);
 const runOutsideDbContextMock = vi.mocked(runOutsideDbContext);
 const withSystemDbAccessContextMock = vi.mocked(withSystemDbAccessContext);
 const revokeGrantMock = vi.mocked(revokeGrant);
@@ -64,7 +65,7 @@ const USER = '11111111-1111-1111-1111-111111111111';
 
 describe('revokeClientFamilies', () => {
   it('revokes a code-only grant (no refresh row) under partner scope and deletes only the join row', async () => {
-    mockSelectRows([{ id: 'grant-code-only' }]); // grants
+    mockSelectRows([{ id: 'grant-code-only', accountId: USER }]); // grants
     mockSelectRows([]); // refresh rows (none — code-only)
     const joinDelete = installDbDelete();
 
@@ -82,20 +83,36 @@ describe('revokeClientFamilies', () => {
     expect(result).toEqual({ grants: 1, refreshTokens: 0 });
   });
 
-  it('aborts before any DB mutation when a grant marker write fails (fail closed)', async () => {
-    mockSelectRows([{ id: 'grant-A' }]); // grants
-    mockSelectRows([{ id: 'rt-1', expiresAt: new Date(Date.now() + 3600_000) }]); // refresh
+  it('commits DB revocation plus a durable retry before a grant marker failure is surfaced', async () => {
+    mockSelectRows([{ id: 'grant-A', accountId: USER }]); // grants
+    mockSelectRows([{ id: 'rt-1', userId: USER, expiresAt: new Date(Date.now() + 3600_000) }]); // refresh
+    let queuedUserId = '';
+    const returning = vi.fn(async () => [{ userId: queuedUserId }]);
+    const onConflictDoUpdate = vi.fn(() => ({ returning }));
+    const values = vi.fn((input: { userId: string }) => {
+      queuedUserId = input.userId;
+      return { onConflictDoUpdate };
+    });
+    insertMock.mockReturnValue({ values } as unknown as ReturnType<typeof db.insert>);
     revokeGrantMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(revokeClientFamilies(CLIENT, { kind: 'global' })).rejects.toThrow('redis down');
+    await expect(revokeClientFamilies(CLIENT, { kind: 'global' })).rejects.toThrow();
 
-    expect(updateMock).not.toHaveBeenCalled();
-    expect(deleteMock).not.toHaveBeenCalled();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      userId: USER,
+      markerType: 'grant',
+      markerId: 'grant-A',
+    }));
+    expect(updateSetCalls).toContainEqual(expect.objectContaining({ revokedAt: expect.any(Date) }));
+    expect(updateSetCalls).toContainEqual(expect.objectContaining({ disabledAt: expect.any(Date) }));
   });
 
   it('global scope revokes every family then disables the client LAST', async () => {
-    mockSelectRows([{ id: 'grant-A' }, { id: 'grant-B' }]); // grants
-    mockSelectRows([{ id: 'rt-1', expiresAt: new Date(Date.now() + 3600_000) }]); // refresh
+    mockSelectRows([
+      { id: 'grant-A', accountId: USER },
+      { id: 'grant-B', accountId: USER },
+    ]); // grants
+    mockSelectRows([{ id: 'rt-1', userId: USER, expiresAt: new Date(Date.now() + 3600_000) }]); // refresh
 
     const result = await revokeClientFamilies(CLIENT, { kind: 'global' });
 
@@ -127,13 +144,54 @@ describe('revokeClientFamilies', () => {
   });
 
   it('keys the refresh-token jti marker on the row id, not payload.jti (Task 3 forward-compat)', async () => {
-    mockSelectRows([{ id: 'grant-A' }]); // grants
+    mockSelectRows([{ id: 'grant-A', accountId: USER }]); // grants
     // Row id is the authoritative token id; payload.jti must NOT be consulted.
-    mockSelectRows([{ id: 'rt-row-id', payload: { jti: 'STALE-PAYLOAD-JTI' }, expiresAt: new Date(Date.now() + 3600_000) }]);
+    mockSelectRows([{
+      id: 'rt-row-id',
+      userId: USER,
+      payload: { jti: 'STALE-PAYLOAD-JTI' },
+      expiresAt: new Date(Date.now() + 3600_000),
+    }]);
 
     await revokeClientFamilies(CLIENT, { kind: 'user', userId: USER });
 
     expect(revokeJtiMock).toHaveBeenCalledWith('rt-row-id', expect.any(Number));
     expect(revokeJtiMock).not.toHaveBeenCalledWith('STALE-PAYLOAD-JTI', expect.any(Number));
+  });
+
+  it('commits a durable retry for every failed family marker before failing closed', async () => {
+    const grantOwner = '33333333-3333-4333-8333-333333333333';
+    const refreshOwner = '44444444-4444-4444-8444-444444444444';
+    mockSelectRows([{ id: 'grant-failed', accountId: grantOwner }]);
+    mockSelectRows([{
+      id: 'refresh-failed',
+      userId: refreshOwner,
+      expiresAt: new Date(Date.now() + 3600_000),
+    }]);
+    insertMock.mockImplementation((() => {
+      let queuedUserId = '';
+      const returning = vi.fn(async () => [{ userId: queuedUserId }]);
+      const onConflictDoUpdate = vi.fn(() => ({ returning }));
+      const values = vi.fn((input: { userId: string }) => {
+        queuedUserId = input.userId;
+        return { onConflictDoUpdate };
+      });
+      return { values };
+    }) as unknown as typeof db.insert);
+    revokeGrantMock.mockRejectedValueOnce(new Error('Redis unavailable'));
+    revokeJtiMock.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await expect(revokeClientFamilies(CLIENT, { kind: 'global' })).rejects.toThrow();
+
+    const queued = insertMock.mock.results.map((result) => {
+      const values = (result.value as { values: ReturnType<typeof vi.fn> }).values;
+      return values.mock.calls[0]?.[0] as { userId?: string; markerId?: string };
+    });
+    expect(queued).toEqual(expect.arrayContaining([
+      expect.objectContaining({ userId: grantOwner, markerId: 'grant-failed' }),
+      expect.objectContaining({ userId: refreshOwner, markerId: 'refresh-failed' }),
+    ]));
+    expect(updateSetCalls).toContainEqual(expect.objectContaining({ revokedAt: expect.any(Date) }));
+    expect(updateSetCalls).toContainEqual(expect.objectContaining({ disabledAt: expect.any(Date) }));
   });
 });

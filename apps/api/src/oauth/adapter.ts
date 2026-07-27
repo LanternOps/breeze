@@ -9,7 +9,10 @@ import {
   oauthRefreshTokens,
   oauthSessions,
 } from '../db/schema';
-import { revokeGrant, revokeJti } from './revocationCache';
+import {
+  writeOAuthRevocationMarkerDurably,
+  type OAuthRevocationMarkerResult,
+} from './revocationRetry';
 import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -427,19 +430,18 @@ export class BreezeOidcAdapter {
           // logging alone leaves a window where the attacker continues
           // to use already-minted access tokens until natural expiry.
           if (grantId) {
-            try {
-              await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
-            } catch (err) {
+            const result = await writeOAuthRevocationMarkerDurably(db, {
+              userId: row.userId,
+              markerType: 'grant',
+              markerId: grantId,
+              expiresAt: new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000),
+            });
+            if (result.status === 'retry_queued') {
               logOauthError({
                 errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-                message: 'Grant-wide revocation cache write failed on refresh-token reuse',
-                err,
-                context: { grantId },
+                message: 'Grant-wide marker queued after refresh-token reuse',
+                context: { markerType: 'grant', errorCode: result.errorCode },
               });
-              // Don't throw — surfacing 500 here would mask the reuse
-              // detection from the client (oidc-provider would map the
-              // throw to a generic server_error). The DB row remains
-              // marked revoked so subsequent token exchanges still fail.
             }
           }
           return undefined;
@@ -504,7 +506,22 @@ export class BreezeOidcAdapter {
     // up the payload here to extract `jti`/`exp` and write the cache entry
     // with the remaining TTL — bearer auth checks the cache on every request.
     if (this.model === 'AccessToken' || this.model === 'RefreshToken') {
-      await this.cacheRevocation(id);
+      const retryQueued = await asSystem(async () => {
+        const markerResults = await this.cacheRevocation(id);
+        if (this.model === 'RefreshToken') {
+          await db
+            .update(oauthRefreshTokens)
+            .set({ revokedAt: new Date() })
+            .where(eq(oauthRefreshTokens.id, refreshTokenStorageId(id)));
+        } else {
+          inMemory.get(this.model)?.delete(id);
+        }
+        return markerResults.some((result) => result.status === 'retry_queued');
+      });
+      if (retryQueued) {
+        throw new Error('OAuth revocation cache unavailable; durable retry queued');
+      }
+      return;
     }
     if (this.model === 'Client') {
       // Registration-management DELETE of a shared DCR client. Enumerate and
@@ -545,21 +562,23 @@ export class BreezeOidcAdapter {
    * the only mechanism that kills sibling access JWTs minted from the same
    * grant before their ~10-minute expiry. Either way, fail closed.
    */
-  private async cacheRevocation(id: string): Promise<void> {
+  private async cacheRevocation(id: string): Promise<OAuthRevocationMarkerResult[]> {
     try {
       let exp: number | undefined;
       let grantId: string | undefined;
+      let userId: string | undefined;
       // RefreshToken rows are addressed by the digest; the jti revocation
       // marker for a refresh token is likewise keyed on the digest (AccessToken
       // markers stay keyed on the raw JWT jti). Compute once and reuse for both
       // the row lookup and the marker write.
       const markerId = this.model === 'RefreshToken' ? refreshTokenStorageId(id) : id;
       if (this.model === 'RefreshToken') {
-        const row = await asSystem(async () => {
-          const [r] = await db.select().from(oauthRefreshTokens).where(eq(oauthRefreshTokens.id, markerId));
-          return r;
-        });
+        const [row] = await db
+          .select()
+          .from(oauthRefreshTokens)
+          .where(eq(oauthRefreshTokens.id, markerId));
         if (row) {
+          userId = row.userId;
           const payloadExp = (row.payload as { exp?: number } | null)?.exp;
           if (typeof payloadExp === 'number') {
             exp = payloadExp;
@@ -575,6 +594,10 @@ export class BreezeOidcAdapter {
           if (typeof payloadGrantId === 'string' && payloadGrantId.length > 0) {
             grantId = payloadGrantId;
           }
+          const payloadAccountId = (row.payload as { accountId?: string } | null)?.accountId;
+          if (payloadAccountId && payloadAccountId !== row.userId) {
+            throw new Error('RefreshToken ownership does not match persisted user');
+          }
         }
       } else {
         // AccessToken lives in the in-memory store; pull exp directly.
@@ -585,13 +608,33 @@ export class BreezeOidcAdapter {
         } else if (stored?.expiresAt) {
           exp = Math.floor(stored.expiresAt.getTime() / 1000);
         }
+        const accountId = (stored?.payload as { accountId?: unknown } | undefined)?.accountId;
+        if (typeof accountId === 'string' && accountId.length > 0) {
+          userId = accountId;
+        }
       }
-      if (exp === undefined) return; // nothing to cache
-      const ttl = Math.max(exp - Math.floor(Date.now() / 1000), 1);
-      await revokeJti(markerId, ttl);
+      if (exp === undefined) return []; // nothing to cache
+      if (!userId) {
+        throw new Error('OAuth revocation marker owner is unavailable');
+      }
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const effectiveExp = Math.max(exp, nowSeconds + 1);
+      const results: OAuthRevocationMarkerResult[] = [];
+      results.push(await writeOAuthRevocationMarkerDurably(db, {
+        userId,
+        markerType: 'jti',
+        markerId,
+        expiresAt: new Date(effectiveExp * 1000),
+      }));
       if (grantId) {
-        await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
+        results.push(await writeOAuthRevocationMarkerDurably(db, {
+          userId,
+          markerType: 'grant',
+          markerId: grantId,
+          expiresAt: new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000),
+        }));
       }
+      return results;
     } catch (err) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
@@ -599,7 +642,7 @@ export class BreezeOidcAdapter {
         err,
         // Never log the raw id: for a RefreshToken it IS the opaque token value.
         // The digest is a safe, non-reversible correlator (equals id for other models).
-        context: { model: this.model, id: this.model === 'RefreshToken' ? refreshTokenStorageId(id) : id },
+        context: { model: this.model },
       });
       throw err;
     }
@@ -610,23 +653,31 @@ export class BreezeOidcAdapter {
     // checks immediately reject. Then mark every refresh token revoked in
     // the DB (so the next refresh-token grant exchange fails with
     // "invalid_grant" rather than minting a fresh access token).
-    try {
-      await revokeGrant(grantId, GRANT_REVOCATION_TTL_SECONDS);
-    } catch (err) {
-      // Without the cache write the DB `revokedAt` update below is purely
-      // informational — sibling access JWTs minted under this grant would
-      // continue to validate until natural expiry. Fail closed.
+    const retryQueued = await asSystem(async () => {
+      const [grant] = await db
+        .select({ accountId: oauthGrants.accountId })
+        .from(oauthGrants)
+        .where(eq(oauthGrants.id, grantId));
+      if (!grant?.accountId) {
+        throw new Error('OAuth grant owner is unavailable');
+      }
+      const marker = await writeOAuthRevocationMarkerDurably(db, {
+        userId: grant.accountId,
+        markerType: 'grant',
+        markerId: grantId,
+        expiresAt: new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000),
+      });
+      await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(sql`payload->>'grantId' = ${grantId}`);
+      return marker.status === 'retry_queued';
+    });
+    if (retryQueued) {
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'Grant-wide revocation cache write failed in revokeByGrantId',
-        err,
-        context: { grantId },
+        message: 'Grant-wide marker queued in revokeByGrantId',
+        context: { markerType: 'grant' },
       });
-      throw err;
+      throw new Error('OAuth revocation cache unavailable; durable retry queued');
     }
-    return asSystem(async () => {
-      await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(sql`payload->>'grantId' = ${grantId}`);
-    });
   }
 
   async findByUid(uid: string): Promise<OidcPayload | undefined> {

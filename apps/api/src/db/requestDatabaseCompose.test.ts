@@ -27,6 +27,10 @@ function renderApiEnvironment(overrides: Record<string, string>): Record<string,
       CADDY_IMAGE_REF: IMAGE_DIGEST,
       COTURN_IMAGE_REF: IMAGE_DIGEST,
       ENROLLMENT_KEY_PEPPER: 'compose-enrollment-key-pepper',
+      // The event-socket permission epoch mode is required-with-no-default
+      // (`${VAR:?}`) in docker-compose.yml, so `config` cannot render without
+      // it. Value mirrors .env.example.
+      EVENT_PERMISSION_EPOCH_MODE: 'compat',
       JWT_SECRET: 'compose-jwt-secret',
       MFA_ENCRYPTION_KEY: 'compose-mfa-encryption-key',
       MFA_RECOVERY_CODE_PEPPER: 'compose-mfa-recovery-code-pepper',
