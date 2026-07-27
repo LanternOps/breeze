@@ -38,9 +38,24 @@ import {
 } from './aiToolsGoogle';
 import {
   sealToolSecrets,
+  isSecretBearingTool,
   SECRET_UNAVAILABLE_TEXT,
   type SecretToolResult,
 } from './actionIntents/secretBearingTools';
+
+/**
+ * Shown when a secret-bearing tool call is refused BEFORE execution because
+ * there is no action intent available to seal the resulting credential into.
+ *
+ * Deliberately distinct wording from SECRET_UNAVAILABLE_TEXT: that message
+ * reports a reset that ALREADY HAPPENED with the credential subsequently
+ * lost; this one reports that the action was NOT performed at all. Confusing
+ * the two would tell an operator a reset succeeded when it didn't (or vice
+ * versa) — never conflate them.
+ */
+const SECRET_ACTION_REFUSED_TEXT =
+  'This action was not performed: no durable approval record was available to store the '
+  + 'resulting credential securely. Retry once the approval workflow is available.';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -480,6 +495,30 @@ function makeSessionAwareHandler(
       }
       intentId = check.intentId;
     }
+
+    // Fail closed on confidentiality BEFORE the provider-side action executes,
+    // not after. Without this, a secret-bearing tool with no intent to seal
+    // into would still perform the (irreversible) provider-side reset and
+    // only then discover there's nowhere safe to put the credential. Refusing
+    // outright here means the reset genuinely never happens, so
+    // SECRET_ACTION_REFUSED_TEXT (not performed) is accurate — as opposed to
+    // SECRET_UNAVAILABLE_TEXT (performed, credential lost) used below for the
+    // case where a carrier somehow reaches the post-execution split anyway.
+    if (isSecretBearingTool(toolName) && !intentId) {
+      console.error(
+        `[AI-SDK] ${toolName} refused: no action intent available to seal a credential into (fail closed before execution)`,
+      );
+      const refusalText = compactToolResultForChat(
+        toolName,
+        JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
+      );
+      await safePostToolUse(onPostToolUse, toolName, args, refusalText, true, 0);
+      return {
+        content: [{ type: 'text' as const, text: refusalText }],
+        isError: true,
+      };
+    }
+
     try {
       const auth = getAuth();
       // Use the user's actual auth scope so RLS / DB-level tenant isolation is enforced.
@@ -505,10 +544,16 @@ function makeSessionAwareHandler(
       } else if (handlerResult.kind === 'error') {
         result = handlerResult.llmText;
       } else if (!intentId) {
-        // No intent row to seal into: the provider-side reset already happened and
-        // cannot be undone, so fail closed on confidentiality and drop the credential.
-        // This is raised HERE, not in postToolUse, because safePostToolUse swallows
-        // callback throws and the response would already have been composed.
+        // Unreachable in practice for any toolName registered in
+        // isSecretBearingTool's registry: the pre-execution guard above
+        // already refuses the call before sessionHandler ever runs. Kept as
+        // defense-in-depth type-narrowing (so `sealed` below can require
+        // `intentId: string` without a non-null assertion) for the case where
+        // a handler returns a SecretToolResult carrier under a toolName the
+        // registry doesn't recognize as secret-bearing. If reached, the
+        // provider-side action already happened and cannot be undone, so
+        // fail closed on confidentiality and drop the credential rather than
+        // ever storing plaintext.
         console.error(
           `[AI-SDK] ${toolName} minted a credential with no action intent to seal it into — dropped (fail closed)`,
         );

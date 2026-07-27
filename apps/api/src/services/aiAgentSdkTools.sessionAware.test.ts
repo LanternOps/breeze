@@ -174,21 +174,76 @@ describe('secret-bearing session-aware handler', () => {
     const res = await handler({ userIdentifier: 'a@b.com', reason: 'r' });
 
     expect(JSON.stringify(res)).not.toContain(PW);
+    // The persistence-facing argument (ai_messages / ai_tool_executions / SSE)
+    // matters just as much as the model-facing return — a regression that
+    // leaked the carrier into ONLY this argument would otherwise pass every
+    // other assertion in this test.
+    expect(post.mock.calls[0]![2]).not.toContain(PW);
     const sealedArg = post.mock.calls[0]![5];
     expect(sealedArg?.intentId).toBe('intent-1');
     expect(sealedArg?.sealedResult.temporaryPasswordEnc).toMatch(/^enc:v3:/);
   });
 
-  it('fails closed when a secret-bearing tool has no intent to seal into', async () => {
+  // Supersedes the pre-review "fails closed when a secret-bearing tool has no
+  // intent to seal into" test: the guard now fires BEFORE sessionHandler runs
+  // (see makeSessionAwareHandler), so this proves the call is refused outright
+  // — the provider-side reset never happens — rather than happening and then
+  // discarding the resulting credential.
+  it('refuses a secret-bearing tool call before execution when there is no intent to seal into (fails closed pre-execution)', async () => {
+    const PW = 'Bz9!oVnL920blvsjqqMy';
+    const sessionHandler = vi.fn(async () => ({
+      kind: 'success' as const,
+      llmText: 'Reset done; credential available for one-time reveal.',
+      secrets: { temporaryPassword: PW },
+    }));
     const post = vi.fn<PostToolUseCallback>(async () => {});
     const handler = makeSessionAwareHandler(
       'm365_reset_password',
       () => authFixture,
       () => sessionFixture,
+      sessionHandler,
+      async () => ({ allowed: true }),          // no intentId
+      post,
+    );
+
+    const res = (await handler({ userIdentifier: 'a@b.com', reason: 'r' })) as ToolResult;
+    const text = res.content[0]!.text;
+
+    // The whole point of moving the guard earlier: the provider-side reset
+    // (sessionHandler) must never run when there's nowhere safe to seal the
+    // resulting credential.
+    expect(sessionHandler).not.toHaveBeenCalled();
+    expect(res.isError).toBe(true);
+    expect(text).not.toContain(PW);
+    // Distinct from SECRET_UNAVAILABLE_TEXT ("...could not be stored securely
+    // and is unavailable...", which implies the reset DID happen) — this
+    // wording must say the action was NOT performed.
+    expect(text).toMatch(/not performed/i);
+    expect(text).not.toMatch(/could not be stored securely/i);
+    expect(post.mock.calls[0]![5]).toBeUndefined();
+  });
+
+  // Defense-in-depth: even if a future secret-bearing tool were added to
+  // sessionHandler's call sites without being registered in
+  // isSecretBearingTool's registry (so the new pre-execution guard above
+  // can't recognize it), the post-execution split must still refuse to seal
+  // a credential with no intentId rather than ever persist plaintext. This
+  // exercises the `!intentId` branch inside the split directly by using a
+  // toolName that isSecretBearingTool does NOT recognize, so the
+  // pre-execution guard does not intercept the call and sessionHandler runs.
+  it('defense-in-depth: substitutes SECRET_UNAVAILABLE_TEXT if a carrier reaches the post-execution split with no intentId', async () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+    process.env.APP_ENCRYPTION_KEY_ID = 'test-key-1';
+    const PW = 'Bz9!oVnL920blvsjqqMy';
+    const post = vi.fn<PostToolUseCallback>(async () => {});
+    const handler = makeSessionAwareHandler(
+      'm365_lookup_user', // NOT in the secret-bearing registry
+      () => authFixture,
+      () => sessionFixture,
       async () => ({
         kind: 'success' as const,
         llmText: 'Reset done; credential available for one-time reveal.',
-        secrets: { temporaryPassword: 'Bz9!oVnL920blvsjqqMy' },
+        secrets: { temporaryPassword: PW },
       }),
       async () => ({ allowed: true }),          // no intentId
       post,
@@ -197,7 +252,7 @@ describe('secret-bearing session-aware handler', () => {
     const res = (await handler({ userIdentifier: 'a@b.com', reason: 'r' })) as ToolResult;
     const text = res.content[0]!.text;
 
-    expect(text).not.toContain('Bz9!oVnL920blvsjqqMy');
+    expect(text).not.toContain(PW);
     expect(text).toMatch(/could not be stored securely|unavailable/i);
     expect(post.mock.calls[0]![5]).toBeUndefined();
   });
