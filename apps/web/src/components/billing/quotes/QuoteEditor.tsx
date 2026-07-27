@@ -107,6 +107,15 @@ interface Props {
    *  Send until the quote is quiescent, so the irreversible money-moment
    *  can't race a blur-save. */
   onPendingEditsChange?: (hasPendingEdits: boolean) => void;
+  /** Reports every save FAILURE. Quiescence alone is not a safe Send signal: a
+   *  failed blur-save clears its in-flight key and a failed delete-flush
+   *  restores its rows, both of which read as "quiet" — QuoteActions cancels a
+   *  queued Send on this rather than opening a composer for a stale total. */
+  onSaveFailure?: () => void;
+  /** Reports a field whose save failed and is still dirty (translated label), or
+   *  null. Waiting cannot clear it, so Send names the field instead of showing
+   *  "Saving changes…" about a save that is never coming. */
+  onUnsavedEditsChange?: (unsavedFieldLabel: string | null) => void;
   /** Hands the workspace an imperative "flush deferred deletions now" hook
    *  (called with null on unmount). QuoteActions invokes it when Send is
    *  clicked during the undo grace window, so the held Send fires as soon as
@@ -121,7 +130,7 @@ interface Props {
 }
 
 
-export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onRegisterPendingDeleteFlush, showInternal: showInternalProp, onToggleInternal }: Props) {
+export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onSaveFailure, onUnsavedEditsChange, onRegisterPendingDeleteFlush, showInternal: showInternalProp, onToggleInternal }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
@@ -231,6 +240,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // indicator near the autosave hint — null until this session's first save
   // (nothing to report before that; the indicator itself stays unrendered).
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // Keys whose most recent save attempt FAILED, cleared when one succeeds. Used
+  // with a still-dirty check to tell "this never saved" apart from the normal
+  // gap between a successful save and its refetch.
+  const [failedKeys, setFailedKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   // Run a scoped mutation: mark the key pending, run, surface failures via the
   // standard handleActionError path, and always clear the key. Returns whether
@@ -243,16 +256,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       try {
         await fn();
         setLastSavedAt(Date.now());
+        setFailedKeys((s) => { if (!s.has(key)) return s; const n = new Set(s); n.delete(key); return n; });
         return true;
       } catch (err) {
         handleActionError(err, errMsg);
+        setFailedKeys((s) => { if (s.has(key)) return s; const n = new Set(s); n.add(key); return n; });
+        onSaveFailure?.();
         return false;
       } finally {
         inFlight.current.delete(key);
         setPending((s) => { const n = new Set(s); n.delete(key); return n; });
       }
     },
-    [],
+    [onSaveFailure],
   );
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -268,15 +284,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [termsSaved, flashTermsSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
-  // Surface "is anything still saving / sitting dirty?" to the workspace so the
-  // Send button can wait for quiescence. Pending covers every in-flight mutation
-  // (line/block/terms/add/remove); the terms dirty flag covers the rail's
-  // blur-to-save field. Per-line dirty state isn't lifted — clicking Send blurs
-  // the focused field, whose commit lands in `pending` before the dialog opens.
-  // Deferred deletions count too: their DELETE hasn't fired yet, so a Send
-  // must not snapshot a quote the user has visibly already trimmed (clicking
-  // Send also flushes them immediately — see onRegisterPendingDeleteFlush).
-  const hasPendingEdits = pending.size > 0 || termsDirty
+  // Two separate questions, mirroring the invoice editor (see the long note
+  // there). hasPendingEdits = work genuinely IN FLIGHT, which resolves on its
+  // own and which a queued Send may wait for. Deferred deletions count: their
+  // DELETE hasn't fired yet, so a Send must not snapshot a quote the user has
+  // visibly already trimmed (clicking Send also flushes them immediately — see
+  // onRegisterPendingDeleteFlush). A merely-dirty field is NOT in flight: on
+  // failure it stays dirty forever, and reporting it here is what used to pin
+  // "Saving changes…" up over a save that had already given up.
+  const hasPendingEdits = pending.size > 0
     || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
@@ -607,6 +623,23 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       return { ...m, [id]: draft };
     });
   }, []);
+  // A field whose save failed AND which still diverges from the server. Both
+  // halves are required: failure alone keeps blocking after the user reverts by
+  // hand (the commit path short-circuits on an unchanged value, so nothing
+  // clears the flag), and divergence alone fires during the round-trip between
+  // a successful save and its refetch. `lineDrafts` is the per-line divergence
+  // signal the rail already maintains, including its own unmount cleanup.
+  const unsavedFieldLabel = useMemo(() => {
+    if (pending.size > 0) return null;
+    if (failedKeys.has('terms') && termsDirty) return t('quotes.editor.terms.title');
+    for (const id of Object.keys(lineDrafts)) {
+      if (failedKeys.has(pendingKey.line(id))) return t('quotes.editor.unsavedField.lines');
+    }
+    return null;
+  }, [pending.size, failedKeys, termsDirty, lineDrafts, t]);
+  useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
+  useEffect(() => () => onUnsavedEditsChange?.(null), [onUnsavedEditsChange]);
+
   // Drop drafts for lines that no longer exist (removed) so a stale draft can't
   // skew the rail after a delete.
   useEffect(() => {
@@ -2725,7 +2758,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               disabled={!canWrite || isPending('terms')}
               data-testid="quote-terms"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
               placeholder={t('quotes.editor.terms.placeholder')}
             />
             <SrSaved show={termsSaved} testId="quote-terms-saved" />

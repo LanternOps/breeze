@@ -82,4 +82,39 @@ describe('DocumentWorkspace', () => {
     expect(panel).toHaveAttribute('aria-labelledby', 'doc-tab-editor');
     expect(screen.getByTestId('panel-body')).toBeInTheDocument();
   });
+
+  it('a titleSlot replaces the visible h1 but the document keeps an sr-only one', () => {
+    // The slot is an editable input. Wrapping that in an <h1> announces
+    // "heading level 1, edit text", which is neither — so the visible heading
+    // steps aside and an sr-only h1 preserves the document structure. Losing
+    // that leaves the page with no h1 at all.
+    renderWs({ titleSlot: <input data-testid="title-input" defaultValue="THING-1" /> });
+
+    expect(screen.getByTestId('title-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('doc-workspace-title')).not.toBeInTheDocument();
+
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1).toHaveTextContent('THING-1');
+    expect(h1).toHaveClass('sr-only');
+  });
+
+  it('renders metaSlot below the title row', () => {
+    renderWs({
+      titleSlot: <input data-testid="title-input" defaultValue="THING-1" />,
+      metaSlot: <span data-testid="meta-slot">Customer: Acme</span>,
+    });
+    const meta = screen.getByTestId('meta-slot');
+    expect(meta).toBeInTheDocument();
+    // Below the title row, not inside it — the switcher used to sit inline and
+    // squeeze the title.
+    expect(screen.getByTestId('title-input').compareDocumentPosition(meta))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('keeps the visible h1 when no titleSlot is given', () => {
+    renderWs({ metaSlot: <span data-testid="meta-slot">meta</span> });
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1).toHaveAttribute('data-testid', 'doc-workspace-title');
+    expect(h1).not.toHaveClass('sr-only');
+  });
 });

@@ -95,7 +95,7 @@ describe('InvoiceEditor — autosave hint + last-saved indicator', () => {
     expect(screen.queryByTestId('invoice-editor-last-saved')).not.toBeInTheDocument();
   });
 
-  it('reports pending edits to the workspace: true while dirty/in-flight, false once settled and on unmount', async () => {
+  it('reports pending edits to the workspace: true only while a save is IN FLIGHT, false once settled and on unmount', async () => {
     let resolvePatch!: (v: Response) => void;
     const patchPromise = new Promise<Response>((resolve) => { resolvePatch = resolve; });
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
@@ -109,15 +109,18 @@ describe('InvoiceEditor — autosave hint + last-saved indicator', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
     expect(onPending).toHaveBeenLastCalledWith(false);
 
-    // Typing makes the notes field dirty — pending flips true immediately (the
-    // Issue gate must hold from the first keystroke, not from blur).
+    // Typing alone is NOT "pending". Pending means a request is on its way and
+    // will resolve; a dirty field makes no such promise, and reporting it here
+    // is what let a failed save keep claiming "Saving changes…" forever. The
+    // Issue gate still holds from the first keystroke, because the click itself
+    // blurs the field and the resulting save lands in `pending` first.
     const textarea = screen.getByTestId('invoice-notes');
     fireEvent.change(textarea, { target: { value: 'Edited' } });
-    await waitFor(() => expect(onPending).toHaveBeenLastCalledWith(true));
+    expect(onPending).toHaveBeenLastCalledWith(false);
 
-    // Blur starts the save; while the PATCH is in flight it stays pending.
+    // Blur starts the save; while the PATCH is in flight it IS pending.
     fireEvent.blur(textarea);
-    expect(onPending).toHaveBeenLastCalledWith(true);
+    await waitFor(() => expect(onPending).toHaveBeenLastCalledWith(true));
 
     resolvePatch(json({ data: {} }));
     await waitFor(() => expect(onPending).toHaveBeenLastCalledWith(false));
@@ -126,5 +129,46 @@ describe('InvoiceEditor — autosave hint + last-saved indicator', () => {
     onPending.mockClear();
     unmount();
     expect(onPending).toHaveBeenLastCalledWith(false);
+  });
+
+  it('reports a FAILED save as an unsaved field, not as pending — and clears it when the retry succeeds', async () => {
+    // The bug this pins: a failed notes PATCH left notesDirty true forever, so
+    // the header showed "Saving changes… Issue unlocks when everything is
+    // saved" over a save that had already given up. Pending must go false (no
+    // request is coming) while the field is named as unsaved instead.
+    let failNext = true;
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1' && opts?.method === 'PATCH') {
+        if (failNext) return json({ error: 'boom' }, false, 500);
+        return json({ data: {} });
+      }
+      return json({ data: {} });
+    });
+    const onPending = vi.fn();
+    const onUnsaved = vi.fn();
+
+    render(
+      <InvoiceEditor
+        detail={draft()}
+        onChanged={vi.fn()}
+        onPendingEditsChange={onPending}
+        onUnsavedEditsChange={onUnsaved}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const textarea = screen.getByTestId('invoice-notes');
+    fireEvent.change(textarea, { target: { value: 'Edited' } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => expect(onUnsaved).toHaveBeenLastCalledWith('Notes'));
+    expect(onPending).toHaveBeenLastCalledWith(false);
+
+    // Retrying the same field succeeds → the block lifts.
+    failNext = false;
+    fireEvent.change(textarea, { target: { value: 'Edited again' } });
+    fireEvent.blur(textarea);
+    await waitFor(() => expect(onUnsaved).toHaveBeenLastCalledWith(null));
   });
 });

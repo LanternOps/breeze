@@ -795,6 +795,9 @@
         "noTargets": "Fügen Sie einen Preisabschnitt hinzu und verschieben Sie diese Positionen dann dorthin.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Nicht zugeordnete Positionen"
+      },
+      "unsavedField": {
+        "lines": "Positionen"
       }
     },
     "actions": {
@@ -864,9 +867,13 @@
       "undoSuccess": "Senden abgebrochen — das Angebot bleibt ein Entwurf.",
       "undoTooLate": "Zu spät zum Rückgängigmachen — das Angebot wurde bereits gesendet.",
       "sendNow": "Jetzt senden",
-      "savingTimeout": "Das Speichern dauert zu lange – prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "savingTimeout": "Ihre Änderungen werden noch gespeichert — das Senden wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
       "sendNowCancelError": "Sofortversand nicht möglich – das Angebot wird weiterhin wie geplant gesendet.",
-      "sendNowAlready": "Bereits unterwegs – das Angebot wird gerade gesendet."
+      "sendNowAlready": "Bereits unterwegs – das Angebot wird gerade gesendet.",
+      "sendCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Senden abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
+      "sendBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und senden Sie dann.",
+      "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist.",
+      "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1172,7 +1179,9 @@
       "manualLine": "Manuelle Position",
       "noCatalogItems": "Keine Katalogartikel.",
       "searchCatalog": "Katalog nach Name oder SKU durchsuchen",
-      "sourceAria": "Positionsquelle hinzufügen"
+      "sourceAria": "Positionsquelle hinzufügen",
+      "catalogLoadFailed": "Der Katalog konnte nicht geladen werden, daher können keine Artikel angezeigt werden.",
+      "retry": "Erneut versuchen"
     },
     "billTo": {
       "addInSettings": "Fügen Sie eine in den Organisationseinstellungen hinzu",
@@ -1243,9 +1252,13 @@
     },
     "undo": {
       "lineDeleted": "Position gelöscht",
-      "tooLate": "Rückgängig nicht mehr möglich – diese Position wurde bereits gelöscht."
+      "tooLate": "Rückgängig nicht mehr möglich – diese Position wurde bereits gelöscht.",
+      "partialFlush": "{{applied}} Löschung(en) wurden übernommen; {{failed}} sind fehlgeschlagen und wurden wiederhergestellt."
     },
-    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten"
+    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
+    "unsavedField": {
+      "lines": "Positionen"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1275,7 +1288,10 @@
     "savingHint": "Änderungen werden gespeichert… Ausstellen wird freigegeben, sobald alles gespeichert ist.",
     "savingTitle": "Ihre Änderungen werden gespeichert – Ausstellen wird freigegeben, sobald alles gespeichert ist.",
     "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
-    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist."
+    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
+    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
+    "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
   "invoiceDetail": {
     "deposit": {

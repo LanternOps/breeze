@@ -15,7 +15,7 @@ import { isValidEmail } from '@/lib/email';
 import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
-import { OrgCombobox } from '../shared/OrgCombobox';
+import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { useShowMargin } from '../billingUi';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
@@ -124,6 +124,14 @@ interface Props {
    *  held (with a "Saving changes…" hint) until the quote is quiescent, so the
    *  confirm dialog can't quote a stale total or race a blur-save server-side. */
   savePending?: boolean;
+  /** Translated label of a field whose save failed and is still dirty. Waiting
+   *  cannot clear it, so Send refuses and names the field rather than queueing
+   *  behind a save that is never coming. */
+  unsavedFieldLabel?: string | null;
+  /** Bumped by the workspace on every editor save FAILURE. A failure can still
+   *  produce "quiescence" (restored rows / cleared in-flight keys), so a queued
+   *  Send must cancel on this rather than open a composer for a stale total. */
+  saveFailureNonce?: number;
   /** Called when Send is clicked while savePending — lets the workspace flush
    *  deferred work immediately (the editor's undo-grace deletions) so the held
    *  Send opens as soon as those land instead of waiting out a grace window. */
@@ -136,7 +144,7 @@ interface Props {
  * Detail rail and the workspace header can't drift in behavior or copy; the
  * data-testids are stable across both variants.
  */
-export default function QuoteActions({ detail, onChanged, variant, savePending = false, onSendWhilePending }: Props) {
+export default function QuoteActions({ detail, onChanged, variant, savePending = false, unsavedFieldLabel = null, saveFailureNonce = 0, onSendWhilePending }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
@@ -174,9 +182,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Focus-on-open + arrow-key cycling for the menu items (Tab closes).
   const { listRef: menuListRef, onKeyDown: onMenuListKeyDown } = useMenuKeyboard(menuOpen, () => setMenuOpen(false));
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
+  // Why Send is held, if it is. 'saving' resolves on its own and a click queues
+  // behind it; 'unsaved' never will, so a click refuses and names the field.
+  const heldReason: 'saving' | 'unsaved' | null = savePending ? 'saving' : unsavedFieldLabel ? 'unsaved' : null;
   // A Send click that lands while edits are settling queues the composer to
-  // open on quiescence (see the header Send onClick).
-  const [openWhenQuiet, setOpenWhenQuiet] = useState(false);
+  // open on quiescence (see the header Send onClick). It captures the failure
+  // nonce it was created at, so "did a save fail while I waited?" is a data
+  // comparison rather than a dependency on effect ordering.
+  const [queued, setQueued] = useState<{ atFailureNonce: number } | null>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -241,14 +254,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   // Company choices for the clone dialog: the partner's org list, with the
   // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
-  // select always has a valid default.
-  const orgOptions = useMemo(() => {
-    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
-    if (!sorted.some((o) => o.id === quote.orgId)) {
-      sorted.unshift({ id: quote.orgId, name: orgName } as (typeof sorted)[number]);
-    }
-    return sorted;
-  }, [organizations, quote.orgId, orgName]);
+  // picker always has a valid default.
+  const orgOptions = useMemo(
+    () => orgComboboxOptions(organizations, quote.orgId, orgName),
+    [organizations, quote.orgId, orgName],
+  );
 
   // Open the composer with fresh fields, then prefill/support-fetch in the
   // background. All three fetches are best-effort: the composer stays usable
@@ -311,25 +321,38 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSendMessage('');
   }, [sending]);
 
+  // Resolve the queued Send in strict priority: failed → cancel; still working
+  // → wait; otherwise open. Cancelling on a CHANGED failure nonce (captured at
+  // click time) is what makes quiescence safe to trust — a failed blur-save
+  // clears its in-flight key and a failed delete-flush restores its rows, so
+  // both look exactly like "done" from here. Mirrors InvoiceActions.
   useEffect(() => {
-    if (!openWhenQuiet || savePending) return;
-    setOpenWhenQuiet(false);
+    if (!queued) return;
+    if (saveFailureNonce !== queued.atFailureNonce) {
+      setQueued(null);
+      showToast({ message: t('quotes.actions.sendCanceledSaveFailed'), type: 'error' });
+      return;
+    }
+    if (savePending) return;
+    setQueued(null);
     openSend();
-  }, [openWhenQuiet, savePending, openSend]);
+  }, [queued, saveFailureNonce, savePending, openSend, t]);
 
   // Escape hatch for a hung save: the queued-open above normally fires within a
   // blur-save round-trip. If the editor is still not quiescent after 10s the
   // request has almost certainly stalled — cancel the queued Send and say so,
   // instead of leaving "Saving changes…" up indefinitely (which at 9pm reads
-  // as "the app is broken").
+  // as "the app is broken"). A warning, not an error, and worded as "still
+  // saving": failures are handled above, so this path never saw one, and
+  // claiming otherwise would assert a failure nobody observed.
   useEffect(() => {
-    if (!openWhenQuiet) return;
+    if (!queued) return;
     const timer = setTimeout(() => {
-      setOpenWhenQuiet(false);
-      showToast({ message: t('quotes.actions.savingTimeout'), type: 'error' });
+      setQueued(null);
+      showToast({ message: t('quotes.actions.savingTimeout'), type: 'warning' });
     }, 10_000);
     return () => clearTimeout(timer);
-  }, [openWhenQuiet, t]);
+  }, [queued, t]);
 
   // The options of the last scheduled send, kept so "Send now" can cancel the
   // delayed job and dispatch the SAME composed email immediately. null after a
@@ -658,7 +681,13 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               // the composer to open the moment the editor goes quiescent —
               // one click to the money moment, never a dead one. Deferred
               // deletions (undo grace window) flush now for the same reason.
-              if (savePending) { onSendWhilePending?.(); setOpenWhenQuiet(true); return; }
+              if (savePending) { onSendWhilePending?.(); setQueued({ atFailureNonce: saveFailureNonce }); return; }
+              // A field that already failed to save will never go quiet on its
+              // own — say which one instead of parking the click forever.
+              if (unsavedFieldLabel) {
+                showToast({ type: 'warning', message: t('quotes.actions.sendBlockedUnsaved', { field: unsavedFieldLabel }) });
+                return;
+              }
               openSend();
             }}
             disabled={sending || isEmpty}
@@ -666,26 +695,30 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             // variants) so AT announces the reason when the button takes focus.
             aria-describedby={
               isEmpty ? `quote-send-empty-hint-${variant}`
-                : savePending ? `quote-send-saving-hint-${variant}`
+                : heldReason ? `quote-send-held-hint-${variant}`
                 : undefined
             }
             title={
               isEmpty ? t('quotes.actions.emptyHint')
-                : savePending ? t('quotes.actions.savingTitle')
+                : heldReason === 'saving' ? t('quotes.actions.savingTitle')
+                : heldReason === 'unsaved' ? t('quotes.actions.unsavedTitle', { field: unsavedFieldLabel })
                 : undefined
             }
             data-testid="quote-send"
             className={`${btnBase} relative bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50`}
           >
-            {/* Overlay spinner: while edits settle (or a send is in flight) the
-                label fades under a dead-centered spinner. The label always
-                defines the button's size and sits truly centered — the earlier
-                reserved-slot approach kept the width stable but left the text
-                permanently off-center. */}
-            {(sending || savePending) && (
+            {/* Overlay spinner: the label fades under a dead-centered spinner.
+                The label always defines the button's size and sits truly
+                centered — the earlier reserved-slot approach kept the width
+                stable but left the text permanently off-center.
+                A spinner promises forthcoming completion, so it renders only
+                while something WILL complete: an in-flight send or a queued
+                click awaiting quiescence. Spinning on bare `savePending` meant a
+                field left dirty by a failed save spun forever. */}
+            {(sending || queued !== null) && (
               <Loader2 className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin" aria-hidden="true" />
             )}
-            <span className={sending || savePending ? 'opacity-30' : ''}>
+            <span className={sending || queued !== null ? 'opacity-30' : ''}>
               {t('quotes.actions.sendProposal')}
             </span>
           </button>
@@ -796,15 +829,19 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {t('quotes.actions.emptyHint')}
           </p>
         )}
-        {canSend && !isEmpty && savePending && (
+        {canSend && !isEmpty && heldReason && (
           // Same placement rules as the empty-quote hint above: the user must be
           // able to SEE why the money-button is held, not just hover for it.
+          // Two reasons, two messages — "Saving changes…" over a field that
+          // already gave up is advice the user can follow indefinitely.
           <p
-            id={`quote-send-saving-hint-${variant}`}
-            data-testid="quote-send-saving-hint"
+            id={`quote-send-held-hint-${variant}`}
+            data-testid={heldReason === 'saving' ? 'quote-send-saving-hint' : 'quote-send-unsaved-hint'}
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
-            {t('quotes.actions.savingHint')}
+            {heldReason === 'saving'
+              ? t('quotes.actions.savingHint')
+              : t('quotes.actions.unsavedHint', { field: unsavedFieldLabel })}
           </p>
         )}
       </div>
@@ -925,7 +962,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             <Trans
               i18nKey="quotes.actions.sendConfirm.noBillingContactHint"
               t={t}
-              components={{ orgLink: <a href={`/settings/organizations/${quote.orgId}`} className="underline hover:text-foreground" /> }}
+              // #billing, not the bare org route: the billing-contact field
+              // lives under that tab and OrgSettingsPage defaults to General, so
+              // an undeep link drops the user on a page with no visible field —
+              // exactly the fix this hint promises to point at.
+              components={{ orgLink: <a href={`/settings/organizations/${quote.orgId}#billing`} className="underline hover:text-foreground" /> }}
             />
           </p>
         )}
@@ -1057,7 +1098,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         </h3>
         <p className="mt-1 text-sm text-muted-foreground">{t('quotes.actions.cloneDialog.message')}</p>
         <div className="mt-4 space-y-3">
-          <label className="block">
+          {/* A <div>, NOT a <label>: OrgCombobox renders its popover inline, so a
+              label wrapper would make the trigger its implicit control and a
+              click anywhere on the popover's own chrome (padding, cap note, the
+              no-results text) would forward to the trigger and close the picker
+              mid-search. The combobox carries its own aria-label. */}
+          <div className="block">
             <span className="mb-1 block text-sm font-medium text-foreground">
               {t('quotes.actions.cloneDialog.companyLabel')}
             </span>
@@ -1071,7 +1117,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               label={t('quotes.actions.cloneDialog.companyLabel')}
               testId="quote-clone-org"
             />
-          </label>
+          </div>
           {cloneOrgId !== quote.orgId && (
             <p className="text-xs text-muted-foreground" data-testid="quote-clone-retarget-hint">
               {t('quotes.actions.cloneDialog.retargetHint')}

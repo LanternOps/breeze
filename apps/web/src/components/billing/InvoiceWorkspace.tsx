@@ -39,9 +39,13 @@ export default function InvoiceWorkspace({ id }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
-  // True while the editor has an in-flight save or a dirty rail field — the
-  // header Issue buttons wait for quiescence so they can't race a blur-save.
+  // True while the editor has work genuinely in flight — the header Issue
+  // buttons wait for quiescence so they can't race a blur-save.
   const [editorSavePending, setEditorSavePending] = useState(false);
+  // Label of a field left dirty with nothing in flight (its save failed, or
+  // never fired). Kept separate from editorSavePending because the two need
+  // opposite handling: one is worth waiting for, the other never resolves.
+  const [editorUnsavedField, setEditorUnsavedField] = useState<string | null>(null);
   // Monotonic count of editor save FAILURES. A failed save can still produce
   // "quiescence" (a failed delete-flush restores its rows; a failed line
   // blur-save clears its in-flight key), so InvoiceActions must cancel a
@@ -182,6 +186,7 @@ export default function InvoiceWorkspace({ id }: Props) {
             onChanged={reload}
             variant="header"
             savePending={editorSavePending}
+            unsavedFieldLabel={editorUnsavedField}
             saveFailureNonce={saveFailureNonce}
             onIssueWhilePending={flushEditorPendingDeletes}
           />
@@ -202,6 +207,7 @@ export default function InvoiceWorkspace({ id }: Props) {
             detail={detail}
             onChanged={() => void reload()}
             onPendingEditsChange={setEditorSavePending}
+            onUnsavedEditsChange={setEditorUnsavedField}
             onSaveFailure={reportSaveFailure}
             onRegisterPendingDeleteFlush={registerPendingDeleteFlush}
             showMargin={showMargin}

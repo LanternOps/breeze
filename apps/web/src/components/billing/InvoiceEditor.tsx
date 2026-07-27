@@ -26,10 +26,17 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 interface Props {
   detail: InvoiceDetail;
   onChanged: () => void;
-  /** Reports "is anything still saving / sitting dirty?" to the workspace so
-   *  the header's Issue buttons can wait for quiescence instead of issuing an
-   *  invoice that's missing a just-typed edit (mirrors the quote editor). */
+  /** Reports "is work actually IN FLIGHT?" — an open mutation or a deferred
+   *  deletion whose DELETE hasn't fired yet. The header's Issue buttons wait on
+   *  this, because it is the only state that resolves on its own. Deliberately
+   *  NOT true for a merely-dirty field: see onUnsavedEditsChange. */
   onPendingEditsChange?: (hasPendingEdits: boolean) => void;
+  /** Reports a field holding an edit that is dirty with NOTHING in flight —
+   *  i.e. its save failed, or never fired. Waiting cannot clear this, so the
+   *  header must refuse the Issue and name the field instead of promising the
+   *  user that a save is on its way. Null when everything is clean or genuinely
+   *  saving. The string is a translated field label. */
+  onUnsavedEditsChange?: (unsavedFieldLabel: string | null) => void;
   /** Reports every save FAILURE. Quiescence alone is not a safe Issue signal:
    *  a failed delete-flush restores its rows and a failed line blur-save
    *  clears its in-flight key, both of which read as "quiet" — the workspace
@@ -53,10 +60,12 @@ const UNDO_GRACE_MS = 6000;
 
 /** One deferred line deletion awaiting its grace window. `memberIds` includes
  *  bundle children — the server FK-cascades them, so they hide and restore as
- *  one unit with their parent. */
-type PendingDelete = { id: string; memberIds: string[]; timer: ReturnType<typeof setTimeout> };
+ *  one unit with their parent. Keyed by the parent line id in
+ *  `pendingDeleteEntries`; the id is NOT repeated here, so an entry can't be
+ *  filed under a key that disagrees with it. */
+type PendingDelete = { memberIds: string[]; timer: ReturnType<typeof setTimeout> };
 
-export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange, onSaveFailure, onRegisterPendingDeleteFlush, showMargin }: Props) {
+export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange, onUnsavedEditsChange, onSaveFailure, onRegisterPendingDeleteFlush, showMargin }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
@@ -116,6 +125,12 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // indicator near the autosave hint — null until this session's first save
   // (nothing to report before that; the indicator itself stays unrendered).
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // Keys whose most recent save attempt FAILED, cleared when one succeeds.
+  // Dirty-ness alone cannot be the "you have unsaved work" signal: after a
+  // SUCCESSFUL save the local value legitimately differs from the server copy
+  // until the refetch lands, so "dirty with nothing in flight" is also the
+  // normal happy path for one round-trip. Failure is unambiguous.
+  const [failedKeys, setFailedKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   // Run a scoped mutation: mark the key pending, run, surface failures via the
   // standard handleActionError path, and always clear the key. Returns whether
@@ -128,9 +143,11 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       try {
         await fn();
         setLastSavedAt(Date.now());
+        setFailedKeys((s) => { if (!s.has(key)) return s; const n = new Set(s); n.delete(key); return n; });
         return true;
       } catch (err) {
         handleActionError(err, errMsg);
+        setFailedKeys((s) => { if (s.has(key)) return s; const n = new Set(s); n.add(key); return n; });
         onSaveFailure?.();
         return false;
       } finally {
@@ -148,20 +165,56 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   const [termsDirty, setTermsDirty] = useState(false);
   const [termsSaved, flashTermsSaved] = useSavedFlash();
 
-  // Surface "is anything still saving / sitting dirty?" to the workspace so the
-  // header Issue buttons can wait for quiescence. Pending covers every in-flight
-  // mutation (line/add/remove/notes/terms); the dirty flags cover the rail's
-  // blur-to-save fields. Per-line dirty state isn't lifted — clicking Issue
-  // blurs the focused field, whose commit lands in `pending` before the action
-  // fires (mirrors the quote editor's contract). Deferred deletions count too:
-  // their DELETE hasn't fired yet, so Issue must not snapshot an invoice the
-  // user has visibly already trimmed (clicking Issue also flushes them — see
-  // onRegisterPendingDeleteFlush).
-  const hasPendingEdits = pending.size > 0 || notesDirty || termsDirty || pendingDeletedLineIds.size > 0;
+  // Per-line dirty fields, reported up from each LineRow. This MUST be lifted:
+  // a line field whose save failed keeps its local value (nothing reverts it)
+  // while runScoped's `finally` clears its in-flight key — so `pending` alone
+  // reads as perfectly quiet while an amber "unsaved" border sits on a quantity.
+  // Leaving it unlifted let Issue number an invoice at the pre-edit money.
+  const [dirtyLineKeys, setDirtyLineKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const reportLineDirty = useCallback((key: string, dirty: boolean) => {
+    setDirtyLineKeys((s) => {
+      if (dirty === s.has(key)) return s; // no-op keeps the reference stable
+      const n = new Set(s);
+      if (dirty) n.add(key); else n.delete(key);
+      return n;
+    });
+  }, []);
+
+  // Two DIFFERENT questions, deliberately kept apart — conflating them is what
+  // produced both a false "Saving changes…" and an Issue that skipped a failed
+  // edit:
+  //
+  // - hasPendingEdits: work is genuinely IN FLIGHT (an open mutation, or a
+  //   deferred deletion whose DELETE hasn't fired). This resolves on its own,
+  //   so a queued Issue may legitimately wait for it. Deferred deletions count:
+  //   Issue must not snapshot an invoice the user has visibly already trimmed
+  //   (clicking Issue also flushes them — see onRegisterPendingDeleteFlush).
+  // - unsavedFieldLabel: a field whose save FAILED and which is still dirty.
+  //   Waiting will never clear it, so the header refuses the Issue and names
+  //   the field.
+  //
+  // The second signal is the intersection of "last attempt failed" and "still
+  // differs from the server", and it needs both halves. Failure alone would
+  // keep blocking after the user reverts the field by hand (the commit path
+  // short-circuits on an unchanged value, so no fresh attempt ever clears the
+  // flag). Dirty alone would fire during the one round-trip between a
+  // successful save and its refetch, refusing an Issue that is perfectly valid.
+  //
+  // A field that is mid-save is dirty AND in flight; `pending.size > 0` is
+  // checked first so that reads as "saving", not as "stuck".
+  const hasPendingEdits = pending.size > 0 || pendingDeletedLineIds.size > 0;
+  const unsavedFieldLabel = useMemo(() => {
+    if (pending.size > 0) return null; // something is genuinely on its way
+    if (failedKeys.has('notes') && notesDirty) return t('invoiceEditor.notes.title');
+    if (failedKeys.has('terms') && termsDirty) return t('invoiceEditor.terms.title');
+    for (const key of failedKeys) if (dirtyLineKeys.has(key)) return t('invoiceEditor.unsavedField.lines');
+    return null;
+  }, [pending.size, failedKeys, notesDirty, termsDirty, dirtyLineKeys, t]);
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
-  // Clear on unmount so a stale `true` can't lock Issue after the editor is gone
-  // (e.g. the invoice was just issued and the tab switched).
-  useEffect(() => () => onPendingEditsChange?.(false), [onPendingEditsChange]);
+  useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
+  // Clear BOTH on unmount so a stale signal can't lock Issue after the editor is
+  // gone (e.g. the invoice was just issued and the tab switched).
+  useEffect(() => () => { onPendingEditsChange?.(false); onUnsavedEditsChange?.(null); }, [onPendingEditsChange, onUnsavedEditsChange]);
 
   // Add-line form
   const [addMode, setAddMode] = useState<AddMode>('catalog');
@@ -171,18 +224,31 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   const [manualPrice, setManualPrice] = useState('0.00');
   const [manualTaxable, setManualTaxable] = useState(false);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [picked, setPicked] = useState<CatalogItem | null>(null);
   const [pickQty, setPickQty] = useState('1');
 
   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
   useEffect(() => { setTerms(invoice.termsAndConditions ?? ''); setTermsDirty(false); }, [invoice.termsAndConditions]);
 
+  // An empty catalog and a BROKEN catalog need different copy: rendering "No
+  // catalog items — add in catalog" because the response failed to parse sends
+  // the user off to create items that already exist. Everything that can throw
+  // is inside the try, including the JSON parse (a 200 with a truncated body
+  // rejects there), and the rejection is surfaced rather than voided away.
   const loadCatalog = useCallback(async () => {
-    const res = await listCatalog({ isActive: true, limit: 200 });
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoiceEditor.errors.loadCatalog')); return; }
-    const body = (await res.json()) as { data: CatalogItem[] };
-    setCatalog(body.data ?? []);
+    try {
+      const res = await listCatalog({ isActive: true, limit: 200 });
+      if (res.status === 401) return UNAUTHORIZED();
+      if (!res.ok) throw new Error(res.statusText);
+      const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
+      if (!body || !Array.isArray(body.data)) throw new Error('malformed catalog response');
+      setCatalog(body.data);
+      setCatalogFailed(false);
+    } catch (err) {
+      handleActionError(err, t('invoiceEditor.errors.loadCatalog'));
+      setCatalogFailed(true);
+    }
   }, [t]);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
@@ -202,23 +268,27 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
-  const addLine = useCallback(() =>
-    runScoped('addLine', async () => {
-      if (addMode === 'manual') {
-        // A line needs at least a title (name) or a description (mirrors the API refine).
-        if (!manualName.trim() && !manualDesc.trim()) return;
-        // Guard qty/price with the same rules as the inline commit path so a bad
-        // manual entry is explained, not silently coerced (Number('abc') → NaN).
-        const q = Number(manualQty);
-        const p = Number(manualPrice);
-        if (!Number.isFinite(q) || q <= 0) {
-          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
-          return;
-        }
-        if (!Number.isFinite(p) || p < 0) {
-          handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
-          return;
-        }
+  // Validation runs OUTSIDE runScoped. Inside it, a plain `return` is
+  // indistinguishable from a completed save, so runScoped would stamp the
+  // "Saved <time>" indicator on an entry it had just rejected — a success cue on
+  // a money document at the exact moment of a failure.
+  const addLine = useCallback(async () => {
+    if (addMode === 'manual') {
+      // A line needs at least a title (name) or a description (mirrors the API refine).
+      if (!manualName.trim() && !manualDesc.trim()) return;
+      // Guard qty/price with the same rules as the inline commit path so a bad
+      // manual entry is explained, not silently coerced (Number('abc') → NaN).
+      const q = Number(manualQty);
+      const p = Number(manualPrice);
+      if (!Number.isFinite(q) || q <= 0) {
+        handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
+        return;
+      }
+      if (!Number.isFinite(p) || p < 0) {
+        handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
+        return;
+      }
+      await runScoped('addLine', async () => {
         await runAction({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/lines`, {
             method: 'POST',
@@ -235,29 +305,33 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
           onUnauthorized: UNAUTHORIZED,
         });
         setManualName(''); setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
-      } else {
-        if (!picked) return;
-        const pq = Number(pickQty);
-        if (!Number.isFinite(pq) || pq <= 0) {
-          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
-          return;
-        }
-        const path = picked.isBundle
-          ? `/invoices/${invoice.id}/lines/bundle`
-          : `/invoices/${invoice.id}/lines/catalog`;
-        const body = picked.isBundle
-          ? { bundleId: picked.id, quantity: pq }
-          : { catalogItemId: picked.id, quantity: pq };
-        await runAction({
-          request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
-          errorFallback: t('invoiceEditor.errors.addLine'),
-          successMessage: t('invoiceEditor.success.lineAdded'),
-          onUnauthorized: UNAUTHORIZED,
-        });
-        setPicked(null); setPickQty('1');
-      }
+        refresh();
+      }, t('invoiceEditor.errors.addLine'));
+      return;
+    }
+    if (!picked) return;
+    const pq = Number(pickQty);
+    if (!Number.isFinite(pq) || pq <= 0) {
+      handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
+      return;
+    }
+    const path = picked.isBundle
+      ? `/invoices/${invoice.id}/lines/bundle`
+      : `/invoices/${invoice.id}/lines/catalog`;
+    const body = picked.isBundle
+      ? { bundleId: picked.id, quantity: pq }
+      : { catalogItemId: picked.id, quantity: pq };
+    await runScoped('addLine', async () => {
+      await runAction({
+        request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
+        errorFallback: t('invoiceEditor.errors.addLine'),
+        successMessage: t('invoiceEditor.success.lineAdded'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setPicked(null); setPickQty('1');
       refresh();
-    }, t('invoiceEditor.errors.addLine')),
+    }, t('invoiceEditor.errors.addLine'));
+  },
   [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh, t]);
 
   // Inline edit of an existing line. `scopeKey` is per-field so one in-flight
@@ -311,9 +385,9 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
 
   // flush → fire the real DELETE; on failure the line is honestly restored (it
   // IS still there) on top of the delete path's own error toast.
-  const flushLineDelete = useCallback(async (lineId: string) => {
+  const flushLineDelete = useCallback(async (lineId: string): Promise<boolean> => {
     const entry = pendingDeleteEntries.current.get(lineId);
-    if (!entry) return; // undone, or another flush already owns it
+    if (!entry) return true; // undone, or another flush already owns it — not a failure
     clearTimeout(entry.timer);
     pendingDeleteEntries.current.delete(lineId);
     const ok = await deleteLine(lineId);
@@ -332,6 +406,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
         return n;
       });
     }
+    return ok;
   }, [deleteLine]);
 
   const startLineDelete = useCallback((lineId: string) => {
@@ -340,7 +415,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     // so they hide — and restore — as one unit.
     const memberIds = [lineId, ...serverLines.filter((l) => l.parentLineId === lineId).map((l) => l.id)];
     const timer = setTimeout(() => { void flushLineDelete(lineId); }, UNDO_GRACE_MS);
-    pendingDeleteEntries.current.set(lineId, { id: lineId, memberIds, timer });
+    pendingDeleteEntries.current.set(lineId, { memberIds, timer });
     setPendingDeletedLineIds((s) => {
       const n = new Set(s);
       for (const id of memberIds) n.add(id);
@@ -359,8 +434,25 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // nicety, never a way for a confirmed deletion to be lost or to outlive the
   // editor.
   const flushAllPendingDeletes = useCallback(() => {
-    for (const e of [...pendingDeleteEntries.current.values()]) void flushLineDelete(e.id);
-  }, [flushLineDelete]);
+    const ids = [...pendingDeleteEntries.current.keys()];
+    if (ids.length === 0) return;
+    void (async () => {
+      const results = await Promise.all(ids.map((id) => flushLineDelete(id)));
+      const failed = results.filter((ok) => !ok).length;
+      // A PARTIAL flush is the case that silently misleads: the deletions that
+      // landed are permanent (their undo toasts are spent, and deleteLine has no
+      // success toast of its own), the failed one's row is back, and the only
+      // other thing the user sees is a generic "Issue was canceled". Read
+      // together those say "nothing happened", which is wrong in both
+      // directions. An all-or-nothing outcome needs no extra narration.
+      if (failed > 0 && failed < results.length) {
+        showToast({
+          type: 'warning',
+          message: t('invoiceEditor.undo.partialFlush', { applied: results.length - failed, failed }),
+        });
+      }
+    })();
+  }, [flushLineDelete, t]);
   const flushAllRef = useRef(flushAllPendingDeletes);
   useEffect(() => { flushAllRef.current = flushAllPendingDeletes; }, [flushAllPendingDeletes]);
   useEffect(() => {
@@ -498,6 +590,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                       isPending={isPending}
                       onPatch={patchLine}
                       onRemove={startLineDelete}
+                      onDirtyChange={reportLineDirty}
                     />
                   ))
                 )}
@@ -600,6 +693,18 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                   {t('invoiceEditor.addLine.add')}
                 </button>
               </div>
+            ) : catalogFailed ? (
+              <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-error">
+                {t('invoiceEditor.addLine.catalogLoadFailed')}{' '}
+                <button
+                  type="button"
+                  onClick={() => void loadCatalog()}
+                  className="underline hover:text-foreground"
+                  data-testid="invoice-catalog-retry"
+                >
+                  {t('invoiceEditor.addLine.retry')}
+                </button>
+              </p>
             ) : catalog.length === 0 ? (
               <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-empty">
                 {t('invoiceEditor.addLine.noCatalogItems')}{' '}
@@ -725,7 +830,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
 }
 
 function LineRow({
-  line, children, currency, isPending, onPatch, onRemove,
+  line, children, currency, isPending, onPatch, onRemove, onDirtyChange,
 }: {
   line: InvoiceLine;
   children: InvoiceLine[];
@@ -733,6 +838,10 @@ function LineRow({
   isPending: (key: string) => boolean;
   onPatch: (lineId: string, patch: Record<string, unknown>, scopeKey: string) => Promise<boolean>;
   onRemove: (lineId: string) => void;
+  /** Reports this row's per-field dirty state to the editor, which folds it into
+   *  the Issue gate. Without it a line edit whose PATCH failed is invisible to
+   *  the header — see the hasPendingEdits comment. */
+  onDirtyChange: (key: string, dirty: boolean) => void;
 }) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
@@ -796,6 +905,21 @@ function LineRow({
   const descDirty = desc.trim() !== (line.description ?? '');
   const qtyDirty = Number(qty) !== Number(line.quantity);
   const priceDirty = Number(price) !== Number(line.unitPrice);
+
+  // Report each field's dirty state up so the header's Issue gate can see it.
+  // The unmount cleanup is load-bearing: a row that disappears (deleted, or
+  // dropped by a refetch) while dirty would otherwise pin the invoice's
+  // "unsaved" state to a field that no longer exists, blocking Issue forever.
+  useEffect(() => { onDirtyChange(nameKey, nameDirty); }, [onDirtyChange, nameKey, nameDirty]);
+  useEffect(() => { onDirtyChange(descKey, descDirty); }, [onDirtyChange, descKey, descDirty]);
+  useEffect(() => { onDirtyChange(qtyKey, qtyDirty); }, [onDirtyChange, qtyKey, qtyDirty]);
+  useEffect(() => { onDirtyChange(priceKey, priceDirty); }, [onDirtyChange, priceKey, priceDirty]);
+  useEffect(() => () => {
+    onDirtyChange(nameKey, false);
+    onDirtyChange(descKey, false);
+    onDirtyChange(qtyKey, false);
+    onDirtyChange(priceKey, false);
+  }, [onDirtyChange, nameKey, descKey, qtyKey, priceKey]);
 
   const commitName = () => {
     if (!canWrite) return;

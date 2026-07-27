@@ -4,7 +4,7 @@
 // `storage`. Removing either channel makes "no margin on screen" a per-widget
 // promise — the exact leak the hook exists to prevent.
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MarginToggle, useShowMargin, SHOW_INTERNAL_MARGIN_KEY, _resetShowMarginMemoryForTests } from './billingUi';
 
@@ -54,5 +54,42 @@ describe('useShowMargin — cross-instance sync', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: SHOW_INTERNAL_MARGIN_KEY, newValue: '1' }));
     });
     expect(screen.getByTestId('state-a')).toHaveTextContent('on');
+  });
+
+  it('keeps instances in sync when localStorage THROWS (private mode / blocked storage)', async () => {
+    // This is the branch the memory mirror exists for, and it is the one that
+    // matters most: a tech screen-sharing in a private window who hides margin
+    // must not have it reappear in the sibling widget. If the sync event were
+    // conditional on a successful write, "hide" would become per-widget here.
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    try {
+      render(<><Consumer id="a" /><Consumer id="b" /></>);
+      expect(screen.getByTestId('state-a')).toHaveTextContent('off');
+
+      fireEvent.click(screen.getByTestId('toggle-a'));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.getByTestId('state-a')).toHaveTextContent('on');
+      expect(screen.getByTestId('state-b')).toHaveTextContent('on');
+      expect(setItem).toHaveBeenCalled(); // it tried; the throw was absorbed
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
+  it('a healthy but EMPTY storage wins over a stale memory mirror', async () => {
+    // Preferring the mirror on a merely-absent key would resurrect a cleared
+    // preference. Absent means default-off, and only an access throw hands
+    // authority to the mirror.
+    render(<Consumer id="a" />);
+    fireEvent.click(screen.getByTestId('toggle-a'));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('state-a')).toHaveTextContent('on');
+
+    localStorage.clear(); // the mirror still says "on"
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key: SHOW_INTERNAL_MARGIN_KEY, newValue: null })); });
+    expect(screen.getByTestId('state-a')).toHaveTextContent('off');
   });
 });

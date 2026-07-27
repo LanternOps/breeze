@@ -20,25 +20,30 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { runAction } from '../../../lib/runAction';
 import { useOrgStore } from '../../../stores/orgStore';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import { OrgCombobox } from '../shared/OrgCombobox';
+import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { UNAUTHORIZED, SrSaved, fieldRing, seamless, useSavedFlash } from './quoteEditorShared';
 
 interface Props {
   detail: QuoteDetailData;
   onChanged: () => void;
-  /** Reports in-flight/dirty state so the workspace can hold Send (merged with
-   *  the editor's own savePending). */
+  /** Reports IN-FLIGHT state so the workspace can hold Send (merged with the
+   *  editor's own savePending). Deliberately not true for a merely-dirty
+   *  field — see the note on the effects below. */
   onPendingChange?: (pending: boolean) => void;
+  /** Reports a translated field label when this surface's save FAILED and the
+   *  field is still dirty, so Send can name it instead of waiting forever. */
+  onUnsavedChange?: (label: string | null) => void;
 }
 
-export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
+export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedChange }: Props) {
   const { t } = useTranslation('billing');
   const { quote } = detail;
 
   const [title, setTitle] = useState(quote.title ?? '');
   const [titleDirty, setTitleDirty] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
+  const [titleFailed, setTitleFailed] = useState(false);
   const [titleSaved, flashTitleSaved] = useSavedFlash();
   useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
@@ -54,16 +59,29 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       setTitleDirty(false);
+      setTitleFailed(false);
       flashTitleSaved();
       onChanged();
-    } catch { /* runAction toasted */ } finally {
+    } catch {
+      // runAction toasted. The field STAYS dirty (nothing reverted it), so
+      // record the failure — reporting dirty as "pending" is what used to pin
+      // "Saving changes…" over the Send button for the rest of the session.
+      setTitleFailed(true);
+    } finally {
       setTitleBusy(false);
     }
   }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, t]);
 
-  const pending = titleBusy || titleDirty;
-  useEffect(() => { onPendingChange?.(pending); }, [pending, onPendingChange]);
+  // Pending means IN FLIGHT only. A dirty title is not a promise of a save: the
+  // Send gate still holds from the first keystroke because clicking Send blurs
+  // this field first, and that blur-save lands in `titleBusy` before the click
+  // handler runs.
+  useEffect(() => { onPendingChange?.(titleBusy); }, [titleBusy, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
+  // Failed AND still dirty — see the same pairing in InvoiceEditor.
+  const unsavedLabel = !titleBusy && titleFailed && titleDirty ? t('quotes.editor.title.label') : null;
+  useEffect(() => { onUnsavedChange?.(unsavedLabel); }, [unsavedLabel, onUnsavedChange]);
+  useEffect(() => () => onUnsavedChange?.(null), [onUnsavedChange]);
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="quote-header-meta">
@@ -94,16 +112,14 @@ export function QuoteCustomerSwitcher({ detail, onChanged, onPendingChange }: Pr
   const { quote } = detail;
 
   const organizations = useOrgStore((s) => s.organizations);
-  const orgOptions = useMemo(() => {
-    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
-    if (!sorted.some((o) => o.id === quote.orgId)) {
-      sorted.unshift({
-        id: quote.orgId,
-        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
-      } as (typeof sorted)[number]);
-    }
-    return sorted;
-  }, [organizations, quote.orgId, detail.billTo?.name]);
+  const orgOptions = useMemo(
+    () => orgComboboxOptions(
+      organizations,
+      quote.orgId,
+      detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
+    ),
+    [organizations, quote.orgId, detail.billTo?.name],
+  );
 
   const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
   const [customerBusy, setCustomerBusy] = useState(false);

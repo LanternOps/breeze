@@ -168,19 +168,52 @@ describe('InvoiceWorkspace', () => {
     render(<InvoiceWorkspace id="inv-1" />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
 
-    // Dirty the notes field → the header shows the saving hint.
+    // Edit + blur → the PATCH is genuinely in flight → the header shows the
+    // saving hint. (Typing alone is not "saving": nothing has been sent yet.)
     fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Edited' } });
+    fireEvent.blur(screen.getByTestId('invoice-notes'));
     await waitFor(() => expect(screen.getByTestId('invoice-issue-saving-hint')).toBeInTheDocument());
 
     // Clicking Issue queues (nothing fires while the save is pending)…
     fireEvent.click(screen.getByTestId('invoice-issue'));
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/issue'))).toBe(false);
 
-    // …the blur-save starts and lands → quiescence → the queued Issue fires.
-    fireEvent.blur(screen.getByTestId('invoice-notes'));
+    // …the save lands → quiescence → the queued Issue fires.
     resolvePatch(json({ data: {} }));
     await waitFor(() =>
       expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/issue') && (c[1] as RequestInit)?.method === 'POST')).toBe(true),
     );
+  });
+
+  it('does NOT fire a queued Issue when the pending save fails — the whole point of the failure nonce', async () => {
+    // Both halves of this are unit-tested in isolation and never meet there:
+    // the editor proves it reports a failure, InvoiceActions proves it cancels
+    // on one. This is the wiring. Deleting `saveFailureNonce` from the
+    // InvoiceActions element below must fail HERE, or the prop is unguarded.
+    let rejectPatch!: (v: Response) => void;
+    const patchPromise = new Promise<Response>((resolve) => { rejectPatch = resolve; });
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1' && opts?.method === 'PATCH') return patchPromise;
+      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
+      if (input === '/invoices/inv-1/payments') return json({ data: [] });
+      if (input === '/invoices/inv-1') return json({ data: invoice({}) });
+      return json({ data: {} });
+    });
+    render(<InvoiceWorkspace id="inv-1" />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Edited' } });
+    fireEvent.blur(screen.getByTestId('invoice-notes'));
+    await waitFor(() => expect(screen.getByTestId('invoice-issue-saving-hint')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+
+    // The save FAILS. The in-flight key clears, so the editor now looks quiet —
+    // firing the queue here would number the invoice without the edit.
+    rejectPatch(json({ error: 'boom' }, false, 500));
+
+    await waitFor(() => expect(screen.getByTestId('invoice-issue-unsaved-hint')).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/issue') && (c[1] as RequestInit)?.method === 'POST')).toBe(false);
   });
 });

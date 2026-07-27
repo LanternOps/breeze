@@ -795,6 +795,9 @@
         "noTargets": "Ajoutez une section tarifaire, puis déplacez-y ces lignes.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Lignes non affectées"
+      },
+      "unsavedField": {
+        "lines": "Lignes"
       }
     },
     "actions": {
@@ -864,9 +867,13 @@
       "undoSuccess": "Envoi annulé — le devis reste un brouillon.",
       "undoTooLate": "Trop tard pour annuler — la proposition a déjà été envoyée.",
       "sendNow": "Envoyer maintenant",
-      "savingTimeout": "L'enregistrement des modifications prend trop de temps — vérifiez votre connexion et réessayez.",
+      "savingTimeout": "Vos modifications sont encore en cours d’enregistrement — l’envoi a été annulé. Réessayez une fois tout enregistré.",
       "sendNowCancelError": "Envoi immédiat impossible — la proposition sera tout de même envoyée comme prévu.",
-      "sendNowAlready": "Déjà en route — la proposition est en cours d'envoi."
+      "sendNowAlready": "Déjà en route — la proposition est en cours d'envoi.",
+      "sendCanceledSaveFailed": "Une modification n’a pas pu être enregistrée, l’envoi a donc été annulé. Corrigez le champ signalé et réessayez.",
+      "sendBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la puis envoyez.",
+      "unsavedHint": "« {{field}} » contient une modification non enregistrée — l’envoi sera disponible une fois enregistrée.",
+      "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’envoi sera disponible une fois enregistrée."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -1172,7 +1179,9 @@
       "manualLine": "Ligne manuelle",
       "noCatalogItems": "Aucun article dans le catalogue.",
       "searchCatalog": "Rechercher par nom ou SKU dans le catalogue",
-      "sourceAria": "Source d'ajout de ligne"
+      "sourceAria": "Source d'ajout de ligne",
+      "catalogLoadFailed": "Le catalogue n’a pas pu être chargé, aucun article ne peut donc être affiché.",
+      "retry": "Réessayer"
     },
     "billTo": {
       "addInSettings": "Ajoutez-en un dans les paramètres de l'organisation",
@@ -1243,9 +1252,13 @@
     },
     "undo": {
       "lineDeleted": "Ligne supprimée",
-      "tooLate": "Trop tard pour annuler — cette ligne a déjà été supprimée."
+      "tooLate": "Trop tard pour annuler — cette ligne a déjà été supprimée.",
+      "partialFlush": "{{applied}} suppression(s) appliquée(s) ; {{failed}} ont échoué et ont été restaurées."
     },
-    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes"
+    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
+    "unsavedField": {
+      "lines": "Lignes"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1275,7 +1288,10 @@
     "savingHint": "Enregistrement des modifications… L'émission sera disponible une fois tout enregistré.",
     "savingTitle": "Enregistrement de vos modifications — l'émission sera disponible une fois tout enregistré.",
     "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
-    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré."
+    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
+    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la puis émettez.",
+    "unsavedHint": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée.",
+    "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée."
   },
   "invoiceDetail": {
     "deposit": {

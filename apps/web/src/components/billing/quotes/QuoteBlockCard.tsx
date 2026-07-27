@@ -341,7 +341,10 @@ export function BlockCard({
             <div
               onBlur={() => void commitRich()}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className={`rounded-md transition-shadow ${fieldRing(richDraft !== html, blockSaved)}`}
+              // `border` is required, not decorative: fieldRing emits border-COLOR
+              // only, and Tailwind's preflight leaves width at 0 — without it the
+              // dirty/saved cue on this block renders nothing.
+              className={`rounded-md border border-transparent transition-colors ${fieldRing(richDraft !== html, blockSaved)}`}
             >
               <RichTextEditor
                 value={richDraft}

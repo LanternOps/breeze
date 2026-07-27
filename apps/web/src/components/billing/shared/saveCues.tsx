@@ -1,8 +1,14 @@
-// The billing editors' shared save-grammar: quiet blur-to-save cues (dirty
-// border / green "saved" pulse / SR-only announcements) used by both the quote
-// editor modules and the invoice editor. Extracted from quoteEditorShared so the
-// invoice editor stops carrying stale byte-similar local copies — one styling
-// contract, one place it evolves.
+// The shared save-grammar: quiet blur-to-save cues (dirty border / green "saved"
+// pulse / SR-only announcements). Extracted from quoteEditorShared, which had
+// been copied into the invoice editor and the contract editor; both copies had
+// since drifted, and the contract one still carried the ring-based version this
+// file exists to replace.
+//
+// Every consumer now routes here — the quote modules via the thin
+// `quoteEditorShared` adapters (which only inject the quote's default label and
+// id prefix), the invoice editor and `contracts/ContractEditor` directly. One
+// styling contract, one place it evolves. Adding a fourth copy is how the last
+// three diverged; extend this file instead.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
@@ -35,24 +41,45 @@ export function SrSaved({ show, label, testId }: { show: boolean; label: string;
 // green border pulse when it lands, nothing at rest. Border-color (not a ring):
 // the focus ring occupies the box-shadow channel, so a ring-based dirty signal
 // was painted over by focus on exactly the field being edited — the one moment
-// the signal matters. Border-color composes with the focus ring, never reflows
-// (the border is always present, only its color changes), and uses the
-// warning-strong indicator token (>=3:1 non-text on a light card). Pair with a
-// constant `transition-colors` on the field.
+// the signal matters. Border-color composes with the focus ring instead.
+//
+// PRECONDITION: the field must already carry a `border` WIDTH utility. These are
+// border-COLOR classes only, and Tailwind 4's preflight leaves `border-width: 0`
+// on every element (this app's `@layer base` re-declares only `border-color`) —
+// so on an element without one, the cue renders nothing at all and does so
+// silently. That is not hypothetical: it is how the rich-text block card lost
+// its cue in the ring→border migration. Given the width, the border is always
+// present and only its color changes, so the signal never reflows. Pair with a
+// constant `transition-colors` (NOT `transition-shadow` — border-color is not in
+// the shadow property set, so the amber→green change would snap).
+//
+// Amber uses `warning-strong` (~4.6:1 on light, >=3:1 dark) because plain
+// `--warning` is ~2.3:1, below the 3:1 non-text minimum. The green branch uses
+// plain `--success` (~4.5:1 light / ~4.0:1 dark), which also clears it — and it
+// is a transient confirmation backed by SrSaved, so it is not load-bearing.
 export function fieldRing(dirty: boolean, saved: boolean): string {
   return dirty ? 'border-warning-strong' : saved ? 'border-success' : '';
 }
 
 // Seamless (document-styled) field border: at rest the border is invisible so
 // the value reads as document text; hover/focus reveal the field. A state color
-// (dirty amber / saved green / error red) REPLACES the base set rather than
-// stacking on it, so two border-color utilities never compete. The
-// focus-visible ring is unconditional: the revealed border alone is a sub-3:1
-// change against the page background, invisible to a keyboard user tabbing
-// through — and the ring lives in the box-shadow channel, so it composes with
-// the border-color save signal instead of painting over it.
-export function seamless(state: string): string {
-  return `${state || 'border-transparent hover:border-border focus:border-border'} focus-visible:ring-2 focus-visible:ring-ring`;
+// REPLACES the base set rather than stacking on it, so two border-color
+// utilities never compete. The focus-visible ring is unconditional: the revealed
+// border alone is a sub-3:1 change against the page background, invisible to a
+// keyboard user tabbing through — and the ring lives in the box-shadow channel,
+// so it composes with the border-color save signal instead of painting over it.
+//
+// `invalid` is a parameter rather than something callers branch around, because
+// branching around it is what callers did — `invalid ? 'border-destructive' :
+// seamless(...)` reads as a legal refactor, but it drops the focus ring from the
+// one field a keyboard user is actively trying to fix (these inputs all set
+// `focus:outline-hidden`, so nothing else supplies an indicator). Taking the
+// error state here means the bypass has no reason to exist.
+export function seamless(state: string, invalid = false): string {
+  const border = invalid
+    ? 'border-destructive'
+    : state || 'border-transparent hover:border-border focus:border-border';
+  return `${border} focus-visible:ring-2 focus-visible:ring-ring`;
 }
 
 // The amber dirty border (fieldRing) is a COLOR-only signal — a screen-reader

@@ -50,6 +50,13 @@ export default function QuoteWorkspace({ id }: Props) {
   // their own pending state; Send waits for ALL surfaces to be quiescent.
   const [titleSavePending, setTitleSavePending] = useState(false);
   const [customerSavePending, setCustomerSavePending] = useState(false);
+  // Monotonic count of editor save FAILURES, and the label of a field left
+  // dirty by one. A failed save still produces "quiescence", so Send needs both
+  // to tell "on its way" from "gave up" (mirrors InvoiceWorkspace).
+  const [saveFailureNonce, setSaveFailureNonce] = useState(0);
+  const reportSaveFailure = useCallback(() => setSaveFailureNonce((n) => n + 1), []);
+  const [editorUnsavedField, setEditorUnsavedField] = useState<string | null>(null);
+  const [titleUnsavedField, setTitleUnsavedField] = useState<string | null>(null);
   // Cost/margin visibility is workspace state so the toggle can live in the
   // pinned header (next to Send) while the editor's internal surfaces consume it.
   const [showInternal, toggleShowInternal] = useShowInternalMargin();
@@ -197,7 +204,7 @@ export default function QuoteWorkspace({ id }: Props) {
       // Drafts get the editable title in place of the static h1, with the
       // customer switcher on its own meta line below — inline next to the title
       // it squeezed the h1 and floated mis-aligned against the status pill.
-      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setTitleSavePending} /> : undefined}
+      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setTitleSavePending} onUnsavedChange={setTitleUnsavedField} /> : undefined}
       metaSlot={isDraft ? <QuoteCustomerSwitcher detail={detail} onChanged={() => void reload()} onPendingChange={setCustomerSavePending} /> : undefined}
       statusPill={statusPill}
       // Primary actions live in the header so Send (the money-moment) and Download
@@ -209,7 +216,7 @@ export default function QuoteWorkspace({ id }: Props) {
           {isDraft && activeTab === 'editor' && (
             <MarginToggle show={showInternal} onToggle={toggleShowInternal} testId="quote-editor-toggle-internal" size="md" />
           )}
-          <QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || titleSavePending || customerSavePending} onSendWhilePending={flushEditorPendingDeletes} />
+          <QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || titleSavePending || customerSavePending} unsavedFieldLabel={editorUnsavedField ?? titleUnsavedField} saveFailureNonce={saveFailureNonce} onSendWhilePending={flushEditorPendingDeletes} />
         </>
       }
       tabs={tabs}
@@ -235,7 +242,7 @@ export default function QuoteWorkspace({ id }: Props) {
           while previewing. */}
       {isDraft && (
         <div className={activeTab === 'editor' ? '' : 'hidden'}>
-          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} showInternal={showInternal} onToggleInternal={toggleShowInternal} />
+          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onSaveFailure={reportSaveFailure} onUnsavedEditsChange={setEditorUnsavedField} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} showInternal={showInternal} onToggleInternal={toggleShowInternal} />
         </div>
       )}
       {activeTab === 'preview' && (

@@ -58,7 +58,7 @@ describe('InvoiceActions — savePending gating', () => {
     // Visible reason for the hold (both a hint paragraph and the button title).
     expect(screen.getByTestId('invoice-issue-saving-hint')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-issue')).toHaveAttribute(
-      'aria-describedby', 'invoice-issue-saving-hint-header',
+      'aria-describedby', 'invoice-issue-held-hint-header',
     );
 
     // Clicking Issue while saving queues it — nothing fires yet.
@@ -113,7 +113,57 @@ describe('InvoiceActions — savePending gating', () => {
     rerender(<InvoiceActions detail={detail()} variant="header" savePending={false} saveFailureNonce={1} />);
 
     // The queue was dropped by the failure — quiescence fires nothing.
-    await new Promise((r) => setTimeout(r, 0));
+    await act(async () => {});
+    await waitFor(() => expect(screen.queryByTestId('invoice-issue-saving-hint')).not.toBeInTheDocument());
+    expect(issuePosted()).toBe(false);
+  });
+
+  it('cancels a queued Issue when the failure and quiescence arrive in the SAME render', async () => {
+    // The dangerous shape: one commit in which the nonce bumps AND savePending
+    // goes false. Splitting these across two rerenders proves nothing — the
+    // first is inert while savePending is still true, so the assertion passes
+    // even if the guard is ordered wrongly. Both props must flip at once.
+    const { rerender } = render(
+      <InvoiceActions detail={detail()} variant="header" savePending saveFailureNonce={0} />,
+    );
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+    expect(issuePosted()).toBe(false);
+
+    rerender(<InvoiceActions detail={detail()} variant="header" savePending={false} saveFailureNonce={1} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await act(async () => {});
+    expect(issuePosted()).toBe(false);
+  });
+
+  it('refuses (does not queue) an Issue click when a field failed to save and stays dirty', async () => {
+    // Queueing here would wait on a save that is never coming. The hint and the
+    // toast must name the field instead of promising a save in progress.
+    render(<InvoiceActions detail={detail()} variant="header" unsavedFieldLabel="Notes" />);
+
+    expect(screen.queryByTestId('invoice-issue-saving-hint')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-issue-unsaved-hint')).toHaveTextContent('Notes');
+
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('Notes') }),
+    ));
+    // No queue, no spinner, and above all no POST.
+    expect(issuePosted()).toBe(false);
+  });
+
+  it('re-checks the visible-lines precondition before firing a queued Issue', async () => {
+    // The queue can outlive the gate: flushing the deferred delete of the last
+    // customer-visible line is itself what the Issue click triggered.
+    const withLine = detail();
+    const { rerender } = render(<InvoiceActions detail={withLine} variant="header" savePending />);
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+
+    const emptied = detail();
+    emptied.lines = [{ ...visibleLine, customerVisible: false }];
+    rerender(<InvoiceActions detail={emptied} variant="header" savePending={false} />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
     expect(issuePosted()).toBe(false);
   });
 
