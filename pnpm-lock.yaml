@@ -703,8 +703,8 @@ importers:
         specifier: ^5.4.0
         version: 5.4.0(react-hook-form@7.81.0(react@19.2.7))
       '@tanstack/react-query':
-        specifier: ^5.101.3
-        version: 5.101.3(react@19.2.7)
+        specifier: ^5.101.4
+        version: 5.101.4(react@19.2.7)
       astro:
         specifier: ^7.1.2
         version: 7.1.2(@astrojs/markdown-remark@7.2.1)(@azure/identity@4.13.1)(@azure/keyvault-secrets@4.11.2)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@types/node@26.1.1)(ioredis@5.11.1)(jiti@2.7.0)(rollup@4.62.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
@@ -913,8 +913,8 @@ importers:
         specifier: ^13.3.0
         version: 13.3.0
       '@tanstack/react-query':
-        specifier: ^5.101.3
-        version: 5.101.3(react@19.2.7)
+        specifier: ^5.101.4
+        version: 5.101.4(react@19.2.7)
       '@tiptap/extension-link':
         specifier: ^3.28.0
         version: 3.28.0(@tiptap/core@3.28.0(@tiptap/pm@3.28.0))(@tiptap/pm@3.28.0)
@@ -5012,11 +5012,11 @@ packages:
     peerDependencies:
       vite: '>=6.4.2'
 
-  '@tanstack/query-core@5.101.3':
-    resolution: {integrity: sha512-pWLyu7AjFFVM5G+frjcL81kKEW9R8GCCPKnL3uaWbMwd2f3ZINFCuy+PtKkdz/+pKw/f/XMsFsYq/H+uJHM4GQ==}
+  '@tanstack/query-core@5.101.4':
+    resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
 
-  '@tanstack/react-query@5.101.3':
-    resolution: {integrity: sha512-ZjgcRwmQUSCythDPj6pE2NKFi9bpQegxIBxgt3hPytXI1ElFHNaa3A7aWW8vFaLCIRjPv467rbREYHbxcdgQbg==}
+  '@tanstack/react-query@5.101.4':
+    resolution: {integrity: sha512-yRg2pfOCxIs4ZJW3XYYHU/WgtD04FHSnfHlpRT7h7pR77hwkdRG4wxbKe4aq6P0RvXUTBSQpQeadS1SUYUe+KA==}
     peerDependencies:
       react: ^18 || ^19
 
@@ -16229,11 +16229,11 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
 
-  '@tanstack/query-core@5.101.3': {}
+  '@tanstack/query-core@5.101.4': {}
 
-  '@tanstack/react-query@5.101.3(react@19.2.7)':
+  '@tanstack/react-query@5.101.4(react@19.2.7)':
     dependencies:
-      '@tanstack/query-core': 5.101.3
+      '@tanstack/query-core': 5.101.4
       react: 19.2.7
 
   '@tauri-apps/api@2.11.0': {}
