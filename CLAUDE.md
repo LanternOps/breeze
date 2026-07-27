@@ -236,6 +236,8 @@ ln -sf docker-compose.override.yml.dev docker-compose.override.yml
 docker compose up --build -d
 ```
 
+**Deleting a config file? Sweep the Compose mounts in the same PR.** Docker creates a missing bind-mount source as an empty **directory** on the host, which then gets `COPY`d into dev images where Vite/PostCSS discovery dies on it (`EISDIR`) — `breeze-web` comes up permanently unhealthy on a fresh clone. `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) parses every tracked compose file and fails when a file-shaped, repo-relative bind-mount source doesn't exist — or has already become a phantom directory. Extensionless sources (`./agent/bin`) are exempt as intended build outputs; out-of-repo sources (`../breeze-billing/…`) can't be asserted and are skipped. Shipped three times before the guard existed: #1999 (postcss), #2208 (partial tailwind), #2012 (the mounts #2208 missed).
+
 ### PR Merge Process
 - Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
 - Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
