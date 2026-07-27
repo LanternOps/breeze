@@ -152,6 +152,10 @@ export default function AddDeviceModal({
   // both reported by the server so the UI never advertises a stale single-use
   // token as good for the whole fleet.
   const [cliDeviceCount, setCliDeviceCount] = useState(1);
+  // Independent of the installer tab's ttlMinutes: the CLI command is
+  // typically pasted into a GPO/imaging script that runs later, so its
+  // useful default is longer than a hand-carried installer's.
+  const [cliTtlMinutes, setCliTtlMinutes] = useState<number>(1440);
   const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
   const [selectedOS, setSelectedOS] = useState<"windows" | "macos" | "linux">(
@@ -195,6 +199,7 @@ export default function AddDeviceModal({
       setOnboardingToken("");
       setTokenError(undefined);
       setCliDeviceCount(1);
+      setCliTtlMinutes(1440);
       setTokenMaxUsage(null);
       setTokenExpiresAt(null);
       setGeneratedLink("");
@@ -214,7 +219,7 @@ export default function AddDeviceModal({
   // gating lives in the auto-init effect; the "Generate new token" button and
   // error-retry call this directly to re-mint, so it only self-guards against
   // concurrent runs rather than against being called again.
-  const initializeCli = useCallback(async (count: number) => {
+  const initializeCli = useCallback(async (count: number, ttlMinutes: number) => {
     if (cliFetchInFlight.current) return;
     cliFetchInFlight.current = true;
     setCliInitialized(true);
@@ -228,7 +233,11 @@ export default function AddDeviceModal({
     try {
       const response = await fetchWithAuth("/devices/onboarding-token", {
         method: "POST",
-        body: JSON.stringify({ count }),
+        // The route validates its body with a strict Zod schema, so the
+        // JSON content type is mandatory — without it Hono hands the
+        // validator `{}` and ttlMinutes is silently dropped (#2777).
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count, ttlMinutes }),
       });
 
       if (!response.ok) {
@@ -292,9 +301,9 @@ export default function AddDeviceModal({
   // Re-mint the CLI token, e.g. after the operator bumps the device count or
   // wants a fresh one mid-session (#1108).
   const regenerateCliToken = useCallback(
-    (count: number) => {
+    (count: number, ttlMinutes: number) => {
       setTokenCopied(false);
-      void initializeCli(count);
+      void initializeCli(count, ttlMinutes);
     },
     [initializeCli],
   );
@@ -325,9 +334,16 @@ export default function AddDeviceModal({
   // the Linux default where the CLI tab is already active on open (#1108).
   useEffect(() => {
     if (isOpen && activeTab === "cli" && !cliInitialized) {
-      void initializeCli(cliDeviceCount);
+      void initializeCli(cliDeviceCount, cliTtlMinutes);
     }
-  }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
+  }, [
+    isOpen,
+    activeTab,
+    cliInitialized,
+    cliDeviceCount,
+    cliTtlMinutes,
+    initializeCli,
+  ]);
 
   const handleTabChange = (tab: "installer" | "cli") => {
     setActiveTab(tab);
@@ -573,6 +589,7 @@ export default function AddDeviceModal({
             <button
               key={tab}
               type="button"
+              data-testid={`tab-${tab}`}
               onClick={() => handleTabChange(tab)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
                 activeTab === tab
@@ -938,7 +955,7 @@ export default function AddDeviceModal({
                     <button
                       type="button"
                       onClick={() => {
-                        void initializeCli(cliDeviceCount);
+                        void initializeCli(cliDeviceCount, cliTtlMinutes);
                       }}
                       className="ml-2 underline hover:no-underline"
                     >
@@ -980,9 +997,47 @@ export default function AddDeviceModal({
                           className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
                         />
                       </div>
+                      <div>
+                        <label
+                          htmlFor="cli-link-ttl"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          {t("addDeviceModal.linkExpiresIn")}
+                        </label>
+                        <select
+                          id="cli-link-ttl"
+                          data-testid="cli-link-ttl"
+                          value={cliTtlMinutes}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n)) setCliTtlMinutes(n);
+                          }}
+                          className="rounded-md border bg-background px-2 py-1 text-sm"
+                        >
+                          <option value={60}>{t("addDeviceModal.n1Hour")}</option>
+                          <option value={1440}>
+                            {t("addDeviceModal.n24Hours")}
+                          </option>
+                          <option value={10080}>
+                            {t("addDeviceModal.n7Days")}
+                          </option>
+                          <option value={43200}>
+                            {t("addDeviceModal.n30Days")}
+                          </option>
+                          <option value={129600}>
+                            {t("addDeviceModal.n90Days")}
+                          </option>
+                          <option value={525600}>
+                            {t("addDeviceModal.n1Year")}
+                          </option>
+                        </select>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => regenerateCliToken(cliDeviceCount)}
+                        data-testid="cli-regenerate-token"
+                        onClick={() =>
+                          regenerateCliToken(cliDeviceCount, cliTtlMinutes)
+                        }
                         className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
                         {t("addDeviceModal.generateNewToken")}{" "}

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Force a deterministic navigator.userAgent BEFORE importing the component,
@@ -376,7 +377,13 @@ describe('AddDeviceModal', () => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/devices/onboarding-token',
         // #1108: the request now carries a device count → maxUsage.
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 1 }) })
+        // #2777: …and an explicit TTL (default 24h) with the JSON content type
+        // the route's strict validator requires.
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count: 1, ttlMinutes: 1440 }),
+        })
       );
     });
 
@@ -435,7 +442,11 @@ describe('AddDeviceModal', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenLastCalledWith(
         '/devices/onboarding-token',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ count: 5 }) })
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count: 5, ttlMinutes: 1440 }),
+        })
       );
     });
 
@@ -466,5 +477,31 @@ describe('AddDeviceModal', () => {
     expect(screen.getByText(/expires in about 1 hour/)).toBeDefined();
     // …and the old misleading hard-coded string is gone.
     expect(screen.queryByText(/expires in 24 hours/)).toBeNull();
+  });
+
+  it('sends the selected expiry on the CLI onboarding-token request', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      new Response(JSON.stringify({
+        token: 'enroll_abc', maxUsage: 1,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        enrollmentSecretMode: 'none', additionalSecretRequired: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+
+    render(<AddDeviceModal isOpen onClose={() => {}} />);
+    await userEvent.click(screen.getByTestId('tab-cli'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fetchWithAuthMock.mockClear();
+
+    await userEvent.selectOptions(screen.getByTestId('cli-link-ttl'), '10080');
+    await userEvent.click(screen.getByTestId('cli-regenerate-token'));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const call = fetchWithAuthMock.mock.calls[0];
+    expect(String(call[0])).toBe('/devices/onboarding-token');
+    const init = call[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toMatchObject({ ttlMinutes: 10080 });
+    expect((init.headers as Record<string, string>)['Content-Type'])
+      .toBe('application/json');
   });
 });
