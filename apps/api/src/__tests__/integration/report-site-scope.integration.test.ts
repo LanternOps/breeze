@@ -1124,7 +1124,7 @@ describe('Wave 2 · definition + template pages report exact visible totals', ()
     const token = f.siteAUser.token;
     const ghost = randomUUID();
 
-    const probes: Array<[string, () => Promise<Response>]> = [];
+    const probes: Array<[string, () => Response | Promise<Response>]> = [];
     for (const [label, id] of [
       ['hidden-other-site', hidden.otherSite],
       ['hidden-unrestricted', hidden.unrestricted],
