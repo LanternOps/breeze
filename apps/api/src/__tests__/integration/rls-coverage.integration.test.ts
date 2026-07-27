@@ -3340,3 +3340,70 @@ describe('unifi_devices RLS — cross-org forge enforcement (Shape 1)', () => {
     },
   );
 });
+
+// ===========================================================================
+// device_mtls_certificates — direct-org auto-discovery assertion (Shape 1)
+//
+// Wave 5 Task 1 (security remediation): device_mtls_certificates carries a
+// direct org_id column and the four standard breeze_has_org_access policies.
+// It is auto-discovered by the org-tenant coverage scan above ("every
+// org-tenant public table has RLS on and all four DML commands covered") —
+// this block asserts that discovery explicitly for this one table and proves
+// it was NOT added to any shape 2-6 allowlist. Full cross-tenant forge
+// coverage (same-org insert/select/update/delete, forged cross-org insert)
+// lives in the dedicated device-mtls-certificates-rls.integration.test.ts
+// suite.
+// ===========================================================================
+describe('device_mtls_certificates RLS — direct-org auto-discovery (Shape 1)', () => {
+  it('is discovered as a direct org_id tenant table, not listed in any non-direct allowlist', () => {
+    expect(ORG_ID_KEYED_TENANT_TABLES.has('device_mtls_certificates')).toBe(false);
+    expect(PARTNER_TENANT_TABLES.has('device_mtls_certificates')).toBe(false);
+    expect(ORG_AXIS_POLICY_EXCLUDED_TABLES.has('device_mtls_certificates')).toBe(false);
+    expect(EXEMPT_TABLES.has('device_mtls_certificates')).toBe(false);
+    expect(INTENTIONAL_UNSCOPED.has('device_mtls_certificates')).toBe(false);
+  });
+
+  it('has RLS enabled and forced, with all four DML commands covered by breeze_has_org_access', async () => {
+    const rows = (await db.execute(sql`
+      SELECT
+        c.relname AS table_name,
+        c.relrowsecurity AS rls_on,
+        c.relforcerowsecurity AS rls_forced,
+        ARRAY(
+          SELECT DISTINCT CASE WHEN p.cmd = 'ALL' THEN cmd_name ELSE p.cmd END
+          FROM pg_policies p
+          CROSS JOIN UNNEST(ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS cmd_name
+          WHERE p.schemaname = 'public'
+            AND p.tablename = c.relname
+            AND p.permissive = 'PERMISSIVE'
+            AND (
+              COALESCE(p.qual, '') LIKE '%breeze_has_org_access%'
+              OR COALESCE(p.with_check, '') LIKE '%breeze_has_org_access%'
+            )
+            AND (p.cmd = 'ALL' OR p.cmd = cmd_name)
+          ORDER BY 1
+        ) AS covered_cmds
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN information_schema.columns col
+        ON col.table_schema = n.nspname AND col.table_name = c.relname
+      WHERE n.nspname = 'public'
+        AND c.relkind = 'r'
+        AND c.relname = 'device_mtls_certificates'
+        AND col.column_name = 'org_id';
+    `)) as unknown as Array<{
+      table_name: string;
+      rls_on: boolean;
+      rls_forced: boolean;
+      covered_cmds: string[];
+    }>;
+
+    // A non-empty result also proves device_mtls_certificates has an org_id
+    // column, which is exactly what makes the generic discovery query above
+    // pick it up as a direct-org (Shape 1) table.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rls_on).toBe(true);
+    expect(rows[0]?.rls_forced).toBe(true);
+    expect(rows[0]?.covered_cmds.slice().sort()).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+  });
+});
