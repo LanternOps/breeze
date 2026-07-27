@@ -6,6 +6,7 @@ vi.mock('./redis', () => ({
 }));
 
 import { getRedis } from './redis';
+import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 import { isViewerJtiRevoked, revokeViewerJti, revokeViewerSession } from './viewerTokenRevocation';
 
 const mockGetRedis = vi.mocked(getRedis);
@@ -33,18 +34,18 @@ describe('viewerTokenRevocation', () => {
     expect(await isViewerJtiRevoked('jti-1')).toBe(true);
   });
 
-  it('revokeViewerJti is best-effort when redis is down (does not throw)', async () => {
+  it('fails closed when a revocation cannot be persisted', async () => {
     mockGetRedis.mockReturnValue(null);
-    // Should not throw even when Redis is unavailable
-    await expect(revokeViewerJti('jti-2')).resolves.toBeUndefined();
+    await expect(revokeViewerJti('jti-2')).rejects.toThrow(/unavailable/i);
+    await expect(revokeViewerSession('session-2')).rejects.toThrow(/unavailable/i);
   });
 
   it('does not log raw viewer identifiers when redis is down', async () => {
     mockGetRedis.mockReturnValue(null);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    await revokeViewerJti('raw-viewer-jti');
-    await revokeViewerSession('raw-session-id');
+    await expect(revokeViewerJti('raw-viewer-jti')).rejects.toThrow();
+    await expect(revokeViewerSession('raw-session-id')).rejects.toThrow();
 
     const logged = errorSpy.mock.calls.flatMap((call) => call.map((arg) => JSON.stringify(arg))).join('\n');
     expect(logged).not.toContain('raw-viewer-jti');
@@ -78,7 +79,21 @@ describe('viewerTokenRevocation', () => {
       'viewer-jti-revoked:test-jti',
       '1',
       'EX',
-      expect.any(Number),
+      VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+    );
+  });
+
+  it('uses the signed viewer lifetime for session revocation too', async () => {
+    const fakeRedis = makeRedisStore();
+    mockGetRedis.mockReturnValue(fakeRedis as any);
+
+    await revokeViewerSession('test-session');
+
+    expect(fakeRedis.set).toHaveBeenCalledWith(
+      'viewer-session-revoked:test-session',
+      '1',
+      'EX',
+      VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
     );
   });
 });

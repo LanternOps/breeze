@@ -12,7 +12,6 @@ const REFRESH_TOKEN_EXPIRY = e2eMode ? '30d' : '7d';
 // and a specific sessionId. TTL reduced to 2h (from 8h) and jti revocation
 // is enforced on tunnel close, so the window of exposure is now bounded.
 const VIEWER_ACCESS_TOKEN_EXPIRY_HOURS = e2eMode ? 24 : 2;
-const VIEWER_ACCESS_TOKEN_EXPIRY = `${VIEWER_ACCESS_TOKEN_EXPIRY_HOURS}h`;
 // Numeric seconds form of the *real* signed viewer-token TTL, exported so the
 // /connect/exchange (and VNC exchange) responses advertise the true lifetime
 // instead of a stale 15-minute value. Security finding #6: the advertised
@@ -212,13 +211,31 @@ export interface TokenPayload {
   jti?: string;
 }
 
-export interface ViewerTokenPayload {
+export type ViewerTokenAssurance =
+  | {
+      mfaSatisfied: true;
+      assuranceAbsoluteExpiresAt: number;
+    }
+  | {
+      mfaSatisfied?: never;
+      assuranceAbsoluteExpiresAt?: never;
+    };
+
+export type ViewerTokenPayload = {
   sub: string;
   email: string;
   sessionId: string;
   purpose: 'viewer';
   jti: string;
   iat?: number;
+  exp?: number;
+} & ViewerTokenAssurance;
+
+export interface CreateRootViewerAccessTokenInput {
+  sub: string;
+  email: string;
+  sessionId: string;
+  mfaSatisfied: true;
 }
 
 export function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
@@ -304,15 +321,88 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
 }
 
 export async function createViewerAccessToken(
-  payload: Omit<ViewerTokenPayload, 'purpose' | 'jti'>
+  payload: CreateRootViewerAccessTokenInput,
 ): Promise<string> {
   const { key, kid } = getSignKey();
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const assuranceAbsoluteExpiresAt = issuedAt + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS;
 
-  return new SignJWT({ ...payload, purpose: 'viewer' })
+  return new SignJWT({
+    sub: payload.sub,
+    email: payload.email,
+    sessionId: payload.sessionId,
+    purpose: 'viewer',
+    mfaSatisfied: true,
+    assuranceAbsoluteExpiresAt,
+  })
     .setProtectedHeader(buildHeader(kid))
     .setJti(randomUUID())
-    .setIssuedAt()
-    .setExpirationTime(VIEWER_ACCESS_TOKEN_EXPIRY)
+    .setIssuedAt(issuedAt)
+    .setExpirationTime(assuranceAbsoluteExpiresAt)
+    .setIssuer('breeze')
+    .setAudience('breeze-viewer')
+    .sign(key);
+}
+
+export async function createViewerDescendantAccessToken(
+  parent: ViewerTokenPayload,
+  input: { sessionId: string },
+): Promise<string> {
+  if (parent.mfaSatisfied !== true) {
+    throw new Error('Viewer token MFA assurance is required');
+  }
+  const assuranceAbsoluteExpiresAt = parent.assuranceAbsoluteExpiresAt;
+  if (
+    typeof assuranceAbsoluteExpiresAt !== 'number'
+    || !Number.isSafeInteger(assuranceAbsoluteExpiresAt)
+    || assuranceAbsoluteExpiresAt <= 0
+  ) {
+    throw new Error('Viewer token absolute expiry is invalid');
+  }
+  const parentExpiresAt = parent.exp;
+  const parentIssuedAt = parent.iat;
+  if (
+    typeof parentExpiresAt !== 'number'
+    || typeof parentIssuedAt !== 'number'
+    || !Number.isSafeInteger(parentExpiresAt)
+    || !Number.isSafeInteger(parentIssuedAt)
+  ) {
+    throw new Error('Viewer token expiry lineage is invalid');
+  }
+
+  const issuedAt = Math.floor(Date.now() / 1000);
+  if (parentExpiresAt <= issuedAt || assuranceAbsoluteExpiresAt <= issuedAt) {
+    throw new Error('Viewer token lineage has expired');
+  }
+  if (
+    parentExpiresAt > assuranceAbsoluteExpiresAt
+    || assuranceAbsoluteExpiresAt > parentIssuedAt + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
+  ) {
+    throw new Error('Viewer token absolute expiry is invalid');
+  }
+
+  const expiresAt = Math.min(
+    issuedAt + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
+    parentExpiresAt,
+    assuranceAbsoluteExpiresAt,
+  );
+  if (expiresAt <= issuedAt) {
+    throw new Error('Viewer token lineage has expired');
+  }
+
+  const { key, kid } = getSignKey();
+  return new SignJWT({
+    sub: parent.sub,
+    email: parent.email,
+    sessionId: input.sessionId,
+    purpose: 'viewer',
+    mfaSatisfied: true,
+    assuranceAbsoluteExpiresAt,
+  })
+    .setProtectedHeader(buildHeader(kid))
+    .setJti(randomUUID())
+    .setIssuedAt(issuedAt)
+    .setExpirationTime(expiresAt)
     .setIssuer('breeze')
     .setAudience('breeze-viewer')
     .sign(key);
@@ -335,13 +425,33 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
       return null;
     }
 
-    return {
+    const base = {
       sub: payload.sub as string,
       email: payload.email as string,
       sessionId: payload.sessionId as string,
-      purpose: 'viewer',
+      purpose: 'viewer' as const,
       jti: payload.jti,
-      iat: typeof payload.iat === 'number' ? payload.iat : undefined
+      iat: typeof payload.iat === 'number' ? payload.iat : undefined,
+      exp: typeof payload.exp === 'number' ? payload.exp : undefined,
+    };
+    if (payload.mfaSatisfied === undefined && payload.assuranceAbsoluteExpiresAt === undefined) {
+      return base;
+    }
+    if (
+      payload.mfaSatisfied !== true
+      || !Number.isSafeInteger(payload.assuranceAbsoluteExpiresAt)
+      || !Number.isSafeInteger(payload.iat)
+      || !Number.isSafeInteger(payload.exp)
+      || (payload.assuranceAbsoluteExpiresAt as number) < (payload.exp as number)
+      || (payload.assuranceAbsoluteExpiresAt as number)
+        > (payload.iat as number) + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
+    ) {
+      return null;
+    }
+    return {
+      ...base,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: payload.assuranceAbsoluteExpiresAt as number,
     };
   } catch (error) {
     console.debug('[jwt] Viewer token verification failed:', error instanceof Error ? error.message : error);

@@ -1,5 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnceMock,
+} = vi.hoisted(() => ({
+  persistDesktopFinalizationIntentMock: vi.fn(async ({ finalization }: any) => ({
+    input: finalization,
+    canonicalPayload: JSON.stringify(finalization),
+    payloadSha256: 'b'.repeat(64),
+  })),
+  finalizeDesktopSessionOnceMock: vi.fn(async () => 'finalized' as const),
+}));
+
+vi.mock('../services/desktopSessionFinalization', () => ({
+  persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,
+}));
+
+vi.mock('../jobs/desktopSessionFinalizationWorker', () => ({
+  enqueueDesktopSessionFinalization: vi.fn(async ({ sessionId, finalizationId }: any) => ({
+    acknowledged: true as const,
+    jobId: `desktop-finalize-${sessionId}-${finalizationId}`,
+  })),
+}));
+
+vi.mock('../services/desktopSessionStop', () => ({
+  ensureDesktopStreamStopped: vi.fn(async ({ finalizationId }: any) => ({
+    state: 'pending',
+    commandId: finalizationId,
+    reason: 'delivery_unacknowledged',
+  })),
+}));
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
 // -------------------------------------------------------------------
@@ -96,7 +128,9 @@ import {
   unregisterDesktopFrameCallback,
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
-  getActiveDesktopSessionCount
+  getActiveDesktopSessionCount,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -139,7 +173,9 @@ function mockSelectChain(result: unknown) {
 function mockUpdateNoReturn() {
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+      }),
     })
   } as any;
 }
@@ -147,7 +183,11 @@ function mockUpdateNoReturn() {
 /**
  * Capture the WS handler factory returned by createDesktopWsRoutes.
  */
-function captureWsHandlers(sessionId: string, ticket?: string) {
+function captureWsHandlers(
+  sessionId: string,
+  ticket?: string,
+  sharedLeases = __createDesktopSharedLeasesForTest(),
+) {
   let capturedFactory: any;
 
   const upgradeWebSocket = vi.fn((factory: any) => {
@@ -155,7 +195,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases,
+  });
 
   const fakeContext = {
     req: {
@@ -239,6 +281,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   // ==========================================
@@ -548,8 +591,50 @@ describe('desktopWs', () => {
       );
       expect(errorMsg).toBeDefined();
       expect(isDesktopSessionOwnedByAgent(SESSION_ID, AGENT_ID)).toBe(false);
-      expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+      expect(finalizeDesktopSessionOnceMock).toHaveBeenCalledTimes(1);
       expect(ws.close).toHaveBeenCalledWith(4003, 'Agent send failed');
+    });
+
+    it('starts renewal while activation is pending and never resurrects after lease loss', async () => {
+      vi.useFakeTimers();
+      setupSuccessfulValidation();
+      let resolveActivation!: (rows: Array<{ id: string }>) => void;
+      const activation = new Promise<Array<{ id: string }>>((resolve) => {
+        resolveActivation = resolve;
+      });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(() => activation),
+          })),
+        })),
+      } as any);
+      const sharedLeases = __createDesktopSharedLeasesForTest();
+      sharedLeases.renew = vi.fn(async () => {
+        throw new Error('lease lost');
+      });
+      const handlers = captureWsHandlers(
+        SESSION_ID,
+        'valid-ticket',
+        sharedLeases,
+      );
+      const ws = wsMock();
+
+      const opening = handlers.onOpen({}, ws);
+      for (let i = 0; i < 10 && !vi.mocked(db.update).mock.calls.length; i += 1) {
+        await Promise.resolve();
+      }
+      await vi.advanceTimersByTimeAsync(5_000);
+      resolveActivation([{ id: SESSION_ID }]);
+      await opening;
+
+      expect(sharedLeases.renew).toHaveBeenCalledTimes(1);
+      expect(sendCommandToAgent).not.toHaveBeenCalledWith(
+        AGENT_ID,
+        expect.objectContaining({ type: 'desktop_stream_start' }),
+      );
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"connected"'));
+      vi.useRealTimers();
     });
   });
 

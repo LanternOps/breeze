@@ -83,6 +83,8 @@ import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import {
   createDesktopWsRoutes,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -123,7 +125,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases: __createDesktopSharedLeasesForTest(),
+  });
 
   const fakeContext = {
     req: {
@@ -143,6 +147,7 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
 describe('desktopWs — multi-tenant isolation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   it('rejects connection when session belongs to a different user', async () => {

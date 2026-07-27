@@ -10,16 +10,49 @@ import { fetchWithAuth } from '@/stores/auth';
 // real modules touch canvas/DOM APIs jsdom lacks, so stub them out. These use
 // plain functions/methods (not vi.fn) so the suite's clearMocks/restoreMocks
 // can't wipe the constructor return values between tests.
+type DataHandler = (data: string) => void;
+type ResizeHandler = (size: { cols: number; rows: number }) => void;
+
+/**
+ * Live xterm listener registry. `dispose()` removes the handler exactly like
+ * the real xterm disposable does, so a test can prove that a torn-down
+ * connection attempt really unhooked terminal input rather than merely
+ * refusing to forward it.
+ */
+const terminalHandlers = {
+  data: [] as DataHandler[],
+  resize: [] as ResizeHandler[],
+  disposeCalls: 0,
+};
+
+const resetTerminalHandlers = () => {
+  terminalHandlers.data = [];
+  terminalHandlers.resize = [];
+  terminalHandlers.disposeCalls = 0;
+};
+
 const makeTerminalStub = () => ({
   loadAddon() {},
   open() {},
   write() {},
   writeln() {},
-  onData() {
-    return { dispose() {} };
+  onData(cb: DataHandler) {
+    terminalHandlers.data.push(cb);
+    return {
+      dispose() {
+        terminalHandlers.disposeCalls += 1;
+        terminalHandlers.data = terminalHandlers.data.filter((h) => h !== cb);
+      },
+    };
   },
-  onResize() {
-    return { dispose() {} };
+  onResize(cb: ResizeHandler) {
+    terminalHandlers.resize.push(cb);
+    return {
+      dispose() {
+        terminalHandlers.disposeCalls += 1;
+        terminalHandlers.resize = terminalHandlers.resize.filter((h) => h !== cb);
+      },
+    };
   },
   dispose() {},
   focus() {},
@@ -63,15 +96,29 @@ const makeResponse = (payload: unknown = {}, ok = true): Response =>
     json: vi.fn().mockResolvedValue(payload),
   } as unknown as Response);
 
+const ticketPostCount = () =>
+  fetchMock.mock.calls.filter(([url]) => /\/ws-ticket$/.test(url as string)).length;
+
 // --- WebSocket mock ---------------------------------------------------------
 class MockWebSocket {
+  static CONNECTING = 0;
   static OPEN = 1;
   static CLOSED = 3;
   static instances: MockWebSocket[] = [];
+  /**
+   * When false the socket stays in CONNECTING until the test drives it. That
+   * is the only way to reproduce a handshake the server rejected before the
+   * HTTP 101 upgrade: the browser surfaces `error`/`close` with no `open`, and
+   * never exposes the 401/403/409/429 that caused it.
+   */
+  static autoOpen = true;
 
   url: string;
-  readyState = MockWebSocket.OPEN;
+  readyState: number = MockWebSocket.CONNECTING;
   sent: string[] = [];
+  closeCalls = 0;
+  /** ws-ticket POSTs that had already been issued when this socket was built. */
+  ticketPostsBefore: number;
   onopen: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
@@ -79,9 +126,12 @@ class MockWebSocket {
 
   constructor(url: string) {
     this.url = url;
+    this.ticketPostsBefore = ticketPostCount();
     MockWebSocket.instances.push(this);
-    // Fire open asynchronously so handlers assigned after construction win.
-    queueMicrotask(() => this.onopen?.({}));
+    if (MockWebSocket.autoOpen) {
+      // Fire open asynchronously so handlers assigned after construction win.
+      queueMicrotask(() => this.fireOpen());
+    }
   }
 
   send(data: string) {
@@ -89,8 +139,35 @@ class MockWebSocket {
   }
 
   close(code?: number) {
+    this.closeCalls += 1;
+    const wasClosed = this.readyState === MockWebSocket.CLOSED;
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.({ code: code ?? 1000 });
+    if (!wasClosed) this.onclose?.({ code: code ?? 1000 });
+  }
+
+  // -- test drivers ---------------------------------------------------------
+  fireOpen() {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.({});
+  }
+
+  fireMessage(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) });
+  }
+
+  fireError() {
+    this.onerror?.({});
+  }
+
+  fireClose(code = 1006) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({ code });
+  }
+
+  get isDetached() {
+    return (
+      this.onopen === null && this.onmessage === null && this.onerror === null && this.onclose === null
+    );
   }
 }
 
@@ -108,6 +185,8 @@ const sessionPostCount = () =>
 
 beforeEach(() => {
   MockWebSocket.instances = [];
+  MockWebSocket.autoOpen = true;
+  resetTerminalHandlers();
   vi.stubGlobal('WebSocket', MockWebSocket);
   vi.stubGlobal(
     'ResizeObserver',
@@ -123,7 +202,9 @@ beforeEach(() => {
       return makeResponse({ id: `session-${sessionPostCount()}` });
     }
     if (/\/ws-ticket$/.test(url)) {
-      return makeResponse({ ticket: 'TKT-abc' });
+      // One-time tickets: every mint must be a different value so a test can
+      // prove a retry never replays the previous WebSocket URL.
+      return makeResponse({ ticket: `TKT-${ticketPostCount()}` });
     }
     if (/\/end$/.test(url)) {
       return makeResponse({});
@@ -224,5 +305,106 @@ describe('RemoteTerminal auto-connect / disconnect (#2137)', () => {
 
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), { timeout: 2000 });
     expect(sessionPostCount()).toBe(2);
+  });
+});
+
+// The server now rejects a terminal WebSocket *before* the HTTP 101 upgrade
+// (401/403/409/429). The browser WebSocket API never exposes that status — the
+// page only sees `error`/`close` with no preceding `open`. Assert on that
+// observable sequence only.
+describe('RemoteTerminal rejected handshake (error/close before open)', () => {
+  const renderAndAwaitFirstSocket = async () => {
+    MockWebSocket.autoOpen = false;
+    renderTerminal();
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    return MockWebSocket.instances[0]!;
+  };
+
+  it('shows a retry state and fully disposes the attempt when the socket errors before open', async () => {
+    const ws = await renderAndAwaitFirstSocket();
+    const typeBeforeRejection = terminalHandlers.data[0];
+
+    act(() => ws.fireError());
+
+    expect(await screen.findByRole('button', { name: /retry/i })).toBeInTheDocument();
+    // No session is presented as live.
+    expect(screen.queryByRole('button', { name: /^disconnect$/i })).not.toBeInTheDocument();
+
+    // The dead socket is closed and every listener unhooked.
+    expect(ws.closeCalls).toBeGreaterThan(0);
+    expect(ws.isDetached).toBe(true);
+    expect(terminalHandlers.disposeCalls).toBeGreaterThanOrEqual(2);
+    expect(terminalHandlers.data).toHaveLength(0);
+    expect(terminalHandlers.resize).toHaveLength(0);
+
+    // Nothing may be written to a socket that never opened.
+    act(() => typeBeforeRejection?.('whoami\r'));
+    expect(ws.sent).toEqual([]);
+  });
+
+  it('shows a retry state when the socket closes before open', async () => {
+    const ws = await renderAndAwaitFirstSocket();
+
+    act(() => ws.fireClose(1006));
+
+    expect(await screen.findByRole('button', { name: /retry/i })).toBeInTheDocument();
+    expect(ws.isDetached).toBe(true);
+    expect(ws.sent).toEqual([]);
+    expect(terminalHandlers.data).toHaveLength(0);
+  });
+
+  it('keeps a rejected attempt inert when it later reports open/connected', async () => {
+    const ws = await renderAndAwaitFirstSocket();
+
+    act(() => ws.fireError());
+    await screen.findByRole('button', { name: /retry/i });
+
+    // A late event from the disposed attempt must not drive the UI or the wire.
+    act(() => {
+      ws.fireOpen();
+      ws.fireMessage({ type: 'connected' });
+      ws.fireMessage({ type: 'output', data: 'stale output' });
+    });
+
+    expect(screen.queryByRole('button', { name: /^disconnect$/i })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /retry/i })).toBeInTheDocument();
+    expect(ws.sent).toEqual([]);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('mints a fresh ticket before the retry socket and never replays the rejected url', async () => {
+    const ws = await renderAndAwaitFirstSocket();
+    const rejectedUrl = ws.url;
+
+    act(() => ws.fireError());
+    const retryBtn = await screen.findByRole('button', { name: /retry/i });
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(ticketPostCount()).toBe(1);
+
+    MockWebSocket.autoOpen = true;
+    await userEvent.click(retryBtn);
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2), { timeout: 2000 });
+    const retrySocket = MockWebSocket.instances[1]!;
+
+    // A fresh authenticated ticket request precedes the replacement socket.
+    expect(ticketPostCount()).toBe(2);
+    expect(retrySocket.ticketPostsBefore).toBe(2);
+    expect(retrySocket.url).not.toBe(rejectedUrl);
+    expect(sessionPostCount()).toBe(2);
+  });
+
+  it('does not auto-reconnect after a rejected handshake', async () => {
+    const ws = await renderAndAwaitFirstSocket();
+
+    act(() => ws.fireError());
+    await screen.findByRole('button', { name: /retry/i });
+
+    // Well past the 500ms auto-connect delay.
+    await new Promise((r) => setTimeout(r, 700));
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(ticketPostCount()).toBe(1);
   });
 });

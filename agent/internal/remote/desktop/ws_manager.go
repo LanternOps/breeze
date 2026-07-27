@@ -69,18 +69,20 @@ func (m *WsSessionManager) StartSession(id string, displayIndex int, config Stre
 	return w, h, nil
 }
 
-// StopSession stops and removes a session
-func (m *WsSessionManager) StopSession(id string) {
+// StopSession stops and removes a session. It holds the manager lock through
+// physical stop completion so a racing redelivery cannot report
+// already_absent while capture is still shutting down.
+func (m *WsSessionManager) StopSession(id string) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	session, ok := m.sessions[id]
-	if ok {
-		delete(m.sessions, id)
+	if !ok {
+		return false
 	}
-	m.mu.Unlock()
 
-	if session != nil {
-		session.Stop()
-	}
+	delete(m.sessions, id)
+	session.Stop()
+	return true
 }
 
 // HandleInput routes an input event to the correct session
@@ -113,15 +115,10 @@ func (m *WsSessionManager) UpdateConfig(id string, config StreamConfig) error {
 // StopAll stops all active sessions
 func (m *WsSessionManager) StopAll() {
 	m.mu.Lock()
-	sessions := make([]*WsStreamSession, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		sessions = append(sessions, s)
-	}
-	m.sessions = make(map[string]*WsStreamSession)
-	m.mu.Unlock()
-
-	for _, s := range sessions {
-		s.Stop()
+	defer m.mu.Unlock()
+	for id, session := range m.sessions {
+		session.Stop()
+		delete(m.sessions, id)
 	}
 }
 
