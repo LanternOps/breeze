@@ -63,6 +63,16 @@ type Config struct {
 	PendingHelperAuthToken       string `mapstructure:"pending_helper_auth_token"`
 	OrgID                        string `mapstructure:"org_id"`
 	SiteID                       string `mapstructure:"site_id"`
+	// DeviceID is the server's device row UUID (devices.id), distinct from
+	// AgentID (devices.agent_id). Security remediation Wave 5 Task 4's
+	// expired-certificate recovery proof is canonicalized on this value (see
+	// apps/api/src/services/mtlsRenewalProof.ts and mtls.BuildRenewalProofCanonicalBytes) —
+	// NOT on AgentID. Populated from EnrollResponse.DeviceID at enrollment;
+	// empty on agents enrolled before this field existed, in which case
+	// expired-cert recovery renewal degrades to requesting without a proof
+	// (fails closed exactly as before this field existed whenever the org's
+	// binding mode requires one).
+	DeviceID string `mapstructure:"device_id"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
@@ -167,6 +177,28 @@ type Config struct {
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
 	MtlsCertExpires string `mapstructure:"mtls_cert_expires"`
+
+	// Security remediation Wave 5 Task 5 — pending (unconfirmed) mTLS
+	// certificate material staged during the two-phase renewal protocol
+	// (Task 4's protocolVersion 2 /renew-cert flow). The OLD active
+	// MtlsCertPEM/MtlsKeyPEM/MtlsCertExpires above remain in force and in use
+	// until /renew-cert/confirm succeeds, so a crash at any point between
+	// staging and confirmation never strands the agent: on restart it just
+	// resumes confirmation instead of losing the certificate. Persisted and
+	// cleared exactly like the active fields, via the same atomic SaveTo —
+	// treated as a unit with them, not via the separate
+	// mutateSecretsAndPersist path credentials.go uses for token rotation.
+	//
+	// PendingMTLSExpiresAt is the server's short (15-minute)
+	// activation-window deadline — the point by which confirmation must
+	// succeed or the pending material is discarded — NOT the certificate's
+	// own multi-day/month validity (that is recovered from the certificate
+	// body itself at promotion time via mtls.CertificateNotAfter, so it does
+	// not need a fifth persisted field).
+	PendingMTLSCertificate   string    `mapstructure:"pending_mtls_certificate"`
+	PendingMTLSPrivateKey    string    `mapstructure:"pending_mtls_private_key"`
+	PendingMTLSCertificateID string    `mapstructure:"pending_mtls_certificate_id"`
+	PendingMTLSExpiresAt     time.Time `mapstructure:"pending_mtls_expires_at"`
 
 	// Watchdog configuration for the breeze-watchdog service.
 	Watchdog WatchdogConfig `mapstructure:"watchdog" yaml:"watchdog"`
@@ -356,6 +388,23 @@ func Load(cfgFile string) (*Config, error) {
 		if v := sv.GetString("mtls_cert_expires"); v != "" {
 			cfg.MtlsCertExpires = v
 		}
+		// Wave 5 Task 5 — pending mTLS material. Reading these back on Load is
+		// what makes crash/restart resumption possible: the heartbeat's
+		// reconcile-on-startup logic checks these fields on the in-memory cfg
+		// it was constructed with, so a staged-but-unconfirmed renewal from a
+		// prior process must land here, not just in secrets.yaml.
+		if v := sv.GetString("pending_mtls_certificate"); v != "" {
+			cfg.PendingMTLSCertificate = v
+		}
+		if v := sv.GetString("pending_mtls_private_key"); v != "" {
+			cfg.PendingMTLSPrivateKey = v
+		}
+		if v := sv.GetString("pending_mtls_certificate_id"); v != "" {
+			cfg.PendingMTLSCertificateID = v
+		}
+		if t := sv.GetTime("pending_mtls_expires_at"); !t.IsZero() {
+			cfg.PendingMTLSExpiresAt = t
+		}
 		// Companion: backup S3 credentials migrate to secrets.yaml via
 		// isSecretYAMLKey; read them back so BackupS3AccessKey/BackupS3SecretKey
 		// are populated after Load (otherwise backup config silently breaks).
@@ -542,6 +591,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", cfg.OrgID)
 	viper.Set("site_id", cfg.SiteID)
+	viper.Set("device_id", cfg.DeviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
@@ -666,6 +716,17 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	sv.Set("mtls_cert_pem", cfg.MtlsCertPEM)
 	sv.Set("mtls_key_pem", cfg.MtlsKeyPEM)
 	sv.Set("mtls_cert_expires", cfg.MtlsCertExpires)
+	// Wave 5 Task 5 — pending mTLS material persists as a unit with the
+	// active fields above: unconditionally taken from cfg (never a
+	// preserve-on-disk fallback), exactly like MtlsCertPEM/KeyPEM/Expires.
+	// Every mutation site (stage / confirm+promote / expire+clear) keeps
+	// cfg's in-memory Pending* fields correct before calling SaveTo, so a
+	// single atomic rewrite here both moves pending->active and clears
+	// pending in one write when promoting.
+	sv.Set("pending_mtls_certificate", cfg.PendingMTLSCertificate)
+	sv.Set("pending_mtls_private_key", cfg.PendingMTLSPrivateKey)
+	sv.Set("pending_mtls_certificate_id", cfg.PendingMTLSCertificateID)
+	sv.Set("pending_mtls_expires_at", cfg.PendingMTLSExpiresAt)
 	// Backup S3 credentials are caught by isSecretYAMLKey (suffix _access_key /
 	// _secret_key) and stripped from agent.yaml; persist them here so they
 	// survive a round-trip through SaveTo → Load. Only write non-empty values
@@ -806,7 +867,9 @@ func isSecretYAMLKey(key string) bool {
 	}
 	switch key {
 	case "auth_token", "watchdog_auth_token",
-		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires":
+		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires",
+		"pending_mtls_certificate", "pending_mtls_private_key",
+		"pending_mtls_certificate_id", "pending_mtls_expires_at":
 		return true
 	}
 	return strings.HasSuffix(key, "_token") ||
