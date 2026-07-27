@@ -299,14 +299,20 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(1);
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
-    // select #0 = org→partner lookup, #1 = the config-policy join, rest = device
-    // expansion + timezone. ONLY the policy join is escalated: widening the whole
-    // resolver to system scope would let a caller see devices RLS denies them.
+    // TWO escapes, not one (#2822): the config-policy join, plus
+    // resolveDeviceTimezone's `partners` join — which is partner-axis and was
+    // silently resolving to UTC for org-scoped callers. They are sequential,
+    // never nested, so at most one extra pooled connection is held at a time.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // select #0 = org→partner lookup, #1 = the config-policy join, #2 = org
+    // default destination, #3 = device expansion, #4 (last) = resolveDeviceTimezone.
+    // ONLY the two partner-axis reads are escalated: widening the whole resolver
+    // to system scope would let a caller see devices RLS denies them.
     expect(selectDepths[0]).toBe(0);
     expect(selectDepths[1]).toBe(1);
-    expect(selectDepths.slice(2).every((depth) => depth === 0)).toBe(true);
+    expect(selectDepths.slice(2, -1).every((depth) => depth === 0)).toBe(true);
+    expect(selectDepths[selectDepths.length - 1]).toBe(1);
     // Context must be closed again once the read completes.
     expect(systemDepth.value).toBe(0);
   });
@@ -362,11 +368,15 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
     const resolved = await resolveBackupConfigForDevice('device-1');
 
     expect(resolved).toMatchObject({ featureLinkId: 'feature-1', configId: 'config-1' });
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
-    // selects 0-2 = device hierarchy (caller context), 3 = policy join (system).
+    // Two escapes: the policy join and resolveDeviceTimezone's partner-axis
+    // join (#2822). Sequential, so never two connections held at once.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // selects 0-2 = device hierarchy (caller context), 3 = policy join (system),
+    // 4 = resolveDeviceTimezone (system).
     expect(selectDepths.slice(0, 3)).toEqual([0, 0, 0]);
     expect(selectDepths[3]).toBe(1);
+    expect(selectDepths[4]).toBe(1);
     expect(systemDepth.value).toBe(0);
   });
 });

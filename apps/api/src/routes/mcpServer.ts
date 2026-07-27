@@ -27,6 +27,7 @@ import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../mi
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
 import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -1380,13 +1381,29 @@ async function dispatchBootstrapAuthTool(
   }
 
   // Look up partner billing email (used as the admin email in invite templates).
+  //
+  // Read under a SYSTEM context (#2822). Both non-partner-scoped principals that
+  // reach this dispatcher deliberately carry accessiblePartnerIds = []: an
+  // org-scoped OAuth bearer (bearerTokenAuth.ts, MCP-OAUTH-06) and any X-API-Key
+  // whose source is not `mcp_provisioning` (apiKeyAuth.ts). Both still resolve a
+  // non-null auth.partnerId, so the ambient-context read returned zero rows —
+  // and RLS does not raise, so the try/catch never fired and partnerAdminEmail
+  // silently became ''. Downstream that produced an email notification channel
+  // with an empty target (modules/mcpInvites/tools/configureDefaults.ts) and
+  // deployment invites rendered with a blank admin contact, both reporting
+  // success. The narrow escalation of this one pinned single-column lookup is
+  // deliberate: it does NOT widen accessiblePartnerIds, which those middlewares
+  // withhold on purpose.
   let partnerAdminEmail = '';
   try {
-    const [row] = await db
-      .select({ billingEmail: partners.billingEmail })
-      .from(partners)
-      .where(eq(partners.id, auth.partnerId))
-      .limit(1);
+    const partnerId = auth.partnerId;
+    const [row] = await readWithPartnerAxisVisibility(() =>
+      db
+        .select({ billingEmail: partners.billingEmail })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1)
+    );
     partnerAdminEmail = row?.billingEmail ?? '';
   } catch (err) {
     console.error('[MCP] Failed to load partner billing email:', err);

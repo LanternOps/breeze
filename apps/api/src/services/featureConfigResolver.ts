@@ -4,6 +4,7 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -403,7 +404,21 @@ function partnerTimezoneFrom(
 }
 
 export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
-  const [row] = await db
+  // System context (#2822). The leftJoin below keeps the DEVICE row alive when
+  // the partner is RLS-invisible, but it does not make the partner's timezone
+  // legible: under an org-scoped caller `partnerTimezone`/`partnerSettings`
+  // simply came back null and the chain silently fell through to
+  // site -> org -> 'UTC'. Every caller of this resolver
+  // (resolvePatchConfigDetailsForDevice, resolveBackupConfigForDevice,
+  // resolveAllBackupAssignedDevices) is reached from
+  // requireScope('organization','partner','system') routes AND from the
+  // system-scoped scheduler — so the SAME device resolved a different
+  // maintenance window depending on who triggered the job, with no error
+  // anywhere. `withPartnerWideVisibility` (same skip-when-system shape) is
+  // already applied to the sibling policy joins in this file; this resolver was
+  // missed. Pinned by the caller-supplied deviceId — device visibility itself is
+  // still gated upstream by the caller's own context.
+  const [row] = await readWithPartnerAxisVisibility(() => db
     .select({
       siteTimezone: sites.timezone,
       orgSettings: organizations.settings,
@@ -425,7 +440,7 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
     .leftJoin(partners, eq(organizations.partnerId, partners.id))
     .leftJoin(sites, eq(devices.siteId, sites.id))
     .where(eq(devices.id, deviceId))
-    .limit(1);
+    .limit(1));
 
   const orgTimezone =
     row?.orgSettings && typeof row.orgSettings === 'object'

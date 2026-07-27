@@ -3,6 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { devices, organizations, sites, partners, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
@@ -165,34 +166,59 @@ provisionRoutes.post(
           throw new Error('Target organization not found');
         }
 
-        // Partner device-limit check (mirrors enrollment.ts:415-449)
-        let maxDevices: number | null = null;
-        if (org.partnerId) {
-          const [partner] = await tx
-            .select({ maxDevices: partners.maxDevices })
-            .from(partners)
-            .where(eq(partners.id, org.partnerId))
-            .limit(1);
-          maxDevices = partner?.maxDevices ?? null;
-        }
-        if (maxDevices != null && org.partnerId) {
-          const partnerOrgIds = tx
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(eq(organizations.partnerId, org.partnerId));
-          const [countResult] = await tx
-            .select({ count: sql<number>`count(*)` })
-            .from(devices)
-            .where(
-              and(
-                sql`${devices.orgId} IN (${partnerOrgIds})`,
-                ne(devices.status, 'decommissioned'),
-              ),
-            );
-          const activeCount = Number(countResult?.count ?? 0);
-          if (activeCount >= maxDevices) {
-            throw new HttpDeviceLimitError(activeCount, maxDevices);
-          }
+        // Partner device-limit check (mirrors enrollment.ts, which runs its
+        // whole flow inside withSystemDbAccessContext).
+        //
+        // Both halves MUST run in a SYSTEM context (#2822). `tx` here is a
+        // SAVEPOINT on the request's own transaction, so it inherits the
+        // caller's RLS GUCs. This route is requireScope('organization',
+        // 'partner', 'system'), and for an ORG-scoped caller
+        // accessiblePartnerIds = []:
+        //   - the `partners` read returned zero rows, so `maxDevices` collapsed
+        //     to null and the entire cap block was skipped — an org admin could
+        //     provision past the partner's max_devices without limit, while the
+        //     identical call from a partner admin was capped;
+        //   - the `partnerOrgIds` subquery over `organizations` only saw the
+        //     caller's own accessible orgs, so even once the cap resolved the
+        //     fleet count under-reported and the cap under-enforced.
+        // `org.partnerId` comes from the `organizations` row already resolved
+        // under the caller's own RLS context above, so this does not let a
+        // caller aim the lookup at a partner it cannot see.
+        //
+        // The escape opens a second pooled connection while this transaction
+        // still holds the first (runOutsideDbContext does not close the outer
+        // transaction). That is accepted here — provisioning is a low-rate
+        // admin action, not a hot path — and it is skipped entirely when the
+        // caller is already system-scoped.
+        const orgPartnerId = org.partnerId;
+        const limit = orgPartnerId
+          ? await readWithPartnerAxisVisibility(async () => {
+            const [partner] = await db
+              .select({ maxDevices: partners.maxDevices })
+              .from(partners)
+              .where(eq(partners.id, orgPartnerId))
+              .limit(1);
+            const maxDevices = partner?.maxDevices ?? null;
+            if (maxDevices == null) return null;
+
+            const partnerOrgIds = db
+              .select({ id: organizations.id })
+              .from(organizations)
+              .where(eq(organizations.partnerId, orgPartnerId));
+            const [countResult] = await db
+              .select({ count: sql<number>`count(*)` })
+              .from(devices)
+              .where(
+                and(
+                  sql`${devices.orgId} IN (${partnerOrgIds})`,
+                  ne(devices.status, 'decommissioned'),
+                ),
+              );
+            return { maxDevices, activeCount: Number(countResult?.count ?? 0) };
+          })
+          : null;
+        if (limit && limit.activeCount >= limit.maxDevices) {
+          throw new HttpDeviceLimitError(limit.activeCount, limit.maxDevices);
         }
 
         const [inserted] = await tx

@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema';
 import { mlFeatureGloballyDisabled } from '../config/env';
 
@@ -155,7 +156,16 @@ export async function resolveMlFeatureFlagForOrg(
 ): Promise<MlFeatureFlagResolution> {
   assertMlFeatureFlagName(flag);
 
-  return withSystemDbAccessContext(async () => {
+  // `withSystemDbAccessContext` alone was a NO-OP here (#2822): inside a request
+  // it early-returns and inherits the caller's context. `GET /config/ml-feature-flags`
+  // and routes/alerts/correlations.ts are requireScope('organization',…), so an
+  // org-scoped caller (accessiblePartnerIds = []) hit an innerJoin on the
+  // partner-axis `partners` table — the invisible partner row erased the ENTIRE
+  // result row, and the function reported every ML feature as
+  // `{ enabled: false, source: 'org_not_found' }`, a statement that is false on
+  // both counts. Pinned by the caller-supplied orgId; the join only widens which
+  // COLUMNS resolve, not which org is selected.
+  return readWithPartnerAxisVisibility(async () => {
     const [row] = await db
       .select({
         orgSettings: organizations.settings,

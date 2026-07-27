@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
+import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
@@ -300,11 +301,21 @@ function makeHandler(
       const auth = getAuth();
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
-      const dbContext: DbAccessContext = {
-        scope: auth.scope as DbAccessContext['scope'],
-        orgId: auth.orgId ?? null,
-        accessibleOrgIds: auth.accessibleOrgIds ?? null,
-      };
+      //
+      // Built via the canonical `dbAccessContextFromAuth` (#2822). The literal
+      // this replaced omitted `accessiblePartnerIds`, `currentPartnerId` and
+      // `userId`; `serializeAccessibleIds` maps an absent list to '' →
+      // `ARRAY[]::uuid[]` for any non-system scope, so `breeze_has_partner_access`
+      // was FALSE and `breeze_current_partner_id()` NULL for EVERY AI tool call —
+      // including a partner-scope MSP admin's, who is entitled to the rows. And
+      // because `makeHandler` deliberately calls `runOutsideDbContext` first,
+      // there was no ambient context to fall back on: this literal was the only
+      // context Postgres saw. Result was a silent partner-axis blackout (scripts,
+      // alert templates, catalog, update rings, integrations all reported empty
+      // with a 200) across the whole chat surface. Same builder the request path
+      // and `jobs/intentReleaseWorker.ts` use, so the re-entered context is
+      // identical to the one authMiddleware opened — not wider.
+      const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
         toolTimeout,
@@ -461,12 +472,11 @@ function makeSessionAwareHandler(
     }
     try {
       const auth = getAuth();
-      // Use the user's actual auth scope so RLS / DB-level tenant isolation is enforced.
-      const dbContext: DbAccessContext = {
-        scope: auth.scope as DbAccessContext['scope'],
-        orgId: auth.orgId ?? null,
-        accessibleOrgIds: auth.accessibleOrgIds ?? null,
-      };
+      // Use the user's actual auth scope so RLS / DB-level tenant isolation is
+      // enforced. Canonical builder — see the note on the sibling literal in
+      // `makeHandler` above for why the hand-rolled object was a partner-axis
+      // blackout (#2822).
+      const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
         toolTimeout,

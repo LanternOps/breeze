@@ -38,7 +38,18 @@ const { makeSessionAwareHandler } = __test__;
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
-const fakeAuth = { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
+// `user` and `partnerId` are part of the real AuthContext and are now load-
+// bearing: the handler builds its DB context with `dbAccessContextFromAuth`
+// (#2822), which reads `auth.user.id` and `auth.partnerId`. The previous stub
+// omitted both, which was only survivable while the handler hand-rolled a
+// partial DbAccessContext — the very defect #2822 fixes.
+const fakeAuth = {
+  scope: 'organization',
+  orgId: 'org-1',
+  accessibleOrgIds: ['org-1'],
+  partnerId: 'partner-1',
+  user: { id: 'user-1' },
+} as any;
 const fakeSession = { breezeSessionId: 'sess-123', auth: fakeAuth } as any;
 
 const firstText = (res: ToolResult) => res.content[0]?.text ?? '';

@@ -11,6 +11,12 @@ let mockRow: Record<string, unknown> | undefined;
 //     .where(...).limit(1)
 // The partners join is a LEFT join (#1318 review) so an RLS-invisible partner
 // row under org scope leaves the device row intact instead of dropping it.
+//
+// The three db-context helpers back `readWithPartnerAxisVisibility` (#2822),
+// which now wraps this query so the partner columns are actually legible to an
+// org-scoped caller. They are pass-throughs here — this suite asserts the
+// precedence chain, not the RLS escape; that is proved against real Postgres in
+// __tests__/integration/partnerAxisSystemContext.integration.test.ts.
 vi.mock('../db', () => {
   const limit = vi.fn(() => Promise.resolve(mockRow ? [mockRow] : []));
   const where = vi.fn(() => ({ limit }));
@@ -19,7 +25,12 @@ vi.mock('../db', () => {
   const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners }));
   const from = vi.fn(() => ({ innerJoin: innerJoinOrgs }));
   const select = vi.fn(() => ({ from }));
-  return { db: { select } };
+  return {
+    db: { select },
+    getCurrentDbAccessContext: vi.fn(() => undefined),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
 });
 
 // The resolver imports many schema tables; a thin stub keeps the module load

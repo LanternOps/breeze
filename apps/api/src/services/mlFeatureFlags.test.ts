@@ -5,7 +5,15 @@ const { dbSelect, withSystemDbAccessContext } = vi.hoisted(() => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+// `resolveMlFeatureFlagForOrg` now escapes to a system context through
+// `readWithPartnerAxisVisibility` (#2822) rather than calling
+// `withSystemDbAccessContext` directly — which was a no-op inside a request.
+// The hoisted spy stays wired so the existing "runs in a system context"
+// assertions keep exercising the real call, and the two new exports the helper
+// needs are added as pass-throughs.
 vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   db: { select: dbSelect },
   withSystemDbAccessContext,
 }));
