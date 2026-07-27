@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema';
 import { mlFeatureGloballyDisabled } from '../config/env';
 
@@ -149,37 +150,73 @@ export function resolveMlFeatureFlag(
   return { flag, enabled, defaultEnabled, source };
 }
 
+/**
+ * The org + partner settings `resolveMlFeatureFlag` needs, or null when either
+ * row is unreadable.
+ *
+ * TWO queries, deliberately split (#2822):
+ *  - `organizations` runs in the CALLER'S context, so RLS still decides which
+ *    org is legible. This matters because `GET /config/ml-feature-flags` takes
+ *    a caller-supplied `?orgId=`; escaping the old
+ *    `organizations INNER JOIN partners` wholesale would have made ANY org id
+ *    selectable and demoted this path to app-layer-only isolation, which
+ *    CLAUDE.md forbids.
+ *  - `partners` is partner-axis, so it needs the system escape: an org-scoped
+ *    caller has accessiblePartnerIds = [], the row came back empty, the old
+ *    innerJoin erased the ENTIRE result row, and every ML feature was reported
+ *    as `{ enabled: false, source: 'org_not_found' }` — false on both counts.
+ *    (`withSystemDbAccessContext` alone was a no-op here: inside a request it
+ *    early-returns and inherits the caller's context.)
+ *
+ * Factored out so `resolveAllMlFeatureFlagsForOrg` can pay for it ONCE.
+ */
+async function loadMlFlagInputs(orgId: string): Promise<{
+  orgSettings: unknown;
+  orgType: string | null;
+  partnerSettings: unknown;
+  partnerType: string | null;
+} | null> {
+  const [org] = await db
+    .select({ settings: organizations.settings, type: organizations.type, partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org) return null;
+
+  const [partner] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ settings: partners.settings, type: partners.type })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId))
+      .limit(1)
+  );
+
+  // Preserves the old innerJoin semantics: no partner row => no result at all,
+  // rather than silently resolving against partner defaults.
+  if (!partner) return null;
+
+  return {
+    orgSettings: org.settings,
+    orgType: org.type,
+    partnerSettings: partner.settings,
+    partnerType: partner.type,
+  };
+}
+
 export async function resolveMlFeatureFlagForOrg(
   orgId: string,
   flag: MlFeatureFlagName,
 ): Promise<MlFeatureFlagResolution> {
   assertMlFeatureFlagName(flag);
 
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({
-        orgSettings: organizations.settings,
-        orgType: organizations.type,
-        partnerSettings: partners.settings,
-        partnerType: partners.type,
-      })
-      .from(organizations)
-      .innerJoin(partners, eq(organizations.partnerId, partners.id))
-      .where(eq(organizations.id, orgId))
-      .limit(1);
+  const inputs = await loadMlFlagInputs(orgId);
+  if (!inputs) {
+    const defaultEnabled = defaultMlFeatureFlagValue(flag);
+    return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
+  }
 
-    if (!row) {
-      const defaultEnabled = defaultMlFeatureFlagValue(flag);
-      return { flag, enabled: false, defaultEnabled, source: 'org_not_found' };
-    }
-
-    return resolveMlFeatureFlag(flag, {
-      orgSettings: row.orgSettings,
-      orgType: row.orgType,
-      partnerSettings: row.partnerSettings,
-      partnerType: row.partnerType,
-    });
-  });
+  return resolveMlFeatureFlag(flag, inputs);
 }
 
 export async function isMlFeatureEnabledForOrg(
@@ -199,8 +236,32 @@ export async function shouldProduceMlOutput(
 export async function resolveAllMlFeatureFlagsForOrg(
   orgId: string,
 ): Promise<Record<MlFeatureFlagName, MlFeatureFlagResolution>> {
-  const entries = await Promise.all(
-    ML_FEATURE_FLAGS.map(async (flag) => [flag, await resolveMlFeatureFlagForOrg(orgId, flag)] as const),
-  );
+  // TWO queries total, not 2 per flag (#2822 review). `resolveMlFeatureFlag` is
+  // pure — given the org/partner settings it touches no DB — so the 11
+  // ML_FEATURE_FLAGS share one `loadMlFlagInputs` call.
+  //
+  // This also removes the need for a system context around the fan-out.
+  // Resolving each flag independently would have taken 11 partner-axis escapes,
+  // and under `Promise.all` those are 11 SIMULTANEOUS `baseDb.transaction`s —
+  // 11 pooled connections on top of the request's own — for a single
+  // `GET /config/ml-feature-flags`. Against the 25-connection ceiling that is a
+  // self-deadlock, not a slowdown: postgres-js has no acquire timeout, so the
+  // requests hang rather than error (#1105 class). Hoisting one shared context
+  // would have fixed the count but system-scoped the org read too; loading the
+  // inputs once fixes both, and keeps the org read under RLS.
+  const inputs = await loadMlFlagInputs(orgId);
+
+  const entries = ML_FEATURE_FLAGS.map((flag) => [
+    flag,
+    inputs
+      ? resolveMlFeatureFlag(flag, inputs)
+      : {
+        flag,
+        enabled: false,
+        defaultEnabled: defaultMlFeatureFlagValue(flag),
+        source: 'org_not_found' as const,
+      },
+  ] as const);
+
   return Object.fromEntries(entries) as Record<MlFeatureFlagName, MlFeatureFlagResolution>;
 }

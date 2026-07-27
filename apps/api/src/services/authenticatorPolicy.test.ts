@@ -7,7 +7,10 @@ const dbMock = vi.hoisted(() => {
   const select = vi.fn(() => ({ from }));
   return { select, from, where, limit };
 });
-vi.mock('../db', () => ({ db: { select: dbMock.select } }));
+vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()), db: { select: dbMock.select } }));
 vi.mock('../db/schema', () => ({ authenticatorPolicies: { partnerId: 'partner_id' } }));
 
 import { loadPartnerPolicy, isEnforcing, validateRaiseOnly } from './authenticatorPolicy';

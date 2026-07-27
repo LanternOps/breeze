@@ -6,20 +6,64 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let mockRow: Record<string, unknown> | undefined;
 
-// Join chain mirrors resolveDeviceTimezone's query exactly:
-//   from(devices).innerJoin(organizations).leftJoin(partners).leftJoin(sites)
-//     .where(...).limit(1)
-// The partners join is a LEFT join (#1318 review) so an RLS-invisible partner
-// row under org scope leaves the device row intact instead of dropping it.
+// resolveDeviceTimezone issues TWO queries (#2822), and the split is the point:
+//   1. from(devices).innerJoin(organizations).leftJoin(sites).where().limit(1)
+//      — runs in the CALLER'S context, so RLS still decides which device is
+//        legible. Escaping this half too would demote device isolation on the
+//        backup/patch paths to app-layer-only.
+//   2. from(partners).where(id = org.partnerId).limit(1)
+//      — runs inside readWithPartnerAxisVisibility, because `partners` is
+//        partner-axis and an org-scoped caller has accessiblePartnerIds = [].
+//        Previously this was a leftJoin in query 1, which kept the device row
+//        alive but left the partner COLUMNS null — the silent fall-through to
+//        site -> org -> 'UTC' that #2822 fixes.
+//
+// The mock dispatches on the table handed to `.from()` rather than on call
+// order, so it stays correct if the two reads are ever reordered.
+//
+// The db-context helpers are pass-throughs here — this suite asserts the
+// precedence chain, not the RLS escape; the escape is proved against real
+// Postgres in __tests__/integration/partnerAxisSystemContext.integration.test.ts.
 vi.mock('../db', () => {
-  const limit = vi.fn(() => Promise.resolve(mockRow ? [mockRow] : []));
-  const where = vi.fn(() => ({ limit }));
-  const leftJoinSites = vi.fn(() => ({ where }));
-  const leftJoinPartners = vi.fn(() => ({ leftJoin: leftJoinSites }));
-  const innerJoinOrgs = vi.fn(() => ({ leftJoin: leftJoinPartners }));
-  const from = vi.fn(() => ({ innerJoin: innerJoinOrgs }));
-  const select = vi.fn(() => ({ from }));
-  return { db: { select } };
+  const deviceLimit = vi.fn(() =>
+    Promise.resolve(
+      mockRow
+        ? [{
+          siteTimezone: mockRow.siteTimezone,
+          orgSettings: mockRow.orgSettings,
+          partnerId: mockRow.partnerId ?? 'partner-1',
+        }]
+        : []
+    )
+  );
+  // `partnerTimezone: null` + `partnerSettings: null` models "no partner row"
+  // (deleted, or — pre-fix — RLS-invisible).
+  const partnerLimit = vi.fn(() =>
+    Promise.resolve(
+      mockRow && !(mockRow.partnerTimezone == null && mockRow.partnerSettings == null)
+        ? [{ timezone: mockRow.partnerTimezone, settings: mockRow.partnerSettings }]
+        : []
+    )
+  );
+
+  const select = vi.fn(() => ({
+    from: vi.fn((table: { id?: string } | undefined) =>
+      table?.id === 'partners.id'
+        ? { where: vi.fn(() => ({ limit: partnerLimit })) }
+        : {
+          innerJoin: vi.fn(() => ({
+            leftJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: deviceLimit })) })),
+          })),
+        }
+    ),
+  }));
+
+  return {
+    db: { select },
+    getCurrentDbAccessContext: vi.fn(() => undefined),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
 });
 
 // The resolver imports many schema tables; a thin stub keeps the module load
@@ -103,11 +147,11 @@ describe('resolveDeviceTimezone (#1318 partner fallback)', () => {
     expect(await resolveDeviceTimezone('dev-1')).toBe('Asia/Tokyo');
   });
 
-  it('org-scoped (partner RLS-invisible): still resolves the org tz, not UTC', async () => {
-    // Under an org-scoped request the partners SELECT policy is false, so the
-    // leftJoin yields null partner columns. The device row must survive (left
-    // join, not inner) and resolve through site -> org. An inner join here would
-    // drop the row entirely and regress to 'UTC'.
+  it('no partner row: still resolves the org tz, not UTC', async () => {
+    // A missing partner row (deleted tenant, or — pre-#2822 — an RLS-invisible
+    // one) must leave the device row intact and resolve through site -> org.
+    // The partner read is a SEPARATE query now, so its absence can no longer
+    // drop the device row at all; this pins that the fall-through still works.
     mockRow = {
       siteTimezone: null,
       orgSettings: { timezone: 'America/Denver' },
@@ -117,7 +161,7 @@ describe('resolveDeviceTimezone (#1318 partner fallback)', () => {
     expect(await resolveDeviceTimezone('dev-1')).toBe('America/Denver');
   });
 
-  it('org-scoped (partner RLS-invisible): still resolves the site tz, not UTC', async () => {
+  it('no partner row: still resolves the site tz, not UTC', async () => {
     mockRow = {
       siteTimezone: 'America/Chicago',
       orgSettings: {},

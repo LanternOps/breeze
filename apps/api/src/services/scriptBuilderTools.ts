@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
+import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
@@ -89,14 +90,17 @@ function makeExistingHandler(
       // when an AsyncLocalStorage store already exists — and the SDK MCP
       // dispatch chain leaves a stale store behind, which would cause the
       // inner call to inherit whatever scope happened to be on the stack.
+      // Built via the canonical `dbAccessContextFromAuth` (#2822): the literal
+      // this replaced omitted `accessiblePartnerIds` / `currentPartnerId` /
+      // `userId`, and since `runOutsideDbContext` discards the ambient context
+      // first, that partial object was the only context Postgres saw — leaving
+      // `breeze_has_partner_access` FALSE for every script-builder tool call,
+      // even a partner-scope admin's. Partner-wide scripts, script categories
+      // and tags all read as empty with a 200.
       const result = await withTimeout(
         runOutsideDbContext(() =>
           withDbAccessContext(
-            {
-              scope: auth.scope,
-              orgId: auth.orgId,
-              accessibleOrgIds: auth.accessibleOrgIds,
-            },
+            dbAccessContextFromAuth(auth),
             () => executeTool(toolName, args, auth),
           ),
         ),

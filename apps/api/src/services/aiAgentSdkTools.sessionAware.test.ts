@@ -32,13 +32,25 @@ vi.mock('./aiToolsM365', () => ({
   registerM365Tools: vi.fn(),
 }));
 
+import { withDbAccessContext } from '../db';
 import { __test__ } from './aiAgentSdkTools';
 
 const { makeSessionAwareHandler } = __test__;
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
-const fakeAuth = { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
+// `user` and `partnerId` are part of the real AuthContext and are now load-
+// bearing: the handler builds its DB context with `dbAccessContextFromAuth`
+// (#2822), which reads `auth.user.id` and `auth.partnerId`. The previous stub
+// omitted both, which was only survivable while the handler hand-rolled a
+// partial DbAccessContext — the very defect #2822 fixes.
+const fakeAuth = {
+  scope: 'organization',
+  orgId: 'org-1',
+  accessibleOrgIds: ['org-1'],
+  partnerId: 'partner-1',
+  user: { id: 'user-1' },
+} as any;
 const fakeSession = { breezeSessionId: 'sess-123', auth: fakeAuth } as any;
 
 const firstText = (res: ToolResult) => res.content[0]?.text ?? '';
@@ -116,6 +128,46 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
     expect(sessionHandler).toHaveBeenCalledWith({ userIdentifier: 'jane@x.com' }, fakeAuth, 'sess-123');
     expect(res.isError).toBeUndefined();
     expect(firstText(res)).toBe(JSON.stringify({ data: { display: 'Jane' } }));
+  });
+
+  // (5) ROOT CAUSE REGRESSION GUARD (#2822). The handler used to hand
+  // withDbAccessContext a hand-rolled literal carrying only scope/orgId/
+  // accessibleOrgIds. `serializeAccessibleIds` maps an absent list to '' ->
+  // ARRAY[]::uuid[] for any non-system scope, so `breeze_has_partner_access`
+  // was FALSE and `breeze_current_partner_id()` NULL for EVERY AI tool call —
+  // and because makeHandler calls runOutsideDbContext first, that literal was
+  // the ONLY context Postgres saw. Partner-axis tables (scripts, alert
+  // templates, catalog, update rings, integrations) all read as empty with a
+  // 200, including for a partner-scope MSP admin entitled to the rows.
+  //
+  // Asserted with a PARTNER-scope auth on purpose: for organization scope
+  // `computeAccessiblePartnerIds` legitimately returns [], so an org-scoped
+  // fixture cannot tell the canonical builder apart from the broken literal.
+  it('builds the tool DB context via dbAccessContextFromAuth, carrying the partner axis', async () => {
+    const partnerAuth = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: null,
+      partnerId: 'partner-1',
+      user: { id: 'user-1' },
+    } as any;
+    getAuth = vi.fn(() => partnerAuth);
+    getActiveSession = vi.fn(() => ({ breezeSessionId: 'sess-123', auth: partnerAuth }) as any);
+
+    const handler = makeSessionAwareHandler(
+      'm365_lookup_user', getAuth, getActiveSession, sessionHandler, onPreToolUse, onPostToolUse,
+    );
+    await handler({ userIdentifier: 'jane@x.com' });
+
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'partner',
+        accessiblePartnerIds: ['partner-1'],
+        currentPartnerId: 'partner-1',
+        userId: 'user-1',
+      }),
+      expect.any(Function),
+    );
   });
 
   // (4) No active session -> no_active_session error, handler & enforcement skipped.
