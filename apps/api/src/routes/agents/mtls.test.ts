@@ -1,21 +1,78 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { createHash } from 'crypto';
+import { createHash, createPrivateKey, sign } from 'crypto';
+
+// -------------------------------------------------------------------
+// Fixtures — real, static, self-signed EC P-256 certs/keys (10y validity),
+// generated once with `openssl req -x509 -newkey ec ...` and pinned here so
+// the unit suite never shells out to openssl at test time. "NEW" represents
+// a freshly-issued replacement certificate; "OLD" represents the device's
+// currently-active certificate (used both as the active row's serial/SPKI
+// and to sign recovery proofs with the matching private key).
+// -------------------------------------------------------------------
+
+const NEW_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIBjDCCATGgAwIBAgIULdi98VWChh4CPbJOhNTfTOxBiicwCgYIKoZIzj0EAwIw
+GzEZMBcGA1UEAwwQYnJlZXplLWFnZW50LW5ldzAeFw0yNjA3MjcxOTI0MDRaFw0z
+NjA3MjQxOTI0MDRaMBsxGTAXBgNVBAMMEGJyZWV6ZS1hZ2VudC1uZXcwWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAARZFuMmkAztgQnzIk+4BrZrUCsCoaevo5Ib2bxO
+68zpCSuzXken/TWXABS+PvkVqjcdLqZ6NbnOgCwUJyNaZSzzo1MwUTAdBgNVHQ4E
+FgQUoK7QuRA6KOj9T/vaXj5Crwoi4FwwHwYDVR0jBBgwFoAUoK7QuRA6KOj9T/va
+Xj5Crwoi4FwwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBGAiEA7kwk
+lgznC76pR5Z2n5gjiGOhGJqZbRY2cLfoC8Zs9zECIQDRO0VdLavsoCPppTVOPN9o
+yMR+DE23HZhAN9jAjaIJFQ==
+-----END CERTIFICATE-----`;
+const NEW_CERT_SERIAL = '2DD8BDF15582861E023DB24E84D4DF4CEC418A27';
+const NEW_CERT_SPKI_BASE64 =
+  'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEWRbjJpAM7YEJ8yJPuAa2a1ArAqGnr6OSG9m8TuvM6Qkrs15Hp/01lwAUvj75Fao3HS6mejW5zoAsFCcjWmUs8w==';
+
+const OLD_CERT_SERIAL = '74C7AF668B8D3D98D464006774AB7889D4B57578';
+const OLD_CERT_SPKI_BASE64 =
+  'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHQhHWPXOBUcwUQCuDdw3afWmgfUZwZnYI7VVrTrHUhzqyz4SchUHYVZRnGpF/eIIukUK1hXjk3TmMHA4ZTrKEw==';
+const OLD_CERT_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgdRUx8apGcQ9ctNfx
+bowZRDWsEu3leRXBUQkZd9m0ktShRANCAAQdCEdY9c4FRzBRAK4N3Ddp9aaB9RnB
+mdgjtVWtOsdSHOrLPhJyFQdhVlGcakX94gi6RQrWFeOTdOYwcDhlOsoT
+-----END PRIVATE KEY-----`;
+const OLD_CERT_PRIVATE_KEY = createPrivateKey(OLD_CERT_PRIVATE_KEY_PEM);
 
 // -------------------------------------------------------------------
 // Mocks
 // -------------------------------------------------------------------
 
-const { dbSelectMock, dbUpdateMock, mfaGate } = vi.hoisted(() => ({
-  dbSelectMock: vi.fn(),
-  dbUpdateMock: vi.fn(),
-  mfaGate: { deny: false },
-}));
+const {
+  dbSelectMock,
+  dbUpdateMock,
+  dbInsertMock,
+  dbTransactionMock,
+  txSelectMock,
+  txUpdateMock,
+  txInsertMock,
+  mfaGate,
+} = vi.hoisted(() => {
+  const txSelect = vi.fn();
+  const txUpdate = vi.fn();
+  const txInsert = vi.fn();
+  return {
+    dbSelectMock: vi.fn(),
+    dbUpdateMock: vi.fn(),
+    dbInsertMock: vi.fn(),
+    txSelectMock: txSelect,
+    txUpdateMock: txUpdate,
+    txInsertMock: txInsert,
+    dbTransactionMock: vi.fn(async (fn: (tx: unknown) => unknown) =>
+      fn({ select: txSelect, update: txUpdate, insert: txInsert }),
+    ),
+    mfaGate: { deny: false },
+  };
+});
 
 vi.mock('../../db', () => ({
   db: {
     select: dbSelectMock,
     update: dbUpdateMock,
+    insert: dbInsertMock,
+    transaction: dbTransactionMock,
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -31,6 +88,23 @@ vi.mock('../../db/schema', () => ({
     previousTokenHash: 'devices.previousTokenHash',
   },
   organizations: { id: 'organizations.id', settings: 'organizations.settings', updatedAt: 'organizations.updatedAt' },
+  deviceMtlsCertificates: {
+    id: 'deviceMtlsCertificates.id',
+    orgId: 'deviceMtlsCertificates.orgId',
+    deviceId: 'deviceMtlsCertificates.deviceId',
+    providerCertificateId: 'deviceMtlsCertificates.providerCertificateId',
+    serialNumber: 'deviceMtlsCertificates.serialNumber',
+    fingerprintSha256: 'deviceMtlsCertificates.fingerprintSha256',
+    publicKeySpki: 'deviceMtlsCertificates.publicKeySpki',
+    legacyProvenance: 'deviceMtlsCertificates.legacyProvenance',
+    state: 'deviceMtlsCertificates.state',
+    issuedAt: 'deviceMtlsCertificates.issuedAt',
+    expiresAt: 'deviceMtlsCertificates.expiresAt',
+    activationExpiresAt: 'deviceMtlsCertificates.activationExpiresAt',
+    activatedAt: 'deviceMtlsCertificates.activatedAt',
+    revokedAt: 'deviceMtlsCertificates.revokedAt',
+    updatedAt: 'deviceMtlsCertificates.updatedAt',
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -84,14 +158,22 @@ const { issueCertMock, revokeCertMock } = vi.hoisted(() => ({
   issueCertMock: vi.fn(),
   revokeCertMock: vi.fn(),
 }));
-vi.mock('../../services/cloudflareMtls', () => ({
-  CloudflareMtlsService: {
-    fromEnv: vi.fn(() => ({
-      issueCertificate: issueCertMock,
-      revokeCertificate: revokeCertMock,
-    })),
-  },
-}));
+// Keep the REAL parseIssuedLeafCertificate/CloudflareMtlsError/
+// categorizeCloudflareMtlsError — only CloudflareMtlsService.fromEnv is
+// swapped for the issue/revoke mocks, so the route's real certificate
+// parsing (node:crypto X509Certificate) runs against the fixture PEMs above.
+vi.mock('../../services/cloudflareMtls', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/cloudflareMtls')>();
+  return {
+    ...actual,
+    CloudflareMtlsService: {
+      fromEnv: vi.fn(() => ({
+        issueCertificate: issueCertMock,
+        revokeCertificate: revokeCertMock,
+      })),
+    },
+  };
+});
 
 vi.mock('@breeze/shared', () => ({
   orgMtlsSettingsSchema: { parse: (v: unknown) => v, safeParseAsync: async (v: unknown) => ({ success: true, data: v }) },
@@ -106,11 +188,51 @@ vi.mock('./helpers', () => ({
   isObject: (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v),
 }));
 
-// Minimal Redis stub with sliding-window semantics. All state hoisted so the
-// factory below can reach it without tripping the vitest hoisting check.
-const { redisState, redisMock } = vi.hoisted(() => {
+// Lifecycle service (Task 3) — mocked wholesale for route tests. Its own
+// demote-guard / durable-retry logic is covered by
+// deviceMtlsCertificateLifecycle.test.ts; here we only need to control
+// whether a demotion "happened" and whether the post-commit revoke call
+// succeeds, failed, or was invoked at all.
+const { queueCertificateRevocationCoreMock, revokeCertificateNowOrEnqueueMock } = vi.hoisted(() => ({
+  queueCertificateRevocationCoreMock: vi.fn(async () => true),
+  revokeCertificateNowOrEnqueueMock: vi.fn(async () => undefined),
+}));
+vi.mock('../../services/deviceMtlsCertificateLifecycle', () => ({
+  queueCertificateRevocationCore: queueCertificateRevocationCoreMock,
+  revokeCertificateNowOrEnqueue: revokeCertificateNowOrEnqueueMock,
+}));
+
+// Controls whether the certificate-assertion headers are honored, mirroring
+// the real trust gate (trustsForwardedHeadersFrom) without needing a real
+// TRUSTED_PROXY_CIDRS/env setup in this unit suite.
+const { trustsForwardedHeadersFromMock } = vi.hoisted(() => ({
+  trustsForwardedHeadersFromMock: vi.fn(() => false),
+}));
+vi.mock('../../services/clientIp', () => ({
+  trustsForwardedHeadersFrom: trustsForwardedHeadersFromMock,
+}));
+
+// Boundary mock: the device-teardown service pulls in the agentWs → terminalWs
+// → remoteAccessPolicy chain at module load, which this test's partial schema
+// mock doesn't satisfy. The handler only needs it to be called on
+// quarantine/deny; its internals are covered by remoteSessionTeardown.test.ts.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  terminateDeviceRemoteSessions: vi.fn().mockResolvedValue(0),
+  // mtls.ts imports TEARDOWN_FAILED too; the real value is -1. The mock must
+  // export it or the route's `teardownResult === TEARDOWN_FAILED` audit branch
+  // would compare against undefined.
+  TEARDOWN_FAILED: -1,
+}));
+
+// Minimal Redis stub with sliding-window semantics (rate limiting) PLUS a
+// simple GET/SET/EVAL string store (used by the REAL mtlsRenewalProof
+// service — not mocked, so route tests exercise real signature
+// verification/consumption against real fixture keys). All state hoisted so
+// the factory below can reach it without tripping the vitest hoisting check.
+const { redisState, redisStringState, redisMock } = vi.hoisted(() => {
   type ZMember = [number, string];
   const state = new Map<string, ZMember[]>();
+  const stringState = new Map<string, string>();
   const zRem = (key: string, max: number) => {
     const arr = state.get(key) ?? [];
     state.set(key, arr.filter(([score]) => score > max));
@@ -173,27 +295,34 @@ const { redisState, redisMock } = vi.hoisted(() => {
     expire() {
       return Promise.resolve();
     },
+    async set(key: string, value: string, ..._rest: unknown[]) {
+      stringState.set(key, value);
+      return 'OK';
+    },
+    async get(key: string) {
+      return stringState.get(key) ?? null;
+    },
+    // Server-side Lua compare-and-delete used by mtlsRenewalProof.ts's
+    // verifyAndConsumeRenewalProof — reimplemented here purely in JS since
+    // this is an in-memory stub, not real Redis.
+    async eval(_script: string, _numKeys: number, key: string, expected: string) {
+      const current = stringState.get(key);
+      if (current === expected) {
+        stringState.delete(key);
+        return 1;
+      }
+      return 0;
+    },
   };
-  return { redisState: state, redisMock: mock };
+  return { redisState: state, redisStringState: stringState, redisMock: mock };
 });
 
 vi.mock('../../services/redis', () => ({
   getRedis: vi.fn(() => redisMock),
 }));
 
-// Boundary mock: the device-teardown service pulls in the agentWs → terminalWs
-// → remoteAccessPolicy chain at module load, which this test's partial schema
-// mock doesn't satisfy. The handler only needs it to be called on
-// quarantine/deny; its internals are covered by remoteSessionTeardown.test.ts.
-vi.mock('../../services/remoteSessionTeardown', () => ({
-  terminateDeviceRemoteSessions: vi.fn().mockResolvedValue(0),
-  // mtls.ts imports TEARDOWN_FAILED too; the real value is -1. The mock must
-  // export it or the route's `teardownResult === TEARDOWN_FAILED` audit branch
-  // would compare against undefined.
-  TEARDOWN_FAILED: -1,
-}));
-
-// Use the real rate-limit helper with the stub above.
+// Use the real rate-limit helper AND the real mtlsRenewalProof service with
+// the stub above.
 
 // -------------------------------------------------------------------
 // Imports (after mocks)
@@ -201,12 +330,15 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
 
 import { mtlsRoutes } from './mtls';
 import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeardown';
+import { buildRenewalProofCanonicalBytes } from '../../services/mtlsRenewalProof';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
 const AGENT_ID = 'agent-mtls-test';
 const TOKEN = 'brz_test_token';
 const TOKEN_HASH = createHash('sha256').update(TOKEN).digest('hex');
+const NEW_CERT_ROW_ID = '33333333-3333-4333-8333-333333333333';
+const OLD_ACTIVE_CERT_ROW_ID = '44444444-4444-4444-8444-444444444444';
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -253,32 +385,138 @@ function mockOrgSettingsLookup(settings: Record<string, unknown> | null = {}) {
   } as any);
 }
 
+// Queues the device_mtls_certificates "active row" read (fetchActiveCertificateRow),
+// used by /renew-cert (mode gate) and /renew-cert/challenge. Must be queued in
+// call order AFTER the device lookup (and, on /renew-cert, after the org
+// settings lookup).
+function mockActiveCertLookup(row: Record<string, unknown> | null) {
+  dbSelectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }),
+    }),
+  } as any);
+}
+
+// Queues the /renew-cert/confirm pending-row lookup (by certificateId).
+function mockPendingCertLookup(row: Record<string, unknown> | null) {
+  dbSelectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }),
+    }),
+  } as any);
+}
+
+// Queues the outer (non-transactional) db.insert used by the protocol-v2
+// pending-issuance path.
+function mockDbInsertOk(id: string | null = NEW_CERT_ROW_ID) {
+  dbInsertMock.mockReturnValueOnce({
+    values: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(id ? [{ id }] : []),
+    }),
+  } as any);
+}
+
+// Queues one call to tx.select(...).from(...).where(...).limit(1) inside the
+// db.transaction callback (the "existingActive" read in both /renew-cert's
+// legacy path and /renew-cert/confirm).
+function mockTxActiveLookup(row: Record<string, unknown> | null) {
+  txSelectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }),
+    }),
+  } as any);
+}
+
+// Queues one call to tx.insert(...).values(...).returning(...).
+function mockTxInsertOk(id: string | null = NEW_CERT_ROW_ID) {
+  txInsertMock.mockReturnValueOnce({
+    values: vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue(id ? [{ id }] : []),
+    }),
+  } as any);
+}
+
+// Queues one call to tx.update(...).set(...).where(...).returning(...).
+// Call this once per expected tx.update() invocation, in call order (e.g.
+// once for the deviceMtlsCertificates activation, once for the legacy
+// devices columns update).
+function mockTxUpdateOk(rowCount = 1) {
+  const rows = Array.from({ length: rowCount }, () => ({ id: NEW_CERT_ROW_ID }));
+  txUpdateMock.mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
+    }),
+  } as any);
+}
+
+function setAssertionHeaders(serial: string): Record<string, string> {
+  return {
+    'X-Breeze-Client-Cert-Verified': 'true',
+    'X-Breeze-Client-Cert-Serial': serial,
+  };
+}
+
+async function signRecoveryProofForActiveChallenge(app: Hono, headers: Record<string, string> = {}) {
+  mockDeviceLookup(baseActiveDeviceRow());
+  mockActiveCertLookup({
+    id: OLD_ACTIVE_CERT_ROW_ID,
+    serialNumber: OLD_CERT_SERIAL,
+    expiresAt: new Date(Date.now() - 3600 * 1000),
+    publicKeySpki: OLD_CERT_SPKI_BASE64,
+  });
+  const res = await app.request('/agents/renew-cert/challenge', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${TOKEN}`, ...headers },
+  });
+  const body = await res.json();
+  const { challengeId, expiresUnix } = body as { challengeId: string; expiresUnix: number };
+  const bytes = buildRenewalProofCanonicalBytes(DEVICE_ID, challengeId, expiresUnix);
+  const signatureBase64 = sign('sha256', bytes, OLD_CERT_PRIVATE_KEY).toString('base64');
+  return { challengeId, expiresUnix, signatureBase64 };
+}
+
+function baseActiveDeviceRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: DEVICE_ID,
+    orgId: ORG_ID,
+    agentId: AGENT_ID,
+    hostname: 'host-1',
+    status: 'online',
+    agentTokenHash: TOKEN_HASH,
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    agentTokenSuspendedAt: null,
+    mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+    mtlsCertCfId: null,
+    ...overrides,
+  };
+}
+
+function resetAllMocksForTest() {
+  vi.clearAllMocks();
+  redisState.clear();
+  redisStringState.clear();
+  issueCertMock.mockReset();
+  revokeCertMock.mockReset();
+  queueCertificateRevocationCoreMock.mockReset().mockResolvedValue(true);
+  revokeCertificateNowOrEnqueueMock.mockReset().mockResolvedValue(undefined);
+  trustsForwardedHeadersFromMock.mockReset().mockReturnValue(false);
+  tenantActiveMock.mockReset().mockResolvedValue(true);
+  matchTokenMock.mockReset().mockReturnValue({ tokenRotationRequired: false });
+  mockDbUpdateOk();
+}
+
 describe('POST /renew-cert — E4 per-device cooldown', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    redisState.clear();
-    issueCertMock.mockReset();
-    revokeCertMock.mockReset();
-    mockDbUpdateOk();
+    resetAllMocksForTest();
   });
 
   it('returns 429 with Retry-After on the 2nd attempt within 30s', async () => {
-    const deviceRow = {
-      id: DEVICE_ID,
-      orgId: ORG_ID,
-      agentId: AGENT_ID,
-      hostname: 'host-1',
-      status: 'online',
-      agentTokenHash: TOKEN_HASH,
-      previousTokenHash: null,
-      previousTokenExpiresAt: null,
-      mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
-      mtlsCertCfId: null,
-    };
+    const deviceRow = baseActiveDeviceRow();
 
     issueCertMock.mockResolvedValue({
       id: 'cf-cert-1',
-      certificate: 'CERT',
+      certificate: NEW_CERT_PEM,
       privateKey: 'KEY',
       expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
       issuedOn: new Date().toISOString(),
@@ -288,6 +526,11 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
     // First request — success
     mockDeviceLookup(deviceRow);
     mockOrgSettingsLookup(); // org policy row present (auto_reissue default)
+    mockActiveCertLookup(null); // no active history row yet — off mode allows regardless
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk(); // activate deviceMtlsCertificates
+    mockTxUpdateOk(); // update legacy devices columns
     const first = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}` },
@@ -317,28 +560,8 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
 });
 
 describe('POST /renew-cert — tenant-status gate (F4)', () => {
-  const activeDeviceRow = {
-    id: DEVICE_ID,
-    orgId: ORG_ID,
-    agentId: AGENT_ID,
-    hostname: 'host-1',
-    status: 'online',
-    agentTokenHash: TOKEN_HASH,
-    previousTokenHash: null,
-    previousTokenExpiresAt: null,
-    agentTokenSuspendedAt: null,
-    // Valid (non-expired) cert so the handler does not divert into quarantine.
-    mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
-    mtlsCertCfId: null,
-  };
-
   beforeEach(() => {
-    vi.clearAllMocks();
-    redisState.clear();
-    issueCertMock.mockReset();
-    revokeCertMock.mockReset();
-    tenantActiveMock.mockResolvedValue(true);
-    mockDbUpdateOk();
+    resetAllMocksForTest();
   });
 
   it('rejects with opaque 401 and does NOT issue a cert when the tenant is inactive', async () => {
@@ -346,7 +569,7 @@ describe('POST /renew-cert — tenant-status gate (F4)', () => {
     // individually suspended — without the tenant gate the agent would still
     // get fresh Cloudflare cert + private key material.
     tenantActiveMock.mockResolvedValue(false);
-    mockDeviceLookup(activeDeviceRow);
+    mockDeviceLookup(baseActiveDeviceRow());
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -364,14 +587,19 @@ describe('POST /renew-cert — tenant-status gate (F4)', () => {
   it('issues normally when the tenant is active', async () => {
     issueCertMock.mockResolvedValue({
       id: 'cf-cert-1',
-      certificate: 'CERT',
+      certificate: NEW_CERT_PEM,
       privateKey: 'KEY',
       expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
       issuedOn: new Date().toISOString(),
       serialNumber: 'sn-1',
     });
-    mockDeviceLookup(activeDeviceRow);
+    mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup(); // org policy row present
+    mockActiveCertLookup(null);
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -386,11 +614,7 @@ describe('POST /renew-cert — tenant-status gate (F4)', () => {
 
 describe('remote-session teardown wiring on quarantine / deny', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    redisState.clear();
-    issueCertMock.mockReset();
-    revokeCertMock.mockReset();
-    mockDbUpdateOk();
+    resetAllMocksForTest();
   });
 
   it('POST /renew-cert quarantine branch tears down live remote sessions AND severs the agent WS', async () => {
@@ -398,20 +622,10 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     // into the quarantine branch, which must cut any in-flight desktop/terminal
     // session AND sever the agent command WebSocket to the now-isolated device.
     // Dropping either call silently leaves live control / command draining.
-    const deviceRow = {
-      id: DEVICE_ID,
-      orgId: ORG_ID,
-      agentId: AGENT_ID,
-      hostname: 'host-1',
-      status: 'online',
-      agentTokenHash: TOKEN_HASH,
-      previousTokenHash: null,
-      previousTokenExpiresAt: null,
-      agentTokenSuspendedAt: null,
+    const deviceRow = baseActiveDeviceRow({
       // Expired one hour ago — triggers the quarantine path.
       mtlsCertExpiresAt: new Date(Date.now() - 3600 * 1000),
-      mtlsCertCfId: null,
-    };
+    });
 
     mockDeviceLookup(deviceRow);
     mockOrgSettingsLookup({ mtls: { expiredCertPolicy: 'quarantine' } });
@@ -455,29 +669,8 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
 });
 
 describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
-  const baseDeviceRow = {
-    id: DEVICE_ID,
-    orgId: ORG_ID,
-    agentId: AGENT_ID,
-    hostname: 'host-1',
-    status: 'online',
-    agentTokenHash: TOKEN_HASH,
-    previousTokenHash: null,
-    previousTokenExpiresAt: null,
-    agentTokenSuspendedAt: null,
-    // Non-expired cert → the handler takes the issue path (not quarantine).
-    mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
-    mtlsCertCfId: null,
-  };
-
   beforeEach(() => {
-    vi.clearAllMocks();
-    redisState.clear();
-    issueCertMock.mockReset();
-    revokeCertMock.mockReset();
-    tenantActiveMock.mockResolvedValue(true);
-    matchTokenMock.mockReturnValue({ tokenRotationRequired: false });
-    mockDbUpdateOk();
+    resetAllMocksForTest();
   });
 
   it('Finding #2: rejects a PREVIOUS (superseded) token caller with 401 and issues no cert', async () => {
@@ -485,7 +678,7 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     // idempotent agent traffic, but NOT for minting new cert material. A stolen
     // superseded token must not obtain a fresh certificate + private key.
     matchTokenMock.mockReturnValueOnce({ tokenRotationRequired: true });
-    mockDeviceLookup(baseDeviceRow);
+    mockDeviceLookup(baseActiveDeviceRow());
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -499,21 +692,25 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     expect(issueCertMock).not.toHaveBeenCalled();
   });
 
-  it('Finding #1: fails closed (500) and returns NO cert material when the metadata write affects 0 rows', async () => {
-    // A 0-row cert-metadata write under FORCE RLS would otherwise "succeed"
-    // silently, leaking an UNTRACKED cert (no serial/expiry/cfId recorded → not
-    // revocable later). The handler must deny AND revoke the just-issued cert.
+  it('fails closed (500) and returns NO cert material when the transaction fails, and revokes the orphan cert', async () => {
+    // A failed activation transaction (e.g. the legacy devices update affects
+    // 0 rows under FORCE RLS) must not leave an untracked, unrevoked
+    // provider certificate — nor return cert material for a renewal that
+    // never actually persisted.
     issueCertMock.mockResolvedValue({
       id: 'cf-cert-untracked',
-      certificate: 'CERT',
+      certificate: NEW_CERT_PEM,
       privateKey: 'KEY',
       expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
       issuedOn: new Date().toISOString(),
       serialNumber: 'sn-untracked',
     });
-    mockDeviceLookup(baseDeviceRow);
+    mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup(); // auto_reissue default → issue path
-    mockDbUpdateOk(0); // metadata write matches 0 rows
+    mockActiveCertLookup(null);
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk(0); // activation update affects 0 rows → transaction throws
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -532,7 +729,7 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
   it('Finding #1: fails closed (500) when the org policy row is missing (no auto_reissue fallback)', async () => {
     // A missing org row must NOT silently downgrade to auto_reissue and issue a
     // cert against an org whose policy we can't resolve.
-    mockDeviceLookup(baseDeviceRow);
+    mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup(null); // org row absent
 
     const res = await buildApp().request('/agents/renew-cert', {
@@ -543,12 +740,644 @@ describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
     expect(res.status).toBe(500);
     expect(issueCertMock).not.toHaveBeenCalled();
   });
+
+  it('demotes the old active row and revokes it post-commit on a successful legacy renewal', async () => {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-2',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 10_000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockTxActiveLookup({ id: OLD_ACTIVE_CERT_ROW_ID });
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueCertificateRevocationCoreMock).toHaveBeenCalledWith(expect.anything(), OLD_ACTIVE_CERT_ROW_ID);
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(OLD_ACTIVE_CERT_ROW_ID);
+  });
+
+  it('queue failure after activation does not fail the renewal response (sweep repairs it)', async () => {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-3',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    revokeCertificateNowOrEnqueueMock.mockRejectedValueOnce(new Error('redis down'));
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 10_000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockTxActiveLookup({ id: OLD_ACTIVE_CERT_ROW_ID });
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mtls.certificate).toBe(NEW_CERT_PEM);
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(OLD_ACTIVE_CERT_ROW_ID);
+  });
+
+  it('legacy response keyset is byte-compatible (mtls: {certificate, privateKey, expiresAt, serialNumber})', async () => {
+    const expiresOn = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    const issuedOn = new Date().toISOString();
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-4',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-MATERIAL',
+      expiresOn,
+      issuedOn,
+      serialNumber: 'sn-4',
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup(null);
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Object.keys(body).sort()).toEqual(['mtls']);
+    expect(Object.keys(body.mtls).sort()).toEqual(['certificate', 'expiresAt', 'privateKey', 'serialNumber']);
+    expect(body.mtls).toEqual({
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-MATERIAL',
+      expiresAt: expiresOn,
+      serialNumber: 'sn-4',
+    });
+  });
+});
+
+describe('POST /renew-cert/challenge', () => {
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  it('rejects without a valid bearer token', async () => {
+    mockDeviceLookup(null);
+    const res = await buildApp().request('/agents/renew-cert/challenge', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_wrong' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns a one-use challengeId + expiresUnix when the active cert is expired and has an SPKI', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/challenge', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Object.keys(body).sort()).toEqual(['challengeId', 'expiresUnix']);
+    expect(typeof body.challengeId).toBe('string');
+    expect(typeof body.expiresUnix).toBe('number');
+  });
+
+  it('rejects (400) when the active certificate is not yet expired', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/challenge', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects (400) when there is no recorded public_key_spki (legacy-imported certificate)', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: null,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/challenge', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rate-limits repeated challenge requests from the same device', async () => {
+    for (let i = 0; i < MTLS_CHALLENGE_LIMIT_FOR_TEST; i += 1) {
+      mockDeviceLookup(baseActiveDeviceRow());
+      mockActiveCertLookup({
+        id: OLD_ACTIVE_CERT_ROW_ID,
+        serialNumber: OLD_CERT_SERIAL,
+        expiresAt: new Date(Date.now() - 3600 * 1000),
+        publicKeySpki: OLD_CERT_SPKI_BASE64,
+      });
+      const res = await buildApp().request('/agents/renew-cert/challenge', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      expect(res.status).toBe(200);
+    }
+
+    mockDeviceLookup(baseActiveDeviceRow());
+    const limited = await buildApp().request('/agents/renew-cert/challenge', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Retry-After')).toBeTruthy();
+  });
+});
+
+// Mirrors the MTLS_CHALLENGE_LIMIT constant in mtls.ts (5 requests / 5 min).
+const MTLS_CHALLENGE_LIMIT_FOR_TEST = 5;
+
+describe('POST /renew-cert — protocol v2 (capable agent)', () => {
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  it('issues a 15-minute pending_activation row without touching the old active row or legacy columns', async () => {
+    const expiresOn = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    const issuedOn = new Date().toISOString();
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-v2',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-V2',
+      expiresOn,
+      issuedOn,
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 10_000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockDbInsertOk(NEW_CERT_ROW_ID);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.protocolVersion).toBe(2);
+    expect(body.certificateId).toBe(NEW_CERT_ROW_ID);
+    expect(body.activationExpiresAt).toBeTruthy();
+    expect(body.mtls).toEqual({
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-V2',
+      expiresAt: expiresOn,
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    // The old row is untouched here — no transaction / demote call for v2 issuance.
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+    expect(queueCertificateRevocationCoreMock).not.toHaveBeenCalled();
+    expect(revokeCertificateNowOrEnqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes the orphan provider cert when the pending row fails to persist', async () => {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-v2-orphan',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-V2',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup(null);
+    mockDbInsertOk(null); // insert returns 0 rows
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2 }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-v2-orphan');
+  });
+});
+
+describe('POST /renew-cert — mode-gated proof/binding (AGENT_MTLS_BINDING_MODE)', () => {
+  const originalMode = process.env.AGENT_MTLS_BINDING_MODE;
+
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  afterEach(() => {
+    if (originalMode === undefined) {
+      delete process.env.AGENT_MTLS_BINDING_MODE;
+    } else {
+      process.env.AGENT_MTLS_BINDING_MODE = originalMode;
+    }
+  });
+
+  function mockSuccessfulLegacyIssuance() {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-mode',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
+  }
+
+  it('off: bearer-only renewal remains compatible even with an unexpired active cert and no assertion', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'off';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockSuccessfulLegacyIssuance();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+  });
+
+  it('audit: bearer-only renewal succeeds (never denies on the observation alone)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockSuccessfulLegacyIssuance();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+  });
+
+  it('enforce: bearer-only renewal with an unexpired active cert and no assertion is denied', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(401);
+    expect(issueCertMock).not.toHaveBeenCalled();
+  });
+
+  it('enforce: unexpired active cert WITH a matching, trusted certificate assertion succeeds', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockSuccessfulLegacyIssuance();
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, ...setAssertionHeaders(OLD_CERT_SERIAL) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
+  });
+
+  it('enforce: a trusted assertion naming a DIFFERENT certificate than the active row is denied in every mode', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'off';
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, ...setAssertionHeaders(NEW_CERT_SERIAL) },
+    });
+
+    expect(res.status).toBe(401);
+    expect(issueCertMock).not.toHaveBeenCalled();
+  });
+
+  it('enforce: expired active cert with a VALID recovery proof succeeds (v2 pending response)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    const app = buildApp();
+    const proof = await signRecoveryProofForActiveChallenge(app);
+
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-recovery',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: NEW_CERT_SERIAL,
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockDbInsertOk(NEW_CERT_ROW_ID);
+
+    const res = await app.request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, recoveryProof: proof }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.protocolVersion).toBe(2);
+    expect(issueCertMock).toHaveBeenCalled();
+  });
+
+  it.each(['off', 'audit', 'enforce'] as const)(
+    'an INVALID supplied recovery proof is denied in %s mode (fails closed on the observation)',
+    async (mode) => {
+      process.env.AGENT_MTLS_BINDING_MODE = mode;
+      mockDeviceLookup(baseActiveDeviceRow());
+      mockOrgSettingsLookup();
+      mockActiveCertLookup({
+        id: OLD_ACTIVE_CERT_ROW_ID,
+        serialNumber: OLD_CERT_SERIAL,
+        expiresAt: new Date(Date.now() - 3600 * 1000),
+        publicKeySpki: OLD_CERT_SPKI_BASE64,
+      });
+
+      const res = await buildApp().request('/agents/renew-cert', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          protocolVersion: 2,
+          recoveryProof: {
+            challengeId: 'never-issued',
+            expiresUnix: Math.floor(Date.now() / 1000) + 300,
+            signatureBase64: Buffer.from('garbage').toString('base64'),
+          },
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(issueCertMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('enforce: expired active cert with NO recorded public key requires administrator re-enrollment', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup();
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() - 3600 * 1000),
+      publicKeySpki: null, // legacy-imported certificate — no SPKI captured
+    });
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/re-enrollment/i);
+    expect(issueCertMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /renew-cert/confirm', () => {
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  it('rejects without a valid bearer token', async () => {
+    mockDeviceLookup(null);
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_wrong', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('404s when the certificateId does not belong to the authenticated device', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: 'some-other-device',
+      state: 'pending_activation',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-x',
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('410s (timeout expiry) when the activation window has already passed', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'pending_activation',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() - 60_000), // already expired
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-x',
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+    expect(res.status).toBe(410);
+  });
+
+  it('confirms and activates with the NEW certificate assertion, demoting and revoking the old row', async () => {
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'pending_activation',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+    mockTxActiveLookup({ id: OLD_ACTIVE_CERT_ROW_ID });
+    mockTxUpdateOk(); // activate the pending row
+    mockTxUpdateOk(); // legacy devices columns
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...setAssertionHeaders(NEW_CERT_SERIAL) },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(queueCertificateRevocationCoreMock).toHaveBeenCalledWith(expect.anything(), OLD_ACTIVE_CERT_ROW_ID);
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(OLD_ACTIVE_CERT_ROW_ID);
+  });
+
+  it('denies confirmation presented with the OLD certificate\'s assertion instead of the new one', async () => {
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'pending_activation',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...setAssertionHeaders(OLD_CERT_SERIAL) },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('denies confirmation with no certificate assertion at all', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'pending_activation',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('PATCH /org/:orgId/settings/log-forwarding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     redisState.clear();
+    redisStringState.clear();
     mfaGate.deny = false;
   });
 

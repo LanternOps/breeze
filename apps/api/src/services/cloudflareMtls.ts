@@ -15,6 +15,8 @@
  * never a raw message.
  */
 
+import { X509Certificate } from 'crypto';
+
 /** Hard ceiling on the revoke call so a hung Cloudflare connection can't wedge a worker slot forever. */
 const REVOKE_TIMEOUT_MS = 10_000;
 
@@ -60,6 +62,59 @@ export interface CfCertResult {
   serialNumber: string;
   expiresOn: string;
   issuedOn: string;
+}
+
+/**
+ * Derived, DB-storable identity for an issued leaf certificate — Wave 5
+ * Task 4's durable `device_mtls_certificates` history rows need the
+ * certificate's own serial (parsed from the cert itself, not just
+ * Cloudflare's `serial_number` string field), a SHA-256 fingerprint of the
+ * DER-encoded certificate, and the certificate's SubjectPublicKeyInfo (SPKI)
+ * for later proof-of-possession recovery (`mtlsRenewalProof.ts`).
+ */
+export interface ParsedIssuedCertificate {
+  serialNumber: string;
+  fingerprintSha256: string;
+  publicKeySpkiBase64: string;
+}
+
+/**
+ * `certificatePem` may be a single leaf certificate OR a bundle (leaf +
+ * intermediate(s)) depending on the provider response shape — only the FIRST
+ * PEM block (the leaf) is ever the device's own identity, so this extracts
+ * that block before parsing.
+ */
+function extractFirstPemCertificateBlock(pem: string): string {
+  const match = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/);
+  if (!match) {
+    throw new Error('No PEM certificate block found in issued certificate response');
+  }
+  return match[0];
+}
+
+/**
+ * Parses the leaf certificate from an issued PEM using node:crypto's
+ * `X509Certificate` — no new dependency. Returns the certificate's own
+ * serial number (uppercase hex, no separators — matches `X509Certificate`'s
+ * own format), a SHA-256 fingerprint of the DER-encoded certificate
+ * (lowercase hex, no separators — matches this codebase's other sha256-hex
+ * conventions, e.g. agent token hashing), and the base64-encoded DER SPKI.
+ *
+ * Throws (never returns partial data) on a malformed/unparseable PEM — the
+ * caller must revoke the just-issued provider certificate and fail the
+ * renewal rather than persist a history row it can't derive an identity for.
+ * Never logs the PEM, the parsed key material, or the fingerprint.
+ */
+export function parseIssuedLeafCertificate(certificatePem: string): ParsedIssuedCertificate {
+  const leafPem = extractFirstPemCertificateBlock(certificatePem);
+  const cert = new X509Certificate(leafPem);
+  const spkiDer = cert.publicKey.export({ type: 'spki', format: 'der' });
+
+  return {
+    serialNumber: cert.serialNumber,
+    fingerprintSha256: cert.fingerprint256.replace(/:/g, '').toLowerCase(),
+    publicKeySpkiBase64: spkiDer.toString('base64'),
+  };
 }
 
 export class CloudflareMtlsService {
