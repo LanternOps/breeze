@@ -335,6 +335,46 @@ const fetchJson = async (url: string) => {
   }
 };
 
+/**
+ * Code `GET /metrics/trends` returns when the caller is site-restricted.
+ * `metric_rollups` is pre-aggregated per organization and carries no site axis,
+ * so the API denies the whole aggregate rather than serving org-wide numbers to
+ * a user who may only see some sites.
+ */
+const SITE_SCOPED_TRENDS_CODE = 'SITE_SCOPED_TRENDS_UNAVAILABLE';
+
+type TrendsResult =
+  | { unavailable: true }
+  | { unavailable: false; data: unknown };
+
+/**
+ * Reads `/metrics/trends`, inspecting the response before generic parsing so the
+ * documented site-scope denial can be told apart from an ordinary failure. The
+ * denial is an expected state for restricted users — every other failure still
+ * throws and is reported through the page's normal error handling.
+ */
+const fetchTrends = async (url: string): Promise<TrendsResult> => {
+  const response = await fetchWithAuth(url);
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+
+  if (!response.ok) {
+    if (response.status === 403 && getRecord(payload).code === SITE_SCOPED_TRENDS_CODE) {
+      return { unavailable: true };
+    }
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+
+  return { unavailable: false, data: payload };
+};
+
 interface AnalyticsPageProps {
   timezone?: string;
 }
@@ -350,6 +390,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     sessions: 0
   });
   const [performanceData, setPerformanceData] = useState<PerformancePoint[]>([]);
+  // True only for the documented site-scope denial: the trend card is hidden
+  // instead of rendered empty, and the denial is not counted as a page error.
+  const [performanceUnavailable, setPerformanceUnavailable] = useState(false);
   const [osDistribution, setOsDistribution] = useState<OsDistributionPoint[]>([]);
   const [alertRows, setAlertRows] = useState<AlertRow[]>([]);
   const [complianceStats, setComplianceStats] = useState<ComplianceStats>({ complianceRate: 0 });
@@ -443,10 +486,17 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         })(),
         (async () => {
           try {
-            const trendsData = await fetchJson(withQuery('/metrics/trends'));
-            setPerformanceData(normalizePerformanceData(trendsData));
+            const trends = await fetchTrends(withQuery('/metrics/trends'));
+            if (trends.unavailable) {
+              setPerformanceUnavailable(true);
+              setPerformanceData([]);
+              return;
+            }
+            setPerformanceUnavailable(false);
+            setPerformanceData(normalizePerformanceData(trends.data));
           } catch (err) {
             errors.push('performance');
+            setPerformanceUnavailable(false);
             setPerformanceData([]);
           }
         })(),
@@ -711,8 +761,13 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   }), []);
 
   const filteredLayout = useMemo(
-    () => dashboardLayouts[selectedDashboard] ?? dashboardLayouts.operations,
-    [dashboardLayouts, selectedDashboard]
+    () => {
+      const layout = dashboardLayouts[selectedDashboard] ?? dashboardLayouts.operations;
+      // Drop only the trend card; every other card on the dashboard is still
+      // backed by a site-scoped endpoint the restricted caller may read.
+      return performanceUnavailable ? layout.filter(item => item.i !== 'performance') : layout;
+    },
+    [dashboardLayouts, performanceUnavailable, selectedDashboard]
   );
 
   const widgetMap = useMemo(() => {
@@ -825,6 +880,12 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         rowHeight={64}
         gap={12}
         renderItem={item => {
+          // DashboardGrid mirrors `layout` into its own state, so the filtered
+          // layout only reaches it on the next commit. Refuse to render the
+          // trend card here too, so a denied caller never sees it at all.
+          if (performanceUnavailable && item.i === 'performance') {
+            return null;
+          }
           if (isInitialLoading) {
             return <div className="h-full w-full animate-pulse rounded-lg border bg-muted/40" />;
           }
