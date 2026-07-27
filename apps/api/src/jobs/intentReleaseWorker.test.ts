@@ -861,6 +861,76 @@ describe('secret-bearing release', () => {
       persistResultForTest('google_reset_password', { raw: 'Temporary password: hunter2 (…)' }),
     ).rejects.toThrow(/plaintext credential/i);
   });
+
+  // The two tests below pin the ACTUAL call sites inside releaseApprovedIntent
+  // (the returned-error path and the completion path), not just the guard
+  // function in isolation — `persistResultForTest` above calls the real
+  // assertNoPlaintextSecret directly, so it would keep passing even if BOTH
+  // in-worker call sites were deleted. These feed a carrier through the real
+  // worker flow so a deleted guard call is caught by an actual regression
+  // here, not just in secretBearingTools.test.ts.
+
+  it('returned-error path: guard trips on a plaintext credential in an error carrier and fails secret_seal_invariant_violated, with no result body', async () => {
+    // llmText is valid JSON with an {error, message} shape (errorString()'s
+    // real output shape) so isReturnedToolError(rawResult) is true and this
+    // routes through the FIRST guard call site (before the
+    // tool_returned_error CAS), not the completion path.
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'error',
+      llmText: JSON.stringify({
+        error: 'google_error',
+        message: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+      }),
+    });
+    const intent = baseIntent({ actionName: 'google_reset_password', orgId: 'org-1' });
+    primeThroughRevalidation(intent);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+    // Exactly two transitionIntent calls: the claim CAS, then the guard's
+    // fail CAS — no attempt to CAS to `completed`, and no `tool_returned_error`
+    // fail-with-result either (that would be a THIRD distinct shape).
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(2);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      { errorCode: 'secret_seal_invariant_violated', executedAt: expect.any(Date) },
+    );
+    const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as Record<string, unknown>;
+    expect(lastPatch).not.toHaveProperty('result');
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    // The audit/log/error paths must never carry the plaintext either.
+    expect(JSON.stringify(auditMock.writeAuditEvent.mock.calls)).not.toContain('hunter2leaked');
+  });
+
+  it('completion path: guard trips on a plaintext credential in a non-JSON error carrier and fails secret_seal_invariant_violated, with no result body', async () => {
+    // llmText is plain prose (not valid JSON), so isReturnedToolError(rawResult)
+    // is FALSE and this falls through to the completion path's guard call
+    // site instead of the returned-error one.
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'error',
+      llmText: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+    });
+    const intent = baseIntent({ actionName: 'google_reset_password', orgId: 'org-1' });
+    primeThroughRevalidation(intent);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(2);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      { errorCode: 'secret_seal_invariant_violated', executedAt: expect.any(Date) },
+    );
+    const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as Record<string, unknown>;
+    expect(lastPatch).not.toHaveProperty('result');
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    expect(JSON.stringify(auditMock.writeAuditEvent.mock.calls)).not.toContain('hunter2leaked');
+  });
 });
 
 describe('processIntentReleaseJob', () => {

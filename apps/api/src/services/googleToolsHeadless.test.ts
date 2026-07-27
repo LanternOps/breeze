@@ -10,6 +10,7 @@ import { googleToolTiers } from './aiToolsGoogle';
 import {
   isHeadlessGoogleTool,
   executeGoogleToolHeadless,
+  executeGoogleSecretToolHeadless,
   GoogleConnectionUnavailableError,
   GOOGLE_HEADLESS_ACTIONS,
   GOOGLE_HEADLESS_SECRET_ACTIONS,
@@ -92,5 +93,45 @@ describe('executeGoogleToolHeadless', () => {
   });
   it('throws for a non-headless tool name (defensive; call site gates with isHeadlessGoogleTool)', async () => {
     await expect(executeGoogleToolHeadless('google_lookup_user', {}, 'org-1')).rejects.toThrow(/not a headless/i);
+  });
+});
+
+// Mirrors the executeGoogleToolHeadless suite above — same three cases,
+// against the secret-bearing counterpart. Nothing here exercised
+// executeGoogleSecretToolHeadless directly before; only intentReleaseWorker.test.ts
+// touched it, and only through a mock, so a regression in its connection-
+// resolution or GoogleConnectionUnavailableError contract (e.g. returning
+// `ctx.error` as a carrier instead of throwing) would have been caught by
+// nothing in the repo.
+describe('executeGoogleSecretToolHeadless', () => {
+  it('resolves by orgId and dispatches to the secret action fn, returning its SecretToolResult carrier', async () => {
+    const fakeCtx = { conn: { adminEmail: 'a@x.com' }, keyJson: '{}' };
+    resolveMock.mockResolvedValueOnce(fakeCtx);
+    const carrier = {
+      kind: 'success' as const,
+      llmText: 'Reset the password for u@x.com. The temporary credential is available for one-time reveal.',
+      secrets: { temporaryPassword: 'unused-in-this-test' },
+    };
+    const spy = vi.spyOn(GOOGLE_HEADLESS_SECRET_ACTIONS, 'google_reset_password' as never)
+      .mockResolvedValueOnce(carrier as never);
+    const out = await executeGoogleSecretToolHeadless(
+      'google_reset_password', { userEmail: 'u@x.com', reason: 'off' }, 'org-1',
+    );
+    expect(resolveMock).toHaveBeenCalledWith('org-1');
+    expect(spy).toHaveBeenCalledWith(fakeCtx, { userEmail: 'u@x.com', reason: 'off' });
+    expect(out).toBe(carrier);
+  });
+
+  it('throws GoogleConnectionUnavailableError when the connection cannot be resolved (never falls back to returning ctx.error as a carrier)', async () => {
+    resolveMock.mockResolvedValueOnce({ error: JSON.stringify({ error: 'no_google_connection', message: 'x' }) });
+    await expect(
+      executeGoogleSecretToolHeadless('google_reset_password', { userEmail: 'u@x.com', reason: 'off' }, 'org-1'),
+    ).rejects.toBeInstanceOf(GoogleConnectionUnavailableError);
+  });
+
+  it('throws for a non-secret-headless tool name (defensive; call site gates with GOOGLE_HEADLESS_SECRET_ACTIONS membership)', async () => {
+    await expect(
+      executeGoogleSecretToolHeadless('google_suspend_user', {}, 'org-1'),
+    ).rejects.toThrow(/not a headless google secret tool/i);
   });
 });
