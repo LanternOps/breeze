@@ -86,7 +86,11 @@ const LOCKABLE_FIELDS = [
   'maintenanceWindow',
 ] as const;
 
-type LockableField = (typeof LOCKABLE_FIELDS)[number];
+// `maxEnrollmentLinkTtlMinutes` is not an editable field of this form (the cap
+// is partner-only, surfaced as a read-only notice — issue #2776), but it does
+// arrive via `locked`, so the lock helper must accept it alongside the
+// seedable editor fields.
+type LockableField = (typeof LOCKABLE_FIELDS)[number] | 'maxEnrollmentLinkTtlMinutes';
 
 const defaultValues: DefaultsData = {
   policyDefaults: {

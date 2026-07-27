@@ -142,6 +142,31 @@ func TestSMBFSReadErrorDoesNotExposePassword(t *testing.T) {
 	}
 }
 
+// GO-2026-5051: go-smb2's ReadDir can panic on a malformed server response.
+// The recover guard must turn that into an error — never a crash — and the
+// error must not leak the credential.
+func TestSMBFSReadDirContainsLibraryPanic(t *testing.T) {
+	const password = "top-secret-password"
+	fys := &smbFS{
+		share:      &fakeSMBShare{readDirPanic: "slice bounds out of range using " + password},
+		credential: Credential{Password: password},
+	}
+
+	entries, err := fys.ReadDir(".")
+	if err == nil {
+		t.Fatal("ReadDir succeeded, want error from contained panic")
+	}
+	if entries != nil {
+		t.Fatalf("ReadDir entries = %v, want nil after contained panic", entries)
+	}
+	if !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("ReadDir error %q does not identify the contained panic", err)
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("ReadDir error %q contains password", err)
+	}
+}
+
 func TestSMBFSCloseCleansUpAndZeroesRetainedCredential(t *testing.T) {
 	domain := "EXAMPLE"
 	share := &fakeSMBShare{}
@@ -169,6 +194,7 @@ type fakeSMBShare struct {
 	entries      []os.FileInfo
 	statInfo     os.FileInfo
 	readDirErr   error
+	readDirPanic string
 	readDirPath  string
 	lstatPath    string
 	umountCalls  int
@@ -179,6 +205,9 @@ type fakeSMBShare struct {
 func (f *fakeSMBShare) ReadDir(name string) ([]os.FileInfo, error) {
 	f.readDirCalls++
 	f.readDirPath = name
+	if f.readDirPanic != "" {
+		panic(f.readDirPanic)
+	}
 	return f.entries, f.readDirErr
 }
 

@@ -70,9 +70,11 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
+      # Allowlist wrapper: fails on any symbol-level finding not in
+      # scripts/security/govulncheck-allowlist.txt (reviewed, unfixable-only
+      # exceptions with code-level mitigations).
       - name: Run govulncheck
-        working-directory: agent
-        run: CGO_ENABLED=0 govulncheck ./...
+        run: bash scripts/security/run-govulncheck.sh
 
   cargo-audit:
     name: Cargo Audit
