@@ -29,6 +29,7 @@ import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
+import { assertNoPlaintextSecret } from './actionIntents/secretBearingTools';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -57,6 +58,10 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  * free-form) goes in `result` instead, never in `error_code`.
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
+
+/** Mirrors MAX_RESULT_BYTES in intentReleaseWorker.ts — the inline path had no
+ *  cap before, so an oversize sealed result could exceed the column budget. */
+const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
 function stripMcpPrefix(toolName: string): string {
   if (!toolName.startsWith('mcp__')) return toolName;
@@ -247,6 +252,11 @@ export async function runPreFlightChecks(
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input) => {
+    // Set only by the tier-3 branch below when it creates a durable intent;
+    // carried on the terminal `return` so postToolUse can seal against the
+    // right intent without relying solely on pendingIntentBySession.
+    let createdIntentId: string | undefined;
+
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
     if (!TOOL_TIERS[toolName]) {
       return { allowed: false, error: `Unknown tool: ${toolName}` };
@@ -717,6 +727,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // CAS it executing -> completed|failed once the inline tool call
         // actually finishes (see pendingIntentBySession above).
         pendingIntentBySession.set(session, intent.id);
+        createdIntentId = intent.id;
 
         // Mark as executing
         try {
@@ -871,7 +882,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       }
     }
 
-    return { allowed: true };
+    return { allowed: true, intentId: createdIntentId };
   };
 }
 
@@ -896,7 +907,7 @@ function isScriptApplyTool(toolName: string): boolean {
  * session and publishes tool_result events to the session's event bus.
  */
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs) => {
+  return async (toolName, input, output, isError, durationMs, sealed) => {
     const toolUseId = session.toolUseIdQueue.shift();
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
@@ -1031,9 +1042,27 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // execution is authorized would be wrong, since the tool hasn't run
       // yet at that point. A lost CAS here just means a reaper or the worker
       // already terminalized the intent first; nothing more to do.
-      const pendingIntentId = pendingIntentBySession.get(session);
+      const pendingIntentId = sealed?.intentId ?? pendingIntentBySession.get(session);
       if (pendingIntentId) {
         pendingIntentBySession.delete(session);
+        // Secret-bearing tools (Task 1/5) hand back a `sealed` result whose
+        // credential is already v3/AAD-sealed for action_intents.result — that
+        // MUST be what gets persisted, never the plaintext-bearing parsedOutput
+        // the model saw. Non-secret tier-3 tools have no `sealed` and keep
+        // persisting parsedOutput as before.
+        const intentResult: Record<string, unknown> = sealed
+          ? sealed.sealedResult
+          : (parsedOutput as Record<string, unknown>);
+
+        // Parity with the worker's MAX_RESULT_BYTES re-check (spec §6.3):
+        // ciphertext is larger than plaintext, so the cap must be applied
+        // AFTER sealing.
+        const sizedResult: Record<string, unknown> =
+          Buffer.byteLength(JSON.stringify(intentResult), 'utf8') > MAX_INLINE_RESULT_BYTES
+            ? { truncated: true }
+            : intentResult;
+
+        assertNoPlaintextSecret(toolName, sizedResult);
         try {
           await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
             executedAt: new Date(),
@@ -1041,8 +1070,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             // release worker's vocabulary); the raw tool error text is
             // unbounded free-form and belongs in `result`, not `error_code`.
             ...(isError
-              ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: parsedOutput as Record<string, unknown> }
-              : { result: parsedOutput as Record<string, unknown> }),
+              ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+              : { result: sizedResult }),
           });
         } catch (err) {
           console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);

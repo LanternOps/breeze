@@ -688,7 +688,10 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-      expect(result).toEqual({ allowed: true });
+      // The tier-3 branch now threads the created intent id back on the
+      // terminal return (Task 6) — this is what lets postToolUse seal
+      // against the right intent without relying solely on the WeakMap.
+      expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
@@ -779,7 +782,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6' });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -807,7 +810,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7' });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1325,6 +1328,163 @@ describe('createSessionPostToolUse', () => {
     const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
     expect(setCall).toBeDefined();
     expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
+  });
+});
+
+// ============================================
+// Task 6: routing the sealed secret-bearing result to the intent write
+// ============================================
+
+describe('inline secret-bearing completion (Task 6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    } as any);
+    mockInsertValues();
+    mockTransitionIntent.mockResolvedValue(true);
+  });
+
+  it('writes the sealed blob to the intent and the safe text to the chat tables', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done; credential available for one-time reveal.',
+      false,
+      12,
+      { intentId: 'intent-1', sealedResult: { temporaryPasswordEnc: 'enc:v3:abc' } },
+    );
+
+    // The intent write gets the sealed ciphertext, keyed off sealed.intentId
+    // (not pendingIntentBySession — preToolUse never ran on this session).
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { temporaryPasswordEnc: 'enc:v3:abc' } }),
+    );
+
+    // The chat tables (aiMessages, via db.insert) must never see the
+    // ciphertext — only the safe llmText the model already produced.
+    const insertedAiMessages = vi.mocked(db.insert).mock.results
+      .map((r) => (r.value as any)?.values?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(JSON.stringify(insertedAiMessages)).not.toContain('enc:v3:abc');
+  });
+
+  it('CASes the intent to failed (with the stable error code) when the sealed tool call itself errored', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'The password reset failed.',
+      true,
+      8,
+      { intentId: 'intent-err', sealedResult: { raw: 'The password reset failed.' } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-err',
+      'executing',
+      'failed',
+      expect.objectContaining({
+        errorCode: 'tool_execution_failed',
+        result: { raw: 'The password reset failed.' },
+      }),
+    );
+  });
+
+  it('prefers sealed.intentId over pendingIntentBySession when both are present', async () => {
+    // Simulate a session that also has a pendingIntentBySession entry (set by
+    // a real preToolUse run) to prove the sealed channel wins — the intent
+    // that got the durable approval is sealed.intentId, and using the wrong
+    // one would write a secret-bearing result to the wrong intent row.
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    } as any);
+    const session = makeActiveSession();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-legacy', approvalRequestIds: ['appr-legacy'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+
+    const callback = createSessionPostToolUse(session);
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-sealed', sealedResult: { temporaryPasswordEnc: 'enc:v3:xyz' } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-sealed',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { temporaryPasswordEnc: 'enc:v3:xyz' } }),
+    );
+    expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+      'intent-legacy',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('applies the size cap AFTER sealing — an oversize sealed result is truncated, not dropped or stored whole', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const oversizeCiphertext = `enc:v3:${'a'.repeat(70 * 1024)}`;
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-big', sealedResult: { temporaryPasswordEnc: oversizeCiphertext } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-big',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { truncated: true } }),
+    );
+  });
+
+  it('refuses to persist a plaintext credential that slipped through as the sealed result', async () => {
+    // assertNoPlaintextSecret is the real (unmocked) module-1 guard — this
+    // proves it is actually wired into the inline write path, not just
+    // imported. A legacy plaintext key must make the whole write throw
+    // rather than silently persist the credential.
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await expect(
+      callback(
+        'm365_reset_password',
+        { userIdentifier: 'a@b.com' },
+        'Reset done.',
+        false,
+        12,
+        { intentId: 'intent-leak', sealedResult: { temporaryPassword: 'hunter2-plaintext' } },
+      ),
+    ).rejects.toThrow(/refusing to persist plaintext credential/);
+
+    expect(mockTransitionIntent).not.toHaveBeenCalled();
   });
 });
 
