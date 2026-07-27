@@ -41,6 +41,7 @@ import {
   enforceAgentCertificateBinding,
   getAgentMtlsBindingMode,
   loadAgentCertificateBindingIdentity,
+  normalizeCertificateSerial,
   readAgentCertificateAssertion,
   recordAgentCertificateBindingMetric,
   registerAgentCertificateBindingPrometheusCounter,
@@ -346,6 +347,59 @@ describe('loadAgentCertificateBindingIdentity', () => {
 
     expect(identity).toEqual({ storedSerial: null, storedState: null });
   });
+
+  // Fix round 3 (code review): two real populations store a non-canonical
+  // serial — rows written by the pre-fix legacy renewal path
+  // (routes/agents/mtls.ts) and rows Task 1's migration imported verbatim
+  // from the historical devices.mtls_cert_serial_number column. The loader
+  // must normalize at THIS read boundary rather than assume either source
+  // is already canonical.
+  it('normalizes a stored active-row serial with colons and lowercase hex', async () => {
+    mockSelectOnce([{ serialNumber: 'aa:bb:cc:dd:ee:ff:00:11:22:33', state: 'active' }]);
+
+    const identity = await loadAgentCertificateBindingIdentity(DEVICE_ID);
+
+    expect(identity).toEqual({ storedSerial: ACTIVE_SERIAL, storedState: 'active' });
+  });
+
+  it('normalizes a stored most-recent-row serial with colons and lowercase hex', async () => {
+    mockSelectOnce([]); // active-row query
+    mockSelectOnce([{ serialNumber: '00:11:22:33:aa:bb:cc:dd:ee:ff', state: 'revoked' }]);
+
+    const identity = await loadAgentCertificateBindingIdentity(DEVICE_ID);
+
+    expect(identity).toEqual({ storedSerial: OTHER_SERIAL, storedState: 'revoked' });
+  });
+
+  it('normalizes a legacy devices.mtls_cert_serial_number value with colons and lowercase hex', async () => {
+    mockSelectOnce([]); // active-row query
+    mockSelectOnce([]); // most-recent query
+    mockSelectOnce([{ legacySerial: '00:11:22:33:aa:bb:cc:dd:ee:ff' }]);
+
+    const identity = await loadAgentCertificateBindingIdentity(DEVICE_ID);
+
+    expect(identity).toEqual({ storedSerial: OTHER_SERIAL, storedState: 'active' });
+  });
+});
+
+describe('normalizeCertificateSerial', () => {
+  it('strips colons and uppercases', () => {
+    expect(normalizeCertificateSerial('aa:bb:cc:01')).toBe('AABBCC01');
+  });
+
+  it('strips spaces and dashes too', () => {
+    expect(normalizeCertificateSerial('aa bb-cc 01')).toBe('AABBCC01');
+  });
+
+  it('is idempotent on an already-canonical value', () => {
+    expect(normalizeCertificateSerial(ACTIVE_SERIAL)).toBe(ACTIVE_SERIAL);
+  });
+
+  it('returns null for null/undefined/empty input', () => {
+    expect(normalizeCertificateSerial(null)).toBeNull();
+    expect(normalizeCertificateSerial(undefined)).toBeNull();
+    expect(normalizeCertificateSerial('')).toBeNull();
+  });
 });
 
 describe('enforceAgentCertificateBinding', () => {
@@ -463,6 +517,26 @@ describe('enforceAgentCertificateBinding', () => {
 
     expect(restDecision.reason).toBe(wsDecision.reason);
     expect(restDecision.allowed).toBe(wsDecision.allowed);
+  });
+
+  // Fix round 3 (code review): an end-to-end reproduction of the reported
+  // gap — a device whose stored identity is a LEGACY-RAW serial (colons,
+  // lowercase, as historically written by the pre-fix renewal path or
+  // imported verbatim by Task 1's migration) must still match a canonical
+  // asserted header for the SAME certificate. Before the loader normalized
+  // storedSerial, this fell through to `serial_mismatch` even though both
+  // sides name the identical certificate.
+  it('matches a legacy-raw stored serial (colons, lowercase) against a canonical asserted header for the same certificate', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    mockSelectOnce([{ serialNumber: 'ab:cd:ef:01', state: 'active' }]);
+
+    const decision = await enforceAgentCertificateBinding({
+      deviceId: DEVICE_ID,
+      assertion: { assertionTrusted: true, assertedVerified: true, assertedSerial: 'ABCDEF01' },
+      pathClass: 'rest',
+    });
+
+    expect(decision).toEqual({ allowed: true, reason: 'matched' });
   });
 });
 

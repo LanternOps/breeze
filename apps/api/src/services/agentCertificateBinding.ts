@@ -62,10 +62,13 @@ export function getAgentMtlsBindingMode(): AgentMtlsBindingMode {
  * untrusted source" (a spoofed header) distinguishable from "no assertion
  * presented" while remaining defense-in-depth against a reader bug.
  *
- * Serial comparison is a direct string equality — both `assertedSerial` and
- * `storedSerial` are expected to already be normalized uppercase hex with no
- * separators (Node's `X509Certificate.serialNumber` and the header reader
- * below both produce that format; see readAgentCertificateAssertion).
+ * Serial comparison is a direct string equality. Both sides are normalized
+ * (uppercase hex, no separators) at their respective READ boundaries before
+ * ever reaching this function — `assertedSerial` by
+ * `readAgentCertificateAssertion` below, `storedSerial` by
+ * `loadAgentCertificateBindingIdentity` — via the shared
+ * `normalizeCertificateSerial` helper, so this comparison never has to trust
+ * an assumption about either source's on-the-wire or on-disk format.
  */
 export function checkAgentCertificateBinding(input: {
   mode: AgentMtlsBindingMode;
@@ -138,6 +141,23 @@ const CLIENT_CERT_VERIFIED_HEADER = 'X-Breeze-Client-Cert-Verified';
 const CLIENT_CERT_SERIAL_HEADER = 'X-Breeze-Client-Cert-Serial';
 
 /**
+ * The ONE canonical certificate-serial normalization used everywhere a
+ * serial crosses a trust boundary in this module: strips every non-hex
+ * character (colons, spaces, dashes) and uppercases the rest. Reused by
+ * `readAgentCertificateAssertion` (header side) and
+ * `loadAgentCertificateBindingIdentity` (stored side) — never copy this
+ * regex a second time; import this helper instead. Also exported for
+ * callers writing a certificate serial to storage (e.g.
+ * routes/agents/mtls.ts's legacy `devices.mtls_cert_serial_number` write),
+ * so new rows are stored in the same canonical form this module reads back.
+ */
+export function normalizeCertificateSerial(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const normalized = raw.replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+/**
  * Reads ONLY the two protected internal certificate-assertion headers set by
  * the trusted edge/proxy layer — never raw Cloudflare or other user-supplied
  * headers. `assertionTrusted` is derived exclusively from
@@ -147,7 +167,7 @@ export function readAgentCertificateAssertion(c: RequestLike): AgentCertificateA
   const assertionTrusted = trustsForwardedHeadersFrom(c);
   const verifiedHeader = c.req.header(CLIENT_CERT_VERIFIED_HEADER);
   const serialHeader = c.req.header(CLIENT_CERT_SERIAL_HEADER);
-  const normalizedSerial = serialHeader ? serialHeader.replace(/[^0-9a-fA-F]/g, '').toUpperCase() : null;
+  const normalizedSerial = normalizeCertificateSerial(serialHeader);
   const assertedVerified = (verifiedHeader === 'true' || verifiedHeader === '1') && Boolean(normalizedSerial);
   return {
     assertionTrusted,
@@ -171,6 +191,15 @@ export interface AgentCertificateBindingIdentity {
  * treated as an active identity. Reports a fully NULL identity only when
  * none of the three sources has anything on file.
  *
+ * Normalizes `storedSerial` (via `normalizeCertificateSerial`) at THIS read
+ * boundary, from every source, before returning it — never assumed already
+ * canonical. Two populations store a non-canonical value: rows written by
+ * the legacy (pre-protocol-v2) renewal path in routes/agents/mtls.ts, which
+ * historically wrote Cloudflare's raw `serial_number` string into the
+ * legacy `devices.mtls_cert_serial_number` column (format not guaranteed —
+ * fixed at the write site too, but old rows predate that fix), and rows
+ * Task 1's migration imported verbatim from that same historical column.
+ *
  * Runs in a system DB context: `device_mtls_certificates` is FORCE-RLS and
  * this must resolve correctly regardless of the caller's request-scoped
  * tenant context (agentAuthMiddleware may not have entered one yet; the WS
@@ -191,7 +220,7 @@ export async function loadAgentCertificateBindingIdentity(
       .where(and(eq(deviceMtlsCertificates.deviceId, deviceId), eq(deviceMtlsCertificates.state, 'active')))
       .limit(1);
     if (active) {
-      return { storedSerial: active.serialNumber, storedState: 'active' };
+      return { storedSerial: normalizeCertificateSerial(active.serialNumber), storedState: 'active' };
     }
 
     const [latest] = await db
@@ -201,7 +230,7 @@ export async function loadAgentCertificateBindingIdentity(
       .orderBy(desc(deviceMtlsCertificates.createdAt))
       .limit(1);
     if (latest) {
-      return { storedSerial: latest.serialNumber, storedState: latest.state };
+      return { storedSerial: normalizeCertificateSerial(latest.serialNumber), storedState: latest.state };
     }
 
     const [deviceRow] = await db
@@ -210,7 +239,7 @@ export async function loadAgentCertificateBindingIdentity(
       .where(eq(devices.id, deviceId))
       .limit(1);
     if (deviceRow?.legacySerial) {
-      return { storedSerial: deviceRow.legacySerial, storedState: 'active' };
+      return { storedSerial: normalizeCertificateSerial(deviceRow.legacySerial), storedState: 'active' };
     }
 
     return { storedSerial: null, storedState: null };

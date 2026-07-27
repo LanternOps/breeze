@@ -28,6 +28,7 @@ import { isPrivateIp } from '../../services/urlSafety';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import {
   getAgentMtlsBindingMode,
+  normalizeCertificateSerial,
   readAgentCertificateAssertion,
   type AgentMtlsBindingMode,
 } from '../../services/agentCertificateBinding';
@@ -1033,10 +1034,18 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
           throw new Error('mtls_history_activation_failed');
         }
 
+        // Fix round 3 (code review): `cert.serialNumber` is Cloudflare's raw
+        // `serial_number` API field — format is NOT guaranteed to match the
+        // canonical uppercase-hex-no-separators form the certificate binding
+        // decision (services/agentCertificateBinding.ts) compares against.
+        // Normalize with the SAME shared helper that read side uses, so new
+        // rows are stored canonical (the loader also defensively normalizes
+        // on read, for rows written before this fix and for Task 1's
+        // migration import of historical raw values).
         const legacyUpdated = await tx
           .update(devices)
           .set({
-            mtlsCertSerialNumber: cert.serialNumber,
+            mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
             mtlsCertExpiresAt: new Date(cert.expiresOn),
             mtlsCertIssuedAt: new Date(cert.issuedOn),
             mtlsCertCfId: cert.id,

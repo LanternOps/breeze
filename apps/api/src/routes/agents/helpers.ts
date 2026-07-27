@@ -59,6 +59,7 @@ import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
+import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
@@ -2360,10 +2361,17 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
   }
 
   try {
+    // Wave 5 Task 6 fix round 3 (code review): `cert.serialNumber` is
+    // Cloudflare's raw `serial_number` API field — format not guaranteed to
+    // match the canonical uppercase-hex-no-separators form the certificate
+    // binding decision (services/agentCertificateBinding.ts) compares
+    // against. Normalize with the same shared helper used everywhere else a
+    // serial crosses a trust boundary, so this (initial enrollment/
+    // provisioning/quarantine-reissue) path stores rows canonical too.
     await db
       .update(devices)
       .set({
-        mtlsCertSerialNumber: cert.serialNumber,
+        mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
         mtlsCertExpiresAt: new Date(cert.expiresOn),
         mtlsCertIssuedAt: new Date(cert.issuedOn),
         mtlsCertCfId: cert.id,
