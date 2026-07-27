@@ -12,7 +12,7 @@
     "securityEventsCouldNotBeLoadedDenialData": "Security events could not be loaded. Denial data may be incomplete.",
     "tabs": "Tabs",
     "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Tool execution guardrails, approval history, and analytics",
-    "updated": "Updated",
+    "updated": "Updated {{time}}",
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
@@ -21,11 +21,11 @@
     "all2": "All",
     "approved": "Approved",
     "error": "Error",
-    "exec": "Exec:",
+    "exec": "Exec: {{duration}}ms",
     "noTier3ToolExecutionsFound": "No Tier 3 tool executions found.",
     "pending": "Pending",
     "rejected": "Rejected",
-    "session": "Session:",
+    "session": "Session: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "The temporary password has already been revealed.",
     "tempPasswordCopied": "Copied",
     "tempPasswordCopy": "Copy",
@@ -37,7 +37,7 @@
     "tempPasswordTitle": "Temporary password",
     "tier3ApprovalHistory": "Tier 3 Approval History",
     "toolInput": "Tool Input",
-    "wait": "Wait:"
+    "wait": "Wait: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Filter rate limits...",
@@ -49,7 +49,7 @@
     "ruleCount": "{{count}} rules",
     "ruleCount_one": "{{count}} rule",
     "ruleCount_other": "{{count}} rules",
-    "t": "T",
+    "t": "T{{tier}}",
     "tier": "Tier",
     "tool": "Tool",
     "window": "Window"
@@ -71,7 +71,7 @@
   "aiRiskTierOverviewMatrix": {
     "filterTools": "Filter tools...",
     "guardrailTierMatrix": "Guardrail Tier Matrix",
-    "tier": "Tier",
+    "tier": "Tier {{tier}}",
     "toolCount": "{{count}} tools",
     "toolCount_one": "{{count}} tool",
     "toolCount_other": "{{count}} tools"

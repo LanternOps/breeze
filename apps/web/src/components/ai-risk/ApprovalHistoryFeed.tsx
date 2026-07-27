@@ -160,14 +160,16 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                       </span>
                       {waitMs !== null && (
                         <span>
-                          {t("aiRiskApprovalHistoryFeed.wait")}
-                          {formatDuration(waitMs)}
+                          {t("aiRiskApprovalHistoryFeed.wait", {
+                            duration: formatDuration(waitMs),
+                          })}
                         </span>
                       )}
                       {exec.durationMs !== null && (
                         <span>
-                          {t("aiRiskApprovalHistoryFeed.exec")}
-                          {exec.durationMs}ms
+                          {t("aiRiskApprovalHistoryFeed.exec", {
+                            duration: exec.durationMs,
+                          })}
                         </span>
                       )}
                     </div>
@@ -199,8 +201,9 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                       </div>
                     )}
                     <p className="mt-2 text-xs text-muted-foreground">
-                      {t("aiRiskApprovalHistoryFeed.session")}
-                      {exec.sessionId}
+                      {t("aiRiskApprovalHistoryFeed.session", {
+                        sessionId: exec.sessionId,
+                      })}
                     </p>
                   </div>
                 )}

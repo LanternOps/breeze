@@ -95,7 +95,7 @@
     "slack": "Slack",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Connetti un workspace con OAuth e pubblica avvisi nei canali. ",
     "workspace": "Workspace",
-    "workspaceID": "Workspace ID: ",
+    "workspaceID": "Workspace ID: {{id}}",
     "connectWorkspace": "Connetti workspace ",
     "oauthRedirectStartsWhenYouConnectASlack": "Il redirect OAuth parte quando connetti un workspace Slack. ",
     "defaultChannel": "Canale predefinito",
@@ -265,10 +265,7 @@
     "unmap": "Rimuovi mappatura ",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "Nessuna organizzazione Huntress ancora rilevata. Salva le credenziali ed esegui Sincronizza ora. ",
     "noOrganizationsMatchTheCurrentFilter": "Nessuna organizzazione corrisponde al filtro attuale. ",
-    "showing": "Visualizzazione ",
-    "of": "di ",
     "previous": "Precedente ",
-    "page": "Pagina ",
     "next": "Successiva ",
     "recentIncidents": "Incidenti recenti",
     "liveStatusError": "Impossibile caricare completamente lo stato in tempo reale di Huntress. I dati di copertura e incidenti di seguito potrebbero essere incompleti o non aggiornati.",
@@ -307,7 +304,9 @@
     "update": "Aggiorna",
     "saveAndConnect": "Salva e connetti",
     "unknownTime": "Ora sconosciuta",
-    "askAdminToConnect": "Huntress è configurato una sola volta a livello partner è condiviso con ogni organizzazione. Chiedi al tuo amministratore MSP di connetterlo."
+    "askAdminToConnect": "Huntress è configurato una sola volta a livello partner è condiviso con ogni organizzazione. Chiedi al tuo amministratore MSP di connetterlo.",
+    "showingRange": "Visualizzazione {{start}}–{{end}} di {{total}}",
+    "pageOf": "Pagina {{current}} di {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -728,7 +727,7 @@
     "stripeDashboard": "dashboard Stripe ",
     "loadingStripeConnection": "Caricamento connessione Stripe...",
     "couldNotLoadStripeConnection": "Impossibile caricare la connessione Stripe.",
-    "key": "chiave •••• ",
+    "key": "chiave •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_… or rk_live_…",
     "connected": "Connesso",
     "live": "In tempo reale",
@@ -878,15 +877,14 @@
     "loadingWebhooks": "Caricamento webhook...",
     "tryAgain": "Riprova ",
     "webhooks": "Webhooks",
-    "endpoints": "endpoint, ",
-    "averageSuccessRate": "% tasso medio di successo ",
     "addWebhook": "Aggiungi webhook ",
     "events": "Eventi",
     "lastTriggered": "Ultima attivazione",
     "successRate": "Tasso di successo",
     "anErrorOccurred": "Si è verificato un errore",
     "justNow": "Proprio ora",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} endpoint, {{successRate}}% tasso medio di successo"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "Impossibile recuperare la cronologia dei test",

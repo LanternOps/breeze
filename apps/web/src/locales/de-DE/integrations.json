@@ -95,7 +95,7 @@
     "slack": "Slack",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Verbinden Sie einen Arbeitsbereich mit OAuth und veröffentlichen Sie Benachrichtigungen an Kanäle.",
     "workspace": "Arbeitsbereich",
-    "workspaceID": "Arbeitsbereich-ID:",
+    "workspaceID": "Arbeitsbereich-ID: {{id}}",
     "connectWorkspace": "Arbeitsbereich verbinden",
     "oauthRedirectStartsWhenYouConnectASlack": "Die OAuth-Umleitung startet, wenn Sie eine Verbindung zu einem Slack-Workspace herstellen.",
     "defaultChannel": "Standardkanal",
@@ -265,10 +265,7 @@
     "unmap": "Zuordnung aufheben",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "Bisher wurden noch keine Huntress-Organisationen entdeckt. Speichern Sie die Anmeldeinformationen und führen Sie „Jetzt synchronisieren“ aus.",
     "noOrganizationsMatchTheCurrentFilter": "Keine Organisation entspricht dem aktuellen Filter.",
-    "showing": "Zeigt",
-    "of": "von",
     "previous": "Zurück",
-    "page": "Seite",
     "next": "Als nächstes",
     "recentIncidents": "Aktuelle Vorfälle",
     "liveStatusError": "Der Status „Live Huntress“ konnte nicht vollständig geladen werden. Die unten aufgeführten Abdeckungs- und Vorfalldaten sind möglicherweise unvollständig oder veraltet.",
@@ -307,7 +304,9 @@
     "update": "Aktualisieren",
     "saveAndConnect": "Speichern und verbinden",
     "unknownTime": "Unbekannte Zeit",
-    "askAdminToConnect": "Huntress wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten."
+    "askAdminToConnect": "Huntress wird einmal auf Partnerebene konfiguriert und für alle Organisationen genutzt. Bitten Sie Ihren MSP-Administrator, die Verbindung einzurichten.",
+    "showingRange": "Zeigt {{start}}–{{end}} von {{total}}",
+    "pageOf": "Seite {{current}} von {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -728,7 +727,7 @@
     "stripeDashboard": "Stripe-Dashboard ",
     "loadingStripeConnection": "Stripe-Verbindung wird geladen…",
     "couldNotLoadStripeConnection": "Die Stripe-Verbindung konnte nicht geladen werden.",
-    "key": "Schlüssel ••••",
+    "key": "Schlüssel •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_… oder rk_live_…",
     "connected": "Verbunden",
     "live": "Lebe",
@@ -878,15 +877,14 @@
     "loadingWebhooks": "Webhooks werden geladen...",
     "tryAgain": "Versuchen Sie es erneut",
     "webhooks": "Webhooks",
-    "endpoints": "Endpunkte,",
-    "averageSuccessRate": "% durchschnittliche Erfolgsquote",
     "addWebhook": "Webhook hinzufügen",
     "events": "Ereignisse",
     "lastTriggered": "Zuletzt ausgelöst",
     "successRate": "Erfolgsquote",
     "anErrorOccurred": "Es ist ein Fehler aufgetreten",
     "justNow": "Gerade eben",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} Endpunkte, {{successRate}}% durchschnittliche Erfolgsquote"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "Der Testverlauf konnte nicht abgerufen werden",

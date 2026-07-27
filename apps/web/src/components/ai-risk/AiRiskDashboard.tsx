@@ -215,8 +215,9 @@ export default function AiRiskDashboard() {
 
           {needsData && lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              {t("aiRiskAiRiskDashboard.updated")}
-              {formatTime(lastUpdated)}
+              {t("aiRiskAiRiskDashboard.updated", {
+                time: formatTime(lastUpdated),
+              })}
             </span>
           )}
         </div>

@@ -12,7 +12,7 @@
     "securityEventsCouldNotBeLoadedDenialData": "Não foi possível carregar os eventos de segurança. Os dados de negação podem estar incompletos.",
     "tabs": "Abas",
     "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Controles de segurança para execução de ferramentas, histórico de aprovações e análises",
-    "updated": "Atualizado",
+    "updated": "Atualizado {{time}}",
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
@@ -21,11 +21,11 @@
     "all2": "Todos",
     "approved": "Aprovado",
     "error": "Erro",
-    "exec": "Execução:",
+    "exec": "Execução: {{duration}}ms",
     "noTier3ToolExecutionsFound": "Nenhuma execução de ferramenta de Camada 3 encontrada.",
     "pending": "Pendente",
     "rejected": "Rejeitado",
-    "session": "Sessão:",
+    "session": "Sessão: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "A senha temporária já foi revelada.",
     "tempPasswordCopied": "Copiado",
     "tempPasswordCopy": "Copiar",
@@ -37,7 +37,7 @@
     "tempPasswordTitle": "Senha temporária",
     "tier3ApprovalHistory": "Histórico de aprovações da Camada 3",
     "toolInput": "Entrada da ferramenta",
-    "wait": "Espera:"
+    "wait": "Espera: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Filtrar limites de taxa...",
@@ -49,7 +49,7 @@
     "ruleCount": "{{count}} regras",
     "ruleCount_one": "{{count}} regra",
     "ruleCount_other": "{{count}} regras",
-    "t": "T",
+    "t": "T{{tier}}",
     "tier": "Camada",
     "tool": "Ferramenta",
     "window": "Janela"
@@ -71,7 +71,7 @@
   "aiRiskTierOverviewMatrix": {
     "filterTools": "Filtrar ferramentas...",
     "guardrailTierMatrix": "Matriz de camadas dos controles de segurança",
-    "tier": "Camada",
+    "tier": "Camada {{tier}}",
     "toolCount": "{{count}} ferramentas",
     "toolCount_one": "{{count}} ferramenta",
     "toolCount_other": "{{count}} ferramentas"

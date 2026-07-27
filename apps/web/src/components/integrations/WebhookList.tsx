@@ -188,9 +188,10 @@ export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
         <div>
           <h2 className="text-lg font-semibold">{t("webhookList.webhooks")}</h2>
           <p className="text-sm text-muted-foreground">
-            {webhooks.length} {t("webhookList.endpoints")}
-            {averageSuccess}
-            {t("webhookList.averageSuccessRate")}
+            {t("webhookList.endpointsSummary", {
+              total: webhooks.length,
+              successRate: averageSuccess,
+            })}
           </p>
         </div>
         <button

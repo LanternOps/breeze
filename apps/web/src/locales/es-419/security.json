@@ -12,7 +12,7 @@
     "securityEventsCouldNotBeLoadedDenialData": "No se pudieron cargar los eventos de seguridad. Los datos de denegación pueden estar incompletos.",
     "tabs": "Pestañas",
     "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Barreras de ejecución de herramientas, historial de aprobaciones y análisis",
-    "updated": "Actualizado",
+    "updated": "Actualizado {{time}}",
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
@@ -21,11 +21,11 @@
     "all2": "Todo",
     "approved": "Aprobado",
     "error": "Error",
-    "exec": "Ejecución:",
+    "exec": "Ejecución: {{duration}}ms",
     "noTier3ToolExecutionsFound": "No se encontraron ejecuciones de herramientas de nivel 3.",
     "pending": "Pendiente",
     "rejected": "Rechazado",
-    "session": "Sesión:",
+    "session": "Sesión: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "La contraseña temporal ya fue revelada.",
     "tempPasswordCopied": "Copiado",
     "tempPasswordCopy": "Copiar",
@@ -37,7 +37,7 @@
     "tempPasswordTitle": "Contraseña temporal",
     "tier3ApprovalHistory": "Historial de aprobación de nivel 3",
     "toolInput": "Entrada de herramienta",
-    "wait": "Esperar:"
+    "wait": "Esperar: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Límites de tasa de filtrado...",
@@ -49,7 +49,7 @@
     "ruleCount": "reglas {{count}}",
     "ruleCount_one": "regla {{count}}",
     "ruleCount_other": "reglas {{count}}",
-    "t": "t",
+    "t": "t{{tier}}",
     "tier": "Nivel",
     "tool": "Herramienta",
     "window": "Ventana"
@@ -71,7 +71,7 @@
   "aiRiskTierOverviewMatrix": {
     "filterTools": "Herramientas de filtrado...",
     "guardrailTierMatrix": "Matriz de niveles de barandilla",
-    "tier": "Nivel",
+    "tier": "Nivel {{tier}}",
     "toolCount": "herramientas {{count}}",
     "toolCount_one": "herramienta {{count}}",
     "toolCount_other": "herramientas {{count}}"

@@ -95,7 +95,7 @@
     "slack": "Slack",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Conecte un espacio de trabajo con OAuth y publique alertas en los canales.",
     "workspace": "Espacio de trabajo",
-    "workspaceID": "Espacio de trabajo ID:",
+    "workspaceID": "Espacio de trabajo ID: {{id}}",
     "connectWorkspace": "Conectar espacio de trabajo",
     "oauthRedirectStartsWhenYouConnectASlack": "La redirección OAuth comienza cuando conecta un espacio de trabajo Slack.",
     "defaultChannel": "Canal predeterminado",
@@ -265,10 +265,7 @@
     "unmap": "Desasignar",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "Aún no se han descubierto organizaciones Huntress. Guarde las credenciales y ejecute Sincronizar ahora.",
     "noOrganizationsMatchTheCurrentFilter": "Ninguna organización coincide con el filtro actual.",
-    "showing": "Mostrando ",
-    "of": "de",
     "previous": "Anterior",
-    "page": "Página",
     "next": "Siguiente",
     "recentIncidents": "Incidentes recientes",
     "liveStatusError": "El estado en vivo Huntress no se pudo cargar completamente. Los datos de cobertura e incidentes que aparecen a continuación pueden estar incompletos o desactualizados.",
@@ -307,7 +304,9 @@
     "update": "Actualizar",
     "saveAndConnect": "Guardar y conectar",
     "unknownTime": "Hora desconocida",
-    "askAdminToConnect": "Huntress se configura una sola vez a nivel de socio y se comparte con todas las organizaciones. Pide a tu administrador MSP que lo conecte."
+    "askAdminToConnect": "Huntress se configura una sola vez a nivel de socio y se comparte con todas las organizaciones. Pide a tu administrador MSP que lo conecte.",
+    "showingRange": "Mostrando {{start}}–{{end}} de {{total}}",
+    "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -728,7 +727,7 @@
     "stripeDashboard": "tablero Stripe",
     "loadingStripeConnection": "Cargando conexión Stripe…",
     "couldNotLoadStripeConnection": "No se pudo cargar la conexión Stripe.",
-    "key": "llave ••••",
+    "key": "llave •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_… o rk_live_…",
     "connected": "Conectado",
     "live": "En vivo",
@@ -878,15 +877,14 @@
     "loadingWebhooks": "Cargando webhooks...",
     "tryAgain": "Intentar otra vez",
     "webhooks": "Webhooks",
-    "endpoints": "puntos finales,",
-    "averageSuccessRate": "% tasa de éxito promedio",
     "addWebhook": "Agregar webhook",
     "events": "Eventos",
     "lastTriggered": "Última activación",
     "successRate": "Tasa de éxito",
     "anErrorOccurred": "Se produjo un error",
     "justNow": "En este momento",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} puntos finales, {{successRate}}% tasa de éxito promedio"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "No se pudo recuperar el historial de pruebas",
