@@ -270,8 +270,17 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
             .map((row) => ({ id: row.id }));
         })
       )
-      .mockReturnValueOnce(
-        makeSelectChain([{ timezone: 'UTC', orgSettings: { timezone: 'UTC' } }])
+      // Timezone resolution now issues a shared org->partner lookup plus one
+      // device read each; a persistent implementation keeps this
+      // order-independent.
+      .mockImplementation(() =>
+        makeSelectChain([{
+          siteTimezone: null,
+          orgSettings: { timezone: 'UTC' },
+          partnerId: 'partner-1',
+          timezone: 'UTC',
+          settings: {},
+        }])
       );
 
     const result = await resolveAllBackupAssignedDevices(orgId);
@@ -317,12 +326,17 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
       .mockReturnValueOnce(makeSelectChain([]))
       // organization-level device expansion
       .mockReturnValueOnce(makeSelectChain([{ id: 'device-org-a' }]))
-      // resolveDeviceTimezone issues TWO selects (#2822): the device/org/site
-      // read, then the partner-axis read pinned to that org's partnerId.
-      .mockReturnValueOnce(
-        makeSelectChain([{ siteTimezone: null, orgSettings: { timezone: 'UTC' }, partnerId }])
-      )
-      .mockReturnValueOnce(makeSelectChain([{ timezone: 'UTC', settings: {} }]));
+      // Timezone resolution: ONE shared org->partner lookup for the batch
+      // (2 selects), then one device/org/site read per device.
+      .mockImplementation(() =>
+        makeSelectChain([{
+          siteTimezone: null,
+          orgSettings: { timezone: 'UTC' },
+          partnerId,
+          timezone: 'UTC',
+          settings: {},
+        }])
+      );
 
     const result = await resolveAllBackupAssignedDevices(orgId);
 
@@ -336,12 +350,12 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     // Exact topology, asserted as a whole array rather than by index: a
     // `.slice(...).every(...)` goes vacuously true if a select is ever removed,
     // which would silently retire this guard.
-    // #0 org→partner lookup | #1 config-policy join (system) | #2 org default
-    // destination | #3 device expansion | #4,#5 resolveDeviceTimezone's
-    // device+partner reads, both inside the ONE hoisted fan-out context.
-    // Device EXPANSION (#3) stays caller-scoped — that is the read RLS must
-    // keep guarding; widening it would let a caller see devices RLS denies.
-    expect(selectDepths).toEqual([0, 1, 0, 0, 1, 1]);
+    // #0 org→partner lookup | #1 config-policy join (SYSTEM) | #2 org default
+    // destination | #3 device expansion | #4 the batch org lookup | #5 the ONE
+    // shared partners read (SYSTEM) | #6 the per-device site/org read.
+    // Everything except the two partner-axis reads is caller-scoped — device
+    // EXPANSION (#3) especially, since that is the read RLS must keep guarding.
+    expect(selectDepths).toEqual([0, 1, 0, 0, 0, 1, 0]);
     expect(systemStats.maxDepth).toBe(1);
     // Context must be closed again once the read completes.
     expect(systemDepth.value).toBe(0);
@@ -408,20 +422,23 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
 
     expect(result).toHaveLength(2);
     // Still 2 with two devices — the count does not scale with N. Pre-fix this
-    // was 3 (1 policy join + 1 per device) and would keep climbing.
+    // was 3 (1 policy join + 1 per device) and would keep climbing. The partner
+    // timezone is now resolved once for the whole batch, so there is also only
+    // ONE `partners` read rather than N identical ones.
     expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
     expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
     // The real assertion: never more than one system transaction — and
     // therefore never more than one extra pooled connection — at any instant.
     expect(systemStats.maxDepth).toBe(1);
-    // #0 org→partner | #1 policy join (system) | #2 org default destination |
-    // #3 device expansion (CALLER — the read RLS must keep guarding). Every
-    // select after that is a timezone read inside the single hoisted context.
-    // Asserted as a prefix + tail property rather than an exact array because
-    // the interleaved fan-out makes the tail length order-dependent.
+    // #0 org→partner | #1 policy join (SYSTEM) | #2 org default destination |
+    // #3 device expansion (CALLER — the read RLS must keep guarding) | #4 the
+    // batch org lookup | #5 the ONE shared partners read (SYSTEM) | #6,#7 the
+    // per-device site/org reads (CALLER).
+    //
+    // The key property: exactly ONE depth-1 select in the timezone tail no
+    // matter how many devices there are. Pre-fix this was one per device.
     expect(selectDepths.slice(0, 4)).toEqual([0, 1, 0, 0]);
-    expect(selectDepths.length).toBeGreaterThan(4);
-    expect(selectDepths.slice(4).every((d) => d === 1)).toBe(true);
+    expect(selectDepths.slice(4).filter((d) => d === 1)).toHaveLength(1);
     expect(systemDepth.value).toBe(0);
   });
 });

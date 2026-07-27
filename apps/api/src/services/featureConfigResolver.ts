@@ -403,7 +403,48 @@ function partnerTimezoneFrom(
   return canonicalColumn;
 }
 
-export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
+/**
+ * The partner timezone for an org, resolved with ONE partner-axis escape.
+ *
+ * Split out so a batch resolver can pay for the escape once instead of per
+ * device — every device in an org shares the same partner, so the per-device
+ * read is identical N times over (#2822 review). Pinned to the partnerId of an
+ * `organizations` row read under the CALLER'S context, so RLS still decides
+ * which org is legible and this cannot be aimed at a foreign partner.
+ *
+ * Returns `undefined` (not null) when the org has no partner, so a caller can
+ * tell "not looked up" from "looked up, no partner tz".
+ */
+export async function resolvePartnerTimezoneForOrg(orgId: string): Promise<string | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) return null;
+  const orgPartnerId = org.partnerId;
+
+  const [partner] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ timezone: partners.timezone, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, orgPartnerId))
+      .limit(1)
+  );
+
+  return partnerTimezoneFrom(partner?.timezone, partner?.settings);
+}
+
+export async function resolveDeviceTimezone(
+  deviceId: string,
+  /**
+   * Pre-resolved partner timezone, for batch callers that already paid for the
+   * partner read once. When supplied, the per-device partner-axis escape is
+   * skipped entirely — that is the whole point.
+   */
+  opts?: { partnerTz?: string | null },
+): Promise<string> {
   // The device/site/org half stays in the CALLER'S context so RLS still decides
   // which device is legible; only the partner row is escaped (#2822).
   //
@@ -432,17 +473,13 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
   // Escaped separately, pinned to the partnerId of an `organizations` row the
   // caller could already see. Escaping the whole join instead would make the
   // DEVICE row selectable system-wide, demoting device isolation on this path
-  // to app-layer-only — which CLAUDE.md forbids — even though today's three
-  // callers all resolve the device under the caller's context first.
-  const [partner] = row?.partnerId
-    ? await readWithPartnerAxisVisibility(() =>
-      db
-        .select({ timezone: partners.timezone, settings: partners.settings })
-        .from(partners)
-        .where(eq(partners.id, row.partnerId))
-        .limit(1)
-    )
-    : [];
+  // to app-layer-only — which CLAUDE.md forbids — even though today's callers
+  // all resolve the device under the caller's context first.
+  //
+  // Skipped when a batch caller already resolved it (`opts.partnerTz`).
+  const partnerTz = opts?.partnerTz !== undefined
+    ? opts.partnerTz
+    : await resolvePartnerTimezoneForDeviceRow(row?.partnerId ?? null);
 
   const orgTimezone =
     row?.orgSettings && typeof row.orgSettings === 'object'
@@ -463,8 +500,21 @@ export async function resolveDeviceTimezone(deviceId: string): Promise<string> {
   return resolveEffectiveTimezone({
     siteTz: row?.siteTimezone,
     orgTz: typeof orgTimezone === 'string' ? orgTimezone : null,
-    partnerTz: partnerTimezoneFrom(partner?.timezone, partner?.settings),
+    partnerTz,
   });
+}
+
+/** The partner-axis half of resolveDeviceTimezone, for the single-device path. */
+async function resolvePartnerTimezoneForDeviceRow(partnerId: string | null): Promise<string | null> {
+  if (!partnerId) return null;
+  const [partner] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ timezone: partners.timezone, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1)
+  );
+  return partnerTimezoneFrom(partner?.timezone, partner?.settings);
 }
 
 export async function resolvePatchConfigDetailsForDevice(
@@ -1608,26 +1658,31 @@ export async function resolveAllBackupAssignedDevices(
     }
   }
 
-  // ONE system context for the whole fan-out (#2822). `resolveDeviceTimezone`
-  // now takes a partner-axis escape of its own, and each escape opens a fresh
-  // `baseDb.transaction` on its own pooled connection. Left bare inside this
-  // `Promise.all` that is N SIMULTANEOUS connection acquires — one per assigned
-  // device — on top of the caller's own held request transaction. This resolver
-  // is called from org-scoped REQUEST routes (routes/backup/{jobs,dashboard,
-  // hyperv,mssql}.ts, routes/backup/readinessCalculator.ts), where the
-  // skip-when-system branch does NOT fire, so an org with a few dozen
-  // backup-assigned devices loading the backup dashboard would exhaust the
-  // 25-connection pool — and postgres-js has no acquire timeout, so it hangs
-  // rather than erroring (#1105 class).
+  // Timezones resolved with ONE partner-axis escape for the whole batch (#2822).
   //
-  // Entering the system context ONCE here makes every nested
-  // `readWithPartnerAxisVisibility` observe `scope === 'system'` and take its
-  // skip branch, so the whole fan-out costs exactly one extra connection
-  // regardless of device count. Device expansion above already happened in the
-  // caller's context, so RLS still decided which devices are in `seen`.
+  // `resolveDeviceTimezone` takes an escape of its own, and each escape is a
+  // real `baseDb.transaction` on its own pooled connection. Called per device
+  // inside a bare `Promise.all` that is N SIMULTANEOUS connection acquires, on
+  // top of the caller's own held request transaction. This resolver runs on
+  // org-scoped REQUEST routes (routes/backup/{jobs,dashboard,hyperv,mssql}.ts,
+  // routes/backup/readinessCalculator.ts) where the skip-when-system branch does
+  // NOT fire, so an org with a few dozen backup-assigned devices loading the
+  // backup dashboard would exhaust the 25-connection pool — and postgres-js has
+  // no acquire timeout, so it hangs rather than erroring (#1105 class).
+  //
+  // Every device here belongs to `orgId`, so they all share ONE partner and one
+  // partner timezone. Resolving it once and passing it down means the batch
+  // costs a single escape AND avoids N redundant identical `partners` reads
+  // serialized inside a held transaction (which would trip the
+  // DB_CONTEXT_HELD_WARN_MS tripwire on large orgs). Device expansion above
+  // already happened in the caller's context, so RLS still decided which devices
+  // are in `seen`, and the per-device site/org reads stay caller-scoped.
   const entries = Array.from(seen.values());
-  const timezones = await readWithPartnerAxisVisibility(() =>
-    Promise.all(entries.map((entry) => resolveDeviceTimezone(entry.deviceId)))
+  if (entries.length === 0) return [];
+
+  const partnerTz = await resolvePartnerTimezoneForOrg(orgId);
+  const timezones = await Promise.all(
+    entries.map((entry) => resolveDeviceTimezone(entry.deviceId, { partnerTz })),
   );
 
   return entries.map((entry, i) => ({ ...entry, resolvedTimezone: timezones[i]! }));

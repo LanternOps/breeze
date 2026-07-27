@@ -42,6 +42,7 @@ import {
   isMlFeatureEnabledForOrg,
   resolveMlFeatureFlag,
   resolveMlFeatureFlagForOrg,
+  resolveAllMlFeatureFlagsForOrg,
 } from './mlFeatureFlags';
 
 const ORIGINAL_ENV = { ...process.env };
@@ -207,6 +208,53 @@ describe('mlFeatureFlags', () => {
       defaultEnabled: true,
       source: 'global_kill_switch',
     });
+  });
+
+  // #2822 review: resolving all flags must cost TWO queries, not two per flag.
+  // Independently escaping each of the 11 ML_FEATURE_FLAGS under `Promise.all`
+  // meant 11 SIMULTANEOUS system transactions — 11 pooled connections on top of
+  // the request's own — for one GET /config/ml-feature-flags. Against the
+  // 25-connection ceiling that is a hang, not a slowdown (postgres-js has no
+  // acquire timeout). `resolveMlFeatureFlag` is pure, so the inputs load once.
+  it('resolves ALL flags from a single org+partner load (no per-flag fan-out)', async () => {
+    mockOrgSettingsRow({
+      orgSettings: { mlFeatureFlags: { 'ml.rca.enabled': true } },
+      orgType: 'customer',
+      partnerSettings: {},
+      partnerType: 'msp',
+    });
+
+    const all = await resolveAllMlFeatureFlagsForOrg('org-1');
+
+    expect(all['ml.rca.enabled']).toMatchObject({ enabled: true, source: 'org_settings' });
+    // Exactly 2 selects total — organizations, then partners — regardless of
+    // how many flags exist. mockOrgSettingsRow stages exactly those two, so a
+    // third call would return undefined and throw.
+    expect(dbSelect).toHaveBeenCalledTimes(2);
+    // And exactly ONE partner-axis escape for the whole batch.
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports org_not_found for every flag when the partner row is unreadable', async () => {
+    // Preserves the old innerJoin semantics: a missing partner row means no
+    // result at all, rather than silently resolving against partner defaults.
+    dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([
+            { settings: {}, type: 'customer', partnerId: 'partner-1' },
+          ]),
+        })),
+      })),
+    } as any);
+    dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })),
+      })),
+    } as any);
+
+    const resolution = await resolveMlFeatureFlagForOrg('org-1', 'ml.rca.enabled');
+    expect(resolution).toMatchObject({ enabled: false, source: 'org_not_found' });
   });
 
   it('rejects unknown flag names at runtime', () => {

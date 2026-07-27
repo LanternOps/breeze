@@ -83,7 +83,18 @@ export type DecidedFactor =
  * `graceDowngrade`. Kept out of the discriminated union so those post-build
  * writes stay legal regardless of which factor arm was chosen. */
 export interface AssuranceDecisionShared {
-  /** Level the policy would require for this approval (telemetry / future gate). */
+  /**
+   * Level the policy would require for this approval (telemetry / future gate).
+   *
+   * ONLY MEANINGFUL ON AN APPROVE. On a deny/report this is the Breeze default
+   * floor with the partner's raise-only overrides NOT applied, because the
+   * partner policy is deliberately not loaded on that path (#2822 review — a DB
+   * fault must never stop a technician REFUSING; see the note at the assignment
+   * site). No caller reads this field today. If you start recording it on a deny
+   * audit row or returning it from a deny response, load the policy for that
+   * path first, or you will under-report the partner floor with nothing to catch
+   * it.
+   */
   requiredLevel: AssuranceLevel;
   /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
   graceDowngrade?: boolean;
