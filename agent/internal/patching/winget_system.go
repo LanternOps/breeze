@@ -56,7 +56,25 @@ func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 	if code != 0 && stdout == "" {
 		return nil, fmt.Errorf("winget upgrade failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
-	return parseWingetUpgradeOutput(stdout), nil
+	patches, parseErr := parseWingetUpgradeOutput(stdout)
+	if parseErr != nil {
+		// winget exited without a table we could read and without saying it
+		// matched nothing (localized column headers, garbled or truncated
+		// console-less output, empty stdout on exit 0). We cannot claim to have
+		// enumerated this device's third-party packages, so report a skip. A
+		// skipped provider is excluded from scan coverage, which stops the
+		// server sweeping existing third_party pending rows to "missing" on the
+		// strength of a scan that never inspected them (#2726).
+		//
+		// Both streams are bounded and stdout is included deliberately: on the
+		// most common real trigger (localized column headers) stderr is empty,
+		// and the unparsable stdout head is the only clue a tech has for why
+		// this device keeps reporting a skipped winget scan.
+		return nil, fmt.Errorf("%w: %v (exit %d, stdout: %q, stderr: %q)",
+			ErrScanSkipped, parseErr, code,
+			truncatePatchField(stdout), truncatePatchField(stderr))
+	}
+	return patches, nil
 }
 
 func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {

@@ -2,6 +2,7 @@ package patching
 
 import (
 	"bufio"
+	"errors"
 	"regexp"
 	"strings"
 )
@@ -9,16 +10,66 @@ import (
 // validWingetPkgID matches valid winget package identifiers (e.g. "Mozilla.Firefox", "Google.Chrome").
 var validWingetPkgID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,255}$`)
 
+// errWingetNoTable reports that winget's output contained neither a parsable
+// result table nor a recognized "matched nothing" message, so the run cannot be
+// distinguished from a failure. Callers MUST treat it as a skipped scan and
+// never as an empty result: an empty result is tombstoning input, and sweeping
+// a device's pending third-party patches on the strength of output we could not
+// even parse wipes rows nothing ever inspected (#2726).
+var errWingetNoTable = errors.New("winget output has no parsable table header")
+
+// wingetNoResultsMessages are the messages winget prints INSTEAD of a result
+// table when it ran correctly but matched nothing. This matters because
+// `winget upgrade` on a fully up-to-date machine emits no header at all — just
+// "No installed package found matching input criteria." — so recognizing these
+// is what keeps a genuinely-empty scan from being misreported as a skip (which
+// would leave installed patches stuck as "pending" forever).
+//
+// Necessarily English-only: winget localizes both these strings and its column
+// headers, so on a localized Windows the headerless output falls through to
+// errWingetNoTable and the scan is reported as skipped. That is the safe
+// direction — stale pending rows survive rather than being tombstoned by a scan
+// that saw nothing.
+var wingetNoResultsMessages = []string{
+	"no installed package found",
+	"no package found matching input criteria",
+	"no applicable update found",
+	"no applicable upgrade found",
+	"no available upgrade found",
+	"no newer package versions are available",
+	"no upgrade available",
+	"no upgrades available",
+}
+
+// wingetReportsNoResults reports whether output carries an explicit winget
+// "matched nothing" message.
+func wingetReportsNoResults(output string) bool {
+	lower := strings.ToLower(output)
+	for _, msg := range wingetNoResultsMessages {
+		if strings.Contains(lower, msg) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseWingetUpgradeOutput parses `winget upgrade` table output into available patches.
 // winget upgrade output format:
 //
 //	Name            Id                  Version   Available  Source
 //	---------------------------------------------------------------
 //	Mozilla Firefox Mozilla.Firefox     128.0     129.0      winget
-func parseWingetUpgradeOutput(output string) []AvailablePatch {
+//
+// Returns errWingetNoTable when there is no header AND no recognized
+// "matched nothing" message — see that error's doc comment for why the caller
+// must not collapse that case into an empty slice.
+func parseWingetUpgradeOutput(output string) ([]AvailablePatch, error) {
 	cols := findColumnBoundaries(output, []string{"Name", "Id", "Version", "Available"})
 	if cols == nil {
-		return nil
+		if wingetReportsNoResults(output) {
+			return nil, nil
+		}
+		return nil, errWingetNoTable
 	}
 
 	var patches []AvailablePatch
@@ -65,7 +116,7 @@ func parseWingetUpgradeOutput(output string) []AvailablePatch {
 		})
 	}
 
-	return patches
+	return patches, nil
 }
 
 // parseWingetListOutput parses `winget list` table output into installed patches.

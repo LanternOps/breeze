@@ -2320,15 +2320,11 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 // everything was skipped serializes as an empty coveredSources array (sweep
 // nothing) rather than being omitted (legacy sweep-all).
 //
-// INTERIM LIMITATION (until #2216 lands): the coverage mechanism keys off
-// providers returning patching.ErrScanSkipped, but the current winget provider
-// still returns (nil, nil) when it can't run (no connected user helper session)
-// instead of the sentinel. So a skipped winget is counted as "scanned and found
-// nothing" and its third_party bucket is treated as COVERED — the coverage guard
-// is inert-but-correct for winget: it never wrongly narrows the sweep, it just
-// can't yet protect winget's own rows. #2216 splits winget.go and has its SYSTEM
-// provider adopt ErrScanSkipped, at which point this mechanism becomes fully
-// effective for winget with no change here. Do not edit winget.go for #2217.
+// The SYSTEM winget provider now participates properly, so a winget that never
+// actually looked at anything no longer marks third_party as covered: an
+// unresolvable winget is never registered as a provider at all, a failed
+// invocation returns an error, and output with no parsable table returns
+// patching.ErrScanSkipped rather than an empty result (#2726).
 func (h *Heartbeat) coveredPatchSources(providerIDs, coveredProviders []string) []string {
 	coveredSet := make(map[string]bool, len(coveredProviders))
 	for _, id := range coveredProviders {
