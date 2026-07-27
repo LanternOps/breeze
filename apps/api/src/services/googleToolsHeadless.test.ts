@@ -33,6 +33,17 @@ describe('googleToolsHeadless parity', () => {
     expect(isHeadlessGoogleTool('not_a_tool')).toBe(false);
   });
 
+  // Real (unmocked) assertion against the actual exported function — the
+  // worker's own unit tests mock isHeadlessGoogleTool, so they cannot catch
+  // a regression in this predicate (this exact class of bug broke the
+  // durable google_reset_password release path after GOOGLE_HEADLESS_SECRET_ACTIONS
+  // was split out of GOOGLE_HEADLESS_ACTIONS: isHeadlessGoogleTool tested
+  // membership of the non-secret map only, so the worker's headless gate
+  // failed session_required before ever reaching the invoke).
+  it('isHeadlessGoogleTool: true for the secret-bearing google_reset_password tool', () => {
+    expect(isHeadlessGoogleTool('google_reset_password')).toBe(true);
+  });
+
   it('each key maps to its OWN correctly-named action fn (catches value mis-pairing)', () => {
     const EXCEPTIONS: Record<string, string> = {
       google_signout: 'googleSignOutAction',

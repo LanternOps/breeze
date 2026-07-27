@@ -76,8 +76,14 @@ export const GOOGLE_HEADLESS_SECRET_ACTIONS: Record<string, GoogleSecretAction> 
 // === tier-3 googleToolTiers set.
 // Enforced by the parity unit test in googleToolsHeadless.test.ts.
 
+// Widened to also cover GOOGLE_HEADLESS_SECRET_ACTIONS: the predicate means
+// "this Google tool can run headless" (i.e. the release worker should not
+// fail it session_required), which is equally true of the secret-bearing
+// reset-password action. The worker (jobs/intentReleaseWorker.ts) is this
+// function's only non-test consumer, so the widening is contained there.
 export function isHeadlessGoogleTool(name: string): boolean {
-  return Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_ACTIONS, name);
+  return Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_ACTIONS, name)
+    || Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_SECRET_ACTIONS, name);
 }
 
 export async function executeGoogleToolHeadless(
@@ -88,6 +94,30 @@ export async function executeGoogleToolHeadless(
   const action = GOOGLE_HEADLESS_ACTIONS[actionName];
   if (!action) {
     throw new Error(`executeGoogleToolHeadless: "${actionName}" is not a headless Google tool`);
+  }
+  const ctx = await resolveContextByOrg(orgId);
+  if ('error' in ctx) {
+    throw new GoogleConnectionUnavailableError(ctx.error);
+  }
+  return action(ctx, (args ?? {}) as Record<string, unknown>);
+}
+
+/**
+ * Secret-bearing counterpart to executeGoogleToolHeadless: same connection
+ * resolution (resolveContextByOrg) and the same
+ * GoogleConnectionUnavailableError contract, but dispatches through
+ * GOOGLE_HEADLESS_SECRET_ACTIONS and returns the SecretToolResult carrier
+ * instead of a plain string, so the release worker can seal the credential
+ * (sealToolSecrets) rather than store the tool's prose verbatim.
+ */
+export async function executeGoogleSecretToolHeadless(
+  toolName: string,
+  args: unknown,
+  orgId: string,
+): Promise<SecretToolResult> {
+  const action = GOOGLE_HEADLESS_SECRET_ACTIONS[toolName];
+  if (!action) {
+    throw new Error(`executeGoogleSecretToolHeadless: "${toolName}" is not a headless Google secret tool`);
   }
   const ctx = await resolveContextByOrg(orgId);
   if ('error' in ctx) {

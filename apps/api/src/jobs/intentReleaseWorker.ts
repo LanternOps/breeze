@@ -15,6 +15,8 @@ import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
   executeGoogleToolHeadless,
+  executeGoogleSecretToolHeadless,
+  GOOGLE_HEADLESS_SECRET_ACTIONS,
   GoogleConnectionUnavailableError,
 } from '../services/googleToolsHeadless';
 import {
@@ -23,6 +25,11 @@ import {
   M365ConnectionUnavailableError,
 } from '../services/m365ToolsHeadless';
 import { sealActionResultSecrets, TEMP_PASSWORD_ENC_KEY } from '../services/actionIntents/resultSecrets';
+import {
+  sealToolSecrets,
+  assertNoPlaintextSecret,
+  type SecretToolResult,
+} from '../services/actionIntents/secretBearingTools';
 
 /**
  * Durable release worker (spec
@@ -276,22 +283,40 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // OAuth connection by intent.orgId (fresh + re-authorized at execution);
   // headless M365 tools resolve their customer-graph-actions connection the
   // same way via the control-plane write-action service; everything else runs
-  // through executeTool.
-  const invoke = isHeadlessGoogleTool(intent.actionName)
-    ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
-    : isHeadlessM365Tool(intent.actionName)
-    ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
-    : () => executeTool(intent.actionName, intent.arguments, auth);
+  // through executeTool. A secret-bearing Google tool (google_reset_password)
+  // is checked FIRST and dispatched through executeGoogleSecretToolHeadless,
+  // which returns a SecretToolResult carrier instead of a plain string — this
+  // is what lets Step 4 below seal the credential instead of storing the
+  // tool's prose (`{raw: "...Temporary password: X..."}`) verbatim, which is
+  // the confirmed plaintext leak this change closes.
+  const secretAction = GOOGLE_HEADLESS_SECRET_ACTIONS[intent.actionName];
 
+  let carrier: SecretToolResult | null = null;
   let rawResult: string;
   try {
-    rawResult = await withToolTimeout(
-      runOutsideDbContext(() =>
-        withDbAccessContext(dbAccessContextFromAuth(auth), invoke),
-      ),
-      getToolTimeout(intent.actionName),
-      intent.actionName,
-    );
+    if (secretAction) {
+      carrier = await withToolTimeout(
+        runOutsideDbContext(() =>
+          withDbAccessContext(dbAccessContextFromAuth(auth), () =>
+            executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
+          ),
+        ),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      );
+      rawResult = carrier.llmText;
+    } else {
+      const invoke = isHeadlessGoogleTool(intent.actionName)
+        ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
+        : isHeadlessM365Tool(intent.actionName)
+        ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
+        : () => executeTool(intent.actionName, intent.arguments, auth);
+      rawResult = await withToolTimeout(
+        runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), invoke)),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      );
+    }
   } catch (err) {
     if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
       // The org's Google/M365 connection is missing/rotated/inactive (or the
@@ -312,15 +337,33 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
 
   // Step 4: cap the result to 64 KiB; oversize -> {truncated:true}, which
-  // still counts as a completion, never a failure.
+  // still counts as a completion, never a failure. A carrier result (secret-
+  // bearing Google tool) is sealed HERE via sealToolSecrets rather than
+  // normalized as prose — this is the fix for the confirmed leak: previously
+  // normalizeToolResult wrapped the carrier's llmText prose as {raw: "..."},
+  // which sealActionResultSecrets below is a no-op on (its `result.action`
+  // gate only matches the M365 structured shape), so the credential was
+  // stored in the clear.
   const resultBytes = Buffer.byteLength(rawResult, 'utf8');
   const truncated = resultBytes > MAX_RESULT_BYTES;
-  const storedResult: Record<string, unknown> = truncated ? { truncated: true } : normalizeToolResult(rawResult);
+
+  let storedResult: Record<string, unknown>;
+  if (truncated) {
+    storedResult = { truncated: true };
+  } else if (carrier) {
+    storedResult = sealToolSecrets(carrier).sealedResult;
+  } else {
+    storedResult = normalizeToolResult(rawResult);
+  }
 
   // A tool that returned an error body (not a throw) is a FAILED release, not a
   // completion — mirrors the chat SDK's isError handling. Store the result for
-  // diagnosis but terminalize as failed:tool_returned_error.
+  // diagnosis but terminalize as failed:tool_returned_error. For a carrier this
+  // checks rawResult === carrier.llmText: an error carrier's llmText keeps the
+  // errorString() JSON shape ({error, message}), so the existing detection
+  // still applies unchanged.
   if (!truncated && isReturnedToolError(rawResult)) {
+    assertNoPlaintextSecret(intent.actionName, storedResult);
     const failed = await transitionIntent(intent.id, 'executing', 'failed', {
       executedAt: new Date(),
       errorCode: 'tool_returned_error',
@@ -339,6 +382,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
 
   // Seal any secret fields (reset_password temporaryPassword) before storage.
   // Re-check the size cap afterwards: ciphertext is larger than plaintext.
+  // sealActionResultSecrets is a no-op on an already-sealed carrier result
+  // (its `result.action` gate does not match), so this cannot double-seal —
+  // it still covers the M365 structured shape, which is sealed independently.
   let finalResult = sealActionResultSecrets(storedResult);
   if (Buffer.byteLength(JSON.stringify(finalResult), 'utf8') > MAX_RESULT_BYTES) {
     if (TEMP_PASSWORD_ENC_KEY in finalResult) {
@@ -348,6 +394,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     }
     finalResult = { truncated: true };
   }
+  assertNoPlaintextSecret(intent.actionName, finalResult);
   const completed = await transitionIntent(intent.id, 'executing', 'completed', {
     executedAt: new Date(),
     result: finalResult,
