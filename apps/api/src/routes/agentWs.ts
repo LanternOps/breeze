@@ -6,7 +6,11 @@ import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
-import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
+import {
+  handleTerminalOutput,
+  getActiveTerminalSession,
+  failTerminalStartForExactCommand,
+} from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
@@ -523,6 +527,45 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
 // Store active WebSocket connections by agentId
 // Map<agentId, WSContext>
 const activeConnections = new Map<string, WSContext>();
+
+// Delivery epoch, monotonic per agent. Bumped every time a socket is installed
+// in `activeConnections`, so every command is dispatched on a known epoch.
+//
+// A superseded socket stays readable for as long as its close frame takes to
+// land, and its onMessage closure keeps its original authorization. Without an
+// epoch, a result (including a desktop/terminal stop result) submitted on that
+// dying socket is indistinguishable from one submitted on the live connection —
+// which is exactly how a stale generation gets to speak for the current one.
+// Result-bearing frames therefore require proof that they arrived on the same
+// epoch the command was delivered on: the socket must still be the mapped one.
+const agentSocketEpochs = new Map<string, number>();
+let lastAgentSocketEpoch = 0;
+
+function installAgentSocketEpoch(agentId: string): number {
+  lastAgentSocketEpoch += 1;
+  agentSocketEpochs.set(agentId, lastAgentSocketEpoch);
+  return lastAgentSocketEpoch;
+}
+
+/**
+ * Exact delivery-epoch proof for a frame received on `ws`. Both halves matter:
+ * the epoch rules out a socket that was replaced and re-replaced, and the map
+ * identity rules out a socket that was never installed at all.
+ */
+function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): boolean {
+  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId) === ws;
+}
+
+/**
+ * Drop an agent's connection outright. Both maps move together: leaving an
+ * epoch behind is harmless for correctness (the proof ANDs epoch equality with
+ * map identity, so it stays closed) but the map would never shrink for an agent
+ * that never reconnects.
+ */
+function evictAgentSocket(agentId: string): void {
+  activeConnections.delete(agentId);
+  agentSocketEpochs.delete(agentId);
+}
 
 // Track per-agent ping/pong state for stale connection detection
 interface AgentPingState {
@@ -1867,6 +1910,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
     );
   };
 
+  // The delivery epoch this handler set owns, stamped when its socket is
+  // installed. Zero until then, which never matches a live epoch.
+  let socketEpoch = 0;
+
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
@@ -1892,8 +1939,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
-      // Store connection
+      // Store connection and stamp this socket's delivery epoch.
       activeConnections.set(agentId, ws);
+      socketEpoch = installAgentSocketEpoch(agentId);
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
 
       // Update device status under tenant DB context. Pending commands are
@@ -2042,6 +2090,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping malformed terminal_output from agent ${agentId}: ${parsed.error.issues[0]?.message}`);
             return;
           }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping terminal_output from superseded socket for agent ${agentId}`);
+            return;
+          }
           const { sessionId, data: termData, encoding } = parsed.data;
           const termSession = getActiveTerminalSession(sessionId);
           if (!termSession || termSession.agentId !== agentId) {
@@ -2094,6 +2146,15 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         // parse failure we drop + log without touching the DB or downstream.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
+          // Exact delivery-epoch proof: a stop/start result carries authority
+          // to tear down a live session, so a superseded socket may not submit
+          // one. (Applies to desk-stop results too — those finalize a desktop.)
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(
+              `[AgentWs] Dropping ${message.commandId.slice(0, 12)} result from superseded socket for agent ${agentId}`
+            );
+            return;
+          }
           const isTerm = message.commandId.startsWith('term-');
           const fastPathParse = isTerm
             ? terminalCommandResultSchema.safeParse(message)
@@ -2114,30 +2175,29 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             fastMsg.result as Record<string, unknown> | undefined;
           const fastError = fastMsg.error;
           if (isTerm && fastStatus === 'failed') {
-            // Extract sessionId from commandId (e.g. "term-start-<sessionId>")
-            const parts = fastCommandId.split('-');
-            // Format: term-<action>-<sessionId>, sessionId may contain hyphens (UUID)
-            const termSessionId = parts.length >= 3 ? parts.slice(2).join('-') : null;
-            if (termSessionId) {
-              const termSession = getActiveTerminalSession(termSessionId);
-              if (termSession && termSession.agentId === agentId) {
-                const errorDetail = fastError ?? 'Unknown error';
-                try {
-                  termSession.userWs.send(JSON.stringify({
-                    type: 'error',
-                    code: 'TERMINAL_START_FAILED',
-                    message: `Agent failed to start terminal: ${errorDetail}`
-                  }));
-                  termSession.userWs.close(4003, 'Terminal start failed');
-                } catch (sendErr) {
-                  console.error(`[AgentWs] Failed to notify user of terminal failure for session ${termSessionId}:`, sendErr);
-                }
-                unregisterTerminalOutputCallback(termSessionId);
-                console.warn(`[AgentWs] Terminal start failed for session ${termSessionId}: ${errorDetail}`);
-              } else if (termSession) {
-                // Schema-passing but ownership-failing — count as probe drop.
-                recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'term_failed');
-              }
+            // The start command id embeds the terminal connection generation
+            // that issued it, so the failure is resolved against that exact
+            // lease rather than against whatever currently holds the session
+            // id. A late failure from a superseded generation therefore cannot
+            // close, notify, or unregister the generation that owns the
+            // session now — the previous identifier-only lookup did exactly
+            // that whenever a user reconnected while a start was in flight.
+            const errorDetail = fastError ?? 'Unknown error';
+            const outcome = await failTerminalStartForExactCommand(
+              fastCommandId,
+              agentId,
+              errorDetail,
+            );
+            if (outcome === 'delivered') {
+              console.warn(`[AgentWs] Terminal start failed for command ${fastCommandId}: ${errorDetail}`);
+            } else if (outcome === 'foreign_agent') {
+              // A live start claimed by an agent that never received it.
+              recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'term_failed');
+            } else {
+              // Benign: a superseded generation, or a start issued before this
+              // instance restarted. Ignored, but NOT counted as a probe — doing
+              // so would let a rolling deploy auto-suspend healthy agents.
+              console.warn(`[AgentWs] Ignoring terminal start failure for unknown command ${fastCommandId}`);
             }
           }
           // Handle WebRTC peer disconnect notifications from agent
@@ -2370,6 +2430,17 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
         switch (parsed.data.type) {
           case 'command_result':
+            // Exact delivery-epoch proof. Desktop finalization stop results
+            // arrive here, not on the `desk-` fast path — their command id IS
+            // the finalization UUID — so this is the path that actually carries
+            // authority to finalize a session. A superseded socket submitting
+            // one would let a dying connection speak for the agent.
+            if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+              console.warn(
+                `[AgentWs] Dropping command_result ${parsed.data.commandId} from superseded socket for agent ${agentId}`
+              );
+              return;
+            }
             await runWithAgentDbAccess('agentWs.commandResult', async () =>
               processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId, authenticatedAgent.orgId)
             );
@@ -2526,6 +2597,9 @@ onClose: async (_event: unknown, ws: WSContext) => {
       // the new connection's entry would make the agent unreachable.
       if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
+        if (agentSocketEpochs.get(agentId) === socketEpoch) {
+          agentSocketEpochs.delete(agentId);
+        }
         console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
         // Update device status to offline (but preserve 'updating' — let
@@ -2583,6 +2657,9 @@ onClose: async (_event: unknown, ws: WSContext) => {
       }
 if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
+        if (agentSocketEpochs.get(agentId) === socketEpoch) {
+          agentSocketEpochs.delete(agentId);
+        }
       }
       if (agentDb) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
@@ -2825,7 +2902,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
       } catch {
         // Connection may already be torn down.
       }
-      activeConnections.delete(agentId);
+      evictAgentSocket(agentId);
     }
   }
 
@@ -2932,7 +3009,7 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
     return true;
   } catch (error) {
     console.error(`Failed to send command to agent ${agentId.slice(0,12)}:`, error);
-    activeConnections.delete(agentId);
+    evictAgentSocket(agentId);
     return false;
   }
 }
@@ -3013,7 +3090,7 @@ export function broadcastToAgents(
       sent++;
     } catch (error) {
       console.error(`Failed to broadcast to agent ${agentId}:`, error);
-      activeConnections.delete(agentId);
+      evictAgentSocket(agentId);
     }
   }
 

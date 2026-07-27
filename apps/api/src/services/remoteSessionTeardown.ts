@@ -118,7 +118,12 @@ export async function teardownDisconnectedSessions(
       let closedLocally = false;
       try {
         const { closeTerminalSession } = await getTerminalWs();
-        closedLocally = closeTerminalSession(row.id);
+        // Async since Wave 4: the close proof is a cross-replica Redis
+        // compare, not a local map lookup. Awaiting keeps the
+        // `!closedLocally` agent fallback below honest — a non-awaited
+        // promise would always be truthy and silently skip the fallback,
+        // leaving a PTY alive on another instance.
+        closedLocally = await closeTerminalSession(row.id);
       } catch (err) {
         console.error(
           `[remoteSessionTeardown] Failed to close terminal socket for session ${row.id}:`,

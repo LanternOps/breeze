@@ -79,6 +79,8 @@ import {
   unregisterTerminalOutputCallback,
   getActiveTerminalSession,
   createTerminalWsRoutes,
+  __createTerminalSharedLeasesForTest,
+  __resetTerminalWsForTest,
   getActiveTerminalSessionCount,
   getActiveTerminalSessionIds
 } from './terminalWs';
@@ -142,7 +144,10 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createTerminalWsRoutes(upgradeWebSocket);
+  // Every capture gets its own lease manager, but generations are globally
+  // monotonic — a replaced generation can never reuse a prior identity.
+  const testSharedLeases = __createTerminalSharedLeasesForTest();
+  createTerminalWsRoutes(upgradeWebSocket, { sharedLeases: testSharedLeases });
 
   // Simulate the Hono context the factory expects
   const fakeContext = {
@@ -216,6 +221,9 @@ function setupSuccessfulValidation(overrides?: { osType?: string }) {
 
 describe('terminalWs', () => {
   beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
     vi.clearAllMocks();
   });
 
@@ -529,6 +537,85 @@ describe('terminalWs', () => {
           })
         })
       );
+    });
+
+    it('rejects a shared second owner with HTTP 409 before the upgrade middleware runs', async () => {
+      setupSuccessfulValidation();
+      const upgradeMiddleware = vi.fn(() => new Response(null, { status: 204 }));
+      const upgradeWebSocket = vi.fn(() => upgradeMiddleware);
+      const sharedLeases = {
+        acquire: vi.fn().mockResolvedValue({ ok: false, reason: 'already_owned' }),
+      };
+
+      const app = (createTerminalWsRoutes as unknown as (
+        upgrade: typeof upgradeWebSocket,
+        options: { sharedLeases: typeof sharedLeases }
+      ) => ReturnType<typeof createTerminalWsRoutes>)(upgradeWebSocket, { sharedLeases });
+
+      const response = await app.request(`/${SESSION_ID}/ws?ticket=valid-ticket`);
+
+      expect(response.status).toBe(409);
+      expect(sharedLeases.acquire).toHaveBeenCalledWith('terminal', SESSION_ID);
+      expect(upgradeMiddleware).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('rejects a replacement for a locally held session with 409 before the upgrade, without disturbing the owner', async () => {
+      // Establish a real local owner first.
+      setupSuccessfulValidation();
+      const ownerHandlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ownerWs = wsMock();
+      await ownerHandlers.onOpen({}, ownerWs);
+      const owner = getActiveTerminalSession(SESSION_ID);
+      expect(owner).toBeDefined();
+
+      // A second request for the same session: the shared lease is free (this
+      // models the durable owner having been released while local state is
+      // still installed), so only the local check can stop it. It must stop it
+      // BEFORE the 101 — no replica may rely on a post-upgrade 4009 close.
+      const upgradeMiddleware = vi.fn(() => new Response(null, { status: 204 }));
+      const upgradeWebSocket = vi.fn(() => upgradeMiddleware);
+      const released: unknown[] = [];
+      const sharedLeases = {
+        acquire: vi.fn().mockResolvedValue({
+          ok: true,
+          claim: {
+            kind: 'terminal',
+            sessionId: SESSION_ID,
+            connectionId: '99999999-9999-4999-8999-999999999999',
+            generation: 9_999,
+            instanceId: '88888888-8888-4888-8888-888888888888',
+            leaseToken: '77777777-7777-4777-8777-777777777777',
+            ownerValue: 'contender',
+            safeForwardingUntilMonotonicMs: Number.MAX_SAFE_INTEGER,
+          },
+        }),
+        release: vi.fn(async (claim: unknown) => {
+          released.push(claim);
+          return true;
+        }),
+      };
+
+      vi.mocked(sendCommandToAgent).mockClear();
+      vi.mocked(db.update).mockClear();
+
+      const app = (createTerminalWsRoutes as unknown as (
+        upgrade: typeof upgradeWebSocket,
+        options: { sharedLeases: typeof sharedLeases }
+      ) => ReturnType<typeof createTerminalWsRoutes>)(upgradeWebSocket, { sharedLeases });
+
+      const response = await app.request(`/${SESSION_ID}/ws?ticket=contender-ticket`);
+
+      expect(response.status).toBe(409);
+      expect(upgradeMiddleware).not.toHaveBeenCalled();
+      // The loser's speculative claim is given back, not leaked.
+      expect(released).toHaveLength(1);
+      // The live owner is untouched: not replaced, not stopped, not rewritten.
+      expect(getActiveTerminalSession(SESSION_ID)).toBe(owner);
+      expect(ownerWs.close).not.toHaveBeenCalled();
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 

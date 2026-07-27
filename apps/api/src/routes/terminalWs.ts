@@ -16,14 +16,25 @@ import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
 import {
   assertRemoteWsUpgradeRuntimeReady,
+  getRemoteWsUpgradeConnection,
   requireRemoteWsUpgrade,
   type RemoteWsUpgradeContext,
 } from '../services/remoteWsUpgrade';
 import {
   getRemoteWsSharedLeaseManager,
+  REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS,
   type RemoteWsSharedLeaseClaim,
   type RemoteWsSharedLeaseManager,
 } from '../services/remoteWsSharedLease';
+import {
+  bindRemoteConnection,
+  installLocalRemoteConnection,
+  ownsSafeRemoteConnection,
+  removeExactLocalRemoteConnection,
+  renewExactRemoteConnectionLease,
+  type RemoteConnectionIdentity,
+  type RemoteConnectionLease,
+} from '../services/remoteWsOwnership';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -32,16 +43,22 @@ const terminalMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ping') }),
 ]);
 
-// Store active terminal sessions
-// Map<sessionId, { userWs: WSContext, agentId: string, userId: string }>
-interface TerminalSession {
-  userWs: WSContext;
+// Store active terminal sessions.
+//
+// The map is keyed by session ID but ownership is NEVER decided by that key
+// alone: every entry carries the exact shared-lease identity (connection id,
+// generation, instance id, lease token) that installed it, and every event,
+// timer, and captured callback re-proves that exact identity before touching
+// state. A foreign socket, a socket from a replaced generation, or a replica
+// that lost its lease is inert — see `ownsSafeRemoteConnection`.
+interface TerminalSession extends RemoteConnectionLease {
   agentId: string;
   userId: string;
   deviceId: string;
   orgId: string;
   startedAt: Date;
   pingInterval?: ReturnType<typeof setInterval>;
+  leaseRenewalInterval?: ReturnType<typeof setInterval>;
   lastPongAt: number;
   // Per-session input rate limiting (sliding window)
   // E2: 200 messages/min OR 1MB total bytes/min, whichever first
@@ -50,8 +67,12 @@ interface TerminalSession {
   // E2: audit summary counters
   bytesIn: number;
   bytesOut: number;
-  sharedOwner?: RemoteWsSharedLeaseClaim;
-  sharedLeases?: RemoteWsSharedLeaseManager;
+  sharedOwner: RemoteWsSharedLeaseClaim;
+  sharedLeases: RemoteWsSharedLeaseManager;
+  // Exact command id of the `terminal_start` this generation dispatched. A
+  // late agent failure result is only honoured against a matching id, so a
+  // superseded generation's failure can never kill the current owner.
+  startCommandId?: string;
 }
 
 // E2: per-session input limits
@@ -60,12 +81,19 @@ const TERMINAL_MSG_LIMIT = 200; // messages per minute
 const TERMINAL_BYTES_LIMIT = 1_048_576; // 1MB per minute
 
 const activeTerminalSessions = new Map<string, TerminalSession>();
-const terminalOpeningReservations = new Map<string, RemoteWsSharedLeaseClaim>();
 
 // Store pending terminal output to relay back to user
 // Map<sessionId, callback>
 type TerminalOutputCallback = (data: string) => void;
 const terminalOutputCallbacks = new Map<string, TerminalOutputCallback>();
+
+function terminalStartCommandId(sessionId: string, generation: number): string {
+  // The generation comes from a Redis INCR that is monotonic per session, so
+  // this id is unique per connection generation. The agent treats the id as
+  // opaque and echoes it back on the result, which is what lets a late
+  // `terminal_start` failure be matched to the exact generation that sent it.
+  return `term-start-${sessionId}-${generation}`;
+}
 
 // Server-side ping/pong constants for stale connection detection
 const PING_INTERVAL_MS = 30_000; // Send ping every 30 seconds
@@ -220,53 +248,247 @@ export function getActiveTerminalSession(sessionId: string): TerminalSession | u
   return activeTerminalSessions.get(sessionId);
 }
 
+function identityOf(session: TerminalSession): RemoteConnectionIdentity {
+  return {
+    connectionId: session.connectionId,
+    generation: session.generation,
+    instanceId: session.instanceId,
+    leaseToken: session.leaseToken,
+  };
+}
+
+function isExactTerminalConnection(
+  session: TerminalSession,
+  identity: RemoteConnectionIdentity,
+): boolean {
+  return (
+    session.connectionId === identity.connectionId
+    && session.generation === identity.generation
+    && session.instanceId === identity.instanceId
+    && session.leaseToken === identity.leaseToken
+  );
+}
+
+interface CloseExactTerminalOptions {
+  /** The socket this close is claimed on behalf of; `null` for an unbound (opening) entry. */
+  expectedWs: WSContext | null;
+  /** `false` when the socket is already gone (client-initiated close/error). */
+  closeSocket: boolean;
+  closeCode: number;
+  closeReason: string;
+  terminalStatus: 'disconnected' | 'failed';
+  /** Write the E2 session-summary audit row (normal disconnects only). */
+  writeSummary: boolean;
+}
+
 /**
- * Force-close a live terminal session held on THIS instance: kill the agent
- * PTY (`terminal_stop`), clear the ping interval, drop the in-memory entry, and
- * close the user socket. Returns `true` if a live session existed locally (and
+ * Close exactly one terminal connection generation.
+ *
+ * Ownership is proved twice: locally (the installed entry must carry this
+ * exact identity and socket) and durably (`beginClose` compares the Redis
+ * owner value). Only a `still_owner` proof may stop the agent PTY or mutate
+ * the session row — an `owner_mismatch` detaches this replica's stale local
+ * state and nothing else, because some other generation legitimately owns the
+ * session now.
+ *
+ * Forwarding is expired BEFORE any await so a concurrent frame, timer, or
+ * agent callback cannot slip through the teardown window. The map entry is
+ * deleted and the Redis lease compare-released only after the final matching
+ * ownership check, so a delete can never strand a live shared owner.
+ *
+ * Idempotent: a second call while the first is in flight returns the same
+ * promise rather than issuing a second `terminal_stop` or DB write.
+ */
+async function closeExactTerminalConnection(
+  sessionId: string,
+  identity: RemoteConnectionIdentity,
+  options: CloseExactTerminalOptions,
+): Promise<boolean> {
+  const session = activeTerminalSessions.get(sessionId);
+  if (!session || !isExactTerminalConnection(session, identity)) return false;
+  if (session.userWs !== options.expectedWs) return false;
+  if (session.cleanupPromise) return session.cleanupPromise.then(() => true);
+
+  // Write-ahead: make this generation inert before the first await.
+  session.state = 'closing';
+  session.safeForwardingUntilMonotonicMs = 0;
+  if (session.pingInterval) clearInterval(session.pingInterval);
+  if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  session.pingInterval = undefined;
+  session.leaseRenewalInterval = undefined;
+
+  const cleanup = (async () => {
+    const proof = await session.sharedLeases
+      .beginClose(session.sharedOwner)
+      .catch(() => ({ ok: false as const, reason: 'unavailable' as const }));
+
+    // `owner_mismatch` means another generation owns the session durably. Detach
+    // this replica's stale state WITHOUT stopping the agent or writing the row —
+    // doing either would tear down the legitimate current owner.
+    const provenOwner = proof.ok;
+    if (!provenOwner && proof.reason !== 'owner_mismatch') {
+      // Redis unavailable: we cannot prove ownership either way. Fail closed on
+      // the STREAM (stop the shell, close the socket) but do not compare-release
+      // a lease we cannot compare.
+      console.error(
+        `[TerminalWs] Shared close proof unavailable for session ${sessionId}; failing closed without lease release`,
+      );
+    }
+    const mayMutate = provenOwner || proof.reason === 'unavailable';
+
+    if (mayMutate) {
+      try {
+        sendCommandToAgent(session.agentId, {
+          id: `term-stop-${sessionId}`,
+          type: 'terminal_stop',
+          payload: { sessionId },
+        });
+      } catch (err) {
+        console.error(`[TerminalWs] Failed to send terminal_stop for session ${sessionId}:`, err);
+      }
+    }
+
+    if (options.closeSocket && options.expectedWs) {
+      try {
+        options.expectedWs.close(options.closeCode, options.closeReason);
+      } catch (err) {
+        console.error(`[TerminalWs] Failed to close terminal socket for session ${sessionId}:`, err);
+      }
+    }
+
+    // Final matching ownership check before dropping local state.
+    const current = activeTerminalSessions.get(sessionId);
+    if (current !== session || !isExactTerminalConnection(current, identity)) return;
+    unregisterTerminalOutputCallback(sessionId);
+    removeExactLocalRemoteConnection(activeTerminalSessions, sessionId, identity);
+    if (provenOwner) {
+      await session.sharedLeases.release(session.sharedOwner).catch(() => false);
+    }
+
+    if (!mayMutate) return;
+
+    const endedAt = new Date();
+    const durationSeconds = Math.round(
+      (endedAt.getTime() - session.startedAt.getTime()) / 1000,
+    );
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db
+          .update(remoteSessions)
+          .set({ status: options.terminalStatus, endedAt, durationSeconds })
+          .where(eq(remoteSessions.id, sessionId));
+      });
+    } catch (dbErr) {
+      console.error(`[TerminalWs] Failed to update session ${sessionId} on close:`, dbErr);
+    }
+
+    if (options.writeSummary) {
+      try {
+        await logSessionAudit(
+          'terminal.session.summary',
+          session.userId,
+          session.orgId,
+          {
+            sessionId,
+            deviceId: session.deviceId,
+            bytesIn: session.bytesIn,
+            bytesOut: session.bytesOut,
+            durationMs: endedAt.getTime() - session.startedAt.getTime(),
+          },
+        );
+      } catch (auditErr) {
+        console.error(`[TerminalWs] Failed to write session summary for ${sessionId}:`, auditErr);
+      }
+    }
+
+    console.log(
+      `Terminal session ${sessionId} closed (${options.closeReason}, duration: ${durationSeconds}s)`,
+    );
+  })();
+
+  session.cleanupPromise = cleanup;
+  await cleanup;
+  return true;
+}
+
+/**
+ * Force-close whichever terminal generation is live on THIS instance: kill the
+ * agent PTY (`terminal_stop`), stop the timers, drop the in-memory entry, and
+ * close the user socket. Resolves `true` if a live session existed locally (and
  * was closed), `false` if there was nothing to close here (e.g. the socket
  * lives on another API instance, or already ended).
  *
- * The in-memory entry is deleted BEFORE `ws.close()`, so the socket's own
- * onClose handler finds nothing and no-ops — no duplicate `terminal_stop` and
- * no DB status re-write. A teardown caller that has already marked the row
- * `disconnected` therefore does not race the onClose write.
+ * Asynchronous because the durable close proof (`beginClose`) is: ownership is
+ * a cross-replica fact and cannot be decided from local memory alone. Callers
+ * that need to know whether the PTY was signalled must await it.
  *
  * Used by mid-session revocation (the ping loop) and by
  * `remoteSessionTeardown` so a suspended operator / quarantined device cannot
  * keep a live shell relaying input.
  */
-export function closeTerminalSession(sessionId: string): boolean {
+export async function closeTerminalSession(sessionId: string): Promise<boolean> {
   const termSession = activeTerminalSessions.get(sessionId);
   if (!termSession) return false;
+  return closeExactTerminalConnection(sessionId, identityOf(termSession), {
+    expectedWs: termSession.userWs,
+    closeSocket: true,
+    closeCode: 4003,
+    closeReason: 'Session revoked',
+    terminalStatus: 'disconnected',
+    writeSummary: false,
+  });
+}
 
-  if (termSession.pingInterval) {
-    clearInterval(termSession.pingInterval);
-  }
-  // Drop local state first so the ws.close() onClose handler finds nothing.
-  activeTerminalSessions.delete(sessionId);
-  unregisterTerminalOutputCallback(sessionId);
+export type TerminalStartFailureOutcome = 'delivered' | 'foreign_agent' | 'unknown_command';
 
-  // Kill the agent PTY for this session.
-  try {
-    sendCommandToAgent(termSession.agentId, {
-      id: `term-stop-${sessionId}`,
-      type: 'terminal_stop',
-      payload: { sessionId },
+/**
+ * Apply a late `terminal_start` failure reported by the agent.
+ *
+ * The command id embeds the connection generation that dispatched the start,
+ * so a failure belonging to a superseded generation can never notify — or tear
+ * down — the generation that owns the session now.
+ *
+ * The three outcomes are deliberately distinct. `foreign_agent` means a live
+ * start was claimed by an agent that did not receive it — genuinely suspicious,
+ * and the caller counts it as a cross-tenant probe. `unknown_command` is
+ * benign: a superseded generation, or a start issued by an API instance that
+ * has since restarted or been rolled. Counting those as probes would let an
+ * ordinary rolling deploy trip the auto-suspend threshold and disable healthy
+ * agents.
+ */
+export async function failTerminalStartForExactCommand(
+  commandId: string,
+  agentId: string,
+  errorDetail: string,
+): Promise<TerminalStartFailureOutcome> {
+  for (const [sessionId, session] of activeTerminalSessions) {
+    if (session.startCommandId !== commandId) continue;
+    if (session.agentId !== agentId) return 'foreign_agent';
+    const ws = session.userWs;
+    if (!ws) return 'unknown_command';
+    try {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'TERMINAL_START_FAILED',
+        message: `Agent failed to start terminal: ${errorDetail}`,
+      }));
+    } catch (sendErr) {
+      console.error(
+        `[TerminalWs] Failed to notify user of terminal failure for session ${sessionId}:`,
+        sendErr,
+      );
+    }
+    await closeExactTerminalConnection(sessionId, identityOf(session), {
+      expectedWs: ws,
+      closeSocket: true,
+      closeCode: 4003,
+      closeReason: 'Terminal start failed',
+      terminalStatus: 'failed',
+      writeSummary: false,
     });
-  } catch (err) {
-    console.error(`[TerminalWs] Failed to send terminal_stop for session ${sessionId}:`, err);
+    return 'delivered';
   }
-
-  try {
-    termSession.userWs.close(4003, 'Session revoked');
-  } catch (err) {
-    console.error(`[TerminalWs] Failed to close terminal socket for session ${sessionId}:`, err);
-  }
-  if (termSession.sharedOwner && termSession.sharedLeases) {
-    void termSession.sharedLeases.release(termSession.sharedOwner);
-  }
-  return true;
+  return 'unknown_command';
 }
 
 async function validateTerminalUpgradeContext(
@@ -309,10 +531,13 @@ function createTerminalWsHandlers(
   sessionId: string,
   ticket: string | undefined,
   caller: { ip: string; userAgent: string },
+  sharedLeases: RemoteWsSharedLeaseManager,
   upgradeContext?: RemoteWsUpgradeContext,
-  sharedLeases?: RemoteWsSharedLeaseManager,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateTerminalAccess>> | null = null;
+  // The exact identity this handler set owns. Every event and captured closure
+  // below re-proves it; nothing in this factory may act on session ID alone.
+  let connectionIdentity: RemoteConnectionIdentity | null = null;
   const validationPromise = (
     upgradeContext
       ? validateTerminalUpgradeContext(upgradeContext)
@@ -321,11 +546,12 @@ function createTerminalWsHandlers(
     validationResult = result;
   });
   const releaseOpeningReservation = async () => {
-    if (!upgradeContext || !sharedLeases) return;
-    const current = terminalOpeningReservations.get(sessionId);
-    if (current?.ownerValue === upgradeContext.sharedClaim.ownerValue) {
-      terminalOpeningReservations.delete(sessionId);
-    }
+    if (!upgradeContext) return;
+    removeExactLocalRemoteConnection(
+      activeTerminalSessions,
+      sessionId,
+      getRemoteWsUpgradeConnection(upgradeContext),
+    );
     upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
     await sharedLeases.release(upgradeContext.sharedClaim);
   };
@@ -333,6 +559,8 @@ function createTerminalWsHandlers(
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
       let validated = false;
+      let sessionStored = false;
+      let outputCallbackRegistered = false;
       try {
         console.log(`Terminal WebSocket onOpen for session ${sessionId}`);
         await validationPromise;
@@ -384,37 +612,101 @@ function createTerminalWsHandlers(
           return;
         }
 
-        // All validation passed — safe to touch DB state for this session
+        // Acquire the durable owner BEFORE any session state exists. In
+        // pre-upgrade mode the middleware already reserved it; in post-upgrade
+        // mode this is the first reservation and a loser never installs.
+        const acquired = upgradeContext
+          ? { ok: true as const, claim: upgradeContext.sharedClaim }
+          : await sharedLeases.acquire('terminal', sessionId);
+        if (!acquired.ok) {
+          // Never overwrite an opening/active/closing owner: a replica that
+          // lost the race closes rather than replacing the live session.
+          ws.close(acquired.reason === 'already_owned' ? 4009 : 1011, 'Terminal session unavailable');
+          return;
+        }
+
+        // All validation and shared acquisition passed — safe to touch DB state
+        // for this exact connection generation.
         validated = true;
 
         // Store the terminal session
         const now = Date.now();
-        if (upgradeContext) {
-          terminalOpeningReservations.delete(sessionId);
+        const reserved = upgradeContext ? activeTerminalSessions.get(sessionId) : undefined;
+        if (reserved && upgradeContext) {
+          Object.assign(reserved, {
+            agentId: device.agentId,
+            userId,
+            deviceId: device.id,
+            orgId: device.orgId,
+            startedAt: new Date(),
+            lastPongAt: now,
+          });
         }
-        activeTerminalSessions.set(sessionId, {
-          userWs: ws,
-          agentId: device.agentId,
-          userId,
-          deviceId: device.id,
-          orgId: device.orgId,
-          startedAt: new Date(),
-          lastPongAt: now,
-          msgTimestamps: [],
-          msgByteTimestamps: [],
-          bytesIn: 0,
-          bytesOut: 0,
-          ...(upgradeContext && sharedLeases
-            ? {
-                sharedOwner: upgradeContext.sharedClaim,
+        const installed = upgradeContext
+          ? (
+              reserved
+              && reserved.connectionId === acquired.claim.connectionId
+              && reserved.generation === acquired.claim.generation
+              && reserved.instanceId === acquired.claim.instanceId
+              && reserved.leaseToken === acquired.claim.leaseToken
+                ? { ok: true as const }
+                : { ok: false as const, reason: 'already_owned' as const }
+            )
+          : installLocalRemoteConnection(
+              activeTerminalSessions,
+              sessionId,
+              acquired.claim,
+              (claim): TerminalSession => ({
+                ...claim,
+                state: 'opening',
+                userWs: null,
+                sharedOwner: claim,
                 sharedLeases,
-              }
-            : {}),
-        });
+                agentId: device.agentId,
+                userId,
+                deviceId: device.id,
+                orgId: device.orgId,
+                startedAt: new Date(),
+                lastPongAt: now,
+                msgTimestamps: [],
+                msgByteTimestamps: [],
+                bytesIn: 0,
+                bytesOut: 0,
+              }),
+            );
+        if (!installed.ok) {
+          await sharedLeases.release(acquired.claim);
+          ws.close(4009, 'Terminal session already owned');
+          return;
+        }
 
-        // Register callback for terminal output (track bytesOut for audit summary)
+        connectionIdentity = {
+          connectionId: acquired.claim.connectionId,
+          generation: acquired.claim.generation,
+          instanceId: acquired.claim.instanceId,
+          leaseToken: acquired.claim.leaseToken,
+        };
+        const boundIdentity = connectionIdentity;
+        if (!bindRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) {
+          removeExactLocalRemoteConnection(activeTerminalSessions, sessionId, boundIdentity);
+          await sharedLeases.release(acquired.claim);
+          ws.close(1011, 'Terminal session binding failed');
+          return;
+        }
+        sessionStored = true;
+        const boundSession = activeTerminalSessions.get(sessionId);
+        if (!boundSession) {
+          throw new Error('terminal connection missing after bind');
+        }
+
+        // Register callback for terminal output (track bytesOut for audit
+        // summary). The closure captures the exact identity + socket: an old
+        // callback that survived a reopen relays nothing to the new owner.
         registerTerminalOutputCallback(sessionId, (data: string) => {
           try {
+            if (!ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) {
+              return;
+            }
             const sess = activeTerminalSessions.get(sessionId);
             if (sess) {
               sess.bytesOut += Buffer.byteLength(data, 'utf8');
@@ -424,6 +716,31 @@ function createTerminalWsHandlers(
             console.error(`Failed to send terminal output to session ${sessionId}:`, error);
           }
         });
+        outputCallbackRegistered = true;
+
+        // Keep the durable lease alive only for this exact installed entry. A
+        // renewal failure expires forwarding first (inside
+        // `renewExactRemoteConnectionLease`) and then tears the socket down, so
+        // no frame is relayed past the point where ownership is unproven.
+        boundSession.leaseRenewalInterval = setInterval(() => {
+          void renewExactRemoteConnectionLease(
+            activeTerminalSessions,
+            sessionId,
+            boundIdentity,
+            ws,
+            () => sharedLeases.renew(boundSession.sharedOwner),
+          ).then((renewed) => {
+            if (renewed) return;
+            void closeExactTerminalConnection(sessionId, boundIdentity, {
+              expectedWs: ws,
+              closeSocket: true,
+              closeCode: 4003,
+              closeReason: 'Lease lost',
+              terminalStatus: 'failed',
+              writeSummary: false,
+            }).catch(() => undefined);
+          });
+        }, REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS);
 
         console.log(`Terminal session ${sessionId} connected for device ${device.hostname}`);
 
@@ -438,6 +755,18 @@ function createTerminalWsHandlers(
             .where(eq(remoteSessions.id, sessionId));
         });
 
+        if (!ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) {
+          await closeExactTerminalConnection(sessionId, boundIdentity, {
+            expectedWs: ws,
+            closeSocket: true,
+            closeCode: 1011,
+            closeReason: 'Terminal session setup failed',
+            terminalStatus: 'failed',
+            writeSummary: false,
+          });
+          return;
+        }
+
         // Send connected message to user
         ws.send(JSON.stringify({
           type: 'connected',
@@ -448,9 +777,13 @@ function createTerminalWsHandlers(
           }
         }));
 
-        // Send terminal_start command to agent
+        // Send terminal_start command to agent. The command id embeds this
+        // generation so a late failure result can only ever be attributed back
+        // to the generation that issued it.
+        const startCommandId = terminalStartCommandId(sessionId, boundIdentity.generation);
+        boundSession.startCommandId = startCommandId;
         const startCommand = {
-          id: `term-start-${sessionId}`,
+          id: startCommandId,
           type: 'terminal_start',
           payload: {
             sessionId,
@@ -468,28 +801,28 @@ function createTerminalWsHandlers(
             message: 'Failed to send start command to agent'
           }));
 
-          // Clean up: agent is offline, session cannot proceed
-          activeTerminalSessions.delete(sessionId);
-          unregisterTerminalOutputCallback(sessionId);
-          await releaseOpeningReservation();
-          try {
-            await withSystemDbAccessContext(async () => {
-              await db
-                .update(remoteSessions)
-                .set({ status: 'failed', endedAt: new Date() })
-                .where(eq(remoteSessions.id, sessionId));
-            });
-          } catch (dbErr) {
-            console.error(`[TerminalWs] Failed to update session ${sessionId} after agent send failure:`, dbErr);
-          }
-          ws.close(4002, 'Agent send failed');
+          // Clean up: agent is offline, session cannot proceed.
+          await closeExactTerminalConnection(sessionId, boundIdentity, {
+            expectedWs: ws,
+            closeSocket: true,
+            closeCode: 4002,
+            closeReason: 'Agent send failed',
+            terminalStatus: 'failed',
+            writeSummary: false,
+          });
           return;
         }
 
-        // Start server-side ping/pong for stale connection detection
+        // Start server-side ping/pong for stale connection detection. The timer
+        // captures the immutable identity and its expected socket, so a timer
+        // that outlives its generation (session removed and reopened) finds no
+        // exact owner and does nothing at all.
         const pingInterval = setInterval(() => {
           const termSess = activeTerminalSessions.get(sessionId);
-          if (!termSess) {
+          if (
+            !termSess
+            || !ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)
+          ) {
             clearInterval(pingInterval);
             return;
           }
@@ -511,10 +844,20 @@ function createTerminalWsHandlers(
           // closes within at most one ping interval (PING_INTERVAL_MS). Fails CLOSED.
           void isViewerSessionRevoked(sessionId)
             .then((revoked) => {
-              if (revoked && activeTerminalSessions.has(sessionId)) {
+              if (
+                revoked
+                && ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)
+              ) {
                 console.warn(`[TerminalWs] Session ${sessionId} revoked mid-session, closing socket`);
                 clearInterval(pingInterval);
-                closeTerminalSession(sessionId);
+                void closeExactTerminalConnection(sessionId, boundIdentity, {
+                  expectedWs: ws,
+                  closeSocket: true,
+                  closeCode: 4003,
+                  closeReason: 'Session revoked',
+                  terminalStatus: 'disconnected',
+                  writeSummary: false,
+                }).catch(() => undefined);
               }
             })
             .catch((revErr) => {
@@ -526,7 +869,16 @@ function createTerminalWsHandlers(
                 revErr
               );
               clearInterval(pingInterval);
-              closeTerminalSession(sessionId);
+              if (ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) {
+                void closeExactTerminalConnection(sessionId, boundIdentity, {
+                  expectedWs: ws,
+                  closeSocket: true,
+                  closeCode: 4003,
+                  closeReason: 'Session revoked',
+                  terminalStatus: 'disconnected',
+                  writeSummary: false,
+                }).catch(() => undefined);
+              }
             });
           try {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
@@ -536,35 +888,45 @@ function createTerminalWsHandlers(
           }
         }, PING_INTERVAL_MS);
 
+        // Attach the timer only to the exact entry this handler owns.
         const currentSession = activeTerminalSessions.get(sessionId);
-        if (currentSession) {
+        if (currentSession && isExactTerminalConnection(currentSession, boundIdentity)) {
           currentSession.pingInterval = pingInterval;
+        } else {
+          clearInterval(pingInterval);
         }
       } catch (error) {
         console.error(`[TerminalWs] onOpen failed for session ${sessionId}:`, error);
 
-        // Clean up any state that may have been partially created
-        const partialSession = activeTerminalSessions.get(sessionId);
-        if (partialSession) {
-          if (partialSession.pingInterval) {
-            clearInterval(partialSession.pingInterval);
-          }
-          activeTerminalSessions.delete(sessionId);
-        }
-        unregisterTerminalOutputCallback(sessionId);
-        await releaseOpeningReservation();
+        // Clean up only the state THIS generation created.
+        if (sessionStored && connectionIdentity) {
+          await closeExactTerminalConnection(sessionId, connectionIdentity, {
+            expectedWs: ws,
+            closeSocket: false,
+            closeCode: 4001,
+            closeReason: 'Session setup failed',
+            terminalStatus: 'failed',
+            writeSummary: false,
+          }).catch((cleanupError) => {
+            console.error(`[TerminalWs] setup cleanup failed for ${sessionId}:`, cleanupError);
+            return false;
+          });
+        } else {
+          if (outputCallbackRegistered) unregisterTerminalOutputCallback(sessionId);
+          await releaseOpeningReservation();
 
-        // Best-effort: mark DB session as failed — only if auth/validation already passed
-        if (validated) {
-          try {
-            await withSystemDbAccessContext(async () => {
-              await db
-                .update(remoteSessions)
-                .set({ status: 'failed', endedAt: new Date() })
-                .where(eq(remoteSessions.id, sessionId));
-            });
-          } catch (dbError) {
-            console.error(`[TerminalWs] Failed to update session ${sessionId} status to failed:`, dbError);
+          // Best-effort: mark DB session as failed — only if auth/validation already passed
+          if (validated) {
+            try {
+              await withSystemDbAccessContext(async () => {
+                await db
+                  .update(remoteSessions)
+                  .set({ status: 'failed', endedAt: new Date() })
+                  .where(eq(remoteSessions.id, sessionId));
+              });
+            } catch (dbError) {
+              console.error(`[TerminalWs] Failed to update session ${sessionId} status to failed:`, dbError);
+            }
           }
         }
 
@@ -589,6 +951,15 @@ function createTerminalWsHandlers(
           code: 'SESSION_NOT_FOUND',
           message: 'Terminal session not found'
         }));
+        return;
+      }
+      // Ownership before anything else: a foreign socket, a socket from a
+      // replaced generation, or an expired forwarding deadline gets no reply,
+      // no agent command, no pong-time update, and no rate-limit accounting.
+      if (
+        !connectionIdentity
+        || !ownsSafeRemoteConnection(activeTerminalSessions, sessionId, connectionIdentity, ws)
+      ) {
         return;
       }
 
@@ -686,101 +1057,31 @@ function createTerminalWsHandlers(
       }
     },
 
-    onClose: async (_event: unknown, _ws: WSContext) => {
-      const termSession = activeTerminalSessions.get(sessionId);
-
-      if (termSession) {
-        // Clear ping interval
-        if (termSession.pingInterval) {
-          clearInterval(termSession.pingInterval);
-        }
-
-        // Send terminal_stop command to agent
-        sendCommandToAgent(termSession.agentId, {
-          id: `term-stop-${sessionId}`,
-          type: 'terminal_stop',
-          payload: { sessionId }
-        });
-
-        // Clean up
-        activeTerminalSessions.delete(sessionId);
-        unregisterTerminalOutputCallback(sessionId);
-        if (termSession.sharedOwner && termSession.sharedLeases) {
-          await termSession.sharedLeases.release(termSession.sharedOwner);
-        }
-
-        // Update session status
-        const endedAt = new Date();
-        const startedAt = termSession.startedAt;
-        const durationSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
-
-        await withSystemDbAccessContext(async () => {
-          await db
-            .update(remoteSessions)
-            .set({
-              status: 'disconnected',
-              endedAt,
-              durationSeconds
-            })
-            .where(eq(remoteSessions.id, sessionId));
-        });
-
-        // E2: write a session summary audit row on close.
-        try {
-          await logSessionAudit(
-            'terminal.session.summary',
-            termSession.userId,
-            termSession.orgId,
-            {
-              sessionId,
-              deviceId: termSession.deviceId,
-              bytesIn: termSession.bytesIn,
-              bytesOut: termSession.bytesOut,
-              durationMs: endedAt.getTime() - startedAt.getTime(),
-            }
-          );
-        } catch (auditErr) {
-          console.error(`[TerminalWs] Failed to write session summary for ${sessionId}:`, auditErr);
-        }
-
-        console.log(`Terminal session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
-      }
+    onClose: async (_event: unknown, ws: WSContext) => {
+      // A close event from a foreign or superseded socket must not tear down
+      // the live owner — it reaches no exact entry and no-ops.
+      if (!connectionIdentity) return;
+      await closeExactTerminalConnection(sessionId, connectionIdentity, {
+        expectedWs: ws,
+        closeSocket: false,
+        closeCode: 1000,
+        closeReason: 'disconnected',
+        terminalStatus: 'disconnected',
+        writeSummary: true,
+      });
     },
 
-    onError: async (event: unknown, _ws: WSContext) => {
+    onError: async (event: unknown, ws: WSContext) => {
       console.error(`Terminal WebSocket error for session ${sessionId}:`, event);
-      const termSession = activeTerminalSessions.get(sessionId);
-      if (termSession?.pingInterval) {
-        clearInterval(termSession.pingInterval);
-      }
-      activeTerminalSessions.delete(sessionId);
-      unregisterTerminalOutputCallback(sessionId);
-      if (termSession?.sharedOwner && termSession.sharedLeases) {
-        await termSession.sharedLeases.release(termSession.sharedOwner);
-      }
-
-      // Update session status in database to match onClose behavior
-      if (termSession) {
-        try {
-          const endedAt = new Date();
-          const durationSeconds = Math.round((endedAt.getTime() - termSession.startedAt.getTime()) / 1000);
-
-          await withSystemDbAccessContext(async () => {
-            await db
-              .update(remoteSessions)
-              .set({
-                status: 'disconnected',
-                endedAt,
-                durationSeconds
-              })
-              .where(eq(remoteSessions.id, sessionId));
-          });
-
-          console.log(`Terminal session ${sessionId} errored and cleaned up (duration: ${durationSeconds}s)`);
-        } catch (dbError) {
-          console.error(`Failed to update session ${sessionId} status after error:`, dbError);
-        }
-      }
+      if (!connectionIdentity) return;
+      await closeExactTerminalConnection(sessionId, connectionIdentity, {
+        expectedWs: ws,
+        closeSocket: false,
+        closeCode: 1011,
+        closeReason: 'socket_error',
+        terminalStatus: 'disconnected',
+        writeSummary: false,
+      });
     }
   };
 }
@@ -807,22 +1108,36 @@ export function createTerminalWsRoutes(
       return requireRemoteWsUpgrade({
         expectedType: 'terminal',
         sharedLeases,
+        // Reject implicit replacement BEFORE the 101: any installed entry —
+        // opening, active, or closing — makes this a 409, never an overwrite.
+        // No replica relies on a post-upgrade 4009 close as enforcement.
         installLocal: (sessionId, claim) => {
-          if (
-            activeTerminalSessions.has(sessionId)
-            || terminalOpeningReservations.has(sessionId)
-          ) {
-            return { ok: false, reason: 'already_owned' };
-          }
-          terminalOpeningReservations.set(sessionId, claim);
-          return { ok: true };
+          const now = Date.now();
+          return installLocalRemoteConnection(
+            activeTerminalSessions,
+            sessionId,
+            claim,
+            (shared): TerminalSession => ({
+              ...shared,
+              state: 'opening',
+              userWs: null,
+              sharedOwner: shared,
+              sharedLeases,
+              agentId: '',
+              userId: '',
+              deviceId: '',
+              orgId: '',
+              startedAt: new Date(),
+              lastPongAt: now,
+              msgTimestamps: [],
+              msgByteTimestamps: [],
+              bytesIn: 0,
+              bytesOut: 0,
+            }),
+          );
         },
-        removeLocal: (sessionId, claim) => {
-          if (terminalOpeningReservations.get(sessionId)?.ownerValue !== claim.ownerValue) {
-            return false;
-          }
-          return terminalOpeningReservations.delete(sessionId);
-        },
+        removeLocal: (sessionId, claim) =>
+          removeExactLocalRemoteConnection(activeTerminalSessions, sessionId, claim),
       })(c, next);
     },
     upgradeWebSocket((c: {
@@ -842,9 +1157,21 @@ export function createTerminalWsRoutes(
         ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
         userAgent: c.req.header('user-agent') ?? '',
       };
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        // Fail closed: without the durable owner there is no way to prove this
+        // socket owns the session, and an unproven terminal must not stream.
+        return {
+          onOpen: (_event: unknown, ws: WSContext) => {
+            ws.close(1011, 'Remote ownership unavailable');
+          },
+          onMessage: () => undefined,
+          onClose: () => undefined,
+          onError: () => undefined,
+        };
+      }
       const context = c.get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
-      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager() ?? undefined;
-      return createTerminalWsHandlers(sessionId, ticket, caller, context, sharedLeases);
+      return createTerminalWsHandlers(sessionId, ticket, caller, sharedLeases, context);
     })
   );
 
@@ -863,4 +1190,68 @@ export function getActiveTerminalSessionCount(): number {
  */
 export function getActiveTerminalSessionIds(): string[] {
   return Array.from(activeTerminalSessions.keys());
+}
+
+export function __resetTerminalWsForTest(): void {
+  for (const session of activeTerminalSessions.values()) {
+    if (session.pingInterval) clearInterval(session.pingInterval);
+    if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  }
+  activeTerminalSessions.clear();
+  terminalOutputCallbacks.clear();
+}
+
+// Monotonic across every test manager instance, mirroring the real Redis
+// `INCR`: two generations must never share an identity, or a stale-generation
+// test would pass for the wrong reason.
+let testLeaseGeneration = 0;
+
+/**
+ * In-memory stand-in for the Redis-backed lease manager. Generations increment
+ * exactly as the real `INCR` does, so tests exercise real generation-mismatch
+ * behaviour rather than a permissive stub.
+ */
+export function __createTerminalSharedLeasesForTest(): RemoteWsSharedLeaseManager {
+  const owners = new Map<string, string>();
+  let generation = 0;
+  return {
+    acquire: async (kind, sessionId) => {
+      if (owners.has(sessionId)) return { ok: false, reason: 'already_owned' };
+      testLeaseGeneration += 1;
+      generation = testLeaseGeneration;
+      const claim: RemoteWsSharedLeaseClaim = {
+        kind,
+        sessionId,
+        connectionId: `11111111-1111-4111-8111-${String(generation).padStart(12, '0')}`,
+        generation,
+        instanceId: '22222222-2222-4222-8222-222222222222',
+        leaseToken: `33333333-3333-4333-8333-${String(generation).padStart(12, '0')}`,
+        ownerValue: `test-owner-${generation}`,
+        safeForwardingUntilMonotonicMs: Number.MAX_SAFE_INTEGER,
+      };
+      owners.set(sessionId, claim.ownerValue);
+      return { ok: true, claim };
+    },
+    renew: async (claim) => claim,
+    beginClose: async (claim) => (
+      owners.get(claim.sessionId) === claim.ownerValue
+        ? { ok: true, ownership: 'still_owner' }
+        : { ok: false, reason: 'owner_mismatch' }
+    ),
+    release: async (claim) => {
+      if (owners.get(claim.sessionId) !== claim.ownerValue) return false;
+      owners.delete(claim.sessionId);
+      return true;
+    },
+    writeDesktopFinalizationIntent: async () => 'written',
+    claimDesktopOrphan: async () => 'claimed',
+    releaseDesktopFinalizationIntent: async () => true,
+    observeDesktopFinalization: async () => ({
+      ownerPresent: false,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    }),
+    topology: {} as RemoteWsSharedLeaseManager['topology'],
+  };
 }

@@ -60,7 +60,11 @@ vi.mock('./remote/helpers', () => ({
 import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
-import { createTerminalWsRoutes } from './terminalWs';
+import {
+  createTerminalWsRoutes,
+  __createTerminalSharedLeasesForTest,
+  __resetTerminalWsForTest,
+} from './terminalWs';
 
 const SESSION_ID = 'session-term-rate-001';
 const DEVICE_ID = 'device-rate';
@@ -100,7 +104,10 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     capturedFactory = factory;
     return (_c: any, _next: any) => {};
   });
-  createTerminalWsRoutes(upgradeWebSocket);
+  // Every capture gets its own lease manager, but generations are globally
+  // monotonic — a replaced generation can never reuse a prior identity.
+  const testSharedLeases = __createTerminalSharedLeasesForTest();
+  createTerminalWsRoutes(upgradeWebSocket, { sharedLeases: testSharedLeases });
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
@@ -151,6 +158,9 @@ function setupSuccessfulValidation() {
 
 describe('terminalWs — E1 Redis rate limiter for WS connections', () => {
   beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
     vi.clearAllMocks();
     rateLimiterMock.mockReset();
     rateLimiterMock.mockImplementation(async () => ({
@@ -196,6 +206,9 @@ describe('terminalWs — E1 Redis rate limiter for WS connections', () => {
 
 describe('terminalWs — E2 per-session input rate limit', () => {
   beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
     vi.clearAllMocks();
     rateLimiterMock.mockReset();
     rateLimiterMock.mockImplementation(async () => ({
