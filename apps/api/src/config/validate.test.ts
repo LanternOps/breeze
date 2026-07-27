@@ -963,6 +963,44 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- Security remediation Wave 5, Task 6 — agent certificate/device
+  // binding mode --------------------------------------------------------
+  describe('AGENT_MTLS_BINDING_MODE', () => {
+    it('defaults to off when unset', () => {
+      withEnv(validEnv, () => {
+        const config = validateConfig();
+        expect(config.AGENT_MTLS_BINDING_MODE).toBe('off');
+      });
+    });
+
+    it('accepts audit', () => {
+      withEnv({ ...validEnv, AGENT_MTLS_BINDING_MODE: 'audit' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_MTLS_BINDING_MODE).toBe('audit');
+      });
+    });
+
+    it('accepts enforce', () => {
+      withEnv({ ...validEnv, AGENT_MTLS_BINDING_MODE: 'enforce' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_MTLS_BINDING_MODE).toBe('enforce');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently falling back', () => {
+      withEnv({ ...validEnv, AGENT_MTLS_BINDING_MODE: 'bogus' }, () => {
+        expect(() => validateConfig()).toThrow('AGENT_MTLS_BINDING_MODE');
+      });
+    });
+
+    it('an absent value keeps production booting (default stays off)', () => {
+      withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_MTLS_BINDING_MODE).toBe('off');
+      });
+    });
+  });
+
   // ---- OAuth DCR (Dynamic Client Registration) hardening (Task 21) -------
   // When DCR is on in production it must declare an anti-spam posture: EITHER
   // gate registration behind an initial-access-token (OAUTH_DCR_REQUIRE_IAT)

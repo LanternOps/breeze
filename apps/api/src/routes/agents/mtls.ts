@@ -26,7 +26,11 @@ import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
 import { isPrivateIp } from '../../services/urlSafety';
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { trustsForwardedHeadersFrom } from '../../services/clientIp';
+import {
+  getAgentMtlsBindingMode,
+  readAgentCertificateAssertion,
+  type AgentMtlsBindingMode,
+} from '../../services/agentCertificateBinding';
 import { issueRenewalChallenge, verifyAndConsumeRenewalProof } from '../../services/mtlsRenewalProof';
 import {
   queueCertificateRevocationCore,
@@ -88,22 +92,7 @@ const confirmRenewRequestSchema = z.object({
 
 type CapableRenewRequest = z.infer<typeof capableRenewRequestSchema>;
 
-type MtlsBindingMode = 'off' | 'audit' | 'enforce';
-
-/**
- * Reads the compatibility mode for /renew-cert's proof/assertion gate.
- *
- * TODO(Task 6): Task 6 (services/agentCertificateBinding.ts) centralizes
- * `AGENT_MTLS_BINDING_MODE` reading + config validation for BOTH REST agent
- * auth and the command WebSocket. This local copy exists only so Task 4 can
- * land the renewal-specific mode gate ahead of Task 6; it must be replaced
- * with the shared service once that lands. Defaults to `off` on any
- * absent/invalid value, matching the shared service's documented default.
- */
-function getMtlsBindingMode(): MtlsBindingMode {
-  const raw = (process.env.AGENT_MTLS_BINDING_MODE ?? '').trim().toLowerCase();
-  return raw === 'audit' || raw === 'enforce' ? raw : 'off';
-}
+type MtlsBindingMode = AgentMtlsBindingMode;
 
 interface ClientCertAssertion {
   /** True only when a verified, trusted-source assertion carried a serial. */
@@ -113,27 +102,19 @@ interface ClientCertAssertion {
 }
 
 /**
- * Reads the edge-set certificate assertion headers
- * (`X-Breeze-Client-Cert-Verified` / `X-Breeze-Client-Cert-Serial`), honoring
- * them ONLY when `trustsForwardedHeadersFrom(c)` is true — i.e. the request's
- * immediate TCP peer is a configured trusted proxy. A client that isn't
- * behind a trusted proxy can set these headers to anything; they must never
- * be trusted directly from `c.req.header(...)` without this gate.
- *
- * TODO(Task 6): replace with the centralized assertion reader in
- * services/agentCertificateBinding.ts once it lands — this mirrors its exact
- * trust rule and serial normalization (uppercase hex, no separators) so
- * behavior does not shift when Task 6 swaps this local copy out.
+ * Reads the edge-set certificate assertion headers via the centralized
+ * reader (services/agentCertificateBinding.ts) and collapses it to the
+ * trust-gated `{ verified, serial }` shape `evaluateRenewalAuthorization`
+ * below expects — its proof-based renewal semantics are deliberately NOT
+ * absorbed into the shared checkAgentCertificateBinding decision (Task 6),
+ * so this adapter is the seam between the two. Trust-gating (only honoring
+ * the headers when `trustsForwardedHeadersFrom(c)` is true) happens inside
+ * `readAgentCertificateAssertion`.
  */
 function readClientCertAssertion(c: Context): ClientCertAssertion {
-  if (!trustsForwardedHeadersFrom(c)) {
-    return { verified: false, serial: null };
-  }
-  const verifiedHeader = c.req.header('X-Breeze-Client-Cert-Verified');
-  const serialHeader = c.req.header('X-Breeze-Client-Cert-Serial');
-  const normalizedSerial = serialHeader ? serialHeader.replace(/[^0-9a-fA-F]/g, '').toUpperCase() : null;
-  const verified = (verifiedHeader === 'true' || verifiedHeader === '1') && Boolean(normalizedSerial);
-  return { verified, serial: verified ? normalizedSerial : null };
+  const assertion = readAgentCertificateAssertion(c);
+  const verified = assertion.assertionTrusted && assertion.assertedVerified;
+  return { verified, serial: verified ? assertion.assertedSerial : null };
 }
 
 function toOptionalString(value: unknown): string | undefined {
@@ -829,7 +810,7 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
   // certificate-binding gate. Runs AFTER the legacy quarantine branch above
   // (unchanged) and BEFORE spending any Cloudflare issuance quota.
   const activeCertRow = await fetchActiveCertificateRow(device.id);
-  const mode = getMtlsBindingMode();
+  const mode = getAgentMtlsBindingMode();
   const assertion = readClientCertAssertion(c);
   const authDecision = await evaluateRenewalAuthorization({
     mode,

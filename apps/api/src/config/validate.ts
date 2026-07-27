@@ -635,6 +635,17 @@ const envSchema = z
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
     IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
 
+    // Security remediation Wave 5, Task 6 — the agent certificate/device
+    // binding compatibility mode (services/agentCertificateBinding.ts),
+    // shared by agent REST auth and the command WebSocket. Defaults to `off`
+    // (NOT `enforce`, unlike IP_ALLOWLIST_ENFORCEMENT_MODE above) so an
+    // unconfigured production deploy keeps booting exactly as before this
+    // feature landed; an explicit but INVALID value still boot-refuses below
+    // rather than silently falling back. Deliberately absent from
+    // .env.example — see envComposeParity.test.ts's guard, which would then
+    // require Compose wiring this task does not scope.
+    AGENT_MTLS_BINDING_MODE: z.enum(['off', 'audit', 'enforce']).default('off'),
+
     // -- Email-to-ticket ingest (Phase 4) ------------------------------------
     // Both optional. If MAILGUN_INBOUND_SIGNING_KEY is unset, `verify()` returns
     // false and the webhook responds 401 (permanent — the provider does NOT retry).
@@ -1593,6 +1604,7 @@ export function validateConfig(): AppConfig {
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: env.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
     MAILGUN_INBOUND_SIGNING_KEY: env.MAILGUN_INBOUND_SIGNING_KEY,
     TICKETS_INBOUND_DOMAIN: env.TICKETS_INBOUND_DOMAIN,
+    AGENT_MTLS_BINDING_MODE: env.AGENT_MTLS_BINDING_MODE,
   });
 
   if (!result.success) {

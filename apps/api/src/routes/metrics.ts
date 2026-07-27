@@ -36,6 +36,7 @@ import { registerM365CustomerGraphReadPrometheusCounter } from '../services/m365
 import { registerM365GraphReadActionPrometheusCounter } from '../services/m365ControlPlane/readActionMetrics';
 import { registerM365GraphActionsPrometheusCounter } from '../services/m365ControlPlane/writeActionMetrics';
 import { registerActionIntentPrometheusCounter } from '../services/actionIntents/metrics';
+import { registerAgentCertificateBindingPrometheusCounter } from '../services/agentCertificateBinding';
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 
 export {
@@ -95,6 +96,7 @@ registerM365CustomerGraphReadPrometheusCounter(register);
 registerM365GraphReadActionPrometheusCounter(register);
 registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
+registerAgentCertificateBindingPrometheusCounter(register);
 
 const httpRequestsTotal = new Counter({
   name: 'http_requests_total',

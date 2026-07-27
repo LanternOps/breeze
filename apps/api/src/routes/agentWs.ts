@@ -38,6 +38,11 @@ import {
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
+import {
+  enforceAgentCertificateBinding,
+  readAgentCertificateAssertion,
+  type AgentCertificateAssertion,
+} from '../services/agentCertificateBinding';
 import { getAgentTenantState } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
@@ -904,12 +909,37 @@ async function isAgentDeviceStillAuthorized(agentId: string): Promise<boolean> {
   }
 }
 
+// Default: no certificate assertion presented / no trusted source. Safe for
+// the (only) production caller below, which always supplies a real one built
+// from the pre-upgrade request; also lets existing direct callers of
+// validateAgentToken(agentId, token) — e.g. this file's unit tests — omit the
+// parameter without affecting behavior (the binding check only ever runs
+// when AGENT_MTLS_BINDING_MODE is not `off`; it fails closed on a genuinely
+// missing assertion in that case, same as any other caller).
+const NO_CERTIFICATE_ASSERTION: AgentCertificateAssertion = {
+  assertionTrusted: false,
+  assertedVerified: false,
+  assertedSerial: null,
+};
+
 /**
  * Validate agent token by hashing it and comparing against the stored hash.
  * Returns `re_enrollment_required` when the device row exists but predates the
  * token-hash migration so the agent can prompt the operator instead of looping.
+ *
+ * Security remediation Wave 5, Task 6: after every other check passes, also
+ * runs the shared certificate/device binding decision
+ * (services/agentCertificateBinding.ts) — the SAME pure check
+ * agentAuthMiddleware calls for REST — so the WS upgrade and REST agent auth
+ * agree on the same reason for the same inputs. `device.id` here is the
+ * ALREADY bearer-token-matched device row, never client input, so a stolen
+ * token cannot bind against a different device's certificate identity.
  */
-export async function validateAgentToken(agentId: string, token: string): Promise<AgentTokenValidation> {
+export async function validateAgentToken(
+  agentId: string,
+  token: string,
+  certAssertion: AgentCertificateAssertion = NO_CERTIFICATE_ASSERTION,
+): Promise<AgentTokenValidation> {
   if (!token || !token.startsWith('brz_')) {
     return { ok: false, reason: 'unauthorized' };
   }
@@ -997,6 +1027,19 @@ export async function validateAgentToken(agentId: string, token: string): Promis
   // that the drain-mode command filtering can't see. The agent falls back to
   // heartbeat polling, which is the actual self_uninstall delivery path.
   if ((await getAgentTenantState(device.orgId)) !== 'active') {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  // Security remediation Wave 5, Task 6 — shared certificate/device binding
+  // decision. Runs after every other auth/lifecycle/tenant check and BEFORE
+  // the WS upgrade is accepted. In the default `off` mode this never touches
+  // the DB (no extra round trip for the common case).
+  const bindingDecision = await enforceAgentCertificateBinding({
+    deviceId: device.id,
+    assertion: certAssertion,
+    pathClass: 'ws',
+  });
+  if (!bindingDecision.allowed) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -2969,7 +3012,12 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
-      const result = await validateAgentToken(agentId, token);
+      // Security remediation Wave 5, Task 6 — read the certificate assertion
+      // headers HERE, on the real pre-upgrade Hono context (the only place in
+      // this flow with header access), and hand the parsed result to
+      // validateAgentToken so the binding decision runs before the upgrade.
+      const certAssertion = readAgentCertificateAssertion(c);
+      const result = await validateAgentToken(agentId, token, certAssertion);
       if (!result.ok) {
         if (result.reason === 're_enrollment_required') {
           return c.json({ error: 'Re-enrollment required', code: 're_enrollment_required' }, 401);
