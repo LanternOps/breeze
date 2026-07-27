@@ -13,7 +13,7 @@ import { db } from '../db';
 import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
   recordBackupCommandTimeout,
@@ -841,6 +841,23 @@ async function metricsResponse(c: any): Promise<Response> {
   });
 }
 
+/** Current-metric response shape with every aggregate zeroed. */
+function emptyDashboardMetrics() {
+  return {
+    data: {
+      uptime: 0,
+      remoteSessions: 0,
+      sessions: 0,
+      devices: { total: 0, online: 0, offline: 0, pending: 0 },
+      business_metrics: {
+        devices_total: 0,
+        devices_active: 0,
+        devices_pending: 0
+      }
+    }
+  };
+}
+
 metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   const auth = c.get('auth');
   const orgCondition =
@@ -850,10 +867,23 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
         ? eq(devices.orgId, auth.orgId)
         : undefined;
 
+  // `allowedSiteIds` is populated by requirePermission. `undefined` is
+  // unrestricted; `[]` is restricted to no sites and must never widen into
+  // an unscoped aggregate.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const allowedSiteIds = perms?.allowedSiteIds;
+  if (allowedSiteIds !== undefined && allowedSiteIds.length === 0) {
+    return c.json(emptyDashboardMetrics());
+  }
+  const siteCondition =
+    allowedSiteIds === undefined ? undefined : inArray(devices.siteId, allowedSiteIds);
+
   try {
-    const deviceStatusCondition = orgCondition
-      ? and(sql`${devices.status} != 'decommissioned'`, orgCondition)
-      : sql`${devices.status} != 'decommissioned'`;
+    const deviceStatusCondition = and(
+      sql`${devices.status} != 'decommissioned'`,
+      orgCondition,
+      siteCondition
+    );
     const statusCounts = await db
       .select({
         status: devices.status,
@@ -879,9 +909,13 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     const enrolledTotal = total - pending;
     const uptime = enrolledTotal > 0 ? Math.round((online / enrolledTotal) * 1000) / 10 : 0;
 
-    const activeSessionCondition = orgCondition
-      ? and(eq(remoteSessions.status, 'active'), orgCondition)
-      : eq(remoteSessions.status, 'active');
+    // Remote-session counts join through devices, so the same site predicate
+    // applies to them.
+    const activeSessionCondition = and(
+      eq(remoteSessions.status, 'active'),
+      orgCondition,
+      siteCondition
+    );
     const [sessionRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(remoteSessions)
@@ -890,9 +924,11 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     const activeSessions = Number(sessionRow?.count ?? 0);
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const totalSessionCondition = orgCondition
-      ? and(gte(remoteSessions.createdAt, thirtyDaysAgo), orgCondition)
-      : gte(remoteSessions.createdAt, thirtyDaysAgo);
+    const totalSessionCondition = and(
+      gte(remoteSessions.createdAt, thirtyDaysAgo),
+      orgCondition,
+      siteCondition
+    );
     const [totalSessionRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(remoteSessions)
@@ -920,6 +956,21 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
 });
 
 metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
+  // Trend metrics aggregate `metric_rollups`, which is pre-aggregated per
+  // organization and carries no site axis. There is no safe site predicate to
+  // apply, so a site-restricted caller (including restricted-empty) is denied
+  // outright before any aggregate query rather than served org-wide data.
+  const trendPerms = c.get('permissions') as UserPermissions | undefined;
+  if (trendPerms?.allowedSiteIds !== undefined) {
+    return c.json(
+      {
+        error: 'Trend metrics are unavailable for site-restricted users',
+        code: 'SITE_SCOPED_TRENDS_UNAVAILABLE'
+      },
+      403
+    );
+  }
+
   const auth = c.get('auth');
   const orgCondition =
     typeof auth?.orgCondition === 'function'

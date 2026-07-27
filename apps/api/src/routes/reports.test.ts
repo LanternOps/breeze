@@ -118,6 +118,7 @@ vi.mock('../services/reportGenerationService', async (importOriginal) => {
 
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ op: 'and', conditions }),
+  or: (...conditions: any[]) => ({ op: 'or', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
@@ -446,6 +447,121 @@ function mockMetricsQueries(
         })
       })
     } as any);
+}
+
+type SummaryAlert = {
+  orgId: string;
+  siteId: string | null;
+  severity: string;
+  status: string;
+  day: string;
+  ruleId: string;
+  ruleName: string;
+};
+
+/**
+ * Evaluates a mocked WHERE tree against one seeded alert. Date bounds always
+ * pass (fixtures sit inside every window); organization and device-site
+ * predicates are the interesting axes.
+ */
+function alertMatches(alert: SummaryAlert, condition: any): boolean {
+  if (!condition) return true;
+  if (condition.op === 'and') {
+    return condition.conditions.every((child: any) => alertMatches(alert, child));
+  }
+  if (condition.op === 'or') {
+    return condition.conditions.some((child: any) => alertMatches(alert, child));
+  }
+  if (condition.op === 'eq') {
+    if (condition.column === 'alerts.orgId' || condition.column === 'devices.orgId') {
+      return alert.orgId === condition.value;
+    }
+    if (condition.column === 'devices.siteId') {
+      return alert.siteId === condition.value;
+    }
+    return true;
+  }
+  if (condition.op === 'inArray') {
+    if (condition.column === 'alerts.orgId' || condition.column === 'devices.orgId') {
+      return (condition.values as string[]).includes(alert.orgId);
+    }
+    if (condition.column === 'devices.siteId') {
+      return alert.siteId !== null && (condition.values as string[]).includes(alert.siteId);
+    }
+    return true;
+  }
+  return true;
+}
+
+/** The device-scope branch the alerts-summary handler conjoins into every aggregate. */
+function findDeviceScopeNode(condition: any): any {
+  const children = condition?.op === 'and' ? condition.conditions : [condition];
+  return children.find(
+    (child: any) =>
+      child?.op === 'or' ||
+      ((child?.op === 'inArray' || child?.op === 'eq') && child.column === 'devices.siteId')
+  );
+}
+
+function countBy(rows: SummaryAlert[], key: 'severity' | 'status' | 'day'): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    counts.set(row[key], (counts.get(row[key]) ?? 0) + 1);
+  }
+  return [...counts.entries()];
+}
+
+/**
+ * Mocks the five alerts-summary aggregates in handler order (severity, status,
+ * day, top rules, total) and records each query's join conditions and WHERE
+ * tree so tests can prove one shared device predicate reaches all of them.
+ */
+function mockAlertsSummaryQueries(rows: SummaryAlert[]) {
+  const captured: any[] = [];
+  const joins: any[][] = [[], [], [], [], []];
+  const projections: Array<(visible: SummaryAlert[]) => any[]> = [
+    (visible) => countBy(visible, 'severity').map(([severity, count]) => ({ severity, count })),
+    (visible) => countBy(visible, 'status').map(([status, count]) => ({ status, count })),
+    (visible) =>
+      countBy(visible, 'day')
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([date, count]) => ({ date, count })),
+    (visible) => {
+      const byRule = new Map<string, { ruleId: string; ruleName: string; count: number }>();
+      for (const row of visible) {
+        const existing = byRule.get(row.ruleId);
+        if (existing) existing.count += 1;
+        else byRule.set(row.ruleId, { ruleId: row.ruleId, ruleName: row.ruleName, count: 1 });
+      }
+      return [...byRule.values()].sort((left, right) => right.count - left.count).slice(0, 10);
+    },
+    (visible) => [{ count: visible.length }]
+  ];
+
+  projections.forEach((project, index) => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => {
+        const node: any = {};
+        node.innerJoin = (_table: unknown, condition: unknown) => {
+          joins[index]!.push(condition);
+          return node;
+        };
+        node.where = (condition: any) => {
+          captured.push(condition);
+          const promise: any = Promise.resolve(
+            project(rows.filter((row) => alertMatches(row, condition)))
+          );
+          promise.groupBy = () => promise;
+          promise.orderBy = () => promise;
+          promise.limit = () => promise;
+          return promise;
+        };
+        return node;
+      }
+    } as any);
+  });
+
+  return { captured, joins };
 }
 
 function mockGenerateDeviceInventoryQuery(rows: Array<{ hostname: string; siteId: string }>) {
@@ -1867,6 +1983,273 @@ describe('reports routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.topCpu).toHaveLength(2);
+    });
+  });
+
+  describe('GET /reports/data/alerts-summary site scope', () => {
+    const ORG_B = '66666666-6666-4666-8666-666666666666';
+    const ORG_C = '77777777-7777-4777-8777-777777777777';
+    const SITE_B1 = '88888888-8888-4888-8888-888888888888';
+    const SITE_B2 = '99999999-9999-4999-8999-999999999999';
+    const SITE_C = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const USER_ID = '44444444-4444-4444-8444-444444444444';
+    const CAPTURED_AT = new Date('2026-07-25T12:00:00.000Z');
+    const EMPTY_SUMMARY = {
+      data: { bySeverity: {}, byStatus: {}, byDay: [], topRules: [] },
+      total: 0
+    };
+
+    const orgAlerts: SummaryAlert[] = [
+      { orgId: ORG_ID, siteId: SITE_ALLOWED, severity: 'critical', status: 'open', day: '2026-07-01', ruleId: 'rule-1', ruleName: 'Rule One' },
+      { orgId: ORG_ID, siteId: SITE_ALLOWED, severity: 'warning', status: 'open', day: '2026-07-02', ruleId: 'rule-1', ruleName: 'Rule One' },
+      { orgId: ORG_ID, siteId: SITE_DENIED, severity: 'critical', status: 'resolved', day: '2026-07-01', ruleId: 'rule-2', ruleName: 'Rule Two' },
+      { orgId: ORG_ID, siteId: null, severity: 'info', status: 'open', day: '2026-07-03', ruleId: 'rule-3', ruleName: 'Rule Three' }
+    ];
+
+    const multiOrgAlerts: SummaryAlert[] = [
+      { orgId: ORG_ID, siteId: SITE_ALLOWED, severity: 'critical', status: 'open', day: '2026-07-01', ruleId: 'rule-a', ruleName: 'Rule A' },
+      { orgId: ORG_ID, siteId: null, severity: 'warning', status: 'open', day: '2026-07-02', ruleId: 'rule-a', ruleName: 'Rule A' },
+      { orgId: ORG_B, siteId: SITE_B1, severity: 'critical', status: 'resolved', day: '2026-07-02', ruleId: 'rule-b1', ruleName: 'Rule B1' },
+      { orgId: ORG_B, siteId: SITE_B2, severity: 'info', status: 'open', day: '2026-07-03', ruleId: 'rule-b2', ruleName: 'Rule B2' },
+      { orgId: ORG_B, siteId: null, severity: 'info', status: 'open', day: '2026-07-03', ruleId: 'rule-b3', ruleName: 'Rule B3' },
+      { orgId: ORG_C, siteId: SITE_C, severity: 'critical', status: 'open', day: '2026-07-04', ruleId: 'rule-c', ruleName: 'Rule C' }
+    ];
+
+    function restrictedAuthority(orgId: string, siteIds: string[]) {
+      return {
+        ok: true,
+        authority: {
+          scope: { version: 1, kind: 'restricted', orgId, siteIds },
+          principalUserId: USER_ID,
+          capturedAt: CAPTURED_AT,
+          fingerprint: 'a'.repeat(64)
+        }
+      };
+    }
+
+    function unrestrictedAuthority(orgId: string) {
+      return {
+        ok: true,
+        authority: {
+          scope: { version: 1, kind: 'unrestricted', orgId },
+          principalUserId: USER_ID,
+          capturedAt: CAPTURED_AT,
+          fingerprint: 'f'.repeat(64)
+        }
+      };
+    }
+
+    function usePartnerAuth(orgIds: string[]) {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        accessibleOrgIds: orgIds,
+        canAccessOrg: (orgId: string) => orgIds.includes(orgId)
+      };
+    }
+
+    it('returns only Site A values in every aggregate component for a restricted caller', async () => {
+      siteScopeState.result = restrictedAuthority(ORG_ID, [SITE_ALLOWED]);
+      const { captured, joins } = mockAlertsSummaryQueries(orgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.bySeverity).toEqual({ critical: 1, warning: 1 });
+      expect(body.data.byStatus).toEqual({ open: 2 });
+      expect(body.data.byDay).toEqual([
+        { date: '2026-07-01', count: 1 },
+        { date: '2026-07-02', count: 1 }
+      ]);
+      expect(body.data.topRules).toEqual([
+        { ruleId: 'rule-1', ruleName: 'Rule One', count: 2 }
+      ]);
+      expect(body.total).toBe(2);
+
+      expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+        authState.auth,
+        ORG_ID,
+        'export'
+      );
+
+      // All five aggregates join alerts to devices and reuse one predicate.
+      expect(captured).toHaveLength(5);
+      expect(joins).toHaveLength(5);
+      for (const queryJoins of joins) {
+        expect(queryJoins).toContainEqual({
+          op: 'eq',
+          column: 'alerts.deviceId',
+          value: 'devices.id'
+        });
+      }
+      const scopeNodes = captured.map(findDeviceScopeNode);
+      for (const node of scopeNodes) {
+        expect(node).toEqual({
+          op: 'inArray',
+          column: 'devices.siteId',
+          values: [SITE_ALLOWED]
+        });
+        expect(node).toBe(scopeNodes[0]);
+      }
+    });
+
+    it('returns 403 for a denied siteId before any query', async () => {
+      siteScopeState.result = restrictedAuthority(ORG_ID, [SITE_ALLOWED]);
+      mockAlertsSummaryQueries(orgAlerts);
+
+      const res = await app.request(`/reports/data/alerts-summary?siteId=${SITE_DENIED}`);
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('returns the zero-safe shape with zero queries for a restricted-empty caller', async () => {
+      siteScopeState.result = { ok: false, reason: 'empty_scope' };
+      mockAlertsSummaryQueries(orgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(EMPTY_SUMMARY);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('leaves an unrestricted caller unchanged', async () => {
+      const { captured } = mockAlertsSummaryQueries(orgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.bySeverity).toEqual({ critical: 2, warning: 1, info: 1 });
+      expect(body.data.byStatus).toEqual({ open: 3, resolved: 1 });
+      expect(body.data.byDay).toHaveLength(3);
+      expect(body.data.topRules).toHaveLength(3);
+      expect(body.total).toBe(4);
+      for (const condition of captured) {
+        expect(findDeviceScopeNode(condition)).toBeUndefined();
+      }
+    });
+
+    it('derives one exact-organization scope from an explicit orgId even for a broader partner', async () => {
+      usePartnerAuth([ORG_ID, ORG_B]);
+      siteScopeState.result = restrictedAuthority(ORG_B, [SITE_B1]);
+      const { captured } = mockAlertsSummaryQueries(multiOrgAlerts);
+
+      const res = await app.request(`/reports/data/alerts-summary?orgId=${ORG_B}`);
+
+      expect(res.status).toBe(200);
+      expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
+        authState.auth,
+        ORG_B,
+        'export'
+      );
+      expect(resolveRequestReportAuthorityMap).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.data.bySeverity).toEqual({ critical: 1 });
+      expect(body.data.byStatus).toEqual({ resolved: 1 });
+      expect(body.data.topRules).toEqual([
+        { ruleId: 'rule-b1', ruleName: 'Rule B1', count: 1 }
+      ]);
+      expect(body.total).toBe(1);
+      for (const condition of captured) {
+        expect(findDeviceScopeNode(condition)).toEqual({
+          op: 'inArray',
+          column: 'devices.siteId',
+          values: [SITE_B1]
+        });
+      }
+    });
+
+    it('builds one per-organization composite predicate for a partner without orgId', async () => {
+      usePartnerAuth([ORG_ID, ORG_B, ORG_C]);
+      siteScopeState.mapResult = new Map<string, any>([
+        [ORG_ID, unrestrictedAuthority(ORG_ID)],
+        [ORG_B, restrictedAuthority(ORG_B, [SITE_B1])],
+        [ORG_C, { ok: false, reason: 'permission_removed' }]
+      ]);
+      const { captured } = mockAlertsSummaryQueries(multiOrgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      expect(resolveRequestReportAuthorityMap).toHaveBeenCalledWith(
+        authState.auth,
+        [ORG_ID, ORG_B, ORG_C],
+        'export'
+      );
+      const body = await res.json();
+      // Organization A is unrestricted through partner fallback; Organization B
+      // contributes only its Site B1 row; Organization C is denied entirely.
+      expect(body.data.bySeverity).toEqual({ critical: 2, warning: 1 });
+      expect(body.data.byStatus).toEqual({ open: 2, resolved: 1 });
+      expect(body.data.byDay).toEqual([
+        { date: '2026-07-01', count: 1 },
+        { date: '2026-07-02', count: 2 }
+      ]);
+      expect(body.data.topRules).toEqual([
+        { ruleId: 'rule-a', ruleName: 'Rule A', count: 2 },
+        { ruleId: 'rule-b1', ruleName: 'Rule B1', count: 1 }
+      ]);
+      expect(body.total).toBe(3);
+
+      const scopeNodes = captured.map(findDeviceScopeNode);
+      expect(scopeNodes[0]).toEqual({
+        op: 'or',
+        conditions: [
+          { op: 'eq', column: 'devices.orgId', value: ORG_ID },
+          {
+            op: 'and',
+            conditions: [
+              { op: 'eq', column: 'devices.orgId', value: ORG_B },
+              { op: 'inArray', column: 'devices.siteId', values: [SITE_B1] }
+            ]
+          }
+        ]
+      });
+      for (const node of scopeNodes) {
+        expect(node).toBe(scopeNodes[0]);
+      }
+    });
+
+    it('returns the zero-safe shape with zero queries when no organization branch is authorized', async () => {
+      usePartnerAuth([ORG_ID, ORG_B]);
+      siteScopeState.mapResult = new Map<string, any>([
+        [ORG_ID, { ok: false, reason: 'permission_removed' }],
+        [ORG_B, { ok: false, reason: 'empty_scope' }]
+      ]);
+      mockAlertsSummaryQueries(multiOrgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(EMPTY_SUMMARY);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('is unrestricted per row for a system caller without orgId', async () => {
+      authState.auth = {
+        ...authState.makeDefault(),
+        scope: 'system',
+        orgId: null,
+        accessibleOrgIds: [],
+        canAccessOrg: () => true
+      };
+      const { captured } = mockAlertsSummaryQueries(multiOrgAlerts);
+
+      const res = await app.request('/reports/data/alerts-summary');
+
+      expect(res.status).toBe(200);
+      expect(resolveRequestReportAuthority).not.toHaveBeenCalled();
+      expect(resolveRequestReportAuthorityMap).not.toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.total).toBe(6);
+      for (const condition of captured) {
+        expect(findDeviceScopeNode(condition)).toBeUndefined();
+      }
     });
   });
 
