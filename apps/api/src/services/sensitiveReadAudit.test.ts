@@ -87,4 +87,40 @@ describe('auditSensitiveRead', () => {
       byteCount: 12,
     })).not.toThrow();
   });
+
+  it('does not propagate a synchronous audit-delivery failure to the caller', () => {
+    // `writeAuditEventAsync` is not an `async` function, so a throw raised
+    // before it reaches the retry-backed `createAuditLogAsync` escapes
+    // SYNCHRONOUSLY. The file-browser and contract-PDF handlers call
+    // auditSensitiveRead from inside a try/catch that maps a throw to an error
+    // response, so an escaping throw would downgrade a completed download.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(writeRouteAudit).mockImplementationOnce(() => {
+      throw new Error('audit backend unavailable');
+    });
+
+    expect(() => auditSensitiveRead({
+      req: { header: () => undefined },
+      get: () => ({
+        user: {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'reader@example.com',
+        },
+      }),
+    } as never, {
+      action: 'file.download',
+      orgId: '22222222-2222-4222-8222-222222222222',
+      resourceType: 'device_file',
+      resourceId: '33333333-3333-4333-8333-333333333333',
+      format: 'binary',
+      rowCount: 1,
+      byteCount: 12,
+    })).not.toThrow();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      '[audit] sensitive-read audit failed:',
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
 });
