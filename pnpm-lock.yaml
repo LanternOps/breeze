@@ -7998,10 +7998,6 @@ packages:
     resolution: {integrity: sha512-XcuyW9qE2kJn07PkecMOBd5Vq/hMy7mmGw+idz1yblbg9N17ijJODrvPkn7/dwL3Kulj8LcRJ69DLOWf91dRUg==}
     engines: {node: '>=16.9.0'}
 
-  hono@4.12.32:
-    resolution: {integrity: sha512-XcuyW9qE2kJn07PkecMOBd5Vq/hMy7mmGw+idz1yblbg9N17ijJODrvPkn7/dwL3Kulj8LcRJ69DLOWf91dRUg==}
-    engines: {node: '>=16.9.0'}
-
   hosted-git-info@7.0.2:
     resolution: {integrity: sha512-puUZAUKT5m8Zzvs72XWy3HtvVbTWljRE66cP60bxJzAqf2DgICo7lYTY2IHUmLnNpjYvw5bvmoHvPc0QO2a62w==}
     engines: {node: ^16.14.0 || >=18.0.0}
@@ -9743,10 +9739,6 @@ packages:
 
   postcss@8.5.19:
     resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
-    engines: {node: ^10 || ^12 || >=14}
-
-  postcss@8.5.23:
-    resolution: {integrity: sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg==}
     engines: {node: ^10 || ^12 || >=14}
 
   postcss@8.5.23:
@@ -19803,8 +19795,6 @@ snapshots:
 
   hono@4.12.32: {}
 
-  hono@4.12.32: {}
-
   hosted-git-info@7.0.2:
     dependencies:
       lru-cache: 10.4.3
@@ -21946,11 +21936,6 @@ snapshots:
       postcss: 8.5.23
       postcss-selector-parser: 6.1.2
 
-  postcss-nested@6.2.0(postcss@8.5.23):
-    dependencies:
-      postcss: 8.5.23
-      postcss-selector-parser: 6.1.2
-
   postcss-selector-parser@6.0.10:
     dependencies:
       cssesc: 3.0.0
@@ -21970,12 +21955,6 @@ snapshots:
       source-map-js: 1.2.1
 
   postcss@8.5.19:
-    dependencies:
-      nanoid: 3.3.16
-      picocolors: 1.1.1
-      source-map-js: 1.2.1
-
-  postcss@8.5.23:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
