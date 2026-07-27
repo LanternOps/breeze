@@ -111,7 +111,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 143,
+    // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
+    // spelled identically in French.
+    'settings.json': 144,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -141,7 +143,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 148,
+    // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
+    // spelled identically in French.
+    'settings.json': 149,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },

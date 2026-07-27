@@ -142,6 +142,16 @@
       "enable": "Activez l’inscription automatique pour les nouveaux appareils",
       "requireApproval": "Exigez l’approbation de l’administrateur",
       "sendWelcome": "Envoyer une notification de bienvenue"
+    },
+    "enrollment": {
+      "title": "Inscription des appareils",
+      "ttl": "Durée de validité par défaut du lien",
+      "ttlHint": "Présélectionne la durée de validité des nouveaux liens d’inscription et programmes d’installation. Les organisations peuvent choisir une autre valeur par défaut.",
+      "deviceCount": "Nombre d’appareils par lien par défaut",
+      "deviceCountHint": "Nombre de machines qu’un lien d’inscription peut inscrire par défaut. Les organisations peuvent choisir une autre valeur par défaut.",
+      "maxTtl": "Durée de vie maximale du lien",
+      "maxTtlHint": "Un plafond sur la durée de vie des clés, et pas seulement sur ce qu’un administrateur peut demander : rien de ce qui est émis sous ce partenaire ne reste utilisable plus longtemps — liens d’inscription, invitations de déploiement MCP et identifiants enfants émis lors de l’utilisation d’un programme d’installation.",
+      "maxTtlWarning": "Les organisations ne peuvent pas l’augmenter. Un plafond court réduit aussi le temps dont dispose une machine pour terminer son inscription après avoir utilisé un lien, et pas seulement le temps de téléchargement."
     }
   },
   "partnerEventLogs": {
@@ -796,6 +806,16 @@
         "invalidWindow": "Entrez une fenêtre valide — les heures de début et de fin doivent différer.",
         "storedInvalid": "Votre fenêtre de maintenance enregistrée était invalide et est ignorée, donc les agents peuvent actuellement mettre à jour à tout moment. Choisissez un réglage valide ci-dessous et enregistrez pour corriger le problème."
       }
+    },
+    "enrollment": {
+      "title": "Inscription des appareils",
+      "ttl": "Durée de validité par défaut du lien",
+      "deviceCount": "Nombre d’appareils par lien par défaut",
+      "inherit": "Hériter du partenaire",
+      "description": "Présélectionne la durée de validité et le nombre d’appareils dans la boîte de dialogue Ajouter un appareil. Laissez un champ sur « Hériter du partenaire » pour suivre la valeur par défaut de votre partenaire.",
+      "capNotice": "Votre partenaire plafonne la durée de vie des liens d’inscription à {{value}}. Les liens, les invitations de déploiement MCP et les identifiants émis par le programme d’installation cessent de fonctionner une fois ce délai écoulé : une machine doit donc aussi terminer son inscription dans cette fenêtre.",
+      "capNoticeUnknown": "Votre partenaire définit une durée de vie maximale pour les liens d’inscription. Les liens et les identifiants émis par le programme d’installation cessent de fonctionner une fois ce délai écoulé : une machine doit donc aussi terminer son inscription dans cette fenêtre.",
+      "capMinutes": "{{minutes}} minutes"
     }
   },
   "orgEventLogSettings": {

@@ -142,6 +142,16 @@
       "enable": "Ativar registro automático para novos dispositivos",
       "requireApproval": "Exigir aprovação do administrador",
       "sendWelcome": "Enviar notificação de boas-vindas"
+    },
+    "enrollment": {
+      "title": "Registro de dispositivos",
+      "ttl": "Validade padrão do link",
+      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos. As organizações podem escolher um padrão diferente.",
+      "deviceCount": "Dispositivos padrão por link",
+      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão. As organizações podem escolher um padrão diferente.",
+      "maxTtl": "Validade máxima do link",
+      "maxTtlHint": "É um teto para o tempo de vida das chaves, não apenas para o que um administrador pode solicitar: nada emitido sob este parceiro continua utilizável por mais tempo — links de registro, convites de implantação do MCP e as credenciais filhas emitidas quando um instalador é resgatado.",
+      "maxTtlWarning": "As organizações não podem aumentá-lo. Um teto curto também encurta o tempo que uma máquina tem para concluir o registro depois de resgatar um link, não apenas o tempo para baixá-lo."
     }
   },
   "partnerEventLogs": {
@@ -796,6 +806,16 @@
         "invalidWindow": "Informe uma janela válida — os horários de início e fim devem ser diferentes.",
         "storedInvalid": "A janela de manutenção salva era inválida e está sendo ignorada; portanto, os agentes podem estar atualizando a qualquer momento. Escolha uma configuração válida abaixo e salve para corrigir."
       }
+    },
+    "enrollment": {
+      "title": "Registro de dispositivos",
+      "ttl": "Validade padrão do link",
+      "deviceCount": "Dispositivos padrão por link",
+      "inherit": "Herdar do parceiro",
+      "description": "Pré-seleciona a validade e a quantidade de dispositivos na caixa de diálogo Adicionar dispositivo. Deixe um campo em “Herdar do parceiro” para seguir o padrão do seu parceiro.",
+      "capNotice": "Seu parceiro limita a validade dos links de registro a {{value}}. Links, convites de implantação do MCP e credenciais emitidas pelo instalador param de funcionar depois disso, então a máquina também precisa concluir o registro dentro dessa janela.",
+      "capNoticeUnknown": "Seu parceiro define uma validade máxima para os links de registro. Links e credenciais emitidas pelo instalador param de funcionar depois disso, então a máquina também precisa concluir o registro dentro dessa janela.",
+      "capMinutes": "{{minutes}} minutos"
     }
   },
   "orgEventLogSettings": {

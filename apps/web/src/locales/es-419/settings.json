@@ -142,6 +142,16 @@
       "enable": "Habilitar la inscripción automática para nuevos dispositivos",
       "requireApproval": "Requerir aprobación del administrador",
       "sendWelcome": "Enviar notificación de bienvenida"
+    },
+    "enrollment": {
+      "title": "Inscripción de dispositivos",
+      "ttl": "Vigencia predeterminada del enlace",
+      "ttlHint": "Preselecciona cuánto tiempo siguen siendo válidos los nuevos enlaces de inscripción e instaladores. Las organizaciones pueden elegir un valor predeterminado distinto.",
+      "deviceCount": "Dispositivos predeterminados por enlace",
+      "deviceCountHint": "Cuántas máquinas puede inscribir un enlace de inscripción de forma predeterminada. Las organizaciones pueden elegir un valor predeterminado distinto.",
+      "maxTtl": "Vigencia máxima del enlace",
+      "maxTtlHint": "Es un límite sobre la vida útil de la clave, no solo sobre lo que un administrador puede solicitar: nada emitido bajo este partner sigue siendo utilizable por más tiempo — enlaces de inscripción, invitaciones de implementación de MCP y las credenciales secundarias emitidas al canjear un instalador.",
+      "maxTtlWarning": "Las organizaciones no pueden aumentarlo. Un límite corto también reduce el tiempo que tiene una máquina para terminar de inscribirse después de canjear un enlace, no solo el tiempo para descargarlo."
     }
   },
   "partnerEventLogs": {
@@ -796,6 +806,16 @@
         "invalidWindow": "Ingrese una ventana válida: las horas de inicio y finalización deben diferir.",
         "storedInvalid": "Su ventana de mantenimiento guardada no era válida y se está ignorando, por lo que los agentes pueden actualizar en cualquier momento. Elija una configuración válida a continuación y guárdela para solucionarla."
       }
+    },
+    "enrollment": {
+      "title": "Inscripción de dispositivos",
+      "ttl": "Vigencia predeterminada del enlace",
+      "deviceCount": "Dispositivos predeterminados por enlace",
+      "inherit": "Heredar del partner",
+      "description": "Preselecciona la vigencia y la cantidad de dispositivos en el cuadro de diálogo Agregar dispositivo. Deje un campo en «Heredar del partner» para seguir el valor predeterminado de su partner.",
+      "capNotice": "Su partner limita la vigencia de los enlaces de inscripción a {{value}}. Los enlaces, las invitaciones de implementación de MCP y las credenciales emitidas por el instalador dejan de funcionar cuando transcurre ese plazo, por lo que la máquina también debe terminar de inscribirse dentro de esa ventana.",
+      "capNoticeUnknown": "Su partner define una vigencia máxima para los enlaces de inscripción. Los enlaces y las credenciales emitidas por el instalador dejan de funcionar cuando transcurre ese plazo, por lo que la máquina también debe terminar de inscribirse dentro de esa ventana.",
+      "capMinutes": "{{minutes}} minutos"
     }
   },
   "orgEventLogSettings": {
