@@ -1176,7 +1176,7 @@ export function EditableLineRow({
               </button>
               {moveTargets.length > 0 && !line.parentLineId && (
                 <>
-                  <p className="mt-1 border-t px-3 pb-0.5 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
+                  <p className="mt-1 border-t px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
                   {moveTargets.map((t) => (
                     <button
                       key={t.id}
@@ -1410,7 +1410,7 @@ export function EditableLineRow({
                 onClick={attachImageFromUrl}
                 disabled={imageBusy || fieldBusy('image') || !imageUrlDraft.trim()}
                 data-testid={`quote-line-image-url-fetch-${line.id}`}
-                className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {t('quotes.editor.actions.fetch')}
               </button>

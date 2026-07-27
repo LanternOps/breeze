@@ -46,6 +46,9 @@ const manualLine: InvoiceDetail['lines'][number] = {
 describe('InvoiceEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Margin visibility persists to localStorage — start each test from the
+    // default (hidden); tests that need the panel opt in explicitly.
+    localStorage.clear();
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/catalog')) return json({ data: [] });
       return json({ data: {} });
@@ -130,6 +133,9 @@ describe('InvoiceEditor', () => {
   });
 
   it('renders the internal margin summary from line costs', async () => {
+    // The panel honors the billing-wide persisted "show cost & margin"
+    // preference — pre-enable it (default is hidden).
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     const costedLine = { ...manualLine, id: 'line-c', costBasis: '30.00', quantity: '2.00', unitPrice: '50.00', lineTotal: '100.00' };
     render(<InvoiceEditor detail={draft([costedLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
@@ -141,6 +147,7 @@ describe('InvoiceEditor', () => {
   });
 
   it('flags a missing cost in the margin summary', async () => {
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     // manualLine has costBasis null → excluded from net and counted as missing.
     render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());

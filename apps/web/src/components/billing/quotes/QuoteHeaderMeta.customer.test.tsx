@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { QuoteHeaderMeta } from './QuoteHeaderMeta';
+import { QuoteCustomerSwitcher } from './QuoteHeaderMeta';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
@@ -63,25 +63,31 @@ const customerPatchCalls = () =>
   fetchMock.mock.calls.filter((c) => c[0] === '/quotes/q-1' && (c[1] as RequestInit | undefined)?.method === 'PATCH'
     && String((c[1] as RequestInit).body).includes('orgId'));
 
-describe('QuoteHeaderMeta customer reassignment', () => {
+describe('QuoteCustomerSwitcher customer reassignment', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockImplementation(async () => json({ data: {} }));
   });
 
-  // Reassignment clears site + bill-to and swaps the tax basis, so a select
-  // change stages a confirm step — the PATCH only fires after the user confirms.
+  /** The switcher is a typeahead combobox: open the trigger, click an option. */
+  function pickCustomer(orgId: string) {
+    fireEvent.click(screen.getByTestId('quote-customer-trigger'));
+    fireEvent.click(screen.getByTestId(`quote-customer-option-${orgId}`));
+  }
+
+  // Reassignment clears site + bill-to and swaps the tax basis, so a pick
+  // stages a confirm step — the PATCH only fires after the user confirms.
   it('changing the customer confirms, then PATCHes { orgId } and refreshes the detail', async () => {
     const onChanged = vi.fn();
-    render(<QuoteHeaderMeta detail={detail()} onChanged={onChanged} />);
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={onChanged} />);
 
-    const select = screen.getByTestId('quote-customer');
-    expect(select).toHaveValue('org-1');
-    fireEvent.change(select, { target: { value: 'org-2' } });
+    const trigger = screen.getByTestId('quote-customer-trigger');
+    expect(trigger).toHaveTextContent('Acme');
+    pickCustomer('org-2');
 
-    // Nothing saved yet — the select still shows the current customer.
+    // Nothing saved yet — the trigger still shows the current customer.
     expect(customerPatchCalls()).toHaveLength(0);
-    expect(select).toHaveValue('org-1');
+    expect(trigger).toHaveTextContent('Acme');
 
     fireEvent.click(screen.getByTestId('quote-customer-confirm'));
     await waitFor(() => expect(customerPatchCalls()).toHaveLength(1));
@@ -90,56 +96,63 @@ describe('QuoteHeaderMeta customer reassignment', () => {
   });
 
   it('cancelling the confirm leaves the customer unchanged and PATCHes nothing', async () => {
-    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={vi.fn()} />);
 
-    const select = screen.getByTestId('quote-customer');
-    fireEvent.change(select, { target: { value: 'org-2' } });
+    pickCustomer('org-2');
     fireEvent.click(screen.getByText('Cancel'));
 
     await waitFor(() => expect(screen.queryByTestId('quote-customer-confirm')).not.toBeInTheDocument());
     expect(customerPatchCalls()).toHaveLength(0);
-    expect(select).toHaveValue('org-1');
+    expect(screen.getByTestId('quote-customer-trigger')).toHaveTextContent('Acme');
   });
 
   it('re-selecting the current customer is a no-op', () => {
-    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={vi.fn()} />);
 
-    fireEvent.change(screen.getByTestId('quote-customer'), { target: { value: 'org-1' } });
+    pickCustomer('org-1');
 
     expect(screen.queryByTestId('quote-customer-confirm')).not.toBeInTheDocument();
     expect(customerPatchCalls()).toHaveLength(0);
   });
 
-  // The select clips a long org name at max-w-56 with no other way to read it —
-  // `title` is the mouse-hover escape hatch, so it must carry the actual
-  // selected name rather than generic static help copy.
-  it("the select's title carries the selected organization's full name", () => {
-    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+  it('filters the option list by the typed query', () => {
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={vi.fn()} />);
 
-    const select = screen.getByTestId('quote-customer');
-    expect(select).toHaveAttribute('title', 'Acme');
+    fireEvent.click(screen.getByTestId('quote-customer-trigger'));
+    fireEvent.change(screen.getByTestId('quote-customer-search'), { target: { value: 'beta' } });
 
-    fireEvent.change(select, { target: { value: 'org-2' } });
-    fireEvent.click(screen.getByTestId('quote-customer-confirm'));
-    // The select snaps to the new value optimistically on confirm; its title
-    // follows the same selection, not the stale one.
-    return waitFor(() => expect(select).toHaveAttribute('title', 'Beta Corp'));
+    expect(screen.getByTestId('quote-customer-option-org-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-customer-option-org-1')).not.toBeInTheDocument();
   });
 
-  it('snaps the select back when the move fails', async () => {
+  // The trigger truncates a long org name — `title` is the mouse-hover escape
+  // hatch, so it must carry the actual selected name.
+  it("the trigger's title carries the selected organization's full name", async () => {
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={vi.fn()} />);
+
+    const trigger = screen.getByTestId('quote-customer-trigger');
+    expect(trigger).toHaveAttribute('title', 'Acme');
+
+    pickCustomer('org-2');
+    fireEvent.click(screen.getByTestId('quote-customer-confirm'));
+    // The trigger snaps to the new value optimistically on confirm; its title
+    // follows the same selection, not the stale one.
+    await waitFor(() => expect(trigger).toHaveAttribute('title', 'Beta Corp'));
+  });
+
+  it('snaps the trigger back when the move fails', async () => {
     fetchMock.mockImplementation(async (path, init) => {
       if (path === '/quotes/q-1' && (init as RequestInit | undefined)?.method === 'PATCH') {
         return json({ error: 'Organization not found' }, false, 404);
       }
       return json({ data: {} });
     });
-    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+    render(<QuoteCustomerSwitcher detail={detail()} onChanged={vi.fn()} />);
 
-    const select = screen.getByTestId('quote-customer');
-    fireEvent.change(select, { target: { value: 'org-2' } });
+    pickCustomer('org-2');
     fireEvent.click(screen.getByTestId('quote-customer-confirm'));
 
     await waitFor(() => expect(customerPatchCalls()).toHaveLength(1));
-    await waitFor(() => expect(select).toHaveValue('org-1'));
+    await waitFor(() => expect(screen.getByTestId('quote-customer-trigger')).toHaveTextContent('Acme'));
   });
 });

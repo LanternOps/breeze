@@ -70,7 +70,7 @@ describe('QuoteActions cloning', () => {
 
     openCloneDialog();
     // The dialog defaults to the source company and a "Clone of …" title.
-    expect(screen.getByTestId('quote-clone-org')).toHaveValue('org-1');
+    expect(screen.getByTestId('quote-clone-org-trigger')).toHaveTextContent('Acme');
     expect(screen.getByTestId('quote-clone-title')).toHaveValue('Clone of Q-2026-000001');
     fireEvent.click(screen.getByTestId('quote-clone-confirm'));
 
@@ -89,7 +89,9 @@ describe('QuoteActions cloning', () => {
     render(<QuoteActions detail={detail} variant="header" />);
 
     openCloneDialog();
-    fireEvent.change(screen.getByTestId('quote-clone-org'), { target: { value: 'org-2' } });
+    // The company picker is a typeahead combobox: open it, pick the org.
+    fireEvent.click(screen.getByTestId('quote-clone-org-trigger'));
+    fireEvent.click(screen.getByTestId('quote-clone-org-option-org-2'));
     // Retargeting surfaces the billing/tax consequences before confirming.
     expect(screen.getByTestId('quote-clone-retarget-hint')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('quote-clone-title'), { target: { value: 'Beta rollout' } });

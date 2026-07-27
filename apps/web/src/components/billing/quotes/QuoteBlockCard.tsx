@@ -671,14 +671,25 @@ export function BlockCard({
                     </p>
                   )
                 ) : (
-                  <CatalogItemPicker
-                    items={catalog}
-                    includeBundles={false}
-                    onSelect={(it) => onAddCatalog(block.id, it)}
-                    testId={`quote-catalog-picker-${block.id}`}
-                    placeholder={t('quotes.editor.catalog.searchPlaceholder')}
-                    disabled={addLineBusy}
-                  />
+                  <>
+                    <CatalogItemPicker
+                      items={catalog}
+                      includeBundles={false}
+                      onSelect={(it) => onAddCatalog(block.id, it)}
+                      testId={`quote-catalog-picker-${block.id}`}
+                      placeholder={t('quotes.editor.catalog.searchPlaceholder')}
+                      disabled={addLineBusy}
+                    />
+                    {/* The editor loads the catalog with limit=200; hitting the
+                        cap means a bigger catalog is silently truncated — say
+                        so instead of letting search-misses read as "not in the
+                        catalog". */}
+                    {catalog.length >= 200 && (
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid={`quote-catalog-cap-note-${block.id}`}>
+                        {t('quotes.editor.catalog.capNote', { count: 200 })}
+                      </p>
+                    )}
+                  </>
                 )
               ) : (
                 <div className="space-y-3">
@@ -884,7 +895,7 @@ export function BlockCard({
                       disabled={addLineBusy || (!name.trim() && !desc.trim())}
                       aria-busy={addLineBusy}
                       data-testid={`quote-manual-add-${block.id}`}
-                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                     >
                       {addLineBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
                       {addLineBusy ? t('quotes.editor.actions.adding') : t('quotes.editor.actions.addLine')}

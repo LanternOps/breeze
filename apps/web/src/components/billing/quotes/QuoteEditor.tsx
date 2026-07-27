@@ -39,7 +39,7 @@ import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
-import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash } from './quoteEditorShared';
+import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import {
@@ -112,10 +112,16 @@ interface Props {
    *  clicked during the undo grace window, so the held Send fires as soon as
    *  the DELETE lands instead of waiting out the rest of the window. */
   onRegisterPendingDeleteFlush?: (flush: (() => void) | null) => void;
+  /** Controlled cost/margin visibility: when provided (the workspace renders
+   *  the toggle in the pinned header, next to Send), the editor consumes the
+   *  value and drops its own toolbar toggle. When absent the editor
+   *  self-manages via useShowInternalMargin (standalone mounts / tests). */
+  showInternal?: boolean;
+  onToggleInternal?: () => void;
 }
 
 
-export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onRegisterPendingDeleteFlush }: Props) {
+export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onRegisterPendingDeleteFlush, showInternal: showInternalProp, onToggleInternal }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
@@ -124,22 +130,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // Margin summary is gated the same way QuoteDetail gates it — on quotes:read —
   // rather than on write, which would hide the aggregate while showing the parts.
   const canSeeMargin = can('quotes', 'read');
-  // "Show cost & margin" governs EVERY internal-economics surface — the per-line
-  // cost/markup bands AND the rail's Margin panel — so one toggle honestly means
-  // "no margin on screen" (a tech screen-sharing with a client must be able to
-  // trust it). Collapsed by default; the choice persists per browser so daily
-  // margin-watchers aren't re-toggling on every quote.
-  const SHOW_INTERNAL_KEY = 'breeze:quote-editor-show-margin';
-  const [showInternal, setShowInternalState] = useState(
-    () => typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_INTERNAL_KEY) === '1',
-  );
-  const setShowInternal = useCallback((updater: (v: boolean) => boolean) => {
-    setShowInternalState((v) => {
-      const next = updater(v);
-      try { localStorage.setItem(SHOW_INTERNAL_KEY, next ? '1' : '0'); } catch { /* private mode — session-only */ }
-      return next;
-    });
-  }, []);
+  // Cost/margin visibility: controlled by the workspace when the props are
+  // supplied (toggle lives in the pinned header), self-managed otherwise. See
+  // useShowInternalMargin for what the flag governs and why it persists.
+  const [fallbackShowInternal, toggleFallbackShowInternal] = useShowInternalMargin();
+  const internalControlled = showInternalProp !== undefined;
+  const showInternal = showInternalProp ?? fallbackShowInternal;
+  const toggleShowInternal = onToggleInternal ?? toggleFallbackShowInternal;
   const { quote, blocks: serverBlocks, lines: serverLines } = detail;
   const currency = quote.currencyCode;
 
@@ -2064,7 +2061,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                             </li>
                           ))}
                         </ul>
-                        <p className="mt-1 text-[11px] text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
                       </div>
                     )}
 
@@ -2146,10 +2143,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   return (
     <div className="space-y-6" data-testid="quote-editor">
-      {/* The autosave hint is writer-only, but the cost/margin toggle is offered to
-          everyone who can see the editor: read-only users also have per-line cost
-          bands and deserve the same collapse control (ml-auto keeps it right-aligned
-          whether or not the hint renders). */}
+      {/* The cost/margin toggle renders here only when the editor self-manages it
+          (standalone mounts / tests) — in the workspace the toggle sits in the
+          pinned header instead, so the toolbar row collapses entirely for a
+          read-only user there. ml-auto keeps the toggle right-aligned whether or
+          not the writer-only hint renders. */}
+      {(canWrite || !internalControlled) && (
       <div className="flex flex-wrap items-center gap-2">
         {canWrite && (
           <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
@@ -2179,17 +2178,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             {t('quotes.editor.coverPage.enable')}
           </label>
         )}
-        <button
-          type="button"
-          onClick={() => setShowInternal((v) => !v)}
-          aria-pressed={showInternal}
-          data-testid="quote-editor-toggle-internal"
-          className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
-        >
-          {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-          {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
-        </button>
+        {!internalControlled && (
+          <button
+            type="button"
+            onClick={toggleShowInternal}
+            aria-pressed={showInternal}
+            data-testid="quote-editor-toggle-internal"
+            className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
+          >
+            {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
+            {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
+          </button>
+        )}
       </div>
+      )}
       {/* Cover page: a toolbar toggle, not a permanent card — the once-per-quote
           setup stays out of the daily compose path. Fields appear only while
           enabled. */}
@@ -2675,13 +2677,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           {sortedBlocks.length >= 2 && (
             <nav
               aria-label={t('quotes.editor.outline.aria')}
+              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
               data-testid="quote-outline"
               className="rounded-lg border bg-card p-3 shadow-xs"
             >
-              <h2
-                className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                title={t('quotes.editor.outline.shortcutHint')}
-              >
+              <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {t('quotes.editor.outline.title')}
               </h2>
               <ul className="space-y-0.5">
@@ -2703,6 +2703,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   </li>
                 ))}
               </ul>
+              {/* Visible, not a hover `title`: a shortcut nobody can discover
+                  by keyboard or touch may as well not exist. */}
+              <p className="mt-1.5 text-xs text-muted-foreground/80" data-testid="quote-outline-shortcut-hint">
+                {t('quotes.editor.outline.shortcutHint')}
+              </p>
             </nav>
           )}
 
@@ -2879,7 +2884,7 @@ function InsertGap({ index, active, onToggle, label, dropActive, onDragOver, onD
         onClick={onToggle}
         aria-expanded={active}
         data-testid={`quote-insert-section-${index}`}
-        className={`inline-flex items-center gap-1 rounded-full border bg-card px-2.5 py-0.5 text-[11px] font-medium transition-opacity focus:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+        className={`inline-flex items-center gap-1 rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium transition-opacity focus:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
           active ? 'border-primary/40 text-primary opacity-100' : 'text-muted-foreground opacity-0 hover:text-foreground group-hover/gap:opacity-100'
         }`}
       >

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
@@ -15,6 +15,8 @@ import { isValidEmail } from '@/lib/email';
 import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
+import { OrgCombobox } from '../shared/OrgCombobox';
+import { useShowMargin } from '../billingUi';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type Quote, type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
@@ -213,6 +215,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // margin visibility, same as MarginPanel: an org-scoped/read-only-cost user
   // must never see this notice imply a permission they don't have.
   const canSeeMargin = can('quotes', 'read');
+  // ALSO gated on the "no margin on screen" preference: a tech who hit "Hide
+  // cost & margin" for a screen-share must not have internal cost tracking
+  // revealed by the send dialog — the moment a client is most likely watching.
+  // The toggle's contract is EVERY internal-economics surface, this included.
+  const [showMarginPref] = useShowMargin();
   const profit = useMemo<QuoteProfit>(
     () => computeQuoteProfit(lines.map((l) => ({
       quantity: l.quantity,
@@ -245,7 +252,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
   // Open the composer with fresh fields, then prefill/support-fetch in the
   // background. All three fetches are best-effort: the composer stays usable
-  // (and the server keeps its own billing-contact fallback) when any fail.
+  // when any fail (the user types the recipient — Send blocks on a valid To).
   const openSend = useCallback(() => {
     setSendTo('');
     setSendCc('');
@@ -254,6 +261,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setIncludePdf(true);
     setSignature(null);
     setStripeStatus(null);
+    setToPrefillMissing(false);
     setSendOpen(true);
     void (async () => {
       try {
@@ -263,6 +271,13 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         const email = org.billingContact?.email?.trim();
         // Functional update so a slow response never clobbers a typed address.
         if (email) setSendTo((cur) => cur || email);
+        // A CONFIRMED absence (the fetch succeeded and there is no contact)
+        // earns an explanation under the To field — at 9pm an empty To with no
+        // "why" forces the owner to recall an address from memory. A failed
+        // fetch stays silent: unknown is not absent, and claiming "no billing
+        // contact" on a lookup error would be false. (The user must type a
+        // recipient either way — the composer never submits an empty To.)
+        else setToPrefillMissing(true);
       } catch { /* leave To empty — the user types the recipient */ }
     })();
     // Signature + Stripe status are partner-level support data. The endpoints
@@ -302,6 +317,75 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     openSend();
   }, [openWhenQuiet, savePending, openSend]);
 
+  // Escape hatch for a hung save: the queued-open above normally fires within a
+  // blur-save round-trip. If the editor is still not quiescent after 10s the
+  // request has almost certainly stalled — cancel the queued Send and say so,
+  // instead of leaving "Saving changes…" up indefinitely (which at 9pm reads
+  // as "the app is broken").
+  useEffect(() => {
+    if (!openWhenQuiet) return;
+    const timer = setTimeout(() => {
+      setOpenWhenQuiet(false);
+      showToast({ message: t('quotes.actions.savingTimeout'), type: 'error' });
+    }, 10_000);
+    return () => clearTimeout(timer);
+  }, [openWhenQuiet, t]);
+
+  // The options of the last scheduled send, kept so "Send now" can cancel the
+  // delayed job and dispatch the SAME composed email immediately. null after a
+  // reload — the composed fields live only in this session, so the button
+  // simply isn't offered and the window plays out normally.
+  const [lastSendOpts, setLastSendOpts] = useState<SendQuoteOptions | null>(null);
+  const [sendingNow, setSendingNow] = useState(false);
+  const sendNow = useCallback(async () => {
+    if (sendingNow || !lastSendOpts) return;
+    setSendingNow(true);
+    try {
+      // Cancel first — only a confirmed cancellation may re-dispatch, so the
+      // customer can never receive the email twice. The cancel step carries
+      // its OWN error copy: if the DELETE fails the schedule is still live
+      // and the window-expiry send WILL fire — "could not send" here would
+      // assert the exact opposite of what happens next.
+      let canceled = false;
+      try {
+        const result = await runAction<{ data?: { canceled?: boolean } }>({
+          request: () => cancelScheduledSend(quote.id),
+          errorFallback: t('quotes.actions.sendNowCancelError'),
+          onUnauthorized: UNAUTHORIZED,
+        });
+        canceled = result?.data?.canceled === true;
+      } catch (err) {
+        handleActionError(err, t('quotes.actions.sendNowCancelError'));
+        return;
+      }
+      if (!canceled) {
+        // The window fired server-side first; the worker owns the send.
+        // Acknowledge the click — the draft→sent flip can land 5-10s later
+        // (BullMQ's delayed-job scan), and a silently re-armed "Send
+        // proposal" button in that gap reads as a dead click.
+        showToast({ message: t('quotes.actions.sendNowAlready'), type: 'success' });
+        refresh();
+        return;
+      }
+      await runAction({
+        request: () => sendQuote(quote.id, lastSendOpts),
+        errorFallback: t('quotes.actions.sendError'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      // The refresh lands the draft→sent flip; the post-flip effect below
+      // surfaces the same honest delivered/not-delivered outcome as a
+      // window-expiry send.
+      refresh();
+    } catch (err) {
+      // A failed immediate send after a successful cancel leaves an ordinary
+      // draft — refresh restores the plain Send button for a retry.
+      handleActionError(err, t('quotes.actions.sendError'));
+      refresh();
+    } finally {
+      setSendingNow(false);
+    }
+  }, [sendingNow, lastSendOpts, quote.id, refresh, t]);
+
   const toParsed = useMemo(() => parseAddressList(sendTo), [sendTo]);
   const ccParsed = useMemo(() => parseAddressList(sendCc), [sendCc]);
   const toError =
@@ -322,6 +406,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // reason under the To field (the same visible-reason pattern the header
   // button uses) instead of a silently dead disabled button.
   const [toMissing, setToMissing] = useState(false);
+  // Set when the org lookup confirmed there is NO billing contact to prefill
+  // from — drives the "why is To empty" explanation with a link to fix it.
+  const [toPrefillMissing, setToPrefillMissing] = useState(false);
   const toInputRef = useRef<HTMLInputElement>(null);
 
   const send = useCallback(async () => {
@@ -354,6 +441,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         errorFallback: t('quotes.actions.sendError'),
         onUnauthorized: UNAUTHORIZED,
       });
+      setLastSendOpts(opts);
       setSendOpen(false);
       setSendMessage('');
       refresh();
@@ -518,18 +606,36 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             Gated on quotes:send; only a draft can be sent. An empty quote can't. */}
         {canSend && scheduleLive && (
           <>
+            {/* The ticking chip is aria-hidden: with role="status" it announced
+                every second of the 30s window to screen readers. The one-shot
+                announcement lives in the always-mounted live region below. */}
             <span
               className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm font-medium text-warning-foreground dark:text-warning"
               data-testid="quote-send-countdown"
-              role="status"
+              aria-hidden="true"
             >
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
               {t('quotes.actions.sendingIn', { seconds: Math.max(0, Math.ceil(((scheduledAtMs ?? 0) - nowMs) / 1000)) })}
             </span>
+            {/* Power path: cancel the delayed job and dispatch the composed
+                email immediately — batching ten quotes shouldn't cost five
+                minutes of countdowns. Offered only in the session that
+                composed the send (lastSendOpts survives no reload). */}
+            {lastSendOpts && (
+              <button
+                type="button"
+                onClick={() => void sendNow()}
+                disabled={sendingNow || undoing}
+                data-testid="quote-send-now"
+                className={`${btnBase} border font-medium hover:bg-muted disabled:opacity-50`}
+              >
+                {sendingNow ? t('quotes.actions.sending') : t('quotes.actions.sendNow')}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void undoSend()}
-              disabled={undoing}
+              disabled={undoing || sendingNow}
               data-testid="quote-send-undo"
               className={`${btnBase} border font-medium hover:bg-muted disabled:opacity-50`}
             >
@@ -537,6 +643,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             </button>
           </>
         )}
+        {/* One-shot SR announcement of the undo window (text appears when the
+            schedule goes live, announced once) — mounted unconditionally so
+            the live region exists before its content changes. */}
+        <span role="status" className="sr-only" data-testid="quote-send-countdown-sr">
+          {canSend && scheduleLive ? t('quotes.actions.sendScheduled', { orgName }) : ''}
+        </span>
         {canSend && !scheduleLive && (
           <button
             type="button"
@@ -563,7 +675,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 : undefined
             }
             data-testid="quote-send"
-            className={`${btnBase} relative bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
+            className={`${btnBase} relative bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50`}
           >
             {/* Overlay spinner: while edits settle (or a send is in flight) the
                 label fades under a dead-centered spinner. The label always
@@ -698,7 +810,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       </div>
 
       {/* Send composer — a lightweight email-client dialog. To is prefilled from
-          the org billing contact (best-effort; the server keeps its own fallback),
+          the org billing contact (best-effort; Send blocks until a valid To),
           Subject left blank means the server default, and the partner's email
           signature / Stripe-connect status are support data loaded only under a
           partner-scoped session (not because the endpoints reject org tokens). */}
@@ -729,7 +841,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             tech may genuinely not know every cost yet) — it's a heads-up, not a
             gate. Reuses MarginPanel's own copy (billingUi.margin.missingCost) so
             the wording can't drift between the rail and this dialog. */}
-        {canSeeMargin && profit.linesMissingCost > 0 && (
+        {canSeeMargin && showMarginPref && profit.linesMissingCost > 0 && (
           <p className="mt-2 flex items-start gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-missing-cost-notice">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
             <span>{t('billingUi.margin.missingCost', { count: profit.linesMissingCost })}</span>
@@ -752,7 +864,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               placeholder={t('quotes.actions.sendConfirm.toPlaceholder')}
               aria-invalid={toError != null}
               data-testid="quote-send-to"
-              className="min-w-0 flex-1 border-0 bg-transparent py-2 text-sm focus:outline-hidden disabled:opacity-60"
+              className="min-w-0 flex-1 rounded-sm border-0 bg-transparent py-2 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
             />
             {!ccOpen && (
               <button
@@ -778,7 +890,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 disabled={sending}
                 aria-invalid={ccError != null}
                 data-testid="quote-send-cc"
-                className="min-w-0 flex-1 border-0 bg-transparent py-2 text-sm focus:outline-hidden disabled:opacity-60"
+                className="min-w-0 flex-1 rounded-sm border-0 bg-transparent py-2 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
               />
             </div>
           )}
@@ -801,10 +913,22 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                   : t('quotes.actions.sendConfirm.subjectPlaceholderNoNumber')
               }
               data-testid="quote-send-subject"
-              className="min-w-0 flex-1 border-0 bg-transparent py-2 text-sm focus:outline-hidden disabled:opacity-60"
+              className="min-w-0 flex-1 rounded-sm border-0 bg-transparent py-2 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
             />
           </div>
         </div>
+        {toPrefillMissing && toParsed.emails.length === 0 && !toError && (
+          // The org lookup confirmed no billing contact exists — say WHY the To
+          // field is empty and link the fix, instead of demanding an address
+          // from memory.
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="quote-send-to-no-contact">
+            <Trans
+              i18nKey="quotes.actions.sendConfirm.noBillingContactHint"
+              t={t}
+              components={{ orgLink: <a href={`/settings/organizations/${quote.orgId}`} className="underline hover:text-foreground" /> }}
+            />
+          </p>
+        )}
         {toError && (
           <p id="quote-send-to-error" className="mt-1 text-xs text-destructive" data-testid="quote-send-to-error">{toError}</p>
         )}
@@ -861,12 +985,24 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-send-payment-warning"
           >
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>{t('quotes.actions.sendConfirm.paymentWarningDeposit')}</span>
+            {/* "Connect Stripe" is a real link, not directions to retype — the
+                fix is one click away from the moment the gap is discovered. */}
+            <span>
+              <Trans
+                i18nKey="quotes.actions.sendConfirm.paymentWarningDeposit"
+                t={t}
+                components={{ integrationsLink: <a href="/integrations" className="underline hover:opacity-80" /> }}
+              />
+            </span>
           </div>
         )}
         {!hasDeposit && stripeStatus === 'disconnected' && (
           <p className="mt-2 text-xs text-muted-foreground" data-testid="quote-send-payment-note">
-            {t('quotes.actions.sendConfirm.paymentNoteNoStripe')}
+            <Trans
+              i18nKey="quotes.actions.sendConfirm.paymentNoteNoStripe"
+              t={t}
+              components={{ integrationsLink: <a href="/integrations" className="underline hover:text-foreground" /> }}
+            />
           </p>
         )}
         {stripeStatus === 'connected' && (
@@ -890,7 +1026,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             disabled={sending}
             aria-describedby={toMissing ? 'quote-send-to-missing' : toError ? 'quote-send-to-error' : undefined}
             data-testid="quote-send-confirm"
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {sending ? t('quotes.actions.sending') : t('quotes.actions.sendProposal')}
           </button>
@@ -925,17 +1061,16 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             <span className="mb-1 block text-sm font-medium text-foreground">
               {t('quotes.actions.cloneDialog.companyLabel')}
             </span>
-            <select
+            {/* Typeahead, not a native select: an MSP with 150 orgs needs to
+                search for the clone target, not scroll a browser list. */}
+            <OrgCombobox
+              options={orgOptions}
               value={cloneOrgId}
-              onChange={(e) => setCloneOrgId(e.target.value)}
+              onSelect={setCloneOrgId}
               disabled={cloning}
-              data-testid="quote-clone-org"
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-            >
-              {orgOptions.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
+              label={t('quotes.actions.cloneDialog.companyLabel')}
+              testId="quote-clone-org"
+            />
           </label>
           {cloneOrgId !== quote.orgId && (
             <p className="text-xs text-muted-foreground" data-testid="quote-clone-retarget-hint">
@@ -972,7 +1107,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             onClick={() => void clone()}
             disabled={cloning || savePending}
             data-testid="quote-clone-confirm"
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneDialog.confirm')}
           </button>

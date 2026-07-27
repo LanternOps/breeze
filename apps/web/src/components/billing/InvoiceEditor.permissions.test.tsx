@@ -50,6 +50,10 @@ const draft: InvoiceDetail = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
+  // Pre-enable the persisted cost/margin preference so margin visibility below
+  // is decided purely by the permission gate under test, not the toggle default.
+  localStorage.clear();
+  localStorage.setItem('breeze:quote-editor-show-margin', '1');
   fetchMock.mockImplementation(async (input: string) => {
     if (input.startsWith('/catalog')) return json({ data: [] });
     return json({ data: {} });

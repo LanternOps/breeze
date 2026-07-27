@@ -63,6 +63,10 @@ const stripePayment = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
+  // Pre-enable the persisted cost/margin preference so margin visibility below
+  // is decided purely by the permission gate under test, not the toggle default.
+  localStorage.clear();
+  localStorage.setItem('breeze:quote-editor-show-margin', '1');
   fetchMock.mockImplementation(async (input: string) => {
     if (input.endsWith('/payments')) return json({ data: [stripePayment] });
     return json({ data: {} });
@@ -83,7 +87,9 @@ describe('InvoiceDetail — permission gating', () => {
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-submit')).not.toBeInTheDocument();
-    // But cost/margin IS a read affordance — invoices:read sees the margin panel.
+    // But cost/margin IS a read affordance — invoices:read sees the margin panel
+    // (with the persisted internal-view preference on) and its toggle.
+    expect(screen.getByTestId('invoice-detail-toggle-margin')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
   });
 
