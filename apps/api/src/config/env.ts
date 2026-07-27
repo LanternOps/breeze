@@ -143,13 +143,32 @@ export function parseOAuthAuthEpochEnforceAfter(
   return new Date(timestamp);
 }
 
-export const OAUTH_AUTH_EPOCH_ENFORCE_AFTER = parseOAuthAuthEpochEnforceAfter(
-  process.env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
-  {
-    oauthEnabled: MCP_OAUTH_ENABLED,
-    nodeEnv: process.env.NODE_ENV,
-  },
-);
+// Import-time resolution must never THROW, for two reasons:
+//   1. config/validate.ts imports this module. A module-scope throw here runs
+//      before the boot validator can collect and report every misconfigured
+//      key, replacing an actionable aggregated message with a bare import
+//      stack trace — and skipping the rest of the checks entirely.
+//   2. env.ts is imported by jobs, seeds, scripts and unrelated test suites
+//      that merely want one unrelated constant. Any of them running with
+//      NODE_ENV=production would die on import even though they never touch
+//      OAuth or event sockets.
+// The authoritative "required in production" and "must be a valid absolute
+// ISO timestamp" refusals therefore live in config/validate.ts, which runs
+// first in bootstrap(). The fallback below is only reachable in a process that
+// bypassed that validator, so it takes the CLOSED value: a deadline already in
+// the past rejects every claimless legacy access token.
+function resolveOAuthAuthEpochEnforceAfterAtImport(): Date | null {
+  try {
+    return parseOAuthAuthEpochEnforceAfter(process.env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER, {
+      oauthEnabled: MCP_OAUTH_ENABLED,
+      nodeEnv: process.env.NODE_ENV,
+    });
+  } catch {
+    return new Date(0);
+  }
+}
+
+export const OAUTH_AUTH_EPOCH_ENFORCE_AFTER = resolveOAuthAuthEpochEnforceAfterAtImport();
 
 export type EventPermissionEpochMode = 'compat' | 'enforce';
 
@@ -173,10 +192,22 @@ export function parseEventPermissionEpochMode(
   return value;
 }
 
-export const EVENT_PERMISSION_EPOCH_MODE = parseEventPermissionEpochMode(
-  process.env.EVENT_PERMISSION_EPOCH_MODE,
-  process.env.NODE_ENV,
-);
+// Non-throwing at import for the same reasons as the OAuth deadline above;
+// config/validate.ts owns the boot refusal. The fallback is the CLOSED mode:
+// `enforce` rejects tickets that carry no permissions epoch, whereas `compat`
+// still accepts version-one tickets.
+function resolveEventPermissionEpochModeAtImport(): EventPermissionEpochMode {
+  try {
+    return parseEventPermissionEpochMode(
+      process.env.EVENT_PERMISSION_EPOCH_MODE,
+      process.env.NODE_ENV,
+    );
+  } catch {
+    return 'enforce';
+  }
+}
+
+export const EVENT_PERMISSION_EPOCH_MODE = resolveEventPermissionEpochModeAtImport();
 
 // Optional override for the consent UI base. Defaults to '' (relative path)
 // — in prod the API and web share the same origin behind Caddy, so a
