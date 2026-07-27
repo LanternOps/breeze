@@ -741,7 +741,7 @@ Create the file with:
 - **Case A (approve/launch):** standard user launches the target → Breeze auto-approves → assert: native consent.exe does not survive, target runs elevated (Task Manager: elevated, running as `~breeze_elev`), process is visible on the user's desktop (not session 0).
 - **Case B (deny/block):** rule set to auto-deny → target does not launch, consent.exe dismissed.
 - **Case C (lifecycle):** after each case, assert `~breeze_elev` is NOT in Administrators and its password was re-randomized (`net localgroup administrators`).
-- **Case D (CVE-2026-20824 / EDR):** run with the customer EDR stack present; confirm no consent.exe deadlock and no EDR block of the `CreateProcessAsUser` launch (cross-check the #1158 allowlist submissions).
+- **Case D (CVE-2026-20824 / EDR):** run with the customer EDR stack present; confirm no consent.exe deadlock and no EDR block of the `CreateProcessAsUser` launch. Note that no allowlist submissions exist yet — #1158 is open and unimplemented — so this case is a genuine empirical test, not a confirmation of prior coverage.
 - **Result reason codes to watch in agent logs:** `ok`, `logon_failed`, `set_session_failed`, `desktop_grant_failed`, `create_process_failed`, `session_lookup_failed`, `empty_target`.
 
 - [ ] **Step 2: Execute the matrix on the VM**

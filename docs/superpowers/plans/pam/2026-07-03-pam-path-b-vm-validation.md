@@ -97,7 +97,7 @@ replacement for it.
 - [ ] **C — `~breeze_elev` lifecycle:** after A and after B, run `net localgroup administrators` → `~breeze_elev` is **not** a member; confirm the account is disabled and its password was re-randomized (demote ran).
 - [ ] **D — Failure demotes:** force a launch failure (e.g. bogus target path) → agent logs a failure reason; `~breeze_elev` is still demoted (mirrors the CI test `TestTokenLaunchFailureStillDemotes`).
 - [ ] **E — RDP / multi-session:** repeat A from an **RDP** session → the elevated process appears in the **RDP user's** session, not the console. (This is the case the session-resolution decision above must satisfy.)
-- [ ] **F — EDR / CVE-2026-20824:** run A with the customer EDR stack present → no `consent.exe` deadlock; the `CreateProcessAsUser` launch is not blocked. Cross-check the #1158 EDR-allowlist submissions cover the new launch pattern.
+- [ ] **F — EDR / CVE-2026-20824:** run A with the customer EDR stack present → no `consent.exe` deadlock; the `CreateProcessAsUser` launch is not blocked. No EDR-allowlist submissions exist yet (#1158 is open and unimplemented), so treat this as an unprotected baseline measurement.
 
 ## Result reason codes to watch in agent logs
 
