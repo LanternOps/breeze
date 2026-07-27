@@ -56,6 +56,14 @@ const LOG_FORWARDING_MASK = '****';
 const MTLS_CHALLENGE_LIMIT = 5;
 const MTLS_CHALLENGE_WINDOW_SECONDS = 300;
 
+// Fix round 2 (code review, deferred minor (b)): /renew-cert/confirm gets
+// its own per-device window, the same pattern as /renew-cert/challenge —
+// confirm is expected once per successful issuance, but an agent may
+// legitimately retry a few times across a network blip within the 15-minute
+// activation window.
+const MTLS_CONFIRM_LIMIT = 5;
+const MTLS_CONFIRM_WINDOW_SECONDS = 300;
+
 // Protocol v2 pending-activation window: the agent must persist the pending
 // certificate and confirm it (see /renew-cert/confirm) within this window.
 // The 5-minute sweep (jobs/mtlsCertificateRevocation.ts, Task 3) revokes any
@@ -1137,6 +1145,41 @@ mtlsRoutes.post(
   async (c) => {
     const device = c.get('mtlsAgentDevice') as AuthenticatedMtlsDevice;
     const { certificateId } = c.req.valid('json');
+
+    // Fix round 2 (code review, deferred minor (b)): per-device rate limit,
+    // the same Redis-key pattern as /renew-cert and /renew-cert/challenge.
+    const redis = getRedis();
+    const confirmRate = await rateLimiter(
+      redis,
+      `mtls:renew:confirm:${device.id}`,
+      MTLS_CONFIRM_LIMIT,
+      MTLS_CONFIRM_WINDOW_SECONDS,
+    );
+    if (!confirmRate.allowed) {
+      const retryAfter = Math.max(1, Math.ceil((confirmRate.resetAt.getTime() - Date.now()) / 1000));
+      c.header('Retry-After', String(retryAfter));
+      return c.json({ error: 'Confirmation rate limited; retry later' }, 429);
+    }
+
+    // Fix round 2 (code review, deferred minor (a)): tenant-status gate,
+    // matching /renew-cert's F4 pattern — this route hand-rolls bearer auth
+    // and never passes through agentAuthMiddleware, so a suspended/churned
+    // tenant whose device token was not individually suspended could
+    // otherwise still activate a pending certificate. Same opaque 401 as a
+    // stale token so suspension is not distinguishable from a bad credential.
+    if (!(await isAgentTenantActive(device.orgId))) {
+      writeAuditEvent(c, {
+        orgId: device.orgId,
+        actorType: 'agent',
+        actorId: device.agentId,
+        action: 'agent.mtls.renew.confirm_denied',
+        resourceType: 'device',
+        resourceId: device.id,
+        result: 'denied',
+        details: { reason: 'tenant_inactive' },
+      });
+      return c.json({ error: 'Invalid agent credentials' }, 401);
+    }
 
     const pendingRow = await withSystemDbAccessContext(async () => {
       const [row] = await db

@@ -952,6 +952,8 @@ describe('POST /renew-cert/challenge', () => {
 
 // Mirrors the MTLS_CHALLENGE_LIMIT constant in mtls.ts (5 requests / 5 min).
 const MTLS_CHALLENGE_LIMIT_FOR_TEST = 5;
+// Mirrors the MTLS_CONFIRM_LIMIT constant in mtls.ts (5 requests / 5 min).
+const MTLS_CONFIRM_LIMIT_FOR_TEST = 5;
 
 describe('POST /renew-cert — protocol v2 (capable agent)', () => {
   beforeEach(() => {
@@ -1414,6 +1416,52 @@ describe('POST /renew-cert/confirm', () => {
       body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
     });
     expect(res.status).toBe(401);
+  });
+
+  it('rejects with opaque 401 and does NOT touch the pending row when the tenant is inactive', async () => {
+    // Fix round 2 (deferred minor (a)): matches /renew-cert's F4 pattern —
+    // a suspended/churned tenant whose device token was not individually
+    // suspended must not be able to activate a pending certificate.
+    tenantActiveMock.mockResolvedValue(false);
+    mockDeviceLookup(baseActiveDeviceRow());
+
+    const res = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('Invalid agent credentials');
+    // Only the device lookup (bearer auth) ran — the pending-row lookup
+    // never happened.
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits repeated confirm requests from the same device', async () => {
+    // Fix round 2 (deferred minor (b)): per-device rate limit, same
+    // Redis-key pattern as /renew-cert and /renew-cert/challenge.
+    for (let i = 0; i < MTLS_CONFIRM_LIMIT_FOR_TEST; i += 1) {
+      mockDeviceLookup(baseActiveDeviceRow());
+      mockPendingCertLookup(null); // 404s past the rate limiter — irrelevant to this test
+      const res = await buildApp().request('/agents/renew-cert/confirm', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+      });
+      expect(res.status).toBe(404);
+    }
+
+    mockDeviceLookup(baseActiveDeviceRow());
+    const limited = await buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Retry-After')).toBeTruthy();
   });
 
   it('404s when the certificateId does not belong to the authenticated device', async () => {
