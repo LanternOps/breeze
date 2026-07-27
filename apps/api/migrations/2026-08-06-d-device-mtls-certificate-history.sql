@@ -156,6 +156,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON device_mtls_certificates TO breeze_app;
 -- device already has a history row, or a legacy value collides with an
 -- existing unique constraint, that device is skipped rather than erroring or
 -- duplicating.
+--
+-- devices.mtls_cert_issued_at / mtls_cert_expires_at are `timestamp` (no tz);
+-- the target columns are `timestamptz`. `AT TIME ZONE 'UTC'` makes the
+-- interpretation explicit (these legacy values were always written in UTC)
+-- instead of relying on the executing session's TimeZone GUC.
 DO $$
 DECLARE
   imported int;
@@ -168,7 +173,9 @@ BEGIN
   SELECT
     d.org_id, d.id, d.mtls_cert_cf_id, d.mtls_cert_serial_number,
     NULL, NULL, true, 'active',
-    d.mtls_cert_issued_at, d.mtls_cert_expires_at, d.mtls_cert_issued_at
+    d.mtls_cert_issued_at AT TIME ZONE 'UTC',
+    d.mtls_cert_expires_at AT TIME ZONE 'UTC',
+    d.mtls_cert_issued_at AT TIME ZONE 'UTC'
   FROM devices d
   WHERE d.mtls_cert_cf_id IS NOT NULL
     AND d.mtls_cert_serial_number IS NOT NULL

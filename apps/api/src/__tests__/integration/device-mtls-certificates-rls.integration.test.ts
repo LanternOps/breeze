@@ -172,4 +172,43 @@ describe('device_mtls_certificates RLS (breeze_app)', () => {
     );
     expect(visibleToB).toHaveLength(0);
   });
+
+  runDb('composite FK forbids a mismatched (device_id, org_id) tuple even under system context', async () => {
+    const { orgB, deviceA, unique } = await seed();
+
+    // The RLS forge test above proves the WRITE POLICY rejects org B claiming
+    // org A's (device, org) tuple — but that tuple was still internally
+    // consistent (deviceA really does belong to orgA), so it never exercises
+    // the composite FK itself. This proves the FK independently: under
+    // withSystemDbAccessContext (RLS bypassed, mirroring
+    // deviceLinkGroupsRls.integration.test.ts's "composite FK forbids linking
+    // a device to a group in another org" case), attempt to insert a row
+    // where device_id belongs to org A but org_id names org B — a genuinely
+    // mismatched tuple with no (device_id, org_id) match in devices at all.
+    // Only devices_id_org_id_uniq + this table's FK stand between that insert
+    // and a written row; RLS plays no part since we're in system context.
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(() =>
+        db.insert(deviceMtlsCertificates).values({
+          orgId: orgB.id,
+          deviceId: deviceA.id, // deviceA belongs to orgA, not orgB
+          providerCertificateId: `prov-mismatched-${unique}`,
+          serialNumber: `serial-mismatched-${unique}`,
+          fingerprintSha256: 'd'.repeat(64),
+          legacyProvenance: false,
+          state: 'active',
+          issuedAt: new Date(),
+          expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          activatedAt: new Date(),
+        }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, 'mismatched (device_id, org_id) tuple must be rejected by the composite FK').toBeDefined();
+    const cause = (caught as { cause?: { code?: string; message?: string } } | undefined)?.cause;
+    expect(cause?.code).toBe('23503'); // foreign_key_violation
+    expect(cause?.message).toMatch(/device_mtls_certificates_device_org_fkey/);
+  });
 });
