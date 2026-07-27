@@ -13,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
+
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/pkg/api"
 )
 
 func TestProcessStartupFieldsContainRoleEvidenceOnly(t *testing.T) {
@@ -610,6 +613,132 @@ func TestResolveBackupServerURL(t *testing.T) {
 			}
 			if (err != nil) != tc.wantErr {
 				t.Errorf("resolveBackupServerURL(%q, %q, %q) err = %v, wantErr %v", tc.enrollSeed, tc.bootstrapSeed, tc.primaryURL, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestApplyEnrollResponseIdentityCopiesDeviceID is the regression test for
+// the DeviceID enrollment-plumbing gap (security remediation Wave 5 Task 5
+// follow-up): the enrollment route has always returned deviceId, but nothing
+// copied EnrollResponse.DeviceID into the persisted config, leaving the
+// expired-certificate mTLS renewal recovery proof inert end-to-end despite
+// every other piece (signing, canonicalization, wire format) being
+// implemented and tested. This pins that applyEnrollResponseIdentity copies
+// every identity/credential field the enrollment response carries —
+// including DeviceID — alongside a full SaveTo+Load round trip, so a
+// regression here would be caught even if a future change stopped short of
+// actually persisting the field.
+func TestApplyEnrollResponseIdentityCopiesDeviceID(t *testing.T) {
+	// Deliberately not t.Parallel(): the subtests below call config.SaveTo /
+	// config.Load, which read and write the config package's global viper
+	// singleton (Load has no lock at all — only Save/SaveTo serialize via
+	// persistMu — and Set() values persist in viper's override layer across
+	// ReadInConfig calls until Reset()). Running them concurrently with each
+	// other would race that shared state; no other test in this package
+	// currently touches config.Load/SaveTo from a t.Parallel() subtest, so
+	// this doesn't collide with anything else either.
+	tests := []struct {
+		name       string
+		enrollResp *api.EnrollResponse
+		wantCfg    config.Config
+	}{
+		{
+			name: "full identity including DeviceID",
+			enrollResp: &api.EnrollResponse{
+				AgentID:           "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776",
+				DeviceID:          "550e8400-e29b-41d4-a716-446655440000",
+				AuthToken:         "brz_auth",
+				WatchdogAuthToken: "brz_watchdog",
+				HelperAuthToken:   "brz_helper",
+				OrgID:             "org-1",
+				SiteID:            "site-1",
+			},
+			wantCfg: config.Config{
+				AgentID:           "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776",
+				DeviceID:          "550e8400-e29b-41d4-a716-446655440000",
+				AuthToken:         "brz_auth",
+				WatchdogAuthToken: "brz_watchdog",
+				HelperAuthToken:   "brz_helper",
+				OrgID:             "org-1",
+				SiteID:            "site-1",
+			},
+		},
+		{
+			// A server predating the deviceId response field (or a response
+			// that simply omits it) must not crash or leave a stale value —
+			// json.Unmarshal already leaves DeviceID as the zero value, and
+			// this must propagate through as empty, not panic or default to
+			// something else. This is also the shape a rollout produces for
+			// any request that lands on a not-yet-upgraded replica.
+			name: "empty DeviceID propagates as empty, not left over from a stale cfg",
+			enrollResp: &api.EnrollResponse{
+				AgentID:   "6ba7b8109dad11d180b400c04fd430c86ba7b8109dad11d180b400c04fd430c",
+				AuthToken: "brz_auth_2",
+				OrgID:     "org-2",
+				SiteID:    "site-2",
+			},
+			wantCfg: config.Config{
+				AgentID:   "6ba7b8109dad11d180b400c04fd430c86ba7b8109dad11d180b400c04fd430c",
+				DeviceID:  "",
+				AuthToken: "brz_auth_2",
+				OrgID:     "org-2",
+				SiteID:    "site-2",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			viper.Reset()
+			t.Cleanup(viper.Reset)
+
+			// Start from a config that already has a (stale, pre-re-enroll)
+			// DeviceID set, proving the copy overwrites rather than only
+			// filling in when empty.
+			cfg := config.Default()
+			cfg.DeviceID = "stale-device-id-from-before-re-enroll"
+
+			applyEnrollResponseIdentity(cfg, tc.enrollResp)
+
+			if cfg.AgentID != tc.wantCfg.AgentID {
+				t.Errorf("AgentID = %q, want %q", cfg.AgentID, tc.wantCfg.AgentID)
+			}
+			if cfg.DeviceID != tc.wantCfg.DeviceID {
+				t.Errorf("DeviceID = %q, want %q", cfg.DeviceID, tc.wantCfg.DeviceID)
+			}
+			if cfg.AuthToken != tc.wantCfg.AuthToken {
+				t.Errorf("AuthToken = %q, want %q", cfg.AuthToken, tc.wantCfg.AuthToken)
+			}
+			if cfg.WatchdogAuthToken != tc.wantCfg.WatchdogAuthToken {
+				t.Errorf("WatchdogAuthToken = %q, want %q", cfg.WatchdogAuthToken, tc.wantCfg.WatchdogAuthToken)
+			}
+			if cfg.HelperAuthToken != tc.wantCfg.HelperAuthToken {
+				t.Errorf("HelperAuthToken = %q, want %q", cfg.HelperAuthToken, tc.wantCfg.HelperAuthToken)
+			}
+			if cfg.OrgID != tc.wantCfg.OrgID {
+				t.Errorf("OrgID = %q, want %q", cfg.OrgID, tc.wantCfg.OrgID)
+			}
+			if cfg.SiteID != tc.wantCfg.SiteID {
+				t.Errorf("SiteID = %q, want %q", cfg.SiteID, tc.wantCfg.SiteID)
+			}
+
+			// End-to-end: prove DeviceID actually survives a durable
+			// SaveTo -> Load round trip, not just the in-memory struct copy —
+			// this is what makes it available to a LATER process (the
+			// heartbeat's mTLS renewal driver) rather than just this one.
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+			if err := config.SaveTo(cfg, cfgPath); err != nil {
+				t.Fatalf("SaveTo: %v", err)
+			}
+			loaded, err := config.Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if loaded.DeviceID != tc.wantCfg.DeviceID {
+				t.Errorf("persisted DeviceID = %q, want %q", loaded.DeviceID, tc.wantCfg.DeviceID)
 			}
 		})
 	}

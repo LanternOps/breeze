@@ -1073,6 +1073,30 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// applyEnrollResponseIdentity copies the identity/credential fields an
+// EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
+// HelperAuthToken, OrgID, SiteID, and DeviceID.
+//
+// DeviceID (security remediation Wave 5 Task 5) is the server's devices.id
+// UUID — distinct from AgentID/devices.agent_id — and is required to build
+// the expired-certificate mTLS renewal recovery proof
+// (mtls.BuildRenewalProofCanonicalBytes / config.Config.DeviceID). The
+// enrollment route has always returned it; nothing previously copied it into
+// the agent's persisted config, which left recovery-proof signing silently
+// unavailable end-to-end even though every other piece was wired up and
+// tested. Extracted as a named helper, mirroring
+// resolveBackupServerURL/assertHostnameNonEmpty above, so it's unit-testable
+// without going through enrollDevice's os.Exit-on-error call chain.
+func applyEnrollResponseIdentity(cfg *config.Config, enrollResp *api.EnrollResponse) {
+	cfg.AgentID = enrollResp.AgentID
+	cfg.AuthToken = enrollResp.AuthToken
+	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
+	cfg.HelperAuthToken = enrollResp.HelperAuthToken
+	cfg.OrgID = enrollResp.OrgID
+	cfg.SiteID = enrollResp.SiteID
+	cfg.DeviceID = enrollResp.DeviceID
+}
+
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
 // never proceed with an empty or whitespace-only hostname, because the
 // downstream substitution used to write the device UUID there and
@@ -1271,12 +1295,7 @@ func enrollDevice(enrollmentKey string) {
 		enrollError(cat, friendly, err)
 	}
 
-	cfg.AgentID = enrollResp.AgentID
-	cfg.AuthToken = enrollResp.AuthToken
-	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
-	cfg.HelperAuthToken = enrollResp.HelperAuthToken
-	cfg.OrgID = enrollResp.OrgID
-	cfg.SiteID = enrollResp.SiteID
+	applyEnrollResponseIdentity(cfg, enrollResp)
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not

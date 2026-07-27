@@ -67,11 +67,19 @@ type Config struct {
 	// AgentID (devices.agent_id). Security remediation Wave 5 Task 4's
 	// expired-certificate recovery proof is canonicalized on this value (see
 	// apps/api/src/services/mtlsRenewalProof.ts and mtls.BuildRenewalProofCanonicalBytes) —
-	// NOT on AgentID. Populated from EnrollResponse.DeviceID at enrollment;
-	// empty on agents enrolled before this field existed, in which case
-	// expired-cert recovery renewal degrades to requesting without a proof
-	// (fails closed exactly as before this field existed whenever the org's
-	// binding mode requires one).
+	// NOT on AgentID. Populated from EnrollResponse.DeviceID by
+	// applyEnrollResponseIdentity (internal/agentapp/main.go) at enrollment
+	// time — including on a `--force` re-enrollment, which is the only
+	// recovery path for an agent that enrolled before this field existed.
+	//
+	// KNOWN ROLLOUT PROPERTY: an agent enrolled before this field was added
+	// has an empty DeviceID on disk and stays that way until it re-enrolls —
+	// nothing backfills it automatically. Until then (or a server-side
+	// backfill lands), expired-cert recovery renewal degrades to requesting
+	// without a proof for that agent (fails closed exactly as it did before
+	// this field existed, whenever the org's binding mode requires one). This
+	// is a known, accepted gap for already-enrolled fleets at rollout, not a
+	// bug in agents enrolled after this field landed.
 	DeviceID string `mapstructure:"device_id"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
