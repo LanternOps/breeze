@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { InvoiceStatus, TicketFormField } from '@breeze/shared';
+import type { InvoiceStatus, PublicQuoteHeader, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -330,7 +330,7 @@ export interface Asset {
 
 // Re-export the shared InvoiceStatus (imported at the top of this file) so portal
 // components keep importing it from '@/lib/api' unchanged.
-export type { InvoiceStatus };
+export type { InvoiceStatus, PublicQuoteHeader };
 
 export interface InvoiceSummary {
   id: string;
@@ -491,7 +491,7 @@ export interface QuoteDetail {
 }
 
 export interface PublicQuoteDetail {
-  quote: QuoteHeader;
+  quote: PublicQuoteHeader;
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;

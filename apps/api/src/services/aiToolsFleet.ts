@@ -64,7 +64,24 @@ import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
-import { siteScopeRequestAllowed } from './reportGenerationService';
+import { assertReportExecutionPreflight } from './reportGenerationService';
+import {
+  decodeSiteScope,
+  intersectSiteScopes,
+  isSiteScopeSubset,
+  persistedSiteScopeValues,
+  reportDefinitionMultiOrgScopeSqlPredicate,
+  reportDefinitionScopeSqlPredicate,
+  reportRunScopeSqlPredicate,
+  resolveRequestReportAuthority,
+  resolveRequestReportAuthorityMap,
+  siteScopeFingerprint,
+  unrestrictedReportDefinitionScopeSqlPredicate,
+  type LiveSiteScopeV1,
+  type PersistedSiteScopeColumns,
+  type ReportAction,
+  type ReportExecutionAuthority,
+} from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
@@ -82,6 +99,146 @@ function getOrgId(auth: AuthContext): string | null {
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+const aiReportDefinitionMetadataProjection = {
+  id: reports.id,
+  orgId: reports.orgId,
+  executionScopeVersion: reports.executionScopeVersion,
+  executionScopeKind: reports.executionScopeKind,
+  executionScopeSiteIds: reports.executionScopeSiteIds,
+  executionScopeUserId: reports.executionScopeUserId,
+  executionScopeFingerprint: reports.executionScopeFingerprint,
+  executionScopeCapturedAt: reports.executionScopeCapturedAt,
+};
+
+const aiReportRunMetadataProjection = {
+  id: reportRuns.id,
+  reportId: reportRuns.reportId,
+  orgId: reports.orgId,
+  executionScopeVersion: reportRuns.executionScopeVersion,
+  executionScopeKind: reportRuns.executionScopeKind,
+  executionScopeSiteIds: reportRuns.executionScopeSiteIds,
+  executionScopeUserId: reportRuns.executionScopeUserId,
+  executionScopeFingerprint: reportRuns.executionScopeFingerprint,
+  executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+};
+
+async function aiLiveReportAuthority(
+  auth: AuthContext,
+  orgId: string,
+  action: ReportAction,
+): Promise<
+  (Omit<ReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
+> {
+  const result = await resolveRequestReportAuthority(auth, orgId, action);
+  if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
+  return result.authority as Omit<ReportExecutionAuthority, 'scope'> & {
+    scope: LiveSiteScopeV1;
+  };
+}
+
+async function aiReportDefinitionAccess(
+  auth: AuthContext,
+  reportId: string,
+  action: ReportAction,
+) {
+  const metadataConditions: SQL[] = [eq(reports.id, reportId)];
+  const tenantCondition = orgWhere(auth, reports.orgId);
+  if (tenantCondition) metadataConditions.push(tenantCondition);
+  const [metadata] = await db
+    .select(aiReportDefinitionMetadataProjection)
+    .from(reports)
+    .where(and(...metadataConditions))
+    .limit(1);
+  if (!metadata) return null;
+
+  const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
+  if (!authority) return null;
+  try {
+    const storedScope = decodeSiteScope(
+      metadata as unknown as PersistedSiteScopeColumns,
+      metadata.orgId,
+    );
+    if (!isSiteScopeSubset(storedScope, authority.scope)) return null;
+  } catch {
+    return null;
+  }
+
+  const predicate = reportDefinitionScopeSqlPredicate(reports, authority.scope);
+  const [report] = await db
+    .select()
+    .from(reports)
+    .where(and(
+      eq(reports.id, reportId),
+      eq(reports.orgId, metadata.orgId),
+      predicate,
+    ))
+    .limit(1);
+  if (!report) return null;
+
+  try {
+    const storedScope = decodeSiteScope(
+      report as unknown as PersistedSiteScopeColumns,
+      report.orgId,
+    );
+    if (!isSiteScopeSubset(storedScope, authority.scope)) return null;
+  } catch {
+    return null;
+  }
+  return { report, authority, predicate };
+}
+
+async function aiReportRunAccess(
+  auth: AuthContext,
+  runId: string,
+  action: ReportAction,
+) {
+  const metadataConditions: SQL[] = [eq(reportRuns.id, runId)];
+  const tenantCondition = orgWhere(auth, reports.orgId);
+  if (tenantCondition) metadataConditions.push(tenantCondition);
+  const [metadata] = await db
+    .select(aiReportRunMetadataProjection)
+    .from(reportRuns)
+    .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+    .where(and(...metadataConditions))
+    .limit(1);
+  if (!metadata) return null;
+
+  const authority = await aiLiveReportAuthority(auth, metadata.orgId, action);
+  if (!authority) return null;
+  try {
+    const storedScope = decodeSiteScope(
+      metadata as unknown as PersistedSiteScopeColumns,
+      metadata.orgId,
+    );
+    if (!isSiteScopeSubset(storedScope, authority.scope)) return null;
+  } catch {
+    return null;
+  }
+  return {
+    metadata,
+    authority,
+    predicate: reportRunScopeSqlPredicate(reportRuns, authority.scope),
+  };
+}
+
+async function aiAuthorityDeviceIds(
+  orgId: string,
+  authority: ReportExecutionAuthority,
+): Promise<string[] | null> {
+  if (authority.scope.kind === 'unrestricted') return null;
+  if (authority.scope.kind !== 'restricted' || authority.scope.siteIds.length === 0) {
+    return [];
+  }
+  const rows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(
+      eq(devices.orgId, orgId),
+      inArray(devices.siteId, authority.scope.siteIds),
+    ));
+  return rows.map((row) => row.id);
 }
 
 // Dual-axis access for alert_rules (#2128): org-owned rules the caller can
@@ -150,10 +307,8 @@ function automationWhere(auth: AuthContext): SQL | undefined {
 // Site-axis helpers (app-layer authz — RLS does NOT enforce site)
 // ============================================
 
-// Minimal UserPermissions view for reused site-scope helpers that only read
-// `allowedSiteIds` (reportGenerationService.siteScopeRequestAllowed,
-// automationRuntime.checkAutomationTargetsWithinSiteScope). Undefined for
-// unrestricted callers so those helpers no-op.
+// Minimal UserPermissions view for the automation target helper, which reads
+// only `allowedSiteIds`. Undefined lets that helper no-op for unrestricted callers.
 function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
   return auth.allowedSiteIds ? ({ allowedSiteIds: auth.allowedSiteIds } as UserPermissions) : undefined;
 }
@@ -1836,8 +1991,41 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, reports.orgId);
-        if (oc) conditions.push(oc);
+        let definitionPredicate: SQL;
+        if (auth.scope === 'organization') {
+          if (!auth.orgId) return JSON.stringify({ error: 'Organization context required' });
+          const authority = await aiLiveReportAuthority(auth, auth.orgId, 'read');
+          if (!authority) {
+            return JSON.stringify({ reports: [], showing: 0 });
+          }
+          conditions.push(eq(reports.orgId, auth.orgId));
+          definitionPredicate = reportDefinitionScopeSqlPredicate(
+            reports,
+            authority.scope,
+          );
+        } else if (auth.scope === 'partner') {
+          const orgIds = auth.accessibleOrgIds ?? [];
+          const authorityMap = await resolveRequestReportAuthorityMap(
+            auth,
+            orgIds,
+            'read',
+          );
+          const scopes: LiveSiteScopeV1[] = [];
+          for (const result of authorityMap.values()) {
+            if (result.ok && result.authority.scope.kind !== 'legacy_unscoped') {
+              scopes.push(result.authority.scope);
+            }
+          }
+          if (orgIds.length > 0) conditions.push(inArray(reports.orgId, orgIds));
+          definitionPredicate = reportDefinitionMultiOrgScopeSqlPredicate(
+            reports.orgId,
+            reports,
+            scopes,
+          );
+        } else {
+          definitionPredicate = unrestrictedReportDefinitionScopeSqlPredicate(reports);
+        }
+        conditions.push(definitionPredicate);
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const rows = await db.select({
@@ -1861,19 +2049,57 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
         let reportDef;
+        let executionAuthority: ReportExecutionAuthority | null = null;
         if (input.reportId) {
-          const conditions: SQL[] = [eq(reports.id, input.reportId as string)];
-          const oc = orgWhere(auth, reports.orgId);
-          if (oc) conditions.push(oc);
-          [reportDef] = await db.select().from(reports).where(and(...conditions)).limit(1);
-          if (!reportDef) return JSON.stringify({ error: 'Report not found or access denied' });
+          const access = await aiReportDefinitionAccess(
+            auth,
+            input.reportId as string,
+            'read',
+          );
+          if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
+          reportDef = access.report;
+          try {
+            const persistedScope = decodeSiteScope(
+              reportDef as unknown as PersistedSiteScopeColumns,
+              reportDef.orgId,
+            );
+            const effectiveScope = intersectSiteScopes(
+              persistedScope,
+              access.authority.scope,
+            );
+            if (
+              !effectiveScope
+              || effectiveScope.kind === 'legacy_unscoped'
+              || (effectiveScope.kind === 'restricted' && effectiveScope.siteIds.length === 0)
+            ) {
+              return JSON.stringify({ error: 'Report not found or access denied' });
+            }
+            executionAuthority = {
+              scope: effectiveScope,
+              principalUserId: access.authority.principalUserId,
+              capturedAt: access.authority.capturedAt,
+              fingerprint: siteScopeFingerprint(effectiveScope),
+            };
+          } catch {
+            return JSON.stringify({ error: 'Report not found or access denied' });
+          }
+        } else {
+          executionAuthority = await aiLiveReportAuthority(auth, orgId, 'read');
+          if (
+            !executionAuthority
+            || executionAuthority.scope.kind === 'legacy_unscoped'
+            || (executionAuthority.scope.kind === 'restricted'
+              && executionAuthority.scope.siteIds.length === 0)
+          ) {
+            return JSON.stringify({ error: 'Access to report scope denied' });
+          }
         }
 
-        // Site axis: a site-restricted caller must not enqueue a report whose
-        // config scope (siteIds / posture sites / deviceIds) exceeds their sites
-        // (mirrors routes/reports/runs.ts:59 via siteScopeRequestAllowed).
-        if (reportDef && !(await siteScopeRequestAllowed(reportDef.orgId, (reportDef.config ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
-          return JSON.stringify({ error: 'Access to report scope denied' });
+        const reportConfig = (reportDef?.config ?? input.config ?? {}) as Record<string, unknown>;
+        try {
+          assertReportExecutionPreflight(orgId, reportConfig, executionAuthority);
+        } catch {
+          return JSON.stringify({ error: 'Report not found or access denied' });
         }
 
         // Only create a run record if we have a saved report definition
@@ -1884,6 +2110,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const [run] = await db.insert(reportRuns).values({
             reportId,
             status: 'pending',
+            ...persistedSiteScopeValues(executionAuthority),
           }).returning();
           runId = run?.id ?? null;
           await db.update(reports).set({ lastGeneratedAt: new Date() }).where(eq(reports.id, reportId));
@@ -1900,6 +2127,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'data') {
         if (!input.reportType) return JSON.stringify({ error: 'reportType is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const executionAuthority = await aiLiveReportAuthority(auth, orgId, 'read');
+        if (!executionAuthority) {
+          return JSON.stringify({ error: 'Access to report scope denied' });
+        }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
         const reportType = input.reportType as string;
@@ -1908,12 +2139,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const inventoryConditions: SQL[] = [eq(devices.orgId, orgId)];
           // Site axis: a site-restricted caller may only enumerate devices in
           // their allowed sites (RLS does NOT enforce site).
-          if (auth.allowedSiteIds) {
-            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
-            if (!allowed || allowed.length === 0) {
+          if (executionAuthority.scope.kind === 'restricted') {
+            if (executionAuthority.scope.siteIds.length === 0) {
               return JSON.stringify({ reportType, data: [], showing: 0 });
             }
-            inventoryConditions.push(inArray(devices.id, allowed));
+            inventoryConditions.push(
+              inArray(devices.siteId, executionAuthority.scope.siteIds),
+            );
           }
           const rows = await db.select({
             id: devices.id,
@@ -1936,8 +2168,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (reportType === 'alert_summary') {
           const summaryConditions: SQL[] = [eq(alerts.orgId, orgId)];
           // Site axis: mirror device_inventory — narrow to in-scope devices.
-          if (auth.allowedSiteIds) {
-            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (executionAuthority.scope.kind === 'restricted') {
+            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority);
             if (!allowed || allowed.length === 0) {
               return JSON.stringify({ reportType, data: { total: 0, active: 0, critical: 0, high: 0, resolved24h: 0 } });
             }
@@ -1965,8 +2197,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           // in-scope devices. Added to the JOIN condition (not WHERE) so policies
           // still appear with in-scope counts rather than being dropped entirely.
           let complianceJoin: SQL = eq(automationPolicies.id, automationPolicyCompliance.policyId);
-          if (auth.allowedSiteIds) {
-            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (executionAuthority.scope.kind === 'restricted') {
+            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority);
             if (!allowed || allowed.length === 0) {
               return JSON.stringify({ reportType, data: [] });
             }
@@ -1993,6 +2225,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'create') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        const authority = await aiLiveReportAuthority(auth, orgId, 'write');
+        if (
+          !authority
+          || (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0)
+        ) {
+          return JSON.stringify({ error: 'Access to report scope denied' });
+        }
         const [report] = await db.insert(reports).values({
           orgId,
           name: input.name as string,
@@ -2001,6 +2240,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           schedule: (input.schedule as 'one_time' | 'daily' | 'weekly' | 'monthly') ?? 'one_time',
           format: (input.format as 'csv' | 'pdf' | 'excel') ?? 'csv',
           createdBy: auth.user.id,
+          ...persistedSiteScopeValues(authority),
         }).returning();
 
         return JSON.stringify({ success: true, reportId: report?.id, name: report?.name });
@@ -2008,12 +2248,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'update') {
         if (!input.reportId) return JSON.stringify({ error: 'reportId is required' });
-        const conditions: SQL[] = [eq(reports.id, input.reportId as string)];
-        const oc = orgWhere(auth, reports.orgId);
-        if (oc) conditions.push(oc);
-
-        const [existing] = await db.select().from(reports).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Report not found or access denied' });
+        const access = await aiReportDefinitionAccess(
+          auth,
+          input.reportId as string,
+          'write',
+        );
+        if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
+        const existing = access.report;
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -2021,44 +2262,78 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.schedule === 'string') updates.schedule = input.schedule;
         if (typeof input.format === 'string') updates.format = input.format;
 
-        await db.update(reports).set(updates).where(eq(reports.id, existing.id));
+        const updated = await db.update(reports).set(updates).where(and(
+          eq(reports.id, existing.id),
+          eq(reports.orgId, existing.orgId),
+          access.predicate,
+        )).returning({ id: reports.id });
+        if (updated.length !== 1) {
+          return JSON.stringify({ error: 'Report not found or access denied' });
+        }
         return JSON.stringify({ success: true, message: `Report "${existing.name}" updated` });
       }
 
       if (action === 'delete') {
         if (!input.reportId) return JSON.stringify({ error: 'reportId is required' });
-        const conditions: SQL[] = [eq(reports.id, input.reportId as string)];
-        const oc = orgWhere(auth, reports.orgId);
-        if (oc) conditions.push(oc);
+        const access = await aiReportDefinitionAccess(
+          auth,
+          input.reportId as string,
+          'delete',
+        );
+        if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
+        const existing = access.report;
 
-        const [existing] = await db.select().from(reports).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Report not found or access denied' });
-
-        await db.transaction(async (tx) => {
+        const deleted = await db.transaction(async (tx) => {
           await tx.delete(reportRuns).where(eq(reportRuns.reportId, existing.id));
-          await tx.delete(reports).where(eq(reports.id, existing.id));
+          const deletedRows = await tx.delete(reports).where(and(
+            eq(reports.id, existing.id),
+            eq(reports.orgId, existing.orgId),
+            access.predicate,
+          )).returning({ id: reports.id });
+          if (deletedRows.length !== 1) {
+            throw new Error('AI_REPORT_DELETE_SCOPE_CHANGED');
+          }
+          return deletedRows[0];
+        }).catch((error) => {
+          if (error instanceof Error && error.message === 'AI_REPORT_DELETE_SCOPE_CHANGED') {
+            return null;
+          }
+          throw error;
         });
+        if (!deleted) {
+          return JSON.stringify({ error: 'Report not found or access denied' });
+        }
         return JSON.stringify({ success: true, message: `Report "${existing.name}" deleted` });
       }
 
       if (action === 'history') {
         if (!input.reportId) return JSON.stringify({ error: 'reportId is required' });
-        const conditions: SQL[] = [eq(reports.id, input.reportId as string)];
-        const oc = orgWhere(auth, reports.orgId);
-        if (oc) conditions.push(oc);
-
-        const [report] = await db.select().from(reports).where(and(...conditions)).limit(1);
-        if (!report) return JSON.stringify({ error: 'Report not found or access denied' });
-        // Site axis: deny run history for a report whose scope exceeds the
-        // caller's sites (mirrors routes/reports/runs.ts:59).
-        if (!(await siteScopeRequestAllowed(report.orgId, (report.config ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
-          return JSON.stringify({ error: 'Access to report scope denied' });
-        }
+        const access = await aiReportDefinitionAccess(
+          auth,
+          input.reportId as string,
+          'read',
+        );
+        if (!access) return JSON.stringify({ error: 'Report not found or access denied' });
+        const report = access.report;
+        const runPredicate = reportRunScopeSqlPredicate(
+          reportRuns,
+          access.authority.scope,
+        );
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const runs = await db.select()
+        const runs = await db.select({
+          id: reportRuns.id,
+          reportId: reportRuns.reportId,
+          status: reportRuns.status,
+          startedAt: reportRuns.startedAt,
+          completedAt: reportRuns.completedAt,
+          outputUrl: reportRuns.outputUrl,
+          errorMessage: reportRuns.errorMessage,
+          rowCount: reportRuns.rowCount,
+          createdAt: reportRuns.createdAt,
+        })
           .from(reportRuns)
-          .where(eq(reportRuns.reportId, report.id))
+          .where(and(eq(reportRuns.reportId, report.id), runPredicate))
           .orderBy(desc(reportRuns.createdAt))
           .limit(limit);
 
@@ -2067,6 +2342,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'download') {
         if (!input.reportRunId) return JSON.stringify({ error: 'reportRunId is required' });
+        const access = await aiReportRunAccess(
+          auth,
+          input.reportRunId as string,
+          'export',
+        );
+        if (!access) return JSON.stringify({ error: 'Report run not found' });
 
         const [run] = await db.select({
           id: reportRuns.id,
@@ -2082,29 +2363,32 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           reportType: reports.type,
           reportFormat: reports.format,
           reportOrgId: reports.orgId,
-          reportConfig: reports.config,
+          executionScopeVersion: reportRuns.executionScopeVersion,
+          executionScopeKind: reportRuns.executionScopeKind,
+          executionScopeSiteIds: reportRuns.executionScopeSiteIds,
+          executionScopeUserId: reportRuns.executionScopeUserId,
+          executionScopeFingerprint: reportRuns.executionScopeFingerprint,
+          executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
         }).from(reportRuns)
           .innerJoin(reports, eq(reportRuns.reportId, reports.id))
-          .where(eq(reportRuns.id, input.reportRunId as string))
+          .where(and(
+            eq(reportRuns.id, input.reportRunId as string),
+            eq(reports.orgId, access.metadata.orgId),
+            access.predicate,
+          ))
           .limit(1);
 
         if (!run) return JSON.stringify({ error: 'Report run not found' });
-
-        // Verify org access via the parent report
-        const oc = orgWhere(auth, reports.orgId);
-        if (oc) {
-          const [accessible] = await db.select({ id: reports.id })
-            .from(reports)
-            .where(and(eq(reports.id, run.reportId), oc))
-            .limit(1);
-          if (!accessible) return JSON.stringify({ error: 'Report not found or access denied' });
-        }
-
-        // Site axis: deny download of a run whose report scope exceeds the
-        // caller's sites (mirrors routes/reports/runs.ts:59). The output URL /
-        // result would otherwise expose out-of-site device data.
-        if (!(await siteScopeRequestAllowed(run.reportOrgId, (run.reportConfig ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
-          return JSON.stringify({ error: 'Access to report scope denied' });
+        try {
+          const storedScope = decodeSiteScope(
+            run as unknown as PersistedSiteScopeColumns,
+            run.reportOrgId,
+          );
+          if (!isSiteScopeSubset(storedScope, access.authority.scope)) {
+            return JSON.stringify({ error: 'Report run not found' });
+          }
+        } catch {
+          return JSON.stringify({ error: 'Report run not found' });
         }
 
         if (run.status !== 'completed') {

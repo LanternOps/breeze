@@ -87,6 +87,11 @@ export const quotes = pgTable('quotes', {
   sendEmailReason: text('send_email_reason').$type<SendQuoteEmailReason>(),
   firstViewedAt: timestamp('first_viewed_at'),
   viewedAt: timestamp('viewed_at'),
+  publicTokenVersion: integer('public_token_version').notNull().default(0),
+  publicResponseJti: varchar('public_response_jti', { length: 128 }),
+  publicResponseConsumedAt: timestamp('public_response_consumed_at', { withTimezone: true }),
+  publicResponseOutcome: varchar('public_response_outcome', { length: 16 }),
+  publicLinkRevokedAt: timestamp('public_link_revoked_at', { withTimezone: true }),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()

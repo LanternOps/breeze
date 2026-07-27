@@ -35,6 +35,42 @@ describe('parseExtensionManifest', () => {
     expect(m.migrationsDir).toBe('migrations'); // default
     expect(m.tenancy.deviceCascadeDeleteTables).toEqual([]); // default
     expect(m.tenancy.deviceOrgMoveDeleteTables).toBeUndefined(); // optional
+    expect(m.tenancy.orgExportColumns).toEqual({});
+  });
+
+  it('accepts exact extension org-export include/exclude classifications', () => {
+    const m = parseExtensionManifest({
+      ...valid,
+      tenancy: {
+        ...valid.tenancy,
+        orgExportColumns: {
+          sample_items: {
+            include: ['id', 'org_id', 'display_name'],
+            exclude: ['credential_hash'],
+          },
+        },
+      },
+    });
+
+    expect(m.tenancy.orgExportColumns).toEqual({
+      sample_items: {
+        include: ['id', 'org_id', 'display_name'],
+        exclude: ['credential_hash'],
+      },
+    });
+    expect(() => parseExtensionManifest({
+      ...valid,
+      tenancy: {
+        ...valid.tenancy,
+        orgExportColumns: {
+          sample_items: {
+            include: ['id'],
+            exclude: [],
+            unexpected: true,
+          },
+        },
+      },
+    })).toThrow();
   });
 
   it('accepts agentRoutes and deviceOrgMoveDeleteTables', () => {

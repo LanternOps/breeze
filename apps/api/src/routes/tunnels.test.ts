@@ -100,7 +100,11 @@ vi.mock('../middleware/auth', () => ({
     } : undefined);
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (c: any, next: any) => (
+    c.req.header('x-test-mfa') === 'false'
+      ? c.json({ error: 'MFA verification required' }, 403)
+      : next()
+  )),
 }));
 
 // --- Agent WS helpers ---
@@ -117,6 +121,7 @@ vi.mock('../services/remoteAccessPolicy', () => ({
 // --- Remote session auth ---
 vi.mock('../services/remoteSessionAuth', () => ({
   createWsTicket: vi.fn(async () => ({ ticket: 'ws-ticket-abc', expiresInSeconds: 60 })),
+  createLegacyViewerCompatibilityWsTicket: vi.fn(async () => ({ ticket: 'legacy-ticket', expiresInSeconds: 60 })),
   createVncConnectCode: vi.fn(async () => ({ code: 'test-connect-code-32bytes', expiresInSeconds: 60 })),
   consumeVncConnectCode: vi.fn(),
   getViewerAccessTokenExpirySeconds: vi.fn(() => 900),
@@ -126,6 +131,7 @@ vi.mock('../services/remoteSessionAuth', () => ({
 // --- JWT service ---
 vi.mock('../services/jwt', () => ({
   createViewerAccessToken: vi.fn(async () => 'mock-viewer-access-token'),
+  createViewerDescendantAccessToken: vi.fn(async () => 'mock-viewer-descendant-token'),
   verifyViewerAccessToken: vi.fn(async () => null),
 }));
 
@@ -156,8 +162,13 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 import { db } from '../db';
 import { sendCommandToAgent } from './agentWs';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode } from '../services/remoteSessionAuth';
-import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import {
+  createViewerAccessToken,
+  createViewerDescendantAccessToken,
+  verifyViewerAccessToken,
+} from '../services/jwt';
 import { captureException } from '../services/sentry';
+import { isViewerJtiRevoked, isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 
 // Reusable device fixture (online, agent connected)
 const onlineDevice = {
@@ -571,6 +582,17 @@ describe('POST /tunnels/:id/connect-code', () => {
     }));
   });
 
+  it('requires current MFA before reading the tunnel or minting a connect code', async () => {
+    const res = await app.request(`/tunnels/${SESSION_ID}/connect-code`, {
+      method: 'POST',
+      headers: { 'x-test-mfa': 'false' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createVncConnectCode).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when tunnel is not found or user cannot access it', async () => {
     vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([]) as any);
 
@@ -718,6 +740,34 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
     app.route('/vnc-viewer', vncViewerRoutes);
   });
 
+  it('rejects a legacy viewer token before lookup, mutation, command, ticket, token, or audit', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'legacy-viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    });
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer legacy-viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'legacy_viewer_transition_forbidden' });
+    expect(isViewerJtiRevoked).not.toHaveBeenCalled();
+    expect(isViewerSessionRevoked).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(createWsTicket).not.toHaveBeenCalled();
+    expect(createViewerAccessToken).not.toHaveBeenCalled();
+    expect(createViewerDescendantAccessToken).not.toHaveBeenCalled();
+  });
+
   it('rejects upgrade when the bound VNC tunnel has closed', async () => {
     vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
       sub: USER_ID,
@@ -725,6 +775,10 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       sessionId: SESSION_ID,
       purpose: 'viewer',
       jti: 'viewer-jti-1',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
     });
     vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
       tunnelUserId: USER_ID,
@@ -748,6 +802,98 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       status: 'disconnected',
     }));
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('fails descendant issuance before creating or changing a desktop session', async () => {
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-expiring',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(createViewerDescendantAccessToken).mockRejectedValueOnce(
+      new Error('Viewer token lineage has expired'),
+    );
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(createWsTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /vnc-viewer/downgrade-to-vnc assurance', () => {
+  it('rejects a legacy viewer token before any side effect', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'legacy-viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    });
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer legacy-viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'legacy_viewer_transition_forbidden' });
+    expect(isViewerJtiRevoked).not.toHaveBeenCalled();
+    expect(isViewerSessionRevoked).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(createWsTicket).not.toHaveBeenCalled();
+    expect(createViewerAccessToken).not.toHaveBeenCalled();
+    expect(createViewerDescendantAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('fails descendant issuance before creating a tunnel or sending an agent command', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-expiring',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(createViewerDescendantAccessToken).mockRejectedValueOnce(
+      new Error('Viewer token lineage has expired'),
+    );
+
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(401);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(createWsTicket).not.toHaveBeenCalled();
   });
 });
 
@@ -1432,6 +1578,10 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       sessionId: SESSION_ID,
       purpose: 'viewer',
       jti: 'viewer-jti-up',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
     });
     vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
       tunnelUserId: USER_ID,
@@ -1457,13 +1607,15 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
     });
 
     expect(res.status).toBe(200);
+    const descendantSessionId = vi.mocked(createViewerDescendantAccessToken).mock.calls[0]?.[1].sessionId;
+    expect(descendantSessionId).toMatch(/^[0-9a-f-]{36}$/);
     const audits = auditCalls(insertMock);
     expect(audits).toHaveLength(1);
     // Viewer-token auth — actor is the tunnel-bound owner, not a JWT subject.
     expect(audits[0]).toEqual(expect.objectContaining({
       action: 'tunnel.upgrade_webrtc',
       resourceType: 'tunnel_session',
-      resourceId: NEW_SESSION_ID,
+      resourceId: descendantSessionId,
       orgId: ORG_ID,
       actorId: USER_ID,
       result: 'success',
@@ -1479,6 +1631,10 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
       sessionId: SESSION_ID,
       purpose: 'viewer',
       jti: 'viewer-jti-down',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
     });
     vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
       userId: USER_ID,
@@ -1498,13 +1654,15 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
     });
 
     expect(res.status).toBe(200);
+    const descendantSessionId = vi.mocked(createViewerDescendantAccessToken).mock.calls[0]?.[1].sessionId;
+    expect(descendantSessionId).toMatch(/^[0-9a-f-]{36}$/);
     const audits = auditCalls(insertMock);
     expect(audits).toHaveLength(1);
     // New tunnel created under viewer-token auth — actor is the session-bound owner.
     expect(audits[0]).toEqual(expect.objectContaining({
       action: 'tunnel.open',
       resourceType: 'tunnel_session',
-      resourceId: NEW_TUNNEL_ID,
+      resourceId: descendantSessionId,
       orgId: ORG_ID,
       actorId: USER_ID,
       result: 'success',

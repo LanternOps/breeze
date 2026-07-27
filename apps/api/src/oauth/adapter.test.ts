@@ -41,6 +41,14 @@ function mockInsertChain() {
   return { values, onConflictDoUpdate };
 }
 
+function mockRetryInsertChain(userId: string) {
+  const returning = vi.fn(async () => [{ userId }]);
+  const onConflictDoUpdate = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoUpdate }));
+  insertMock.mockReturnValue({ values } as unknown as ReturnType<typeof db.insert>);
+  return { values, onConflictDoUpdate, returning };
+}
+
 function mockUpdateChain() {
   const where = vi.fn();
   const set = vi.fn(() => ({ where }));
@@ -214,6 +222,7 @@ describe('BreezeOidcAdapter', () => {
   });
 
   it('revokes RefreshToken rows on destroy', async () => {
+    mockSelectRows([]);
     const chain = mockUpdateChain();
 
     await new BreezeOidcAdapter('RefreshToken').destroy('refresh_abc');
@@ -224,6 +233,7 @@ describe('BreezeOidcAdapter', () => {
   });
 
   it('revokes refresh tokens by grantId with one JSON predicate update', async () => {
+    mockSelectRows([{ accountId: '00000000-0000-4000-8000-000000000001' }]);
     const chain = mockUpdateChain();
 
     await new BreezeOidcAdapter('RefreshToken').revokeByGrantId('grant_abc');
@@ -365,6 +375,65 @@ describe('BreezeOidcAdapter', () => {
     consoleError.mockRestore();
   });
 
+  it('durably records refresh-token replay cleanup before returning the invalid-token result', async () => {
+    const userId = '00000000-0000-4000-8000-000000000001';
+    mockSelectRows([{
+      id: 'refresh-digest',
+      userId,
+      clientId: 'client_abc',
+      partnerId: '00000000-0000-4000-8000-000000000002',
+      orgId: null,
+      payload: { accountId: userId, grantId: 'grant-replay' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+    const retry = mockRetryInsertChain(userId);
+    vi.mocked(revokeGrant).mockRejectedValueOnce(new Error('Redis unavailable'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find('refresh-raw')).resolves.toBeUndefined();
+
+    expect(retry.values).toHaveBeenCalledWith(expect.objectContaining({
+      userId,
+      markerType: 'grant',
+      markerId: 'grant-replay',
+    }));
+  });
+
+  it('durably records AccessToken destroy cleanup before throwing fail closed', async () => {
+    const userId = '00000000-0000-4000-8000-000000000001';
+    const adapter = new BreezeOidcAdapter('AccessToken');
+    await adapter.upsert('access-jti', {
+      accountId: userId,
+      exp: Math.floor(Date.now() / 1000) + 60,
+    }, 60);
+    const retry = mockRetryInsertChain(userId);
+    vi.mocked(revokeJti).mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await expect(adapter.destroy('access-jti')).rejects.toThrow();
+
+    expect(retry.values).toHaveBeenCalledWith(expect.objectContaining({
+      userId,
+      markerType: 'jti',
+      markerId: 'access-jti',
+    }));
+  });
+
+  it('resolves grant ownership and durably records revokeByGrantId cleanup before throwing', async () => {
+    const userId = '00000000-0000-4000-8000-000000000001';
+    mockSelectRows([{ accountId: userId }]);
+    const retry = mockRetryInsertChain(userId);
+    vi.mocked(revokeGrant).mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await expect(new BreezeOidcAdapter('RefreshToken').revokeByGrantId('grant-owned')).rejects.toThrow();
+
+    expect(retry.values).toHaveBeenCalledWith(expect.objectContaining({
+      userId,
+      markerType: 'grant',
+      markerId: 'grant-owned',
+    }));
+  });
+
   it('returns undefined for expired RefreshToken rows', async () => {
     mockSelectRows([{
       payload: { accountId: 'user_abc' },
@@ -487,6 +556,7 @@ describe('BreezeOidcAdapter RefreshToken digest storage', () => {
     const futureExp = Math.floor(Date.now() / 1000) + 600;
     mockSelectRows([{
       id: digest,
+      userId: uuid1,
       payload: { grantId: 'grant_abc', exp: futureExp },
       expiresAt: new Date(futureExp * 1000),
     }]);

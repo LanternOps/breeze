@@ -72,6 +72,11 @@ export default function RemoteTerminal({
   const webSocketRef = useRef<WebSocket | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const disconnectFiredRef = useRef(false);
+  // Each connect() owns a generation. A ws-ticket is single use and is spent by
+  // the handshake, so an attempt the server refused is dead the instant it is
+  // refused — anything it reports afterwards (a late open, a late frame) must
+  // not drive the UI or the wire.
+  const connectAttemptRef = useRef(0);
 
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   // Tracks whether the one-shot auto-connect has already fired. This gates the
@@ -172,6 +177,9 @@ export default function RemoteTerminal({
   const connect = useCallback(async () => {
     if (!terminalRef.current) return;
 
+    const attempt = ++connectAttemptRef.current;
+    const isStale = () => connectAttemptRef.current !== attempt;
+
     setStatus('connecting');
 
     try {
@@ -217,14 +225,53 @@ export default function RemoteTerminal({
       const apiHostname = apiHost.replace(/^https?:\/\//, '');
       const wsUrl = `${wsProtocol}//${apiHostname}/api/v1/remote/sessions/${currentSessionId}/ws?ticket=${encodeURIComponent(ticket)}`;
 
+      if (isStale()) return;
+
       const ws = new WebSocket(wsUrl);
       webSocketRef.current = ws;
 
       // Track whether the server has confirmed the session is ready.
       // We must not send any messages (resize, data) until then.
       let serverReady = false;
+      // The server now decides admission *before* the HTTP 101 upgrade
+      // (401/403/409/429). Browsers never surface that status to the WebSocket
+      // API — the only observable signal is an error/close with no preceding
+      // open — so track the open ourselves and treat a pre-open failure as a
+      // rejected handshake rather than a mid-session disconnect.
+      let opened = false;
+      let attemptDisposed = false;
+      const disposables: Array<{ dispose: () => void }> = [];
+
+      /**
+       * Tears down exactly this attempt: unhooks terminal input, detaches every
+       * socket listener (so a late event is inert), and closes the socket. The
+       * ticket in `wsUrl` is spent and is dropped with it.
+       */
+      const disposeAttempt = () => {
+        // Always drain the list: listeners can be appended after a rejection
+        // has already fired (the handshake can fail while they are being wired).
+        for (const d of disposables) d.dispose();
+        disposables.length = 0;
+        if (attemptDisposed) return;
+        attemptDisposed = true;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        if (webSocketRef.current === ws) webSocketRef.current = null;
+        try {
+          ws.close();
+        } catch {
+          // Already closing/closed — nothing to unwind.
+        }
+      };
 
       ws.onopen = () => {
+        if (isStale()) {
+          disposeAttempt();
+          return;
+        }
+        opened = true;
         setStatus('connecting');
         terminalRef.current?.writeln(`\x1b[1;32m${t('remoteTerminal.connectedBang')}\x1b[0m`);
         terminalRef.current?.writeln('');
@@ -232,6 +279,7 @@ export default function RemoteTerminal({
       };
 
       ws.onmessage = (event) => {
+        if (isStale() || attemptDisposed) return;
         if (terminalRef.current) {
           try {
             const message = JSON.parse(event.data);
@@ -283,7 +331,29 @@ export default function RemoteTerminal({
         }
       };
 
+      // A handshake the server refused. Dispose only this attempt and present
+      // the retry affordance: the session row and the one-time ticket are both
+      // spent, so retrying mints a fresh session and a fresh ticket through the
+      // authenticated HTTP endpoints — it never replays this URL.
+      const handleRejectedHandshake = () => {
+        if (attemptDisposed) return;
+        disposeAttempt();
+        setStatus('failed');
+        setSessionId(null);
+        terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
+        onError?.(t('remoteTerminal.errors.webSocket'));
+        callOnDisconnect();
+      };
+
       ws.onerror = () => {
+        if (isStale()) {
+          disposeAttempt();
+          return;
+        }
+        if (!opened) {
+          handleRejectedHandshake();
+          return;
+        }
         setStatus('failed');
         setSessionId(null);
         terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
@@ -292,6 +362,14 @@ export default function RemoteTerminal({
       };
 
       ws.onclose = (event) => {
+        if (isStale()) {
+          disposeAttempt();
+          return;
+        }
+        if (!opened) {
+          handleRejectedHandshake();
+          return;
+        }
         if (event.code !== 1000) {
           setStatus('failed');
           setSessionId(null);
@@ -307,6 +385,7 @@ export default function RemoteTerminal({
 
       // Handle terminal input — only forward after server confirms session
       const dataDisposable = terminalRef.current.onData((data: string) => {
+        if (attemptDisposed || isStale()) return;
         if (serverReady && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'data', data }));
           setBytesTransferred(prev => ({
@@ -318,6 +397,7 @@ export default function RemoteTerminal({
 
       // Handle terminal resize — only forward after server confirms session
       const resizeDisposable = terminalRef.current.onResize((size: { cols: number; rows: number }) => {
+        if (attemptDisposed || isStale()) return;
         if (serverReady && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'resize',
@@ -327,9 +407,17 @@ export default function RemoteTerminal({
         }
       });
 
+      disposables.push(dataDisposable, resizeDisposable);
       // Store disposables for cleanup
-      (ws as unknown as Record<string, unknown>)._disposables = [dataDisposable, resizeDisposable];
+      (ws as unknown as Record<string, unknown>)._disposables = disposables;
+
+      // The handshake may already have been refused while the listeners above
+      // were being wired; dispose now rather than leaving them attached.
+      if (attemptDisposed || isStale()) {
+        disposeAttempt();
+      }
     } catch (error) {
+      if (isStale()) return;
       setStatus('failed');
       const message = error instanceof Error ? error.message : t('remoteTerminal.errors.failed');
       terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errorMessage', { message })}\x1b[0m`);
@@ -339,12 +427,18 @@ export default function RemoteTerminal({
 
   // Disconnect from session
   const disconnect = useCallback(async () => {
+    // Retire the current attempt so its close/error events cannot re-enter the
+    // connection state machine while we tear the session down here.
+    connectAttemptRef.current += 1;
     if (webSocketRef.current) {
       const disposables = (webSocketRef.current as unknown as Record<string, unknown[]>)._disposables;
       if (disposables) {
         for (const d of disposables) {
           (d as { dispose: () => void }).dispose();
         }
+        // Same array the attempt holds — empty it so the close below can't
+        // dispose the listeners a second time.
+        disposables.length = 0;
       }
       webSocketRef.current.close(1000);
       webSocketRef.current = null;

@@ -19,6 +19,19 @@ vi.mock("../services/enrollmentKeySecurity", () => ({
   hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
 }));
 
+// Partner-cap enforcement (#2776 fix round 3). Mocked at the wiring level —
+// see enrollmentKeys.test.ts's identically-named-pattern helper for
+// rationale. Permissive default (returns ttlMinutes unchanged) models "no
+// partner cap configured", so every pre-existing test in this file (which
+// predates the cap clamp) keeps passing without needing to stage an extra
+// db.select call for the org⋈partner join.
+const clampTtlToCapMock = vi.fn(
+  async (_orgId: string, ttlMinutes: number) => ttlMinutes,
+);
+vi.mock("../services/enrollmentDefaults", () => ({
+  clampTtlToCap: (...args: [string, number]) => clampTtlToCapMock(...args),
+}));
+
 // ============================================================
 // Imports after mocks
 // ============================================================
@@ -35,6 +48,10 @@ function makeApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // vi.clearAllMocks clears call history but NOT implementations — restore
+  // the permissive default every test.
+  clampTtlToCapMock.mockReset();
+  clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) => ttlMinutes);
   delete process.env.MACOS_INSTALLER_ALLOW_LEGACY_GET_BOOTSTRAP;
   delete process.env.AGENT_BACKUP_SERVER_URL;
 });
@@ -232,6 +249,247 @@ describe("POST /api/v1/installer/bootstrap", () => {
       headers: { "X-Breeze-Bootstrap-Token": "CCCCCCCCCC" },
     });
     expect(res.status).toBe(404);
+  });
+
+  it("consumes a live token whose parent key has already expired (#2775)", async () => {
+    // The token itself has 7 days left; the parent enrollment key (the
+    // deliberately transient 60-minute container created by the Add Device
+    // modal) died an hour ago. The token's own expiry is the sole authority —
+    // redemption must still succeed and the child key must get a fresh TTL,
+    // not the parent's dead one.
+    const tokenRow = {
+      id: "t-2775",
+      token: "EEEEEEEEEE",
+      orgId: "o1",
+      parentEnrollmentKeyId: "pk-dead",
+      siteId: "s1",
+      maxUsage: 10,
+      consumedCount: 0,
+      createdBy: "u1",
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600_000),
+    };
+    const parentKey = {
+      id: "pk-dead",
+      name: "Acme parent",
+      orgId: "o1",
+      siteId: "s1",
+      keySecretHash: "parent-secret-hash",
+      expiresAt: new Date(Date.now() - 3600_000), // parent: dead an hour ago
+    };
+    const org = { id: "o1", name: "Acme Corp" };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([tokenRow]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([org]) }),
+        }),
+      } as any);
+
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return {
+          returning: () =>
+            Promise.resolve([{ id: "ck-2775", orgId: "o1", siteId: "s1" }]),
+        };
+      },
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({
+        where: () => ({
+          returning: () =>
+            Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]),
+        }),
+      }),
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "EEEEEEEEEE" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enrollmentKey).toMatch(/^[a-f0-9]{64}$/);
+    // Child key gets its own fresh TTL, not the parent's dead one.
+    expect(capturedChildKeyValues).not.toBeNull();
+    const childExpiresAt = (
+      capturedChildKeyValues as unknown as { expiresAt: Date }
+    ).expiresAt;
+    expect(childExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(childExpiresAt.getTime()).toBeGreaterThan(
+      parentKey.expiresAt.getTime(),
+    );
+  });
+
+  // Fix round 3 (#2776): this is the hottest of all the redemption paths —
+  // every device enrollment goes through it — and it uses the
+  // CHILD_ENROLLMENT_KEY_TTL_MINUTES server-constant default with no
+  // interactive caller (the token IS the auth), so a partner cap below the
+  // default must CLAMP the minted child's lifetime down, never reject.
+  it("clamps the child key TTL down when the partner cap is below the CHILD_ENROLLMENT_KEY_TTL_MINUTES default", async () => {
+    const tokenRow = {
+      id: "t-cap-low", token: "FFFFFFFFFF", orgId: "o-cap", parentEnrollmentKeyId: "pk-cap",
+      siteId: "s-cap", maxUsage: 1, consumedCount: 0, createdBy: "u1", consumedAt: null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600_000),
+    };
+    const parentKey = {
+      id: "pk-cap", name: "Cap parent", orgId: "o-cap", siteId: "s-cap",
+      keySecretHash: null, expiresAt: new Date(Date.now() + 3600_000),
+    };
+    const org = { id: "o-cap", name: "Cap Org" };
+
+    clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) =>
+      Math.min(ttlMinutes, 60), // partner cap: 60 minutes
+    );
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
+
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return { returning: () => Promise.resolve([{ id: "ck-cap-low", orgId: "o-cap", siteId: "s-cap" }]) };
+      },
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]) }) }),
+    } as any);
+
+    const before = Date.now();
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "FFFFFFFFFF" },
+    });
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    expect(capturedChildKeyValues).not.toBeNull();
+    const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
+    // Clamped to the 60-minute cap, NOT the 1440-minute (24h) default.
+    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-cap", 1440);
+  });
+
+  it("does not shorten the child key TTL when the partner cap is above the CHILD_ENROLLMENT_KEY_TTL_MINUTES default (no-op clamp)", async () => {
+    const tokenRow = {
+      id: "t-cap-high", token: "GGGGGGGGGG", orgId: "o-cap2", parentEnrollmentKeyId: "pk-cap2",
+      siteId: "s-cap2", maxUsage: 1, consumedCount: 0, createdBy: "u1", consumedAt: null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600_000),
+    };
+    const parentKey = {
+      id: "pk-cap2", name: "Cap2 parent", orgId: "o-cap2", siteId: "s-cap2",
+      keySecretHash: null, expiresAt: new Date(Date.now() + 3600_000),
+    };
+    const org = { id: "o-cap2", name: "Cap2 Org" };
+
+    clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) =>
+      Math.min(ttlMinutes, 525_600), // generous partner cap
+    );
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
+
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return { returning: () => Promise.resolve([{ id: "ck-cap-high", orgId: "o-cap2", siteId: "s-cap2" }]) };
+      },
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]) }) }),
+    } as any);
+
+    const before = Date.now();
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "GGGGGGGGGG" },
+    });
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    expect(capturedChildKeyValues).not.toBeNull();
+    const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
+    // Unchanged: still the full 1440-minute (24h) default.
+    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+  });
+
+  // #2776 regression. docker-compose threads CHILD_ENROLLMENT_KEY_TTL_MINUTES
+  // in as `${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-}`, which `docker compose
+  // config` renders as `VAR: ""` when the operator hasn't set it — the
+  // container sees it SET to an empty string, not absent. The old
+  // `Number(process.env.X ?? 24 * 60)` read yielded 0 there (`??` doesn't fire
+  // on '', Number('') === 0), so every redeemed child enrollment key was born
+  // already expired and agent enrollment stopped working entirely on upgrade.
+  it("an EMPTY CHILD_ENROLLMENT_KEY_TTL_MINUTES falls back to 24h, not 0 (#2776)", async () => {
+    vi.stubEnv("CHILD_ENROLLMENT_KEY_TTL_MINUTES", "");
+    process.env.PUBLIC_API_URL = "https://us.2breeze.app";
+
+    const tokenRow = {
+      id: "t-empty-env", token: "HHHHHHHHHH", orgId: "o-env", parentEnrollmentKeyId: "pk-env",
+      siteId: "s-env", maxUsage: 1, consumedCount: 0, createdBy: "u1", consumedAt: null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 3600_000),
+    };
+    const parentKey = {
+      id: "pk-env", name: "Env parent", orgId: "o-env", siteId: "s-env",
+      keySecretHash: null, expiresAt: new Date(Date.now() + 3600_000),
+    };
+    const org = { id: "o-env", name: "Env Org" };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
+
+    let capturedChildKeyValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: (vals: Record<string, unknown>) => {
+        capturedChildKeyValues = vals;
+        return { returning: () => Promise.resolve([{ id: "ck-env", orgId: "o-env", siteId: "s-env" }]) };
+      },
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]) }) }),
+    } as any);
+
+    const before = Date.now();
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": "HHHHHHHHHH" },
+    });
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    // The value handed to the cap clamp is the 24h default, never 0.
+    expect(clampTtlToCapMock).toHaveBeenCalledWith("o-env", 1440);
+    const childExpiresAt = (capturedChildKeyValues as unknown as { expiresAt: Date }).expiresAt;
+    expect(childExpiresAt.getTime()).toBeGreaterThan(after);
+    expect(childExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
+    expect(childExpiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+
+    vi.unstubAllEnvs();
   });
 
   it("partially-consumed multi-use token still redeems and mints a single-use child key", async () => {

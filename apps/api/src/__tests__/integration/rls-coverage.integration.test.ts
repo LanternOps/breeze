@@ -9,6 +9,7 @@ import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
+import { oauthRevocationRetries } from '../../db/schema/oauth';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -555,6 +556,10 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // the owning user via breeze_current_user_id(), with an
   // OR breeze_current_scope() = 'system' branch (Shape 6). Mirrors user_passkeys.
   'authenticator_devices',
+  // oauth_revocation_retries: durable retry work for OAuth grant/JTI markers.
+  // Request paths are limited to the exact user owner; the explicit system
+  // branch lets the bounded retry worker drain work for every user.
+  'oauth_revocation_retries',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
@@ -1238,6 +1243,258 @@ describe('RLS coverage contract', () => {
         `user_id = breeze_current_user_id(). ` +
         `See the Phase 6 migration for the canonical shape.`
     ).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// oauth_revocation_retries — Shape 6 forge and worker-context enforcement
+//
+// Durable retry rows carry revocation marker identifiers and therefore must
+// never be visible or forgeable across users. The system branch is intentional:
+// the retry worker must process due rows without impersonating each owner.
+// ===========================================================================
+describe('oauth_revocation_retries RLS — user ownership and system worker access (Shape 6)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const partnerSlug = `rls-oauth-retries-partner-${runSuffix}`;
+  const userAEmail = `rls-oauth-retries-a-${runSuffix}@example.test`;
+  const userBEmail = `rls-oauth-retries-b-${runSuffix}@example.test`;
+
+  let partnerId: string;
+  let userAId: string;
+  let userBId: string;
+  const retryIds = new Set<string>();
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS OAuth Retries Partner ${runSuffix}`,
+          slug: partnerSlug,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for OAuth retry RLS test');
+      partnerId = partner.id;
+
+      const [a, b] = await db
+        .insert(users)
+        .values([
+          {
+            partnerId: partner.id,
+            email: userAEmail,
+            name: 'RLS OAuth Retry User A',
+            status: 'active',
+          },
+          {
+            partnerId: partner.id,
+            email: userBEmail,
+            name: 'RLS OAuth Retry User B',
+            status: 'active',
+          },
+        ])
+        .returning({ id: users.id });
+      if (!a || !b) throw new Error('failed to seed users for OAuth retry RLS test');
+      userAId = a.id;
+      userBId = b.id;
+    });
+  }
+
+  function userContext(userId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [],
+      userId,
+    };
+  }
+
+  async function seedRetry(userId: string, markerId: string): Promise<string> {
+    const [row] = await withSystemDbAccessContext(async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId,
+          markerType: 'grant',
+          markerId,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_unavailable',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    if (!row) throw new Error('failed to seed OAuth revocation retry');
+    retryIds.add(row.id);
+    return row.id;
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      for (const id of retryIds) {
+        await db.delete(oauthRevocationRetries).where(eq(oauthRevocationRetries.id, id));
+      }
+      if (userAId) await db.delete(users).where(eq(users.id, userAId));
+      if (userBId) await db.delete(users).where(eq(users.id, userBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('permits own-user CRUD', async () => {
+    await ensureFixtures();
+
+    const [inserted] = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId: userAId,
+          markerType: 'jti',
+          markerId: `own-${runSuffix}`,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_write_failed',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(inserted).toBeDefined();
+    retryIds.add(inserted!.id);
+
+    const visible = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .select({ id: oauthRevocationRetries.id })
+        .from(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id)),
+    );
+    expect(visible).toEqual([{ id: inserted!.id }]);
+
+    const updated = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .update(oauthRevocationRetries)
+        .set({ attempts: 2 })
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ attempts: oauthRevocationRetries.attempts }),
+    );
+    expect(updated).toEqual([{ attempts: 2 }]);
+
+    const deleted = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .delete(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(deleted).toEqual([{ id: inserted!.id }]);
+    retryIds.delete(inserted!.id);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'denies cross-user SELECT, UPDATE, DELETE, and forged INSERT without mutation',
+    async () => {
+      await ensureFixtures();
+      const retryId = await seedRetry(userAId, `cross-user-${runSuffix}`);
+
+      const visible = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .select({ id: oauthRevocationRetries.id })
+          .from(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId)),
+      );
+      expect(visible).toEqual([]);
+
+      const updated = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .update(oauthRevocationRetries)
+          .set({ attempts: 99 })
+          .where(eq(oauthRevocationRetries.id, retryId))
+          .returning({ id: oauthRevocationRetries.id }),
+      );
+      expect(updated).toEqual([]);
+
+      const deleted = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .delete(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId))
+          .returning({ id: oauthRevocationRetries.id }),
+      );
+      expect(deleted).toEqual([]);
+
+      let caught: unknown;
+      try {
+        await withDbAccessContext(userContext(userBId), async () =>
+          db.insert(oauthRevocationRetries).values({
+            userId: userAId,
+            markerType: 'grant',
+            markerId: `forged-${runSuffix}`,
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+            nextAttemptAt: new Date(),
+            lastErrorCode: 'redis_unavailable',
+          }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      expect(cause?.cause?.message ?? cause?.message ?? '').toMatch(
+        /row-level security|permission denied/i,
+      );
+
+      const unchanged = await withSystemDbAccessContext(async () =>
+        db
+          .select({ attempts: oauthRevocationRetries.attempts })
+          .from(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId)),
+      );
+      expect(unchanged).toEqual([{ attempts: 0 }]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)('permits explicit system-context CRUD for the retry worker', async () => {
+    await ensureFixtures();
+
+    const [inserted] = await withSystemDbAccessContext(async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId: userBId,
+          markerType: 'grant',
+          markerId: `system-${runSuffix}`,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_unavailable',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(inserted).toBeDefined();
+    retryIds.add(inserted!.id);
+
+    const visible = await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: oauthRevocationRetries.id })
+        .from(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id)),
+    );
+    expect(visible).toEqual([{ id: inserted!.id }]);
+
+    const updated = await withSystemDbAccessContext(async () =>
+      db
+        .update(oauthRevocationRetries)
+        .set({ completedAt: new Date() })
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(updated).toEqual([{ id: inserted!.id }]);
+
+    const deleted = await withSystemDbAccessContext(async () =>
+      db
+        .delete(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(deleted).toEqual([{ id: inserted!.id }]);
+    retryIds.delete(inserted!.id);
   });
 });
 

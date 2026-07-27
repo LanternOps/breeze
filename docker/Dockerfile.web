@@ -39,8 +39,13 @@ ENV HOST=0.0.0.0
 # node:24-alpine digest is refreshed past 3.5.7.
 # CVE-2026-12151: the base image's bundled npm vendors a vulnerable undici; the
 # runtime entrypoint is `node`, not npm, so remove npm/npx from the runner.
+# CVE-2026-14257: this runner is `FROM base`, which installs pnpm globally, and
+# pnpm vendors its own brace-expansion (2.1.2). pnpm is a build-time tool only --
+# nothing in the runtime path shells out to it -- so drop it here too. Overrides
+# in package.json cannot reach a tool's bundled deps, so this is the only lever.
 RUN apk upgrade --no-cache libcrypto3 libssl3 && \
-    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+            /usr/local/lib/node_modules/pnpm /usr/local/bin/pnpm /usr/local/bin/pnpx
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 astro

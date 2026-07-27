@@ -639,6 +639,12 @@ export interface InheritableDefaultSettings {
     agent?: string;
     watchdog?: string;
   };
+  /** Pre-selected link TTL in the Add Device modal. Inherit-with-override. */
+  defaultEnrollmentTtlMinutes?: number;
+  /** Pre-selected device count in the Add Device modal. Inherit-with-override. */
+  defaultEnrollmentDeviceCount?: number;
+  /** Hard ceiling on link TTL. Partner-only — orgs cannot raise it. */
+  maxEnrollmentLinkTtlMinutes?: number;
 }
 
 export interface InheritableBrandingSettings {
@@ -785,3 +791,4 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './loginContext';
+export * from './publicQuote';

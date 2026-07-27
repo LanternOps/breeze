@@ -121,6 +121,28 @@ vi.mock("../services", () => ({
   getRedis: () => mockGetRedis(),
 }));
 
+// Partner-cap enforcement (#2776 task 3.4). Mocked at the wiring level — the
+// cap-computation/message logic itself is unit-tested directly against
+// resolveEnrollmentDefaults/getEnrollmentDefaultsForOrg, so these route tests
+// only need to prove the route calls assertTtlWithinCap with the right org id
+// and TTL, and reacts correctly to its null/error return.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+// clampTtlToCap (fix round 3, #2776): the CLAMP-shaped sibling of
+// assertTtlWithinCap, used by mintChildEnrollmentKey/redeemShortCode/the
+// /s/:code redemption/issueBootstrapTokenForKey for server-constant TTLs on
+// paths with no interactive caller. Permissive default (returns ttlMinutes
+// unchanged) models "no partner cap configured".
+const clampTtlToCapMock = vi.fn(
+  async (_orgId: string, ttlMinutes: number) => ttlMinutes,
+);
+vi.mock("../services/enrollmentDefaults", () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+  clampTtlToCap: (...args: [string, number]) => clampTtlToCapMock(...args),
+}));
+
 // ============================================================
 // Import after mocks
 // ============================================================
@@ -135,6 +157,25 @@ import { MsiSigningService } from "../services/msiSigning";
 import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
+
+/**
+ * Configure the mocked partner-cap gate for the current test. Mirrors the
+ * real assertTtlWithinCap contract: null when ttlMinutes is undefined or at/
+ * under the cap, an error string naming the cap when it's exceeded.
+ */
+function mockEnrollmentDefaults(opts: { maxTtlMinutes: number }) {
+  assertTtlWithinCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number | undefined) => {
+      if (ttlMinutes === undefined) return null;
+      return ttlMinutes > opts.maxTtlMinutes
+        ? `ttlMinutes exceeds the partner maximum of ${opts.maxTtlMinutes} minutes`
+        : null;
+    },
+  );
+  clampTtlToCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number) => Math.min(ttlMinutes, opts.maxTtlMinutes),
+  );
+}
 
 // ============================================================
 // Helpers
@@ -184,6 +225,18 @@ function makeChildKeyRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+// Runs before every per-describe `vi.clearAllMocks()` (outer beforeEach hooks
+// fire before inner ones), so each test starts from the permissive default —
+// clearAllMocks only wipes call history, not mockImplementation, so a test
+// that calls mockEnrollmentDefaults() would otherwise leak its cap into every
+// later test in the file.
+beforeEach(() => {
+  assertTtlWithinCapMock.mockReset();
+  assertTtlWithinCapMock.mockImplementation(async () => null);
+  clampTtlToCapMock.mockReset();
+  clampTtlToCapMock.mockImplementation(async (_orgId: string, ttlMinutes: number) => ttlMinutes);
+});
 
 // ============================================================
 // Tests
@@ -424,6 +477,124 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     });
     expect(res.status).toBe(429);
   });
+
+  // #2776 task 3.4 — partner-cap enforcement at the mint route.
+  it("rejects a ttlMinutes above the partner cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const parentRow = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows", count: 1, ttlMinutes: 43200 }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("1440");
+    expect(insertValues).not.toHaveBeenCalled();
+    // The cap check must run after the parent key load, using its orgId.
+    expect(assertTtlWithinCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
+  });
+
+  it("allows a ttlMinutes at exactly the cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow();
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows", count: 1, ttlMinutes: 1440 }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  // #2776 final wave — the SEVENTH uncapped mint path. assertTtlWithinCap
+  // returns null for `undefined` by design, so OMITTING ttlMinutes used to
+  // hand the child key the uncapped CHILD_ENROLLMENT_KEY_TTL_MINUTES server
+  // constant (1440) — 24x a 60-minute partner cap, on one of the two
+  // most-used download routes.
+  it("clamps the CHILD_ENROLLMENT_KEY_TTL_MINUTES fallback to the partner cap when ttlMinutes is omitted (#2776)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 60 });
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow();
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    let capturedChildValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+        capturedChildValues = vals;
+        return { returning: vi.fn().mockResolvedValue([childRow]) };
+      }),
+    } as any);
+
+    const before = Date.now();
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows", count: 1 }),
+    });
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    // The uncapped server constant is what gets handed to the clamp...
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    // ...and the key that actually lands is the 60-minute cap, not 24h.
+    expect(capturedChildValues).not.toBeNull();
+    const expiresAt = (capturedChildValues as unknown as { expiresAt: Date }).expiresAt;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + 61 * 60 * 1000);
+  });
 });
 
 // ============================================================
@@ -547,6 +718,90 @@ describe("GET /s/:code", () => {
     expect(issueSpy.mock.calls[0]?.[0]?.createdByUserId).not.toBe("");
 
     issueSpy.mockRestore();
+  });
+
+  // Fix round 3 (#2776): this route mints its own download child key via
+  // CHILD_ENROLLMENT_KEY_TTL_MINUTES (default 1440) with no interactive
+  // caller (it's the public short-link redemption), so a partner cap below
+  // that default must clamp the minted lifetime down, never reject.
+  it("clamps the download child key's TTL down when the partner cap is below the default", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 60 });
+    const shortLinkRow = makeKeyRow({
+      shortCode: "cappedlink",
+      installerPlatform: "macos",
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([makeChildKeyRow({ installerPlatform: "macos" })]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+    // macOS path with signing disabled falls through to the legacy zip
+    // builder — irrelevant here, only the child-key insert's expiresAt matters.
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+
+    const before = Date.now();
+    const res = await app.request("/s/cappedlink");
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
+    // Clamped to the 60-minute cap, NOT the 1440-minute (24h) default.
+    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
+    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+  });
+
+  it("does not shorten the download child key's TTL when the partner cap is above the default (no-op clamp)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
+    const shortLinkRow = makeKeyRow({
+      shortCode: "generouscap",
+      installerPlatform: "macos",
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([makeChildKeyRow({ installerPlatform: "macos" })]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+
+    const before = Date.now();
+    const res = await app.request("/s/generouscap");
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
+    // Unchanged: still the full 1440-minute (24h) default.
+    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
+    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
   });
 
   it("returns 404 for unknown code", async () => {
@@ -1017,6 +1272,46 @@ describe("GET /public-download/:platform", () => {
     issueSpy.mockRestore();
   });
 
+  it("returns 410 without issuing a bootstrap token when parent key is within the min-remaining window (#2775 fix-round-1)", async () => {
+    // Public/unauthenticated path (shared serveInstaller helper). Before this
+    // guard, a near-dead parent would still mint a bootstrap token — which,
+    // post #2775 fix, gets a full independent TTL uncapped by the parent.
+    // Must refuse outright, and must NOT leak parent-key name/id in the
+    // public error response.
+    const row = makeKeyRow({
+      shortCode: "pubcode1234",
+      installerPlatform: "windows",
+      maxUsage: 1,
+      usageCount: 0,
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi.spyOn(
+      installerBootstrapTokenIssuance,
+      "issueBootstrapTokenForKey",
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toMatch(/expiring too soon/i);
+    expect(body.error).not.toMatch(/Test Key/);
+    expect(issueSpy).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
+  });
+
   it("rejects legacy raw token query downloads by default", async () => {
     const res = await app.request(
       `/enrollment-keys/public-download/windows?token=${"a".repeat(64)}`,
@@ -1357,6 +1652,152 @@ describe("POST /:id/bootstrap-token", () => {
 
     expect(res.status).toBe(410);
   });
+
+  it("refuses to issue a bootstrap token when parent key is within 60s of expiry (#2775 fix-round-1)", async () => {
+    // Parent with only 30s of life left. Before this guard, the route called
+    // issueBootstrapTokenForKey directly, which (post #2775 fix) mints a
+    // fresh, independent TTL uncapped by the parent — so a near-dead parent
+    // would produce a token that outlives it. Refuse outright instead,
+    // matching the /installer-link and /installer/:platform guards.
+    const parent = makeKeyRow({
+      expiresAt: new Date(Date.now() + 30_000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1 }),
+      },
+    );
+
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body.error).toContain("expires too soon");
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("honours ttlMinutes on the bootstrap-token route (#2775)", async () => {
+    const parent = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValue({
+        id: "token-row-uuid-2",
+        token: "ABCDE12345",
+        expiresAt: new Date(Date.now() + 129_600 * 60 * 1000),
+        parentKeyName: "Test Key",
+      } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 3, ttlMinutes: 129_600 }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ ttlMinutes: 129_600 }),
+    );
+
+    issueSpy.mockRestore();
+  });
+
+  it("rejects ttlMinutes above the cap on the bootstrap-token route (#2775)", async () => {
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ttlMinutes: 525_601 }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  // #2776 task 3.4 — a value the global schema max would allow (well under
+  // 525_600) can still exceed a lower PARTNER cap, which only the DB-backed
+  // assertTtlWithinCap gate (not the static zod schema) can enforce.
+  it("rejects a ttlMinutes above the partner cap on the bootstrap-token route (#2776)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const parent = makeKeyRow();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1, ttlMinutes: 43200 }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("1440");
+    expect(assertTtlWithinCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
+  });
+
+  it("allows a ttlMinutes at exactly the partner cap on the bootstrap-token route (#2776)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const parent = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parent]),
+        }),
+      }),
+    } as any);
+
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "token-row-uuid-3" }]),
+      }),
+    } as any);
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/bootstrap-token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxUsage: 1, ttlMinutes: 1440 }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+  });
 });
 
 // ============================================================
@@ -1446,6 +1887,35 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     );
   });
 
+  it("passes the ttlMinutes query param through to the bootstrap token (macos app bundle) (#2775)", async () => {
+    const parentRow = makeKeyRow();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
+      Buffer.from("fixture-app-zip"),
+    );
+    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+      Buffer.from("renamed-app-zip"),
+    );
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=2&ttlMinutes=10080`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(issueSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ maxUsage: 2, ttlMinutes: 10080 }),
+    );
+  });
+
   it("falls back to legacy zip when ?legacy=1 is passed", async () => {
     const parentRow = makeKeyRow();
     const childRow = makeChildKeyRow({ installerPlatform: "macos" });
@@ -1488,6 +1958,51 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     // The app-bundle path must NOT have been called
     expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
+  });
+
+  // #2776 final wave — same seventh gap on the other download route.
+  it("clamps the CHILD_ENROLLMENT_KEY_TTL_MINUTES fallback to the partner cap when ttlMinutes is omitted (#2776)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 60 });
+    const parentRow = makeKeyRow();
+    const childRow = makeChildKeyRow({ installerPlatform: "macos" });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([parentRow]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+    let capturedChildValues: Record<string, unknown> | null = null;
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+        capturedChildValues = vals;
+        return { returning: vi.fn().mockResolvedValue([childRow]) };
+      }),
+    } as any);
+
+    const before = Date.now();
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/macos?count=1&legacy=1`,
+      { headers: { authorization: "Bearer jwt" } },
+    );
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    expect(capturedChildValues).not.toBeNull();
+    const expiresAt = (capturedChildValues as unknown as { expiresAt: Date }).expiresAt;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + 61 * 60 * 1000);
   });
 
   it("falls back to legacy zip when installer app asset is missing (returns null)", async () => {
@@ -1688,5 +2203,130 @@ describe("POST / - siteId ownership validation", () => {
     expect(body.siteId).toBeNull();
     // when no siteId is provided, site lookup should not be called
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// POST / - partner cap enforcement (fix round 1, #2776 task 3.4)
+//
+// This route has TWO paths to an expiry — ttlMinutes and an explicit
+// expiresAt (createEnrollmentKeySchema's refine guarantees only one is ever
+// set) — and a parent enrollment key is itself an enrollment credential, so
+// both paths must be gated. Capping only ttlMinutes would leave expiresAt as
+// a wide-open bypass.
+// ============================================================
+describe("POST / - partner cap enforcement (fix round 1, #2776)", () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PUBLIC_API_URL = "https://api.example.com";
+    app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+  });
+
+  it("rejects a ttlMinutes above the partner cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const orgId = randomUUID();
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId, name: "Test Key", ttlMinutes: 43200 }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("1440");
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(assertTtlWithinCapMock).toHaveBeenCalledWith(orgId, 43200);
+  });
+
+  it("allows a ttlMinutes at exactly the partner cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const orgId = randomUUID();
+    const keyRow = makeKeyRow({ orgId });
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId, name: "Test Key", ttlMinutes: 1440 }),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects an expiresAt whose implied duration exceeds the partner cap (the expiresAt bypass path)", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const orgId = randomUUID();
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    // 30 days out — far above a 1440-minute (24h) cap.
+    const expiresAt = new Date(Date.now() + 43200 * 60 * 1000).toISOString();
+
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId, name: "Test Key", expiresAt }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("1440");
+    expect(insertValues).not.toHaveBeenCalled();
+    // The route must derive an implied minutes value from expiresAt and
+    // check IT against the cap — there is no ttlMinutes to check directly.
+    const [, impliedMinutes] = assertTtlWithinCapMock.mock.calls[0]!;
+    expect(impliedMinutes).toBeGreaterThan(43199);
+    expect(impliedMinutes).toBeLessThanOrEqual(43201);
+  });
+
+  it("allows an expiresAt whose implied duration is comfortably under the partner cap", async () => {
+    mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+    const orgId = randomUUID();
+    const keyRow = makeKeyRow({ orgId });
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    // 60 minutes out — comfortably under the 1440-minute cap.
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId, name: "Test Key", expiresAt }),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("passes undefined to the cap gate when neither ttlMinutes nor expiresAt is supplied (falls back to the deployment default, not a cap violation)", async () => {
+    const orgId = randomUUID();
+    const keyRow = makeKeyRow({ orgId });
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([keyRow]),
+      }),
+    } as any);
+
+    const res = await app.request("/enrollment-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId, name: "Test Key" }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(assertTtlWithinCapMock).toHaveBeenCalledWith(orgId, undefined);
   });
 });

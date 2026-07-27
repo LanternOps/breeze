@@ -66,11 +66,13 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
           cache: pnpm
@@ -85,7 +87,7 @@ jobs:
         env:
           # Authenticate binarySync's github API call so we don't hit the
           # 60/hour unauthenticated rate limit on the shared CI runner IP.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           BINARY_SOURCE: github
           # Use the most recent published release whose manifest format is
           # known to be compatible with the current API code. Bump this when
@@ -120,6 +122,9 @@ jobs:
           AGENT_ENROLLMENT_SECRET: ci-smoke-bsg-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
           ENROLLMENT_SECRET_ENFORCEMENT_MODE: warn
           IS_HOSTED: "false"
+          # Required in production by the Wave 3 live-authorization epoch
+          # rollout — compat until the fleet drains version-one writers.
+          EVENT_PERMISSION_EPOCH_MODE: compat
           TRUSTED_PROXY_CIDRS: 127.0.0.1/32
           CORS_ALLOWED_ORIGINS: http://localhost:3001
           TRUST_PROXY_HEADERS: "false"

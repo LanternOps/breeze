@@ -24,8 +24,8 @@ import {
 } from '../db/schema';
 import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
 import type { PostureSummary } from '@breeze/shared';
-import { canAccessSite, type UserPermissions } from './permissions';
-import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerationService';
+import type { ReportResult } from './reportGenerationService';
+import type { ReportExecutionAuthority } from './siteScope';
 import {
   buildSecurityProductInventory,
   categoryForEndpointProvider,
@@ -92,7 +92,8 @@ function emptySummary(
   orgRow: { id: string; name: string } | undefined,
   generatedAt: string,
   includeCis = true,
-  backupRequired = true
+  backupRequired = true,
+  includeOrgWideEvidence = true,
 ) {
   return {
     org: { id: orgRow?.id ?? '', name: orgRow?.name ?? 'Unknown' },
@@ -116,23 +117,25 @@ function emptySummary(
       cisAvgPassRate: null,
       cisIncluded: includeCis,
       cisAssessedCount: 0,
-      identityProviderConnected: false,
       backupRequired,
-      backupConfigured: false,
-      backupEncrypted: null,
-      dnsFilteringActive: false,
-      dnsFilteringSyncStatus: null
+      ...(includeOrgWideEvidence ? {
+        identityProviderConnected: false,
+        backupConfigured: false,
+        backupEncrypted: null,
+        dnsFilteringActive: false,
+        dnsFilteringSyncStatus: null,
+      } : {}),
     },
-    privilegedAccess: {
+    ...(includeOrgWideEvidence ? { privilegedAccess: {
       uacInterceptionEnabled: false,
       activePamRules: 0,
       elevationsInWindow: 0,
       elevationsApproved: 0,
       elevationsDenied: 0,
       mfaStepUpEnforced: false
-    },
+    } } : {}),
     securityProducts: [],
-    postureScore: null
+    ...(includeOrgWideEvidence ? { postureScore: null } : {}),
   } satisfies PostureSummary;
 }
 
@@ -152,16 +155,38 @@ function prettyDnsProvider(p: string): string {
 export async function generateSecurityCompliancePostureReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
-  perms?: UserPermissions
+  authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
   const cfg = securityCompliancePostureConfigSchema.parse(rawConfig ?? {});
   const generatedAt = new Date().toISOString();
 
-  if (perms?.allowedSiteIds && cfg.sites.some((siteId) => !canAccessSite(perms, siteId))) {
+  if (!authority || authority.scope.orgId !== orgId) {
+    throw new Error('Report execution authority organization mismatch');
+  }
+  if (authority.scope.kind === 'legacy_unscoped') {
+    throw new Error('Legacy report scope cannot execute');
+  }
+  const restrictedScope = authority.scope.kind === 'restricted'
+    ? authority.scope
+    : null;
+  if (restrictedScope && cfg.sites.some((siteId) => !restrictedScope.siteIds.includes(siteId))) {
     throw new Error('Requested site is outside the caller scope');
   }
 
-  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  if (restrictedScope && restrictedScope.siteIds.length === 0) {
+    return {
+      rows: [],
+      rowCount: 0,
+      generatedAt,
+      summary: emptySummary(
+        { id: orgId, name: 'Unknown' },
+        generatedAt,
+        cfg.includeCis,
+        cfg.backupRequired,
+        false,
+      ),
+    };
+  }
 
   const [orgRow] = await db
     .select({ id: organizations.id, name: organizations.name, partnerId: organizations.partnerId })
@@ -169,21 +194,12 @@ export async function generateSecurityCompliancePostureReport(
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  if (allowedDeviceIds?.length === 0) {
-    return {
-      rows: [],
-      rowCount: 0,
-      generatedAt,
-      summary: emptySummary(orgRow, generatedAt, cfg.includeCis, cfg.backupRequired)
-    };
-  }
-
   const deviceConditions = [eq(devices.orgId, orgId)];
   if (cfg.sites.length > 0) {
     deviceConditions.push(inArray(devices.siteId, cfg.sites));
   }
-  if (allowedDeviceIds) {
-    deviceConditions.push(inArray(devices.id, allowedDeviceIds));
+  if (authority.scope.kind === 'restricted') {
+    deviceConditions.push(inArray(devices.siteId, authority.scope.siteIds));
   }
 
   const deviceRows = await db
@@ -203,7 +219,13 @@ export async function generateSecurityCompliancePostureReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgRow, generatedAt, cfg.includeCis, cfg.backupRequired)
+      summary: emptySummary(
+        orgRow,
+        generatedAt,
+        cfg.includeCis,
+        cfg.backupRequired,
+        authority.scope.kind === 'unrestricted',
+      )
     };
   }
 
@@ -255,67 +277,97 @@ export async function generateSecurityCompliancePostureReport(
 
   const vulnByDevice = await loadOpenVulnerabilityCounts(deviceIds);
 
-  const [dns] = await db
-    .select({ isActive: dnsFilterIntegrations.isActive, provider: dnsFilterIntegrations.provider, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
-    .from(dnsFilterIntegrations)
-    .where(and(eq(dnsFilterIntegrations.orgId, orgId), eq(dnsFilterIntegrations.isActive, true)))
-    .limit(1);
-  const [backup] = await db
-    .select({ isActive: backupConfigs.isActive, provider: backupConfigs.provider, encryption: backupConfigs.encryption })
-    .from(backupConfigs)
-    .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isActive, true)))
-    .limit(1);
-  const [c2c] = await db
-    .select({ status: c2cConnections.status, provider: c2cConnections.provider })
-    .from(c2cConnections)
-    .where(and(eq(c2cConnections.orgId, orgId), eq(c2cConnections.status, 'active')))
-    .limit(1);
-  const [m365] = await db
-    .select({ status: m365Connections.status })
-    .from(m365Connections)
-    .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.status, 'active')))
-    .limit(1);
-  const [google] = await db
-    .select({ status: googleWorkspaceConnections.status })
-    .from(googleWorkspaceConnections)
-    .where(and(eq(googleWorkspaceConnections.orgId, orgId), eq(googleWorkspaceConnections.status, 'active')))
-    .limit(1);
+  const includeOrgWideEvidence = authority.scope.kind === 'unrestricted';
+  const orgWideEvidence = includeOrgWideEvidence
+    ? await (async () => {
+      const [dns] = await db
+        .select({ isActive: dnsFilterIntegrations.isActive, provider: dnsFilterIntegrations.provider, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
+        .from(dnsFilterIntegrations)
+        .where(and(eq(dnsFilterIntegrations.orgId, orgId), eq(dnsFilterIntegrations.isActive, true)))
+        .limit(1);
+      const [backup] = await db
+        .select({ isActive: backupConfigs.isActive, provider: backupConfigs.provider, encryption: backupConfigs.encryption })
+        .from(backupConfigs)
+        .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isActive, true)))
+        .limit(1);
+      const [c2c] = await db
+        .select({ status: c2cConnections.status, provider: c2cConnections.provider })
+        .from(c2cConnections)
+        .where(and(eq(c2cConnections.orgId, orgId), eq(c2cConnections.status, 'active')))
+        .limit(1);
+      const [m365] = await db
+        .select({ status: m365Connections.status })
+        .from(m365Connections)
+        .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.status, 'active')))
+        .limit(1);
+      const [google] = await db
+        .select({ status: googleWorkspaceConnections.status })
+        .from(googleWorkspaceConnections)
+        .where(and(eq(googleWorkspaceConnections.orgId, orgId), eq(googleWorkspaceConnections.status, 'active')))
+        .limit(1);
 
-  const [pamCfg] = await db
-    .select({ uacInterceptionEnabled: pamOrgConfig.uacInterceptionEnabled })
-    .from(pamOrgConfig)
-    .where(eq(pamOrgConfig.orgId, orgId))
-    .limit(1);
-  const pamRuleRows = await db
-    .select({ id: pamRules.id })
-    .from(pamRules)
-    .where(and(eq(pamRules.orgId, orgId), eq(pamRules.enabled, true)));
-  const windowStart = new Date(Date.now() - cfg.windowDays * 86400000);
-  const elevationRows = await db
-    .select({ approvedAt: elevationRequests.approvedAt, deniedByUserId: elevationRequests.deniedByUserId })
-    .from(elevationRequests)
-    .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
+      const [pamCfg] = await db
+        .select({ uacInterceptionEnabled: pamOrgConfig.uacInterceptionEnabled })
+        .from(pamOrgConfig)
+        .where(eq(pamOrgConfig.orgId, orgId))
+        .limit(1);
+      const pamRuleRows = await db
+        .select({ id: pamRules.id })
+        .from(pamRules)
+        .where(and(eq(pamRules.orgId, orgId), eq(pamRules.enabled, true)));
+      const windowStart = new Date(Date.now() - cfg.windowDays * 86400000);
+      const elevationRows = await db
+        .select({ approvedAt: elevationRequests.approvedAt, deniedByUserId: elevationRequests.deniedByUserId })
+        .from(elevationRequests)
+        .where(and(eq(elevationRequests.orgId, orgId), gte(elevationRequests.requestedAt, windowStart)));
+
+      let mfaStepUpEnforced = false;
+      if (orgRow?.partnerId) {
+        const [authPol] = await db
+          .select({ requireEnrollment: authenticatorPolicies.requireEnrollment, enforceFrom: authenticatorPolicies.enforceFrom })
+          .from(authenticatorPolicies)
+          .where(eq(authenticatorPolicies.partnerId, orgRow.partnerId))
+          .limit(1);
+        mfaStepUpEnforced =
+          Boolean(authPol?.requireEnrollment) &&
+          (!authPol?.enforceFrom || new Date(authPol.enforceFrom).getTime() <= Date.now());
+      }
+
+      const [postureRow] = await db
+        .select({ overallScore: securityPostureOrgSnapshots.overallScore })
+        .from(securityPostureOrgSnapshots)
+        .where(eq(securityPostureOrgSnapshots.orgId, orgId))
+        .orderBy(desc(securityPostureOrgSnapshots.capturedAt))
+        .limit(1);
+
+      return { dns, backup, c2c, m365, google, pamCfg, pamRuleRows, elevationRows, mfaStepUpEnforced, postureRow };
+    })()
+    : {
+      dns: undefined,
+      backup: undefined,
+      c2c: undefined,
+      m365: undefined,
+      google: undefined,
+      pamCfg: undefined,
+      pamRuleRows: [],
+      elevationRows: [],
+      mfaStepUpEnforced: false,
+      postureRow: undefined,
+    };
+  const {
+    dns,
+    backup,
+    c2c,
+    m365,
+    google,
+    pamCfg,
+    pamRuleRows,
+    elevationRows,
+    mfaStepUpEnforced,
+    postureRow,
+  } = orgWideEvidence;
   const elevationsApproved = elevationRows.filter((e) => e.approvedAt != null).length;
   const elevationsDenied = elevationRows.filter((e) => e.deniedByUserId != null).length;
-
-  let mfaStepUpEnforced = false;
-  if (orgRow?.partnerId) {
-    const [authPol] = await db
-      .select({ requireEnrollment: authenticatorPolicies.requireEnrollment, enforceFrom: authenticatorPolicies.enforceFrom })
-      .from(authenticatorPolicies)
-      .where(eq(authenticatorPolicies.partnerId, orgRow.partnerId))
-      .limit(1);
-    mfaStepUpEnforced =
-      Boolean(authPol?.requireEnrollment) &&
-      (!authPol?.enforceFrom || new Date(authPol.enforceFrom).getTime() <= Date.now());
-  }
-
-  const [postureRow] = await db
-    .select({ overallScore: securityPostureOrgSnapshots.overallScore })
-    .from(securityPostureOrgSnapshots)
-    .where(eq(securityPostureOrgSnapshots.orgId, orgId))
-    .orderBy(desc(securityPostureOrgSnapshots.capturedAt))
-    .limit(1);
 
   // CIS hardening pass-rate per device (latest scan), optional via config.includeCis.
   // Uses the result's aggregate columns directly — no findings-jsonb parsing needed.
@@ -516,16 +568,18 @@ export async function generateSecurityCompliancePostureReport(
         cisAvgPassRate,
         cisIncluded: cfg.includeCis,
         cisAssessedCount: cisByDevice.size,
-        // Proves an identity provider is CONNECTED, not that MFA is enforced.
-        // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
-        identityProviderConnected: Boolean(m365 || google),
         backupRequired: cfg.backupRequired,
-        backupConfigured: Boolean(backup || c2c),
-        backupEncrypted: backup ? Boolean(backup.encryption) : null,
-        dnsFilteringActive: dnsActive,
-        dnsFilteringSyncStatus: dnsSyncStatus
+        ...(includeOrgWideEvidence ? {
+          // Proves an identity provider is CONNECTED, not that MFA is enforced.
+          // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
+          identityProviderConnected: Boolean(m365 || google),
+          backupConfigured: Boolean(backup || c2c),
+          backupEncrypted: backup ? Boolean(backup.encryption) : null,
+          dnsFilteringActive: dnsActive,
+          dnsFilteringSyncStatus: dnsSyncStatus,
+        } : {}),
       },
-      privilegedAccess: {
+      ...(includeOrgWideEvidence ? { privilegedAccess: {
         uacInterceptionEnabled: Boolean(pamCfg?.uacInterceptionEnabled),
         activePamRules: pamRuleRows.length,
         windowDays: cfg.windowDays,
@@ -533,9 +587,9 @@ export async function generateSecurityCompliancePostureReport(
         elevationsApproved,
         elevationsDenied,
         mfaStepUpEnforced
-      },
+      } } : {}),
       securityProducts,
-      postureScore: postureRow?.overallScore ?? null
+      ...(includeOrgWideEvidence ? { postureScore: postureRow?.overallScore ?? null } : {}),
   } satisfies PostureSummary;
 
   return { rows, rowCount: rows.length, generatedAt, summary };

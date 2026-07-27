@@ -108,7 +108,12 @@ vi.mock('../../services/timeEntryService', async () => {
   return { ...actual, ...timeServiceMocks };
 });
 
+vi.mock('../../services/sensitiveReadAudit', () => ({
+  auditSensitiveRead: vi.fn(),
+}));
+
 import { ticketsRoutes } from './index';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const PART_ID   = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
@@ -293,11 +298,95 @@ describe('GET /export/billables.csv', () => {
     expect(headerLine).toBe('type,date,organization,ticket,description,technician,quantity,rate,amount,billing_status,approved');
     expect(body).toContain('T-2026-0001');
     expect(body).not.toContain('cost');
+    expect(auditSensitiveRead).toHaveBeenCalledWith(expect.anything(), {
+      action: 'billing.billables.download',
+      orgId: null,
+      resourceType: 'billing_export',
+      resourceId: 'billables',
+      format: 'csv',
+      rowCount: 1,
+      byteCount: Buffer.byteLength(body, 'utf8'),
+    });
   });
 
   it('rejects missing date params with 400', async () => {
     const res = await ticketsRoutes.request('/export/billables.csv');
     expect(res.status).toBe(400);
     expect(timeServiceMocks.listBillables).not.toHaveBeenCalled();
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('audits an organization-filtered export to the requested authorized org', async () => {
+    const orgId = '11111111-1111-4111-8111-111111111111';
+    authRef.current.canAccessOrg = (id: string) => id === orgId;
+    timeServiceMocks.listBillables.mockResolvedValue([]);
+
+    const res = await ticketsRoutes.request(
+      `/export/billables.csv?from=2026-06-01&to=2026-06-30&orgId=${orgId}`,
+    );
+    const body = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(auditSensitiveRead).toHaveBeenCalledWith(expect.anything(), {
+      action: 'billing.billables.download',
+      orgId,
+      resourceType: 'billing_export',
+      resourceId: 'billables',
+      format: 'csv',
+      rowCount: 0,
+      byteCount: Buffer.byteLength(body, 'utf8'),
+    });
+  });
+
+  it('does not query or audit a denied organization export', async () => {
+    authRef.current.canAccessOrg = () => false;
+    const deniedOrgId = '22222222-2222-4222-8222-222222222222';
+
+    const res = await ticketsRoutes.request(
+      `/export/billables.csv?from=2026-06-01&to=2026-06-30&orgId=${deniedOrgId}`,
+    );
+
+    expect(res.status).toBe(403);
+    expect(timeServiceMocks.listBillables).not.toHaveBeenCalled();
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('does not audit a row serialization failure', async () => {
+    timeServiceMocks.listBillables.mockResolvedValue([{
+      kind: 'time',
+      date: new Date(Number.NaN),
+      orgName: 'Acme',
+      ticketNumber: 'T-1',
+      description: 'fix',
+      technician: 'Tess',
+      quantity: '1',
+      rate: '1',
+      amount: '1',
+      billingStatus: 'not_billed',
+      isApproved: true,
+    }]);
+
+    const res = await ticketsRoutes.request(
+      '/export/billables.csv?from=2026-06-01&to=2026-06-30',
+    );
+
+    expect(res.status).toBe(500);
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('keeps successful CSV bytes unchanged when audit delivery is non-blocking', async () => {
+    timeServiceMocks.listBillables.mockResolvedValue([]);
+    vi.mocked(auditSensitiveRead).mockImplementationOnce(() => {
+      void Promise.reject(new Error('audit backend unavailable')).catch(() => undefined);
+    });
+
+    const res = await ticketsRoutes.request(
+      '/export/billables.csv?from=2026-06-01&to=2026-06-30',
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(
+      'type,date,organization,ticket,description,technician,quantity,rate,amount,billing_status,approved',
+    );
   });
 });

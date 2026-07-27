@@ -78,6 +78,8 @@ import {
   unregisterTerminalOutputCallback,
   getActiveTerminalSession,
   createTerminalWsRoutes,
+  __createTerminalSharedLeasesForTest,
+  __resetTerminalWsForTest,
   getActiveTerminalSessionCount,
   getActiveTerminalSessionIds
 } from './terminalWs';
@@ -141,7 +143,10 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createTerminalWsRoutes(upgradeWebSocket);
+  // Every capture gets its own lease manager, but generations are globally
+  // monotonic — a replaced generation can never reuse a prior identity.
+  const testSharedLeases = __createTerminalSharedLeasesForTest();
+  createTerminalWsRoutes(upgradeWebSocket, { sharedLeases: testSharedLeases });
 
   // Simulate the Hono context the factory expects
   const fakeContext = {
@@ -215,6 +220,9 @@ function setupSuccessfulValidation(overrides?: { osType?: string }) {
 
 describe('terminalWs', () => {
   beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
     vi.clearAllMocks();
   });
 
@@ -344,6 +352,64 @@ describe('terminalWs', () => {
       expect(ws.send).toHaveBeenCalledWith(
         expect.stringContaining('"pong"')
       );
+    });
+
+    it('makes a foreign socket inert for input, pong, close, and error', async () => {
+      const owner = getActiveTerminalSession(SESSION_ID);
+      expect(owner).toBeDefined();
+      const originalPongAt = owner!.lastPongAt;
+      const foreignWs = wsMock();
+      vi.mocked(sendCommandToAgent).mockClear();
+      vi.mocked(db.update).mockClear();
+      vi.spyOn(Date, 'now').mockReturnValue(originalPongAt + 10_000);
+
+      await handlers.onMessage(
+        { data: JSON.stringify({ type: 'data', data: 'foreign\n' }) },
+        foreignWs
+      );
+      await handlers.onMessage(
+        { data: JSON.stringify({ type: 'resize', cols: 100, rows: 30 }) },
+        foreignWs
+      );
+      await handlers.onMessage(
+        { data: JSON.stringify({ type: 'pong' }) },
+        foreignWs
+      );
+      await handlers.onClose({}, foreignWs);
+      await handlers.onError(new Error('foreign socket'), foreignWs);
+
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(getActiveTerminalSession(SESSION_ID)).toBe(owner);
+      expect(owner!.lastPongAt).toBe(originalPongAt);
+    });
+
+    it('makes handlers captured by a replaced generation inert', async () => {
+      const staleHandlers = handlers;
+      const staleWs = ws;
+
+      await staleHandlers.onClose({}, staleWs);
+
+      setupSuccessfulValidation();
+      const replacementHandlers = captureWsHandlers(SESSION_ID, 'replacement-ticket');
+      const replacementWs = wsMock();
+      await replacementHandlers.onOpen({}, replacementWs);
+      const replacement = getActiveTerminalSession(SESSION_ID);
+      expect(replacement).toBeDefined();
+
+      vi.mocked(sendCommandToAgent).mockClear();
+      vi.mocked(db.update).mockClear();
+
+      await staleHandlers.onMessage(
+        { data: JSON.stringify({ type: 'data', data: 'stale\n' }) },
+        staleWs
+      );
+      await staleHandlers.onClose({}, staleWs);
+      await staleHandlers.onError(new Error('stale socket'), staleWs);
+
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(getActiveTerminalSession(SESSION_ID)).toBe(replacement);
     });
   });
 

@@ -142,6 +142,16 @@
       "enable": "Abilita la registrazione automatica per i nuovi dispositivi",
       "requireApproval": "Richiedi approvazione amministratore",
       "sendWelcome": "Invia notifica di benvenuto"
+    },
+    "enrollment": {
+      "title": "Registrazione dispositivi",
+      "ttl": "Validità predefinita del link",
+      "ttlHint": "Preseleziona per quanto tempo restano validi i nuovi link di registrazione e gli installer. Le org possono scegliere un valore predefinito diverso.",
+      "deviceCount": "Dispositivi predefiniti per link",
+      "deviceCountHint": "Quanti computer può registrare un singolo link di registrazione per impostazione predefinita. Le org possono scegliere un valore predefinito diverso.",
+      "maxTtl": "Durata massima del link",
+      "maxTtlHint": "È un tetto sulla durata delle chiavi, non solo su ciò che un amministratore può richiedere: nulla di emesso sotto questo partner resta utilizzabile più a lungo — link di registrazione, inviti di distribuzione MCP e le credenziali figlie emesse quando un installer viene riscattato.",
+      "maxTtlWarning": "Le org non possono aumentarlo. Un tetto breve accorcia anche il tempo a disposizione di un computer per completare la registrazione dopo aver riscattato un link, non solo il tempo per scaricarlo."
     }
   },
   "partnerEventLogs": {
@@ -796,6 +806,16 @@
         "invalidWindow": "Inserisci una finestra valida: ora di inizio e ora di fine devono essere diverse.",
         "storedInvalid": "La finestra di manutenzione salvata non era valida e viene ignorata, quindi gli agent potrebbero attualmente aggiornarsi in qualsiasi momento. Scegli un'impostazione valida qui sotto e salva per correggerla."
       }
+    },
+    "enrollment": {
+      "title": "Registrazione dispositivi",
+      "ttl": "Validità predefinita del link",
+      "deviceCount": "Dispositivi predefiniti per link",
+      "inherit": "Eredita dal partner",
+      "description": "Preseleziona la validità e il numero di dispositivi nella finestra Aggiungi dispositivo. Lascia un campo su «Eredita dal partner» per seguire il valore predefinito del partner.",
+      "capNotice": "Il tuo partner limita la durata dei link di registrazione a {{value}}. Link, inviti di distribuzione MCP e credenziali emesse dall’installer smettono di funzionare allo scadere, quindi anche il computer deve completare la registrazione entro quella finestra.",
+      "capNoticeUnknown": "Il tuo partner imposta una durata massima per i link di registrazione. I link e le credenziali emesse dall’installer smettono di funzionare allo scadere, quindi anche il computer deve completare la registrazione entro quella finestra.",
+      "capMinutes": "{{minutes}} minuti"
     }
   },
   "orgEventLogSettings": {

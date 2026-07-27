@@ -372,9 +372,15 @@ async function getDocumentOr404(auth: AuthContext, id: string): Promise<Contract
 export async function getContractDocumentPdf(
   auth: AuthContext,
   id: string,
-): Promise<{ pdfData: Buffer; mime: string; byteSize: number; sha256: string }> {
+): Promise<{ orgId: string; pdfData: Buffer; mime: string; byteSize: number; sha256: string }> {
   const doc = await getDocumentOr404(auth, id);
-  return { pdfData: doc.pdfData, mime: doc.mime, byteSize: doc.byteSize, sha256: doc.sha256 };
+  return {
+    orgId: doc.orgId,
+    pdfData: doc.pdfData,
+    mime: doc.mime,
+    byteSize: doc.byteSize,
+    sha256: doc.sha256,
+  };
 }
 
 /**

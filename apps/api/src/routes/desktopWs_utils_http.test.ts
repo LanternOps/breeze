@@ -1,5 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const {
+  revokeViewerSessionMock,
+  persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnceMock,
+} = vi.hoisted(() => {
+  const revokeViewerSessionMock = vi.fn(async (_sessionId: string) => undefined);
+  return {
+    revokeViewerSessionMock,
+    persistDesktopFinalizationIntentMock: vi.fn(async ({ finalization }: any) => ({
+      input: finalization,
+      canonicalPayload: JSON.stringify(finalization),
+      payloadSha256: 'd'.repeat(64),
+    })),
+    finalizeDesktopSessionOnceMock: vi.fn(async (input: { sessionId: string }) => {
+      await revokeViewerSessionMock(input.sessionId);
+      return 'finalized' as const;
+    }),
+  };
+});
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules
 // -------------------------------------------------------------------
@@ -32,6 +52,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../services/remoteSessionAuth', () => ({
   createWsTicket: vi.fn(),
+  createLegacyViewerCompatibilityWsTicket: vi.fn(),
   consumeWsTicket: vi.fn(),
   consumeDesktopConnectCode: vi.fn(),
   getViewerAccessTokenExpirySeconds: vi.fn(() => 900)
@@ -45,7 +66,35 @@ vi.mock('../services/jwt', () => ({
 vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerJtiRevoked: vi.fn(async () => false),
   isViewerSessionRevoked: vi.fn(async () => false),
-  revokeViewerSession: vi.fn(async () => undefined),
+  revokeViewerSession: revokeViewerSessionMock,
+}));
+
+vi.mock('../services/desktopSessionFinalization', () => ({
+  persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
+  finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,
+}));
+
+vi.mock('../jobs/desktopSessionFinalizationWorker', () => ({
+  enqueueDesktopSessionFinalization: vi.fn(async ({
+    sessionId,
+    finalizationId,
+  }: {
+    sessionId: string;
+    finalizationId: string;
+  }) => ({
+    acknowledged: true as const,
+    jobId: `desktop-finalize-${sessionId}-${finalizationId}`,
+  })),
+}));
+
+vi.mock('../services/desktopSessionStop', () => ({
+  ensureDesktopStreamStopped: vi.fn(async ({ finalizationId }: {
+    finalizationId: string;
+  }) => ({
+    state: 'pending',
+    commandId: finalizationId,
+    reason: 'delivery_unacknowledged',
+  })),
 }));
 
 vi.mock('./agentWs', () => ({
@@ -69,9 +118,19 @@ vi.mock('../services/rate-limit', () => ({
 // Imports (after mocks)
 // -------------------------------------------------------------------
 import { db } from '../db';
-import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import {
+  consumeWsTicket,
+  consumeDesktopConnectCode,
+  createLegacyViewerCompatibilityWsTicket,
+  createWsTicket,
+  getViewerAccessTokenExpirySeconds,
+} from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
-import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
+import {
+  isViewerJtiRevoked,
+  isViewerSessionRevoked,
+  revokeViewerSession,
+} from '../services/viewerTokenRevocation';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleDesktopFrame,
@@ -79,7 +138,9 @@ import {
   unregisterDesktopFrameCallback,
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
-  getActiveDesktopSessionCount
+  getActiveDesktopSessionCount,
+  __createDesktopSharedLeasesForTest,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -87,14 +148,16 @@ import {
 // -------------------------------------------------------------------
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
-const DEVICE_ID = 'device-xyz';
+const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+const ORG_ID = '33333333-3333-4333-8333-333333333333';
 const AGENT_ID = 'agent-xyz';
 
 // Use a unique user ID per successful onOpen to avoid the in-memory
 // rate limiter (10 connections per user per 60s) blocking later tests.
 let userIdCounter = 0;
 function nextUserId(): string {
-  return `user-desk-${++userIdCounter}`;
+  userIdCounter += 1;
+  return `44444444-4444-4444-8444-${userIdCounter.toString().padStart(12, '0')}`;
 }
 
 function wsMock() {
@@ -138,7 +201,9 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, {
+    sharedLeases: __createDesktopSharedLeasesForTest(),
+  });
 
   const fakeContext = {
     req: {
@@ -181,7 +246,8 @@ function setupSuccessfulValidation() {
     agentId: AGENT_ID,
     hostname: 'test-host',
     osType: 'windows',
-    status: 'online'
+    status: 'online',
+    orgId: ORG_ID,
   };
 
   vi.mocked(db.select)
@@ -221,6 +287,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   // ==========================================
@@ -482,6 +549,132 @@ describe('desktopWs', () => {
         body: JSON.stringify({ sessionId: '', code: '' })
       });
       expect(res3.status).toBe(400);
+    });
+  });
+
+  describe('POST /:id/viewer/ws-ticket assurance', () => {
+    function setupViewerTicketAccess(
+      assurance: { mfaSatisfied: true; assuranceAbsoluteExpiresAt: number } | undefined,
+      queueAccessRows = true,
+    ) {
+      const basePayload = {
+        sub: 'viewer-user',
+        email: 'viewer@example.com',
+        sessionId: SESSION_ID,
+        purpose: 'viewer',
+        jti: 'viewer-jti',
+        iat: 1_000,
+        exp: 2_000,
+      } as const;
+      vi.mocked(verifyViewerAccessToken).mockResolvedValue(
+        assurance ? { ...basePayload, ...assurance } : basePayload,
+      );
+      const rows = [{
+        session: {
+          id: SESSION_ID,
+          type: 'desktop',
+          userId: 'viewer-user',
+          status: 'pending',
+          deviceId: DEVICE_ID,
+        },
+        device: {
+          id: DEVICE_ID,
+          status: 'online',
+          agentId: AGENT_ID,
+        },
+        user: {
+          id: 'viewer-user',
+          email: 'viewer@example.com',
+          status: 'active',
+        },
+      }];
+      if (queueAccessRows) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue(rows),
+                }),
+              }),
+            }),
+          }),
+        } as any);
+      }
+    }
+
+    it('maps an assured viewer token to a normal V2 ticket', async () => {
+      process.env.REMOTE_WS_AUTH_MODE = 'post_upgrade';
+      setupViewerTicketAccess({
+        mfaSatisfied: true,
+        assuranceAbsoluteExpiresAt: 2_000,
+      });
+      vi.mocked(createWsTicket).mockResolvedValue({
+        ticket: 'v2-ticket',
+        expiresInSeconds: 60,
+      });
+
+      const res = await buildApp().request(`/${SESSION_ID}/viewer/ws-ticket`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer viewer-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(createWsTicket).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: SESSION_ID,
+        sessionType: 'desktop',
+        mfaSatisfied: true,
+      }));
+      expect(createLegacyViewerCompatibilityWsTicket).not.toHaveBeenCalled();
+    });
+
+    it('maps a legacy viewer token only to post-upgrade V1 compatibility', async () => {
+      process.env.REMOTE_WS_AUTH_MODE = 'post_upgrade';
+      setupViewerTicketAccess(undefined);
+      vi.mocked(createWsTicket).mockResolvedValue({
+        ticket: 'incorrect-v2-ticket',
+        expiresInSeconds: 60,
+      });
+      vi.mocked(createLegacyViewerCompatibilityWsTicket).mockResolvedValue({
+        ticket: 'v1-ticket',
+        expiresInSeconds: 60,
+      });
+
+      const res = await buildApp().request(`/${SESSION_ID}/viewer/ws-ticket`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer legacy-viewer-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(createLegacyViewerCompatibilityWsTicket).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'post_upgrade',
+          sessionId: SESSION_ID,
+          sessionType: 'desktop',
+        }),
+      );
+      expect(createWsTicket).not.toHaveBeenCalled();
+    });
+
+    it('rejects a legacy viewer token in pre-upgrade mode', async () => {
+      process.env.REMOTE_WS_AUTH_MODE = 'pre_upgrade';
+      setupViewerTicketAccess(undefined, false);
+      vi.mocked(createWsTicket).mockResolvedValue({
+        ticket: 'incorrect-v2-ticket',
+        expiresInSeconds: 60,
+      });
+
+      const res = await buildApp().request(`/${SESSION_ID}/viewer/ws-ticket`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer legacy-viewer-token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(isViewerJtiRevoked).not.toHaveBeenCalled();
+      expect(isViewerSessionRevoked).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+      expect(createLegacyViewerCompatibilityWsTicket).not.toHaveBeenCalled();
+      expect(createWsTicket).not.toHaveBeenCalled();
     });
   });
 

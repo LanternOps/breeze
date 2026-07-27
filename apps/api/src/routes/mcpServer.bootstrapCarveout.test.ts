@@ -48,6 +48,7 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
 }));
 
 vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   db: new Proxy({}, {
     get: (_target, property) => state.db[property as string],
   }),

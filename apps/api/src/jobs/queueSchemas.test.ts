@@ -6,7 +6,35 @@ import {
   discoveryQueueJobDataSchema,
   fdbEntrySchema,
   sensitiveDataQueueJobDataSchema,
+  desktopSessionFinalizationJobDataSchema,
 } from './queueSchemas';
+
+describe('desktopSessionFinalizationJobDataSchema', () => {
+  const valid = {
+    version: 1 as const,
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    finalizationId: '22222222-2222-4222-8222-222222222222',
+  };
+
+  it('accepts only the versioned stable identifiers', () => {
+    expect(desktopSessionFinalizationJobDataSchema.parse(valid)).toEqual(valid);
+    expect(() => desktopSessionFinalizationJobDataSchema.parse({
+      ...valid,
+      canonicalPayload: '{}',
+    })).toThrow();
+  });
+
+  it('rejects invalid identifiers and versions', () => {
+    expect(() => desktopSessionFinalizationJobDataSchema.parse({
+      ...valid,
+      sessionId: 'not-a-uuid',
+    })).toThrow();
+    expect(() => desktopSessionFinalizationJobDataSchema.parse({
+      ...valid,
+      version: 2,
+    })).toThrow();
+  });
+});
 
 describe('automationQueueJobDataSchema', () => {
   const validCases: Array<{ name: string; payload: Record<string, unknown> }> = [

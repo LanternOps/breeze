@@ -123,6 +123,13 @@ export default defineConfig({
       // list). NOT the same file as the co-located mocked unit suite
       // `mfaStepUpGrant.test.ts`, which stays on this runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Enrollment-key cleanup sweep real-DB test (#2775 live-bootstrap-token
+      // exemption): imports `__tests__/integration/setup` (real postgres pool
+      // + autoMigrate) and lives in src/jobs/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts
+      // (registered in its include list).
+      'src/jobs/enrollmentKeyCleanup.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

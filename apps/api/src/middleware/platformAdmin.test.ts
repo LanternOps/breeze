@@ -33,6 +33,7 @@ function makeApp(authToInject: AuthShape | null) {
 
   app.use('*', platformAdminMiddleware);
   app.get('/admin/partners/:id/anything', (c) => c.json({ ok: true, partnerId: c.req.param('id') }));
+  app.get('/admin/downstream-denied', (c) => c.json({ error: 'mfa required' }, 403));
   return app;
 }
 
@@ -70,5 +71,21 @@ describe('platformAdminMiddleware', () => {
     expect(audit.action).toMatch(/^platform_admin\./);
     expect(audit.actorId).toBe('u1');
     expect(audit.resourceType).toBe('platform_admin');
+    expect(audit.result).toBe('success');
+  });
+
+  it('never records a downstream authorization denial as a successful admin action', async () => {
+    const app = makeApp({
+      user: { id: 'u1', email: 'pa@x.com', name: 'PA', isPlatformAdmin: true },
+    });
+
+    const res = await app.request('/admin/downstream-denied');
+
+    expect(res.status).toBe(403);
+    expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls[0]![0]).toMatchObject({
+      actorId: 'u1',
+      result: 'failure',
+    });
   });
 });

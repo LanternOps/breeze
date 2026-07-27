@@ -3,6 +3,7 @@ import { platformAdminMiddleware } from '../../middleware/platformAdmin';
 import { abuseRoutes } from './abuse';
 import { tenantErasureRoutes } from './tenantErasure';
 import { tenantExportRoutes } from './tenantExport';
+import { desktopFinalizationRoutes } from './desktopFinalization';
 
 export const adminRoutes = new Hono();
 
@@ -13,3 +14,4 @@ adminRoutes.route('/', abuseRoutes);
 // adds its own requireMfa() middleware on top.
 adminRoutes.route('/tenant-erasure', tenantErasureRoutes);
 adminRoutes.route('/tenant-export', tenantExportRoutes);
+adminRoutes.route('/desktop-finalizations', desktopFinalizationRoutes);

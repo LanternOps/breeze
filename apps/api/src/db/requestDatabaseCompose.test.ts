@@ -27,6 +27,10 @@ function renderApiEnvironment(overrides: Record<string, string>): Record<string,
       CADDY_IMAGE_REF: IMAGE_DIGEST,
       COTURN_IMAGE_REF: IMAGE_DIGEST,
       ENROLLMENT_KEY_PEPPER: 'compose-enrollment-key-pepper',
+      // The event-socket permission epoch mode is required-with-no-default
+      // (`${VAR:?}`) in docker-compose.yml, so `config` cannot render without
+      // it. Value mirrors .env.example.
+      EVENT_PERMISSION_EPOCH_MODE: 'compat',
       JWT_SECRET: 'compose-jwt-secret',
       MFA_ENCRYPTION_KEY: 'compose-mfa-encryption-key',
       MFA_RECOVERY_CODE_PEPPER: 'compose-mfa-recovery-code-pepper',
@@ -34,6 +38,12 @@ function renderApiEnvironment(overrides: Record<string, string>): Record<string,
       POSTGRES_IMAGE_REF: IMAGE_DIGEST,
       POSTGRES_PASSWORD: 'compose-postgres-password',
       REDIS_IMAGE_REF: IMAGE_DIGEST,
+      // Remote-access admission/lease configuration is required-with-no-default
+      // (`${VAR:?}`) in docker-compose.yml, so `config` cannot render without
+      // it. Values mirror .env.example.
+      REMOTE_ACCESS_ADMISSION_MODE: 'open',
+      REMOTE_WS_AUTH_MODE: 'post_upgrade',
+      REMOTE_WS_REDIS_TOPOLOGY: 'standalone-single-primary',
       TURN_SECRET: 'compose-turn-secret',
       ...overrides,
     },

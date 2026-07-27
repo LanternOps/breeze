@@ -83,7 +83,18 @@ export type DecidedFactor =
  * `graceDowngrade`. Kept out of the discriminated union so those post-build
  * writes stay legal regardless of which factor arm was chosen. */
 export interface AssuranceDecisionShared {
-  /** Level the policy would require for this approval (telemetry / future gate). */
+  /**
+   * Level the policy would require for this approval (telemetry / future gate).
+   *
+   * ONLY MEANINGFUL ON AN APPROVE. On a deny/report this is the Breeze default
+   * floor with the partner's raise-only overrides NOT applied, because the
+   * partner policy is deliberately not loaded on that path (#2822 review — a DB
+   * fault must never stop a technician REFUSING; see the note at the assignment
+   * site). No caller reads this field today. If you start recording it on a deny
+   * audit row or returning it from a deny response, load the policy for that
+   * path first, or you will under-report the partner floor with nothing to catch
+   * it.
+   */
   requiredLevel: AssuranceLevel;
   /** Phase 4: under-assured but allowed because enforcement is off / in grace. */
   graceDowngrade?: boolean;
@@ -215,10 +226,21 @@ export async function assertApprovalAssurance(input: {
   // 2. Apply the partner policy floor (raise-only) to the REQUIRED level, then
   //    enforce — but ONLY for an approve. A deny/report is always allowed
   //    through (spec §12 fail-safe): a technician must never be unable to REFUSE.
-  const policy = await loadPartnerPolicy(input.partnerId ?? null);
+  //
+  // The policy load is gated on `isApprove` so the fail-safe actually holds
+  // (#2822 review). `loadPartnerPolicy` now takes a system-context DB escape,
+  // which introduces a real failure mode (pool exhaustion, transaction abort)
+  // where previously the org-scoped read just returned zero rows. Both callers
+  // — routes/pam.ts and routes/approvals.ts — re-classify ANY throw out of this
+  // function as an assertion failure and return 401, so loading the policy
+  // unconditionally would make a transient DB fault block a technician from
+  // REFUSING a request. That is exactly the state spec §12 says must never
+  // occur. A deny therefore never touches the partner policy at all.
+  const isApprove = (input.decision ?? 'approved') === 'approved';
+  const policy = isApprove ? await loadPartnerPolicy(input.partnerId ?? null) : null;
   decision.requiredLevel = requiredAssurance(input.riskTier, policy?.floorOverrides ?? null);
 
-  if ((input.decision ?? 'approved') === 'approved' && decision.decidedAssuranceLevel < decision.requiredLevel) {
+  if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
     if (isEnforcing(policy, new Date())) {
       throw new StepUpRequiredError(decision.requiredLevel, decision.decidedAssuranceLevel);
     }

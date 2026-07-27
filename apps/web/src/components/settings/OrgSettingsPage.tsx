@@ -254,6 +254,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
+  // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
+  // notice in the defaults editor. Partner-only — the org never edits it.
+  const [partnerMaxEnrollmentTtl, setPartnerMaxEnrollmentTtl] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
@@ -302,6 +305,17 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setPartnerPins(
           lockedList.includes('defaults.agentVersionPins')
             ? effData.effective?.defaults?.agentVersionPins
+            : undefined,
+        );
+        // Same signal for the enrollment cap (#2776): `locked` is what tells us
+        // the value came from the PARTNER. Without that check the merged value
+        // could be the org's own stale cap, which the resolver ignores — showing
+        // it as "your partner caps you at X" would be a lie.
+        const effectiveCap = effData.effective?.defaults?.maxEnrollmentLinkTtlMinutes;
+        setPartnerMaxEnrollmentTtl(
+          lockedList.includes('defaults.maxEnrollmentLinkTtlMinutes') &&
+            typeof effectiveCap === 'number'
+            ? effectiveCap
             : undefined,
         );
       } else {
@@ -702,9 +716,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               organizationName={displayOrg.name}
               defaults={orgDetails?.settings?.defaults}
               onDirty={handleDirty}
-              onSave={(data) => handleSave('defaults', data)}
+              // The editor now emits the shared `InheritableDefaultSettings`
+              // interface, which (unlike a type alias) has no implicit index
+              // signature — spread it into a plain record for the save helper.
+              onSave={(data) => handleSave('defaults', { ...data })}
               pinnableVersions={pinnableVersions}
               partnerPins={partnerPins}
+              locked={locked}
+              partnerMaxEnrollmentTtlMinutes={partnerMaxEnrollmentTtl}
             />
           </div>
         );

@@ -110,6 +110,24 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 10, resetAt: new Date() })),
 }));
 
+// Partner-cap enforcement (#2776 task 3.4). Mocked at the wiring level — see
+// enrollmentKeys.test.ts's identically-named helper for rationale.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+// clampTtlToCap — the CLAMP-shaped sibling. The child-key mint on this route
+// runs it on the CHILD_ENROLLMENT_KEY_TTL_MINUTES fallback, so it must be
+// present here or the route throws. Permissive default (returns ttlMinutes
+// unchanged) models "no partner cap configured".
+const clampTtlToCapMock = vi.fn(
+  async (_orgId: string, ttlMinutes: number) => ttlMinutes,
+);
+vi.mock('../services/enrollmentDefaults', () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+  clampTtlToCap: (...args: [string, number]) => clampTtlToCapMock(...args),
+}));
+
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
@@ -172,6 +190,25 @@ function mockDeleteWhere() {
   } as any);
 }
 
+/**
+ * Configure the mocked partner-cap gate for the current test. Mirrors the
+ * real assertTtlWithinCap contract: null when ttlMinutes is undefined or at/
+ * under the cap, an error string naming the cap when it's exceeded.
+ */
+function mockEnrollmentDefaults(opts: { maxTtlMinutes: number }) {
+  assertTtlWithinCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number | undefined) => {
+      if (ttlMinutes === undefined) return null;
+      return ttlMinutes > opts.maxTtlMinutes
+        ? `ttlMinutes exceeds the partner maximum of ${opts.maxTtlMinutes} minutes`
+        : null;
+    },
+  );
+  clampTtlToCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number) => Math.min(ttlMinutes, opts.maxTtlMinutes),
+  );
+}
+
 describe('enrollment key routes — installer download', () => {
   let app: Hono;
 
@@ -181,6 +218,14 @@ describe('enrollment key routes — installer download', () => {
     // that set mockReturnValue for fromEnv would otherwise leak into
     // subsequent tests. Explicitly reset fromEnv to "signing disabled".
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
+    // Same reasoning for the partner-cap gate: reset to the permissive
+    // default every test unless a test opts into mockEnrollmentDefaults().
+    assertTtlWithinCapMock.mockReset();
+    assertTtlWithinCapMock.mockImplementation(async () => null);
+    clampTtlToCapMock.mockReset();
+    clampTtlToCapMock.mockImplementation(
+      async (_orgId: string, ttlMinutes: number) => ttlMinutes,
+    );
     // Default: Windows bootstrap token issuance succeeds.
     vi.mocked(issueBootstrapTokenForKey).mockResolvedValue({
       id: 'tok-1',
@@ -475,6 +520,20 @@ describe('enrollment key routes — installer download', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('passes the ttlMinutes query param through to the bootstrap token (windows) (#2775)', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?count=5&ttlMinutes=43200`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ maxUsage: 5, ttlMinutes: 43200 }),
+      );
+    });
+
     it('child key honors the ttlMinutes query param (per-link picker) (macos)', async () => {
       const parentKey = makeEnrollmentKey(); // parent: 1h remaining
       mockSelectFromWhereLimit([parentKey]);
@@ -507,6 +566,42 @@ describe('enrollment key routes — installer download', () => {
         { method: 'GET', headers: { Authorization: 'Bearer token' } },
       );
       expect(res.status).toBe(400);
+    });
+
+    // #2776 task 3.4 — a value under the global 525_600 schema max can still
+    // exceed a lower PARTNER cap, which only the DB-backed assertTtlWithinCap
+    // gate (not the static zod schema) can enforce.
+    it('rejects a ttlMinutes above the partner cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      const parentKey = makeEnrollmentKey();
+      mockSelectFromWhereLimit([parentKey]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/windows?ttlMinutes=43200`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('1440');
+      expect(assertTtlWithinCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('allows a ttlMinutes at exactly the partner cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      const parentKey = makeEnrollmentKey();
+      mockSelectFromWhereLimit([parentKey]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/macos?ttlMinutes=1440`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
     });
 
     // Query-param validation is enforced by the Hono zValidator middleware

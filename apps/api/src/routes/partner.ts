@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -31,12 +32,28 @@ partnerRoutes.get('/me', async (c) => {
   if (!partnerId) {
     return c.json({ error: 'No partner association' }, 404);
   }
+  // Narrowed copy so the closure below keeps the non-null type.
+  const resolvedPartnerId = partnerId;
 
-  const [partner] = await db
-    .select({ id: partners.id, name: partners.name, slug: partners.slug, status: partners.status, settings: partners.settings })
-    .from(partners)
-    .where(eq(partners.id, partnerId))
-    .limit(1);
+  // Read under a SYSTEM context (#2822). This route is gated by authMiddleware
+  // ONLY — no requireScope — and is explicitly exempt from partnerGuard
+  // (index.ts) so the client can still ask "what is my partner's status?" while
+  // that partner is inactive. An ORGANIZATION-scoped JWT carries a non-null
+  // partnerId (routes/auth/helpers.ts fills it from organizations.partnerId),
+  // so it reaches this read with accessiblePartnerIds = [] and the `partners`
+  // SELECT policy filters the row out — turning every org-scoped call into a
+  // spurious 404, which the web AccountInactiveGuard swallows (`if (!res.ok)
+  // return null`), so those users are never told their tenant is suspended.
+  // `partnerId` here is either the verified JWT claim or the caller's own
+  // partner_users row — never client input — so escalating this one
+  // pinned-by-id lookup does not widen which partner is legible.
+  const [partner] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ id: partners.id, name: partners.name, slug: partners.slug, status: partners.status, settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, resolvedPartnerId))
+      .limit(1)
+  );
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);

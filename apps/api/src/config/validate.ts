@@ -2,7 +2,12 @@ import { isIP } from 'net';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
-import { decodePartnerApiCursorSigningKey, isRecognizedSelfHostSignal } from './env';
+import {
+  decodePartnerApiCursorSigningKey,
+  isRecognizedSelfHostSignal,
+  parseEventPermissionEpochMode,
+  parseOAuthAuthEpochEnforceAfter,
+} from './env';
 
 // ---------------------------------------------------------------------------
 // Insecure default detection
@@ -235,6 +240,78 @@ function requireIf(
   });
 }
 
+/**
+ * Wave 3 live-authorization rollout controls (`OAUTH_AUTH_EPOCH_ENFORCE_AFTER`,
+ * `EVENT_PERMISSION_EPOCH_MODE`).
+ *
+ * The parsers themselves live in config/env.ts, but they are invoked HERE so a
+ * misconfigured value refuses boot through the aggregated validator report
+ * rather than throwing while env.ts is being imported. env.ts is imported by
+ * this validator, by background jobs, by seeds and by scripts; a module-scope
+ * throw there kills all of them and preempts every other config check.
+ *
+ * Shape is enforced in every environment — a value that is neither `compat`
+ * nor `enforce`, or a timestamp without an explicit UTC/offset suffix, is a
+ * bug regardless of NODE_ENV. Presence is enforced in production only, so
+ * local dev keeps the documented defaults.
+ */
+function validateLiveAuthorizationRolloutConfig(
+  data: {
+    OAUTH_AUTH_EPOCH_ENFORCE_AFTER?: string;
+    EVENT_PERMISSION_EPOCH_MODE?: string;
+    MCP_OAUTH_ENABLED?: string;
+  },
+  isProduction: boolean,
+  ctx: z.RefinementCtx,
+): void {
+  const truthy = (raw: string | undefined): boolean =>
+    ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+
+  const oauthDeadline = data.OAUTH_AUTH_EPOCH_ENFORCE_AFTER?.trim() ?? '';
+  if (oauthDeadline) {
+    try {
+      // Non-strict options: this call only exercises the format check; the
+      // presence rule is applied explicitly below so the message names the
+      // production condition.
+      parseOAuthAuthEpochEnforceAfter(oauthDeadline, { oauthEnabled: false, nodeEnv: undefined });
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_AUTH_EPOCH_ENFORCE_AFTER'],
+        message:
+          'OAUTH_AUTH_EPOCH_ENFORCE_AFTER must be an absolute ISO timestamp with an explicit UTC/offset suffix (e.g. 2026-08-06T00:30:00Z). A local timestamp would move the OAuth compatibility deadline with the host timezone.',
+      });
+    }
+  } else if (isProduction && truthy(data.MCP_OAUTH_ENABLED)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OAUTH_AUTH_EPOCH_ENFORCE_AFTER'],
+      message:
+        'OAUTH_AUTH_EPOCH_ENFORCE_AFTER is required in production when MCP_OAUTH_ENABLED=true. It is the absolute end of the compatibility window for pre-Wave-3 access tokens that carry no auth_epoch claim; without it those tokens are accepted indefinitely. Choose one timestamp per rollout, at least ACCESS_TOKEN_TTL_SECONDS after the first new token-minting instance starts.',
+    });
+  }
+
+  const eventMode = data.EVENT_PERMISSION_EPOCH_MODE?.trim() ?? '';
+  if (eventMode) {
+    try {
+      parseEventPermissionEpochMode(eventMode, undefined);
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EVENT_PERMISSION_EPOCH_MODE'],
+        message: 'EVENT_PERMISSION_EPOCH_MODE must be compat or enforce.',
+      });
+    }
+  } else if (isProduction) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['EVENT_PERMISSION_EPOCH_MODE'],
+      message:
+        'EVENT_PERMISSION_EPOCH_MODE must be explicitly set in production to compat or enforce. Deploy new event-ticket writers with compat, then switch the whole fleet to enforce at least 60 seconds after the last version-one writer drains.',
+    });
+  }
+}
+
 function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: z.RefinementCtx): void {
   const entries = (value ?? '')
     .split(',')
@@ -441,6 +518,15 @@ const envSchema = z
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
     OAUTH_DCR_ALLOW_ANONYMOUS: z.string().optional(),
+
+    // Wave 3 live-authorization rollout controls. Shape is validated in EVERY
+    // environment (a garbage value is a bug anywhere); presence is required in
+    // production only. Enforced here rather than at config/env.ts import time:
+    // that module is imported by this validator and by every job/script, so a
+    // module-scope throw there would preempt this aggregated report and break
+    // unrelated processes that never touch OAuth or event sockets.
+    OAUTH_AUTH_EPOCH_ENFORCE_AFTER: z.string().optional(),
+    EVENT_PERMISSION_EPOCH_MODE: z.string().optional(),
 
     // -- Feature-flagged secrets (Task 26 / audit H-3) -----------------------
     // The validator only enforces these in production when the corresponding
@@ -753,6 +839,11 @@ const envSchema = z
         });
       }
     }
+
+    // Wave 3 live-authorization rollout controls. Shape checked everywhere,
+    // presence required in production. See the helper for why this cannot live
+    // at config/env.ts import time.
+    validateLiveAuthorizationRolloutConfig(data, isProduction, ctx);
 
     // --- Required secrets: reject insecure values in production only ---
     if (isProduction) {
@@ -1445,6 +1536,9 @@ export function validateConfig(): AppConfig {
     OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
     OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,
     OAUTH_DCR_ALLOW_ANONYMOUS: env.OAUTH_DCR_ALLOW_ANONYMOUS,
+    // Wave 3 live-authorization rollout controls.
+    OAUTH_AUTH_EPOCH_ENFORCE_AFTER: env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
+    EVENT_PERMISSION_EPOCH_MODE: env.EVENT_PERMISSION_EPOCH_MODE,
     // Task 26 (H-3): feature-flagged production secrets.
     MCP_OAUTH_ENABLED: env.MCP_OAUTH_ENABLED,
     OAUTH_JWKS_PRIVATE_JWK: env.OAUTH_JWKS_PRIVATE_JWK,

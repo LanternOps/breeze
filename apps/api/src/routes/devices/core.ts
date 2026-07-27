@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { zValidator } from '../../lib/validation';
+import { z } from 'zod';
+import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
@@ -53,6 +54,7 @@ import { sendCommandToAgent, isAgentConnected, disconnectAgent } from '../agentW
 import { terminateDeviceRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { CommandTypes } from '../../services/commandQueue';
 import { getGlobalEnrollmentSecret } from '../agents/enrollment';
+import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
 import {
   withExtensionDeviceCascade,
   withExtensionDeviceOrgDenormalized,
@@ -274,6 +276,25 @@ function envInt(name: string, fallback: number): number {
 const ENROLL_TOKEN_MAX_COUNT = 1000;
 const ENROLL_TOKEN_MAX_TTL_MINUTES = 525_600; // 365 days
 
+// `count` keeps its existing ad-hoc coercion + clamp behaviour below —
+// existing clients rely on an out-of-range or non-numeric count being
+// silently floored/clamped rather than rejected (devices.test.ts:353+).
+// `ttlMinutes` is schema-validated and REJECTED when out of range: a
+// silently reduced expiry is the exact failure mode #2775/#2777 were filed
+// for, so it gets no such leniency.
+//
+// Every field is optional because a BODYLESS POST is a supported call shape
+// here — first-run guided setup (web setup/EnrollDeviceStep.tsx) and script
+// clients both POST with no body while `fetchWithAuth` still sends
+// `Content-Type: application/json`. That is why the route uses
+// `optionalJsonValidator`, not `zValidator('json', ...)`: the latter 400s
+// ("Malformed JSON in request body") on an empty body with a JSON
+// content-type, which the previous `c.req.json().catch(() => ({}))` did not.
+const onboardingTokenSchema = z.object({
+  count: z.unknown().optional(),
+  ttlMinutes: z.number().int().min(1).max(ENROLL_TOKEN_MAX_TTL_MINUTES).optional(),
+}).strict();
+
 // POST /devices/onboarding-token - Generate a short-lived enrollment key.
 // If AGENT_ENROLLMENT_SECRET is configured, enrollment also requires that
 // shared secret; otherwise the short-lived key stands on its own.
@@ -282,6 +303,7 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  optionalJsonValidator(onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');
@@ -306,6 +328,29 @@ coreRoutes.post(
       return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
     }
 
+    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
+    // command is frequently pasted onto several machines during a migration;
+    // without these the historical hard-coded single-use token failed on every
+    // machine after the first. Defaults preserve the old single-use, 60-min
+    // behaviour for callers that send no body.
+    const data = c.req.valid('json');
+    const rawCount = Number((data as { count?: unknown }).count);
+    const maxUsage = Number.isFinite(rawCount)
+      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
+      : 1;
+    // Explicit-ttl-vs-default is distinguished BEFORE the default is applied:
+    // assertTtlWithinCap must see what the caller actually asked for (an
+    // omitted ttlMinutes stays `undefined`, which the gate never rejects — an
+    // unset value has no chooser to hold to a cap). No coercion or clamping is
+    // needed here: the Zod schema already guarantees an integer in 1..525_600
+    // and REJECTS anything outside it rather than silently reducing it.
+    const explicitTtlMinutes = data.ttlMinutes;
+
+    // Reject (never clamp) a caller-supplied TTL above the partner cap
+    // (#2776 task 3.4). Runs after org resolution — orgId is required.
+    const capError = await assertTtlWithinCap(orgId, explicitTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     // Pick the first site in the org for the enrollment key
     const [site] = await db
       .select({ id: sites.id })
@@ -317,21 +362,8 @@ coreRoutes.post(
       return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
     }
 
-    // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
-    // command is frequently pasted onto several machines during a migration;
-    // without these the historical hard-coded single-use token failed on every
-    // machine after the first. Defaults preserve the old single-use, 60-min
-    // behaviour for callers that send no body.
-    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
-    const rawCount = Number((body as { count?: unknown }).count);
-    const maxUsage = Number.isFinite(rawCount)
-      ? Math.min(ENROLL_TOKEN_MAX_COUNT, Math.max(1, Math.trunc(rawCount)))
-      : 1;
-    const rawTtl = Number((body as { ttlMinutes?: unknown }).ttlMinutes);
-    const defaultTtlMinutes = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
-    const ttlMinutes = Number.isFinite(rawTtl)
-      ? Math.min(ENROLL_TOKEN_MAX_TTL_MINUTES, Math.max(1, Math.trunc(rawTtl)))
-      : defaultTtlMinutes;
+    const ttlMinutes = explicitTtlMinutes
+      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);

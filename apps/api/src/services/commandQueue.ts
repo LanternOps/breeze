@@ -239,6 +239,98 @@ export interface QueueCommandForExecutionResult {
   error?: string;
 }
 
+export type RearmIdempotentCommandResult =
+  | { delivered: true }
+  | {
+      delivered: false;
+      reason: 'agent_disconnected' | 'delivery_failed' | 'command_conflict';
+    };
+
+/**
+ * Re-arm and immediately redeliver only the intrinsically idempotent,
+ * finalization-ID-bound desktop stop command. The stable command row remains
+ * the durable identity across API/agent restarts; this helper never allocates
+ * or replaces it.
+ */
+export async function rearmIdempotentCommandForDelivery(input: {
+  commandId: string;
+  deviceId: string;
+  type: 'desktop_stream_stop';
+  payload: { sessionId: string; finalizationId: string };
+}): Promise<RearmIdempotentCommandResult> {
+  const prepared = await withSystemDbAccessContext(async () => {
+    const [command] = await db
+      .select()
+      .from(deviceCommands)
+      .where(eq(deviceCommands.id, input.commandId))
+      .limit(1);
+    if (
+      !command
+      || command.deviceId !== input.deviceId
+      || command.type !== input.type
+      || command.targetRole !== 'agent'
+      || !command.payload
+      || typeof command.payload !== 'object'
+      || Array.isArray(command.payload)
+      || Object.keys(command.payload as Record<string, unknown>).length !== 2
+      || (command.payload as Record<string, unknown>).sessionId !== input.payload.sessionId
+      || (command.payload as Record<string, unknown>).finalizationId
+        !== input.payload.finalizationId
+    ) {
+      return { ok: false as const };
+    }
+
+    const [device] = await db
+      .select({ agentId: devices.agentId })
+      .from(devices)
+      .where(eq(devices.id, input.deviceId))
+      .limit(1);
+    if (!device?.agentId) return { ok: true as const, agentId: null };
+
+    // A confirmed result is filtered by ensureDesktopStreamStopped before this
+    // helper is called. Re-arm every other state using the same row identity.
+    await db
+      .update(deviceCommands)
+      .set({
+        status: 'pending',
+        executedAt: null,
+        completedAt: null,
+        result: null,
+      })
+      .where(and(
+        eq(deviceCommands.id, input.commandId),
+        inArray(deviceCommands.status, ['pending', 'sent', 'failed', 'completed']),
+      ));
+    return { ok: true as const, agentId: device.agentId };
+  });
+
+  if (!prepared.ok) {
+    return { delivered: false, reason: 'command_conflict' };
+  }
+  if (!prepared.agentId || !isAgentConnected(prepared.agentId)) {
+    return { delivered: false, reason: 'agent_disconnected' };
+  }
+
+  const claimed = await withSystemDbAccessContext(() =>
+    claimPendingCommandForDelivery(input.commandId),
+  );
+  if (!claimed) {
+    return { delivered: false, reason: 'delivery_failed' };
+  }
+  const delivered = sendCommandToAgent(prepared.agentId, {
+    id: input.commandId,
+    type: input.type,
+    payload: input.payload,
+  });
+  if (!delivered) {
+    await withSystemDbAccessContext(() =>
+      releaseClaimedCommandDelivery(input.commandId, claimed.executedAt),
+    );
+    return { delivered: false, reason: 'delivery_failed' };
+  }
+  return { delivered: true };
+}
+
 // Backup-related command types — used to guard backup-specific Prometheus metrics
 const BACKUP_COMMAND_TYPES = new Set([
   'backup_run', 'backup_stop', 'backup_restore', 'backup_verify',

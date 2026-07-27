@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { randomUUID } from 'node:crypto';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
@@ -9,7 +10,12 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
-import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import {
+  createViewerAccessToken,
+  createViewerDescendantAccessToken,
+  verifyViewerAccessToken,
+  type ViewerTokenPayload,
+} from '../services/jwt';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
 import { getRedis } from '../services/redis';
@@ -763,6 +769,7 @@ tunnelRoutes.delete(
 tunnelRoutes.post(
   '/:id/ws-ticket',
   requireScope('organization', 'partner', 'system'),
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -798,6 +805,7 @@ tunnelRoutes.post(
       sessionId: id,
       sessionType: 'tunnel',
       userId: auth.user.id,
+      mfaSatisfied: true,
       // Task 16: bind to issuer's trusted IP + UA.
       ip: getTrustedClientIp(c),
       userAgent: c.req.header('user-agent') ?? '',
@@ -821,6 +829,7 @@ tunnelRoutes.post(
 tunnelRoutes.post(
   '/:id/http-ticket',
   requireScope('organization', 'partner', 'system'),
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -856,6 +865,7 @@ tunnelRoutes.post(
       sessionId: id,
       sessionType: 'tunnel-http',
       userId: auth.user.id,
+      mfaSatisfied: true,
       ip: getTrustedClientIp(c),
       userAgent: c.req.header('user-agent') ?? '',
       ttlMs: HTTP_TICKET_TTL_MS,
@@ -879,6 +889,7 @@ tunnelRoutes.post(
 tunnelRoutes.post(
   '/:id/connect-code',
   requireScope('organization', 'partner', 'system'),
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -1016,6 +1027,7 @@ vncExchangeRoutes.post(
       sessionId: record.tunnelId,
       sessionType: 'tunnel',
       userId: record.userId,
+      mfaSatisfied: true,
       // Task 16: bind to the exchanging viewer's IP + UA — they will
       // open the WS within seconds from the same browser.
       ip: getTrustedClientIp(c),
@@ -1027,6 +1039,7 @@ vncExchangeRoutes.post(
       sub: record.userId,
       email: record.email,
       sessionId: record.tunnelId,
+      mfaSatisfied: true,
     });
 
     // No bearer auth on this route — the one-time code IS the auth. Attribute
@@ -1062,7 +1075,13 @@ vncExchangeRoutes.post(
 
 export const vncViewerRoutes = new Hono();
 
-async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti: string } | Response> {
+async function requireViewerToken(
+  c: Context,
+  options: {
+    requireAssuredTransition?: boolean;
+    descendantSessionId?: string;
+  } = {},
+): Promise<(ViewerTokenPayload & { descendantAccessToken?: string }) | Response> {
   const authHeader = c.req.header('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return c.json({ error: 'Missing or invalid authorization header' }, 401);
@@ -1071,6 +1090,19 @@ async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti:
   const payload = await verifyViewerAccessToken(token);
   if (!payload || !payload.jti) {
     return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+  if (options.requireAssuredTransition && payload.mfaSatisfied !== true) {
+    return c.json({ error: 'legacy_viewer_transition_forbidden' }, 403);
+  }
+  let descendantAccessToken: string | undefined;
+  if (options.descendantSessionId) {
+    try {
+      descendantAccessToken = await createViewerDescendantAccessToken(payload, {
+        sessionId: options.descendantSessionId,
+      });
+    } catch {
+      return c.json({ error: 'Invalid or expired token' }, 401);
+    }
   }
   // Check jti-level revocation (belt — individual token invalidation)
   if (await isViewerJtiRevoked(payload.jti)) {
@@ -1082,7 +1114,10 @@ async function requireViewerToken(c: Context): Promise<{ sessionId: string; jti:
   if (await isViewerSessionRevoked(payload.sessionId)) {
     return c.json({ error: 'Session closed' }, 401);
   }
-  return { sessionId: payload.sessionId, jti: payload.jti };
+  return {
+    ...payload,
+    ...(descendantAccessToken ? { descendantAccessToken } : {}),
+  };
 }
 
 // GET /vnc-viewer/desktop-access
@@ -1124,7 +1159,11 @@ vncViewerRoutes.get('/desktop-access', async (c) => {
 // sessionId + token to drive the standard `/desktop-ws/:sessionId/viewer/*`
 // endpoints for ICE, offer, ws-ticket, etc.
 vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
-  const auth = await requireViewerToken(c);
+  const transitionSessionId = randomUUID();
+  const auth = await requireViewerToken(c, {
+    requireAssuredTransition: true,
+    descendantSessionId: transitionSessionId,
+  });
   if (auth instanceof Response) return auth;
 
   const bound = await withSystemDbAccessContext(async () => {
@@ -1184,6 +1223,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
     const [row] = await db
       .insert(remoteSessions)
       .values({
+        id: transitionSessionId,
         deviceId: bound.deviceId,
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
@@ -1199,11 +1239,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
     return c.json({ error: 'Failed to create desktop session' }, 500);
   }
 
-  const accessToken = await createViewerAccessToken({
-    sub: bound.tunnelUserId,
-    email: bound.userEmail,
-    sessionId: session.id,
-  });
+  const accessToken = auth.descendantAccessToken!;
 
   // Viewer-token auth — no JWT actor. Attribute the upgrade to the tunnel-bound
   // owner (the user who opened the originating VNC tunnel) so the credential
@@ -1211,7 +1247,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   await logTunnelAudit(
     'tunnel.upgrade_webrtc',
     'tunnel_session',
-    session.id,
+    transitionSessionId,
     bound.tunnelUserId,
     bound.tunnelOrgId,
     { deviceId: bound.deviceId, type: 'desktop', fromTunnelId: auth.sessionId },
@@ -1219,7 +1255,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   );
 
   return c.json({
-    sessionId: session.id,
+    sessionId: transitionSessionId,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),
   });
@@ -1234,7 +1270,11 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
 // token scoped to the tunnel id. Mirrors POST /tunnels but for viewer-token
 // auth (which can't hit the user-JWT-gated route).
 vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
-  const auth = await requireViewerToken(c);
+  const transitionTunnelId = randomUUID();
+  const auth = await requireViewerToken(c, {
+    requireAssuredTransition: true,
+    descendantSessionId: transitionTunnelId,
+  });
   if (auth instanceof Response) return auth;
 
   const bound = await withSystemDbAccessContext(async () => {
@@ -1275,6 +1315,7 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     const [row] = await db
       .insert(tunnelSessions)
       .values({
+        id: transitionTunnelId,
         deviceId: bound.deviceId,
         userId: bound.userId,
         orgId: bound.orgId,
@@ -1293,10 +1334,10 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   }
 
   const sent = sendCommandToAgent(bound.agentId, {
-    id: `tun-open-${tunnel.id}`,
+    id: `tun-open-${transitionTunnelId}`,
     type: 'tunnel_open',
     payload: {
-      tunnelId: tunnel.id,
+      tunnelId: transitionTunnelId,
       targetHost: '127.0.0.1',
       targetPort: 5900,
       tunnelType: 'vnc',
@@ -1307,7 +1348,7 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
     await withSystemDbAccessContext(() =>
       db.update(tunnelSessions)
         .set({ status: 'failed', errorMessage: 'Agent disconnected before tunnel could be opened', endedAt: new Date() })
-        .where(eq(tunnelSessions.id, tunnel.id))
+        .where(eq(tunnelSessions.id, transitionTunnelId))
     );
     return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
   }
@@ -1315,9 +1356,10 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   // Build the ws-ticket + wsUrl the same way /vnc-exchange does. Ticket TTL
   // is short (60s) — the viewer connects immediately after this call.
   const ticket = await createWsTicket({
-    sessionId: tunnel.id,
+    sessionId: transitionTunnelId,
     sessionType: 'tunnel',
     userId: bound.userId,
+    mfaSatisfied: true,
     // Task 16: bind to the requester's IP + UA.
     ip: getTrustedClientIp(c),
     userAgent: c.req.header('user-agent') ?? '',
@@ -1325,13 +1367,8 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   const publicBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/$/, '');
   const baseUrl = publicBase ? new URL(publicBase) : new URL(c.req.url);
   const wsProtocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${tunnel.id}/ws?ticket=${ticket.ticket}`;
-
-  const accessToken = await createViewerAccessToken({
-    sub: bound.userId,
-    email: bound.userEmail,
-    sessionId: tunnel.id,
-  });
+  const wsUrl = `${wsProtocol}//${baseUrl.host}/api/v1/tunnel-ws/${transitionTunnelId}/ws?ticket=${ticket.ticket}`;
+  const accessToken = auth.descendantAccessToken!;
 
   // This path creates a brand-new tunnel session under viewer-token auth (no
   // JWT actor), mirroring POST /tunnels — so emit the same tunnel.open audit,
@@ -1340,7 +1377,7 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   await logTunnelAudit(
     'tunnel.open',
     'tunnel_session',
-    tunnel.id,
+    transitionTunnelId,
     bound.userId,
     bound.orgId,
     { deviceId: bound.deviceId, type: 'vnc', via: 'downgrade_vnc', fromSessionId: auth.sessionId },
@@ -1348,7 +1385,7 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   );
 
   return c.json({
-    tunnelId: tunnel.id,
+    tunnelId: transitionTunnelId,
     wsUrl,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),

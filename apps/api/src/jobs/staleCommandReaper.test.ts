@@ -87,7 +87,7 @@ vi.mock('../services/commandQueue', async (importOriginal) => {
   };
 });
 
-import { reapStaleDeviceCommands, reapStaleBackupJobs } from './staleCommandReaper';
+import { reapStaleDeviceCommands, reapStaleBackupJobs, resolveMaxReapPerRun } from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
   const chain: Record<string, any> = {};
@@ -106,6 +106,27 @@ function backupUpdateChain(returningValue: unknown) {
     })),
   };
 }
+
+// The `0 == unlimited` knob is subtle and availability-critical: drizzle's
+// `.limit(0)` returns ZERO rows, so a naive pass-through would silently
+// disable the reaper entirely rather than uncapping it. #2823 also changed
+// what an EMPTY `STALE_REAPER_MAX_PER_RUN` resolves to — it used to reach
+// this mapping as 0 (unlimited); it now reaches it as the 5000 default.
+describe('resolveMaxReapPerRun', () => {
+  it('passes a positive cap through', () => {
+    expect(resolveMaxReapPerRun(5000)).toBe(5000);
+    expect(resolveMaxReapPerRun(1)).toBe(1);
+  });
+
+  it('maps an explicit 0 to unlimited, never to a zero-row limit', () => {
+    expect(resolveMaxReapPerRun(0)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(resolveMaxReapPerRun(0)).not.toBe(0);
+  });
+
+  it('falls back to the default for a negative cap', () => {
+    expect(resolveMaxReapPerRun(-1)).toBe(5000);
+  });
+});
 
 describe('stale command reaper', () => {
   beforeEach(() => {

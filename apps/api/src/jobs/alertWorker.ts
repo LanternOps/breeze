@@ -18,6 +18,7 @@ import {
 } from '../services/alertService';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { envInt } from '../utils/envInt';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -120,8 +121,8 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 
   // Caller-supplied batchSize takes precedence (back-compat). Otherwise read the
   // env override; default 5000. Setting the env to 0 means "unlimited per run".
-  const cap = data.batchSize ?? Number(process.env.ALERT_WORKER_MAX_DEVICES_PER_RUN ?? '5000');
-  const chunkSize = Math.max(1, Number(process.env.ALERT_WORKER_CHUNK_SIZE ?? '500'));
+  const cap = data.batchSize ?? envInt('ALERT_WORKER_MAX_DEVICES_PER_RUN', 5000);
+  const chunkSize = Math.max(1, envInt('ALERT_WORKER_CHUNK_SIZE', 500));
 
   // Get all active organizations
   const orgs = await db

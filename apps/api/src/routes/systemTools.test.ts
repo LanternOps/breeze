@@ -47,6 +47,11 @@ vi.mock('../services/commandQueue', () => ({
 
 vi.mock('../services/auditService', () => ({
   createAuditLog: vi.fn().mockResolvedValue(undefined),
+  // The file-download handler now records a sensitive-read audit, which reaches
+  // auditEvents -> createAuditLogAsync. Without this export the mock's getter
+  // throws and the audit chokepoint has to swallow it, so the route would never
+  // exercise the real audit path.
+  createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../db', () => ({

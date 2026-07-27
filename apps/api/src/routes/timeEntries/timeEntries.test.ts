@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
+const { serviceMocks, authRef, permsRef, auditMock } = vi.hoisted(() => ({
   serviceMocks: {
     createTimeEntry: vi.fn(),
     startTimer: vi.fn(),
@@ -24,7 +24,8 @@ const { serviceMocks, authRef, permsRef } = vi.hoisted(() => ({
     }
   },
   // wildcard permission present => manageAll admin
-  permsRef: { current: { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] } }
+  permsRef: { current: { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] } },
+  auditMock: vi.fn(),
 }));
 
 vi.mock('../../services/timeEntryService', async () => {
@@ -50,6 +51,10 @@ vi.mock('../../middleware/auth', async () => ({
   }
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: auditMock,
+}));
+
 import { timeEntriesRoutes } from './index';
 
 const ADMIN_PERMS = { permissions: [{ resource: '*', action: '*' }] };
@@ -57,6 +62,7 @@ const TIME_ENTRY_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 
 beforeEach(() => {
   Object.values(serviceMocks).forEach((m) => m.mockReset());
+  auditMock.mockReset();
   authRef.current.scope = 'partner';
   permsRef.current = { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] };
 });
@@ -229,5 +235,227 @@ describe('GET /timesheet', () => {
     );
     // restore
     authRef.current.accessibleOrgIds = null;
+  });
+});
+
+describe('explicit time-entry mutation audits', () => {
+  const ORG_A = '1f2f1d8e-aaaa-4000-8000-000000000010';
+  const ORG_B = '1f2f1d8e-bbbb-4000-8000-000000000011';
+  const ENTRY_A = '3f2f1d8e-aaaa-4222-8333-444455556661';
+  const ENTRY_B = '3f2f1d8e-bbbb-4222-8333-444455556662';
+
+  it.each([
+    {
+      label: 'create',
+      service: serviceMocks.createTimeEntry,
+      path: '/',
+      method: 'POST',
+      body: {
+        startedAt: '2026-06-11T09:00:00Z',
+        endedAt: '2026-06-11T09:30:00Z',
+      },
+      action: 'time_entry.created',
+      status: 201,
+    },
+    {
+      label: 'stop',
+      service: serviceMocks.stopTimer,
+      path: '/stop',
+      method: 'POST',
+      body: {},
+      action: 'time_entry.stopped',
+      status: 200,
+    },
+    {
+      label: 'update',
+      service: serviceMocks.updateTimeEntry,
+      path: `/${ENTRY_A}`,
+      method: 'PATCH',
+      body: { description: 'updated' },
+      action: 'time_entry.updated',
+      status: 200,
+    },
+    {
+      label: 'delete',
+      service: serviceMocks.deleteTimeEntry,
+      path: `/${ENTRY_A}`,
+      method: 'DELETE',
+      body: undefined,
+      action: 'time_entry.deleted',
+      status: 200,
+    },
+  ])('writes one exact explicit audit for $label', async ({
+    service,
+    path,
+    method,
+    body,
+    action,
+    status,
+  }) => {
+    service.mockImplementation(async (...args: unknown[]) => {
+      const actor = args.at(-1) as {
+        recordAuditMutation?: (mutation: unknown) => void;
+      };
+      actor.recordAuditMutation?.({
+        action,
+        entryId: ENTRY_A,
+        orgId: ORG_A,
+      });
+      return method === 'DELETE' ? undefined : { id: ENTRY_A, orgId: ORG_A };
+    });
+
+    const res = await timeEntriesRoutes.request(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    expect(res.status).toBe(status);
+    expect(auditMock).toHaveBeenCalledTimes(1);
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG_A,
+      action,
+      resourceType: 'time_entry',
+      resourceId: ENTRY_A,
+      details: { entryIds: [ENTRY_A], count: 1 },
+    });
+  });
+
+  it('emits one audit per affected entry for start auto-stop ownership', async () => {
+    serviceMocks.startTimer.mockImplementation(async (_input, actor) => {
+      actor.recordAuditMutation?.({
+        action: 'time_entry.stopped',
+        entryId: ENTRY_A,
+        orgId: ORG_A,
+      });
+      actor.recordAuditMutation?.({
+        action: 'time_entry.started',
+        entryId: ENTRY_B,
+        orgId: ORG_B,
+      });
+      return { id: ENTRY_B, orgId: ORG_B };
+    });
+
+    const res = await timeEntriesRoutes.request('/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'next task' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(auditMock.mock.calls.map(([, event]) => event)).toEqual([
+      {
+        orgId: ORG_A,
+        action: 'time_entry.stopped',
+        resourceType: 'time_entry',
+        resourceId: ENTRY_A,
+        details: { entryIds: [ENTRY_A], count: 1 },
+      },
+      {
+        orgId: ORG_B,
+        action: 'time_entry.started',
+        resourceType: 'time_entry',
+        resourceId: ENTRY_B,
+        details: { entryIds: [ENTRY_B], count: 1 },
+      },
+    ]);
+  });
+
+  it('groups bulk audit records by exact org, preserving NULL org ownership', async () => {
+    permsRef.current = ADMIN_PERMS;
+    serviceMocks.approveTimeEntries.mockImplementation(async (_ids, _approve, actor) => {
+      actor.recordAuditMutation?.({
+        action: 'time_entry.approved',
+        entryId: ENTRY_A,
+        orgId: ORG_A,
+      });
+      actor.recordAuditMutation?.({
+        action: 'time_entry.approved',
+        entryId: ENTRY_B,
+        orgId: ORG_A,
+      });
+      actor.recordAuditMutation?.({
+        action: 'time_entry.approved',
+        entryId: TIME_ENTRY_ID,
+        orgId: null,
+      });
+      return { updated: 3, skipped: 1, skippedReasons: { ENTRY_NOT_FOUND: 1 } };
+    });
+
+    const res = await timeEntriesRoutes.request('/bulk-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids: [ENTRY_A, ENTRY_B, TIME_ENTRY_ID, '3f2f1d8e-cccc-4222-8333-444455556663'],
+        approve: true,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(auditMock.mock.calls.map(([, event]) => event)).toEqual([
+      {
+        orgId: ORG_A,
+        action: 'time_entry.approved',
+        resourceType: 'time_entry',
+        details: { entryIds: [ENTRY_A, ENTRY_B], count: 2 },
+      },
+      {
+        orgId: null,
+        action: 'time_entry.approved',
+        resourceType: 'time_entry',
+        details: { entryIds: [TIME_ENTRY_ID], count: 1 },
+      },
+    ]);
+  });
+
+  it('does not audit a failed service operation', async () => {
+    const { TimeEntryServiceError } = await vi.importActual<
+      typeof import('../../services/timeEntryService')
+    >('../../services/timeEntryService');
+    serviceMocks.updateTimeEntry.mockRejectedValue(
+      new TimeEntryServiceError('Time entry not found', 404, 'ENTRY_NOT_FOUND'),
+    );
+
+    const res = await timeEntriesRoutes.request(`/${ENTRY_A}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'denied' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful response when explicit audit delivery throws', async () => {
+    serviceMocks.createTimeEntry.mockImplementation(async (_input, actor) => {
+      actor.recordAuditMutation?.({
+        action: 'time_entry.created',
+        entryId: ENTRY_A,
+        orgId: ORG_A,
+      });
+      return { id: ENTRY_A, orgId: ORG_A };
+    });
+    auditMock.mockImplementation(() => {
+      throw new Error('audit backend unavailable');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await timeEntriesRoutes.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          startedAt: '2026-06-11T09:00:00Z',
+          endedAt: '2026-06-11T09:30:00Z',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      await expect(res.json()).resolves.toEqual({
+        data: { id: ENTRY_A, orgId: ORG_A },
+      });
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 });

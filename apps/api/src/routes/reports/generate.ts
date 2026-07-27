@@ -2,8 +2,13 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { generateReport, siteScopeRequestAllowed, type ReportResult } from '../../services/reportGenerationService';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import {
+  generateReport,
+  UnexecutableReportScopeError,
+  type ReportResult,
+} from '../../services/reportGenerationService';
+import { PERMISSIONS } from '../../services/permissions';
+import { resolveRequestReportAuthority } from '../../services/siteScope';
 import { ensureOrgAccess } from './helpers';
 import { generateReportSchema } from './schemas';
 
@@ -48,13 +53,29 @@ generateRoutes.post(
 
     // Generate report data based on type
     const config = data.config || {};
-    const perms = c.get('permissions') as UserPermissions | undefined;
-
-    if (!(await siteScopeRequestAllowed(orgId!, config, perms))) {
+    const authorityResult = await resolveRequestReportAuthority(
+      auth,
+      orgId!,
+      'read',
+    );
+    if (!authorityResult.ok) {
       return c.json({ error: 'Device not found or access denied' }, 403);
     }
 
-    const reportData: ReportResult = await generateReport(data.type, orgId!, config, perms);
+    let reportData: ReportResult;
+    try {
+      reportData = await generateReport(
+        data.type,
+        orgId!,
+        config,
+        authorityResult.authority,
+      );
+    } catch (error) {
+      if (error instanceof UnexecutableReportScopeError) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      throw error;
+    }
 
     writeRouteAudit(c, {
       orgId: orgId ?? auth.orgId,

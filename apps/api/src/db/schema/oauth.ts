@@ -1,5 +1,16 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, uuid, jsonb, timestamp, index, primaryKey } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  text,
+  uuid,
+  jsonb,
+  timestamp,
+  index,
+  uniqueIndex,
+  primaryKey,
+  varchar,
+  integer,
+} from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
 
@@ -151,4 +162,24 @@ export const oauthClientBlocks = pgTable('oauth_client_blocks', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   orgClientIdx: index('oauth_client_blocks_client_idx').on(table.clientId),
+}));
+
+export const oauthRevocationRetries = pgTable('oauth_revocation_retries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  markerType: varchar('marker_type', { length: 16 }).notNull(),
+  markerId: varchar('marker_id', { length: 255 }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull(),
+  lastErrorCode: varchar('last_error_code', { length: 64 }).notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  dueIdx: index('oauth_revocation_retries_due_idx').on(table.completedAt, table.nextAttemptAt),
+  userIdx: index('oauth_revocation_retries_user_idx').on(table.userId),
+  incompleteMarkerUq: uniqueIndex('oauth_revocation_retries_incomplete_marker_uq')
+    .on(table.markerType, table.markerId)
+    .where(sql`${table.completedAt} IS NULL`),
 }));

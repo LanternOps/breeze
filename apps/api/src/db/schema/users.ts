@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -67,6 +67,7 @@ export const users = pgTable('users', {
   authEpoch: integer('auth_epoch').notNull().default(1),
   mfaEpoch: integer('mfa_epoch').notNull().default(1),
   emailEpoch: integer('email_epoch').notNull().default(1),
+  permissionsEpoch: bigint('permissions_epoch', { mode: 'number' }).notNull().default(0),
   // SR2-17: the address the user has ASKED to move to. users.email remains the
   // verified, authoritative identity (login, password reset, CF Access and SSO
   // all match on it and MUST NOT match this) until a purpose='email_change'

@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, oauthGrants, oauthRefreshTokens } from '../db/schema';
-import { revokeGrant, revokeJti } from './revocationCache';
+import { writeOAuthRevocationMarkerDurably } from './revocationRetry';
 import { ERROR_IDS, logOauthError } from './log';
 
 // Grant-marker TTL must outlive the longest access JWT minted under a grant.
@@ -72,9 +72,13 @@ export async function revokeClientFamilies(
   scope: OAuthRevocationScope,
   opts: { revokedByUserId?: string; reason?: string } = {},
 ): Promise<RevokeClientFamiliesResult> {
-  return runOutsideDbContext(() =>
+  const outcome = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => revokeClientFamiliesInSystemContext(clientId, scope, opts)),
   );
+  if (outcome.retryQueued) {
+    throw new Error('OAuth revocation cache unavailable; durable retry queued');
+  }
+  return outcome.result;
 }
 
 function grantScopeCondition(clientId: string, scope: OAuthRevocationScope): SQL[] {
@@ -103,33 +107,41 @@ async function revokeClientFamiliesInSystemContext(
   clientId: string,
   scope: OAuthRevocationScope,
   opts: { revokedByUserId?: string; reason?: string },
-): Promise<RevokeClientFamiliesResult> {
+): Promise<{ result: RevokeClientFamiliesResult; retryQueued: boolean }> {
   // 1. Authoritative discovery: grants first (source of truth), refresh rows
   //    supplemental (jti markers only).
   const grants = await db
-    .select({ id: oauthGrants.id })
+    .select({ id: oauthGrants.id, accountId: oauthGrants.accountId })
     .from(oauthGrants)
     .where(and(...grantScopeCondition(clientId, scope)));
 
   const refreshRows = await db
-    .select({ id: oauthRefreshTokens.id, expiresAt: oauthRefreshTokens.expiresAt })
+    .select({
+      id: oauthRefreshTokens.id,
+      userId: oauthRefreshTokens.userId,
+      expiresAt: oauthRefreshTokens.expiresAt,
+    })
     .from(oauthRefreshTokens)
     .where(and(...refreshScopeCondition(clientId, scope)));
 
-  // 2. Redis markers BEFORE any DB mutation. A failure here throws so the
-  //    caller returns 503 and does not proceed — the grant marker is the only
-  //    signal that kills already-minted access JWTs before natural expiry.
+  let retryQueued = false;
+
+  // 2. Attempt every Redis marker. Failures become durable work in this same
+  // transaction; the public fail-closed error is raised only after commit.
   for (const grant of grants) {
-    try {
-      await revokeGrant(grant.id, GRANT_REVOCATION_TTL_SECONDS);
-    } catch (err) {
+    const result = await writeOAuthRevocationMarkerDurably(db, {
+      userId: grant.accountId,
+      markerType: 'grant',
+      markerId: grant.id,
+      expiresAt: new Date(Date.now() + GRANT_REVOCATION_TTL_SECONDS * 1000),
+    });
+    if (result.status === 'retry_queued') {
+      retryQueued = true;
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'revocation-service grant marker write failed',
-        err,
-        context: { clientId, grantId: grant.id, scope: scope.kind },
+        message: 'revocation-service grant marker queued for retry',
+        context: { clientId, markerType: 'grant', scope: scope.kind, errorCode: result.errorCode },
       });
-      throw err;
     }
   }
 
@@ -138,16 +150,19 @@ async function revokeClientFamiliesInSystemContext(
     // removes jti from the refresh payload but the row id (its digest) remains
     // the authoritative token identifier.
     const ttl = Math.max(Math.ceil((new Date(row.expiresAt).getTime() - Date.now()) / 1000), 1);
-    try {
-      await revokeJti(row.id, ttl);
-    } catch (err) {
+    const result = await writeOAuthRevocationMarkerDurably(db, {
+      userId: row.userId,
+      markerType: 'jti',
+      markerId: row.id,
+      expiresAt: new Date(Date.now() + ttl * 1000),
+    });
+    if (result.status === 'retry_queued') {
+      retryQueued = true;
       logOauthError({
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-        message: 'revocation-service refresh-token marker write failed',
-        err,
-        context: { clientId, tokenId: row.id, scope: scope.kind },
+        message: 'revocation-service refresh-token marker queued for retry',
+        context: { clientId, markerType: 'jti', scope: scope.kind, errorCode: result.errorCode },
       });
-      throw err;
     }
   }
 
@@ -198,5 +213,8 @@ async function revokeClientFamiliesInSystemContext(
       .where(and(eq(oauthClients.id, clientId), isNull(oauthClients.disabledAt)));
   }
 
-  return { grants: grants.length, refreshTokens: refreshRows.length };
+  return {
+    result: { grants: grants.length, refreshTokens: refreshRows.length },
+    retryQueued,
+  };
 }

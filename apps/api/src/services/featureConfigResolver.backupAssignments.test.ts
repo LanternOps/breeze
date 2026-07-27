@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { selectMock, systemDepth, selectDepths } = vi.hoisted(() => ({
+const { selectMock, systemDepth, selectDepths, systemStats } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Depth of the simulated system DB access context, and the depth each
   // db.select() ran at — lets a test prove a query executed INSIDE
   // withSystemDbAccessContext (the only way RLS shows partner-wide rows).
   systemDepth: { value: 0 },
   selectDepths: [] as number[],
+  // Peak simultaneous system contexts. Each one is a real
+  // `baseDb.transaction` holding its own pooled connection, so this is the
+  // connection-hold guard: it must stay at 1 no matter how many devices the
+  // resolver fans out over (#2822 / #1105 class).
+  systemStats: { maxDepth: 0 },
 }));
 
 function makeSelectChain(
@@ -64,33 +69,49 @@ function findEqValue(condition: unknown, column: unknown): unknown {
   return undefined;
 }
 
-vi.mock('../db', () => ({
-  db: {
-    select: (...args: unknown[]) => {
-      selectDepths.push(systemDepth.value);
-      return selectMock(...(args as []));
-    },
-  },
+// Async factory so the mock can model the REAL AsyncLocalStorage semantics of
+// db/index.ts. A plain shared counter is NOT good enough: with `Promise.all`,
+// one branch entering a system context would make a concurrent sibling's
+// `getCurrentDbAccessContext()` report 'system' and skip its own escape — so a
+// per-item connection fan-out would look like a single shared context and the
+// connection-hold guard below would pass vacuously. With ALS, a reader sees
+// 'system' only when IT is genuinely inside the context.
+vi.mock('../db', async () => {
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  const systemAls = new AsyncLocalStorage<true>();
 
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  // Track nesting so a test can assert WHICH queries ran system-scoped.
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
-    systemDepth.value += 1;
-    try {
-      return await fn();
-    } finally {
-      systemDepth.value -= 1;
-    }
-  }),
-  // Default: an org-scoped request context (the case that cannot see
-  // partner-wide policy rows and must therefore escalate).
-  getCurrentDbAccessContext: vi.fn(() =>
-    systemDepth.value > 0
-      ? { scope: 'system', orgId: null, accessibleOrgIds: null }
-      : { scope: 'organization', orgId: 'org-a', accessibleOrgIds: ['org-a'] }
-  ),
-}));
+  return {
+    db: {
+      select: (...args: unknown[]) => {
+        selectDepths.push(systemAls.getStore() ? 1 : 0);
+        return selectMock(...(args as []));
+      },
+    },
+
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) =>
+      systemAls.exit(() => fn())
+    ),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    // `systemDepth` counts SIMULTANEOUS system contexts — each one is a real
+    // `baseDb.transaction` holding its own pooled connection in production.
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+      systemDepth.value += 1;
+      systemStats.maxDepth = Math.max(systemStats.maxDepth, systemDepth.value);
+      try {
+        return await systemAls.run(true, fn);
+      } finally {
+        systemDepth.value -= 1;
+      }
+    }),
+    // Default: an org-scoped request context (the case that cannot see
+    // partner-wide policy rows and must therefore escalate).
+    getCurrentDbAccessContext: vi.fn(() =>
+      systemAls.getStore()
+        ? { scope: 'system', orgId: null, accessibleOrgIds: null }
+        : { scope: 'organization', orgId: 'org-a', accessibleOrgIds: ['org-a'] }
+    ),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   configurationPolicies: {
@@ -200,8 +221,13 @@ const dbMock = dbModule as unknown as {
 describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks does NOT drain a mockReturnValueOnce queue. An unconsumed
+    // entry would shift every select in the NEXT test by one and produce a
+    // baffling `null` result, so reset the implementation outright.
+    selectMock.mockReset();
     systemDepth.value = 0;
     selectDepths.length = 0;
+    systemStats.maxDepth = 0;
   });
 
   it('keeps partner-level backup assignments constrained to the requested org', async () => {
@@ -244,8 +270,17 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
             .map((row) => ({ id: row.id }));
         })
       )
-      .mockReturnValueOnce(
-        makeSelectChain([{ timezone: 'UTC', orgSettings: { timezone: 'UTC' } }])
+      // Timezone resolution now issues a shared org->partner lookup plus one
+      // device read each; a persistent implementation keeps this
+      // order-independent.
+      .mockImplementation(() =>
+        makeSelectChain([{
+          siteTimezone: null,
+          orgSettings: { timezone: 'UTC' },
+          partnerId: 'partner-1',
+          timezone: 'UTC',
+          settings: {},
+        }])
       );
 
     const result = await resolveAllBackupAssignedDevices(orgId);
@@ -291,23 +326,119 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
       .mockReturnValueOnce(makeSelectChain([]))
       // organization-level device expansion
       .mockReturnValueOnce(makeSelectChain([{ id: 'device-org-a' }]))
-      // resolveDeviceTimezone
-      .mockReturnValueOnce(
-        makeSelectChain([{ timezone: 'UTC', orgSettings: { timezone: 'UTC' } }])
+      // Timezone resolution: ONE shared org->partner lookup for the batch
+      // (2 selects), then one device/org/site read per device.
+      .mockImplementation(() =>
+        makeSelectChain([{
+          siteTimezone: null,
+          orgSettings: { timezone: 'UTC' },
+          partnerId,
+          timezone: 'UTC',
+          settings: {},
+        }])
       );
 
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(1);
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
-    // select #0 = org→partner lookup, #1 = the config-policy join, rest = device
-    // expansion + timezone. ONLY the policy join is escalated: widening the whole
-    // resolver to system scope would let a caller see devices RLS denies them.
-    expect(selectDepths[0]).toBe(0);
-    expect(selectDepths[1]).toBe(1);
-    expect(selectDepths.slice(2).every((depth) => depth === 0)).toBe(true);
+    // TWO escapes, not one (#2822): the config-policy join, plus the single
+    // context that wraps the whole timezone fan-out (resolveDeviceTimezone's
+    // `partners` join is partner-axis and was silently resolving to UTC for
+    // org-scoped callers). Never 1 + N — see the two-device test below.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // Exact topology, asserted as a whole array rather than by index: a
+    // `.slice(...).every(...)` goes vacuously true if a select is ever removed,
+    // which would silently retire this guard.
+    // #0 org→partner lookup | #1 config-policy join (SYSTEM) | #2 org default
+    // destination | #3 device expansion | #4 the batch org lookup | #5 the ONE
+    // shared partners read (SYSTEM) | #6 the per-device site/org read.
+    // Everything except the two partner-axis reads is caller-scoped — device
+    // EXPANSION (#3) especially, since that is the read RLS must keep guarding.
+    expect(selectDepths).toEqual([0, 1, 0, 0, 0, 1, 0]);
+    expect(systemStats.maxDepth).toBe(1);
     // Context must be closed again once the read completes.
+    expect(systemDepth.value).toBe(0);
+  });
+
+  // CONNECTION-HOLD GUARD (#2822 review, #1105 class). resolveDeviceTimezone
+  // takes a partner-axis escape, and every escape is a real
+  // `baseDb.transaction` holding its own pooled connection. Resolving
+  // timezones per device inside a bare `Promise.all` therefore costs N
+  // SIMULTANEOUS connections — and this resolver runs on org-scoped REQUEST
+  // routes (routes/backup/{jobs,dashboard,hyperv,mssql}.ts,
+  // readinessCalculator.ts), where the skip-when-system branch does not fire.
+  // Against the 25-connection ceiling, with no postgres-js acquire timeout,
+  // that is a hang rather than an error.
+  //
+  // The single-device test above CANNOT see this — with N=1, "one escape per
+  // device" and "one escape total" are the same number. This test uses TWO
+  // devices specifically so the escape count stops scaling with N.
+  it('takes ONE system context for the whole timezone fan-out, not one per device', async () => {
+    const orgId = 'org-a';
+    const partnerId = 'partner-1';
+
+    selectMock
+      .mockReturnValueOnce(makeSelectChain([{ partnerId }]))
+      .mockReturnValueOnce(
+        makeSelectChain([
+          {
+            backupSettings: {
+              schedule: { frequency: 'daily', time: '01:00' },
+              destinationConfigId: 'config-1',
+            },
+            featureLinkId: 'feature-1',
+            featurePolicyId: null,
+            profileSelections: null,
+            assignmentLevel: 'organization',
+            assignmentTargetId: orgId,
+            assignmentPriority: 1,
+            assignmentCreatedAt: new Date('2026-04-01T00:00:00Z'),
+          },
+        ])
+      )
+      // org default destination lookup
+      .mockReturnValueOnce(makeSelectChain([]))
+      // organization-level device expansion — TWO devices
+      .mockReturnValueOnce(
+        makeSelectChain([{ id: 'device-org-a' }, { id: 'device-org-b' }])
+      )
+      // resolveDeviceTimezone runs under `Promise.all`, so the two devices'
+      // selects INTERLEAVE and a `mockReturnValueOnce` queue would hand device
+      // B the row meant for device A's partner read. Use a persistent
+      // implementation returning a row that satisfies both the device/org/site
+      // read and the partner read, so the mock is order-independent.
+      .mockImplementation(() =>
+        makeSelectChain([{
+          siteTimezone: null,
+          orgSettings: { timezone: 'UTC' },
+          partnerId,
+          timezone: 'UTC',
+          settings: {},
+        }])
+      );
+
+    const result = await resolveAllBackupAssignedDevices(orgId);
+
+    expect(result).toHaveLength(2);
+    // Still 2 with two devices — the count does not scale with N. Pre-fix this
+    // was 3 (1 policy join + 1 per device) and would keep climbing. The partner
+    // timezone is now resolved once for the whole batch, so there is also only
+    // ONE `partners` read rather than N identical ones.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // The real assertion: never more than one system transaction — and
+    // therefore never more than one extra pooled connection — at any instant.
+    expect(systemStats.maxDepth).toBe(1);
+    // #0 org→partner | #1 policy join (SYSTEM) | #2 org default destination |
+    // #3 device expansion (CALLER — the read RLS must keep guarding) | #4 the
+    // batch org lookup | #5 the ONE shared partners read (SYSTEM) | #6,#7 the
+    // per-device site/org reads (CALLER).
+    //
+    // The key property: exactly ONE depth-1 select in the timezone tail no
+    // matter how many devices there are. Pre-fix this was one per device.
+    expect(selectDepths.slice(0, 4)).toEqual([0, 1, 0, 0]);
+    expect(selectDepths.slice(4).filter((d) => d === 1)).toHaveLength(1);
     expect(systemDepth.value).toBe(0);
   });
 });
@@ -315,8 +446,13 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
 describe('resolveBackupConfigForDevice partner-wide visibility', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks does NOT drain a mockReturnValueOnce queue. An unconsumed
+    // entry would shift every select in the NEXT test by one and produce a
+    // baffling `null` result, so reset the implementation outright.
+    selectMock.mockReset();
     systemDepth.value = 0;
     selectDepths.length = 0;
+    systemStats.maxDepth = 0;
   });
 
   it('reads the config-policy join in a system context while the device hierarchy stays caller-scoped', async () => {
@@ -354,19 +490,25 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
           },
         ])
       )
-      // resolveDeviceTimezone
+      // resolveDeviceTimezone: device/org/site in the CALLER'S context, then
+      // the partner-axis read escaped on its own (#2822).
       .mockReturnValueOnce(
-        makeSelectChain([{ timezone: 'UTC', orgSettings: { timezone: 'UTC' } }])
-      );
+        makeSelectChain([{ siteTimezone: null, orgSettings: { timezone: 'UTC' }, partnerId: 'partner-1' }])
+      )
+      .mockReturnValueOnce(makeSelectChain([{ timezone: 'UTC', settings: {} }]));
 
     const resolved = await resolveBackupConfigForDevice('device-1');
 
     expect(resolved).toMatchObject({ featureLinkId: 'feature-1', configId: 'config-1' });
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
-    // selects 0-2 = device hierarchy (caller context), 3 = policy join (system).
-    expect(selectDepths.slice(0, 3)).toEqual([0, 0, 0]);
-    expect(selectDepths[3]).toBe(1);
+    // Two escapes: the policy join and resolveDeviceTimezone's partner-axis
+    // read (#2822), taken one after the other — never nested.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    expect(systemStats.maxDepth).toBe(1);
+    // 0-2 device hierarchy (caller) | 3 policy join (system) | 4 timezone
+    // device/org/site read (CALLER — RLS still selects the device) | 5 the
+    // partner-axis read (system).
+    expect(selectDepths).toEqual([0, 0, 0, 1, 0, 1]);
     expect(systemDepth.value).toBe(0);
   });
 });

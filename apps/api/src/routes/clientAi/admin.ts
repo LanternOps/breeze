@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import { partners } from '../../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
@@ -49,11 +50,24 @@ clientAiAdminRoutes.use('*', async (c, next) => {
   }
   const auth = c.get('auth');
   if (auth?.partnerId) {
-    const [partner] = await db
-      .select({ aiForOfficeEnabled: partners.aiForOfficeEnabled })
-      .from(partners)
-      .where(eq(partners.id, auth.partnerId))
-      .limit(1);
+    const partnerId = auth.partnerId;
+    // Read under a SYSTEM context (#2822). This group applies authMiddleware
+    // only — no requireScope — and every route below routes through
+    // resolveScopedOrgId, which explicitly supports ORGANIZATION scope. An
+    // org-scoped caller carries a non-null auth.partnerId but
+    // accessiblePartnerIds = [], so the ambient-context read returned zero rows
+    // and this gate 404'd the entire /client-ai/admin surface for every
+    // org-scoped user even when their partner's entitlement was ON — a fail-
+    // closed outage indistinguishable from the genuine "not enabled" response.
+    // Pinned to the verified JWT's partnerId, so this does not widen which
+    // partner is legible.
+    const [partner] = await readWithPartnerAxisVisibility(() =>
+      db
+        .select({ aiForOfficeEnabled: partners.aiForOfficeEnabled })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1)
+    );
     if (!partner?.aiForOfficeEnabled) {
       return c.json({ error: 'Breeze AI for Office is not enabled' }, 404);
     }

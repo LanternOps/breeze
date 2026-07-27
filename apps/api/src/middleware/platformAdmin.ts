@@ -21,7 +21,7 @@ export async function platformAdminMiddleware(c: Context, next: Next) {
 
     authorized = true;
     const route = buildRouteAction(c.req.path);
-    createAuditLogAsync({
+    const writeAudit = (result: 'success' | 'failure') => createAuditLogAsync({
       orgId: null,
       actorType: 'user',
       actorId: auth.user.id,
@@ -34,10 +34,17 @@ export async function platformAdminMiddleware(c: Context, next: Next) {
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
-      result: 'success',
+      result,
     });
 
-    await next();
+    try {
+      await next();
+    } catch (error) {
+      writeAudit('failure');
+      throw error;
+    }
+
+    writeAudit(c.res.status >= 400 ? 'failure' : 'success');
   });
 
   // If authMiddleware threw HTTPException, we never reach here. If it ran

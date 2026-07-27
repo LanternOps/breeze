@@ -3,6 +3,7 @@ import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
 import { captureException } from '../services/sentry';
+import { envInt } from '../utils/envInt';
 
 const { db } = dbModule;
 
@@ -13,11 +14,11 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return dbModule.withSystemDbAccessContext(fn);
 };
 
-const CORRELATION_INTERVAL_MS = Number(process.env.INCIDENT_CORRELATION_INTERVAL_MS ?? 2 * 60 * 1000);
-const TIMELINE_ENRICH_INTERVAL_MS = Number(process.env.INCIDENT_TIMELINE_ENRICH_INTERVAL_MS ?? 5 * 60 * 1000);
-const SLA_MONITOR_INTERVAL_MS = Number(process.env.INCIDENT_SLA_MONITOR_INTERVAL_MS ?? 60 * 1000);
-const P1_ESCALATION_MINUTES = Number(process.env.INCIDENT_SLA_P1_MINUTES ?? 15);
-const P2_ESCALATION_MINUTES = Number(process.env.INCIDENT_SLA_P2_MINUTES ?? 60);
+const CORRELATION_INTERVAL_MS = envInt('INCIDENT_CORRELATION_INTERVAL_MS', 2 * 60 * 1000);
+const TIMELINE_ENRICH_INTERVAL_MS = envInt('INCIDENT_TIMELINE_ENRICH_INTERVAL_MS', 5 * 60 * 1000);
+const SLA_MONITOR_INTERVAL_MS = envInt('INCIDENT_SLA_MONITOR_INTERVAL_MS', 60 * 1000);
+const P1_ESCALATION_MINUTES = envInt('INCIDENT_SLA_P1_MINUTES', 15);
+const P2_ESCALATION_MINUTES = envInt('INCIDENT_SLA_P2_MINUTES', 60);
 
 let correlationTimer: ReturnType<typeof setInterval> | null = null;
 let timelineEnricherTimer: ReturnType<typeof setInterval> | null = null;

@@ -4288,7 +4288,9 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	// expires into "session ended". SessionManager.StartSession enforces
 	// single-active-session and tears down any existing session before
 	// creating the new one, so re-invocation is safe.
-	dedupable := cmd.Type != tools.CmdStartDesktop && cmd.Type != tools.CmdStopDesktop
+	dedupable := cmd.Type != tools.CmdStartDesktop &&
+		cmd.Type != tools.CmdStopDesktop &&
+		cmd.Type != tools.CmdDesktopStreamStop
 
 	if dedupable && !h.markCommandSeen(cmd.ID) {
 		cmdLog.Debug("skipping duplicate command")

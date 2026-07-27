@@ -3,6 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { devices, organizations, sites, partners, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
@@ -13,6 +14,7 @@ import {
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { captureException } from '../../services/sentry';
 import { provisionDeviceSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from '../agents/helpers';
 import { getActiveTrustKeyset } from '../../services/manifestSigning';
@@ -151,50 +153,95 @@ provisionRoutes.post(
     // lgtm[js/insufficient-password-hash]
     const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
 
-    // ----------- device limit check + insert (TOCTOU-safe in a transaction) -----------
+    // ----------- partner device-limit check, then insert -----------
+    //
+    // The cap check runs BEFORE the insert transaction opens, not inside it.
+    //
+    // WHY IT MOVED (#2822): the `partners` read must run in a SYSTEM context.
+    // Inside `db.transaction` that meant `runOutsideDbContext` opening a SECOND
+    // pooled connection while the insert transaction still held the first
+    // (runOutsideDbContext does not close the outer transaction). Hoisting it
+    // out removes the double-hold entirely — nothing between the org lookup and
+    // the cap check writes anything, so there is nothing to keep in the
+    // transaction.
+    //
+    // WHY IT NEEDS THE SYSTEM CONTEXT AT ALL: this route is
+    // requireScope('organization','partner','system'), and for an ORG-scoped
+    // caller accessiblePartnerIds = [], so under the request's own RLS context
+    //   - the `partners` read returned zero rows, `maxDevices` collapsed to
+    //     null, and the whole cap block was skipped — an org admin could
+    //     provision past the partner's max_devices without limit, while the
+    //     identical call from a partner admin was capped;
+    //   - the `partnerOrgIds` subquery over `organizations` only saw the
+    //     caller's own accessible orgs, so even once a cap resolved, the fleet
+    //     count under-reported and the cap under-enforced.
+    // (enrollment.ts has always been correct here because it runs its whole
+    // flow inside withSystemDbAccessContext.)
+    //
+    // The org row itself is still read under the CALLER'S context, so RLS
+    // decides which org is legible; `org.partnerId` therefore comes from a row
+    // the caller could already see and cannot be aimed at a foreign partner.
+    //
+    // NOT TOCTOU-SAFE, and never was: the count takes no lock, so two
+    // concurrent provisions at the cap boundary can both observe
+    // `activeCount === maxDevices - 1` and both insert. That race predates this
+    // change (separate requests are separate transactions under READ COMMITTED
+    // regardless of where the count runs); moving the check out of the insert
+    // transaction does not widen it. Enforcing it strictly would need a lock on
+    // the partner row or a DB-level constraint — tracked, not solved here.
+    const [targetOrg] = await db
+      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, data.orgId))
+      .limit(1);
+
+    if (!targetOrg) {
+      return c.json({ error: 'Target organization not found' }, 404);
+    }
+
+    const orgPartnerId = targetOrg.partnerId;
+    const deviceLimit = orgPartnerId
+      ? await readWithPartnerAxisVisibility(async () => {
+        const [partner] = await db
+          .select({ maxDevices: partners.maxDevices })
+          .from(partners)
+          .where(eq(partners.id, orgPartnerId))
+          .limit(1);
+        const maxDevices = partner?.maxDevices ?? null;
+        if (maxDevices == null) return null;
+
+        const partnerOrgIds = db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, orgPartnerId));
+        const [countResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(devices)
+          .where(
+            and(
+              sql`${devices.orgId} IN (${partnerOrgIds})`,
+              ne(devices.status, 'decommissioned'),
+            ),
+          );
+        return { maxDevices, activeCount: Number(countResult?.count ?? 0) };
+      })
+      : null;
+
+    if (deviceLimit && deviceLimit.activeCount >= deviceLimit.maxDevices) {
+      return c.json(
+        {
+          error: 'Device limit reached',
+          code: 'DEVICE_LIMIT_REACHED',
+          currentDevices: deviceLimit.activeCount,
+          maxDevices: deviceLimit.maxDevices,
+        },
+        403,
+      );
+    }
+
     let device: typeof devices.$inferSelect | undefined;
     try {
       device = await db.transaction(async (tx) => {
-        const [org] = await tx
-          .select({ id: organizations.id, partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, data.orgId))
-          .limit(1);
-
-        if (!org) {
-          throw new Error('Target organization not found');
-        }
-
-        // Partner device-limit check (mirrors enrollment.ts:415-449)
-        let maxDevices: number | null = null;
-        if (org.partnerId) {
-          const [partner] = await tx
-            .select({ maxDevices: partners.maxDevices })
-            .from(partners)
-            .where(eq(partners.id, org.partnerId))
-            .limit(1);
-          maxDevices = partner?.maxDevices ?? null;
-        }
-        if (maxDevices != null && org.partnerId) {
-          const partnerOrgIds = tx
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(eq(organizations.partnerId, org.partnerId));
-          const [countResult] = await tx
-            .select({ count: sql<number>`count(*)` })
-            .from(devices)
-            .where(
-              and(
-                sql`${devices.orgId} IN (${partnerOrgIds})`,
-                ne(devices.status, 'decommissioned'),
-              ),
-            );
-          const activeCount = Number(countResult?.count ?? 0);
-          if (activeCount >= maxDevices) {
-            throw new HttpDeviceLimitError(activeCount, maxDevices);
-          }
-        }
-
         const [inserted] = await tx
           .insert(devices)
           .values({
@@ -234,18 +281,13 @@ provisionRoutes.post(
         return inserted;
       });
     } catch (err) {
-      if (err instanceof HttpDeviceLimitError) {
-        return c.json(
-          {
-            error: 'Device limit reached',
-            code: 'DEVICE_LIMIT_REACHED',
-            currentDevices: err.current,
-            maxDevices: err.max,
-          },
-          403,
-        );
-      }
+      // The cap check no longer throws through here — it returns 403 directly
+      // above — so anything reaching this catch is a genuine insert failure.
+      // Route it to Sentry as well as stdout: a DB fault here (including pool
+      // exhaustion from the partner-axis escape) is otherwise invisible outside
+      // the droplet's logs.
       console.error('[devices.provision] insert failed:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
       return c.json({ error: 'Failed to provision device' }, 500);
     }
 
@@ -416,8 +458,3 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
   return c.json({ success: true, config: row.credentials }, 200);
 });
 
-class HttpDeviceLimitError extends Error {
-  constructor(public current: number, public max: number) {
-    super('device limit reached');
-  }
-}

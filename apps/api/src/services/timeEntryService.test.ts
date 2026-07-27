@@ -15,7 +15,9 @@ const { dbMocks, emitMock, configMocks } = vi.hoisted(() => {
     insertedValues: [] as Record<string, unknown>[],
     updateSetArgs: [] as Record<string, unknown>[],
     whereArgs: [] as unknown[],
-    onConflictDoNothingCalls: 0
+    onConflictDoNothingCalls: 0,
+    deleteError: null as Error | null,
+    deleteResult: [] as unknown[],
   };
   const configMocks = {
     getOrgBillingDefaults: vi.fn().mockResolvedValue(null),
@@ -82,7 +84,18 @@ vi.mock('../db', () => ({
         return { where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(dbMocks.updateResult)) })) };
       })
     })),
-    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
+    delete: vi.fn(() => ({
+      where: vi.fn(() => {
+        const terminal = dbMocks.deleteError
+          ? Promise.reject(dbMocks.deleteError)
+          : Promise.resolve();
+        return Object.assign(terminal, {
+          returning: vi.fn(() => dbMocks.deleteError
+            ? Promise.reject(dbMocks.deleteError)
+            : Promise.resolve(dbMocks.deleteResult)),
+        });
+      }),
+    }))
   }
 }));
 
@@ -156,6 +169,8 @@ beforeEach(() => {
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
   dbMocks.onConflictDoNothingCalls = 0;
+  dbMocks.deleteError = null;
+  dbMocks.deleteResult = [];
   emitMock.mockClear();
   configMocks.getOrgBillingDefaults.mockResolvedValue(null);
 });
@@ -569,6 +584,241 @@ describe('approveTimeEntries', () => {
     expect(setArgs.approvedBy).toBeNull();
     expect(setArgs.approvedAt).toBeNull();
     expect(emitMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'time_entry.approved' }));
+  });
+});
+
+describe('time-entry audit mutation recording', () => {
+  function actorWithRecorder() {
+    const recordAuditMutation = vi.fn();
+    return {
+      actor: { ...ACTOR, recordAuditMutation },
+      recordAuditMutation,
+    };
+  }
+
+  it('records create from the returned row, including its exact organization', async () => {
+    const { actor, recordAuditMutation } = actorWithRecorder();
+    dbMocks.selectResults.push([
+      { id: 't-1', partnerId: 'p-1', orgId: 'o-create', categoryId: null },
+    ]);
+    dbMocks.insertResult = [{
+      id: 'te-create',
+      orgId: 'o-create',
+      partnerId: 'p-1',
+      ticketId: 't-1',
+      userId: 'u-1',
+      durationMinutes: 30,
+      isBillable: false,
+    }];
+
+    await createTimeEntry(
+      {
+        ticketId: 't-1',
+        startedAt: new Date('2026-06-11T09:00:00Z'),
+        endedAt: new Date('2026-06-11T09:30:00Z'),
+      },
+      actor,
+    );
+
+    expect(recordAuditMutation).toHaveBeenCalledWith({
+      action: 'time_entry.created',
+      entryId: 'te-create',
+      orgId: 'o-create',
+    });
+  });
+
+  it('records both the auto-stopped row and the newly started row', async () => {
+    const { actor, recordAuditMutation } = actorWithRecorder();
+    dbMocks.updateResult = [{
+      id: 'te-previous',
+      orgId: 'o-previous',
+      partnerId: 'p-1',
+      ticketId: null,
+      durationMinutes: 15,
+      isBillable: false,
+    }];
+    dbMocks.insertResult = [{
+      id: 'te-started',
+      orgId: null,
+      partnerId: 'p-1',
+      ticketId: null,
+      endedAt: null,
+      isBillable: false,
+    }];
+
+    await startTimer({ description: 'next task' }, actor);
+
+    expect(recordAuditMutation.mock.calls.map(([mutation]) => mutation)).toEqual([
+      {
+        action: 'time_entry.stopped',
+        entryId: 'te-previous',
+        orgId: 'o-previous',
+      },
+      {
+        action: 'time_entry.started',
+        entryId: 'te-started',
+        orgId: null,
+      },
+    ]);
+  });
+
+  it('records stop and update from their returned rows', async () => {
+    const stop = actorWithRecorder();
+    dbMocks.updateResult = [{
+      id: 'te-stop',
+      orgId: 'o-stop',
+      partnerId: 'p-1',
+      ticketId: null,
+      durationMinutes: 20,
+      isBillable: false,
+    }];
+    await stopTimer({}, stop.actor);
+    expect(stop.recordAuditMutation).toHaveBeenCalledWith({
+      action: 'time_entry.stopped',
+      entryId: 'te-stop',
+      orgId: 'o-stop',
+    });
+
+    const update = actorWithRecorder();
+    const existing = {
+      id: 'te-update',
+      orgId: 'o-before',
+      partnerId: 'p-1',
+      ticketId: null,
+      userId: 'u-1',
+      startedAt: new Date('2026-06-11T09:00:00Z'),
+      endedAt: new Date('2026-06-11T09:30:00Z'),
+      durationMinutes: 30,
+      isApproved: false,
+    };
+    dbMocks.selectResults.push([existing]);
+    dbMocks.updateResult = [{ ...existing, orgId: 'o-after', description: 'updated' }];
+    await updateTimeEntry('te-update', { description: 'updated' }, update.actor);
+    expect(update.recordAuditMutation).toHaveBeenCalledWith({
+      action: 'time_entry.updated',
+      entryId: 'te-update',
+      orgId: 'o-after',
+    });
+  });
+
+  it('does not record an update when UPDATE RETURNING yields no mutated row', async () => {
+    const update = actorWithRecorder();
+    const existing = {
+      id: 'te-raced',
+      orgId: 'o-before',
+      partnerId: 'p-1',
+      ticketId: null,
+      userId: 'u-1',
+      startedAt: new Date('2026-06-11T09:00:00Z'),
+      endedAt: new Date('2026-06-11T09:30:00Z'),
+      durationMinutes: 30,
+      isApproved: false,
+    };
+    dbMocks.selectResults.push([existing]);
+    dbMocks.updateResult = [];
+
+    await updateTimeEntry('te-raced', { description: 'lost race' }, update.actor);
+
+    expect(update.recordAuditMutation).not.toHaveBeenCalled();
+  });
+
+  it('records delete only after the authorized database deletion succeeds', async () => {
+    const success = actorWithRecorder();
+    dbMocks.selectResults.push([{
+      id: 'te-delete',
+      orgId: null,
+      userId: 'u-1',
+      isApproved: false,
+      partnerId: 'p-1',
+      ticketId: null,
+      durationMinutes: 10,
+    }]);
+    dbMocks.deleteResult = [{ id: 'te-delete', orgId: null }];
+    await deleteTimeEntry('te-delete', success.actor);
+    expect(success.recordAuditMutation).toHaveBeenCalledWith({
+      action: 'time_entry.deleted',
+      entryId: 'te-delete',
+      orgId: null,
+    });
+
+    const failed = actorWithRecorder();
+    dbMocks.selectResults.push([{
+      id: 'te-failed',
+      orgId: 'o-failed',
+      userId: 'u-1',
+      isApproved: false,
+      partnerId: 'p-1',
+      ticketId: null,
+      durationMinutes: 10,
+    }]);
+    dbMocks.deleteError = new Error('delete failed');
+    await expect(deleteTimeEntry('te-failed', failed.actor)).rejects.toThrow(
+      'delete failed',
+    );
+    expect(failed.recordAuditMutation).not.toHaveBeenCalled();
+  });
+
+  it('does not record delete when a concurrent delete leaves no returned row', async () => {
+    const raced = actorWithRecorder();
+    dbMocks.selectResults.push([{
+      id: 'te-raced-delete',
+      orgId: 'o-raced',
+      userId: 'u-1',
+      isApproved: false,
+      partnerId: 'p-1',
+      ticketId: null,
+      durationMinutes: 10,
+    }]);
+    dbMocks.deleteResult = [];
+
+    await deleteTimeEntry('te-raced-delete', raced.actor);
+
+    expect(raced.recordAuditMutation).not.toHaveBeenCalled();
+  });
+
+  it('records only returned mixed-org bulk rows, preserving a NULL partner-level org', async () => {
+    const approved = actorWithRecorder();
+    approved.actor.manageAll = true;
+    dbMocks.selectResults.push([
+      { id: 'te-a', endedAt: new Date(), partnerId: 'p-1', ticketId: null },
+      { id: 'te-b', endedAt: new Date(), partnerId: 'p-1', ticketId: null },
+      { id: 'te-null', endedAt: new Date(), partnerId: 'p-1', ticketId: null },
+    ]);
+    dbMocks.updateResult = [
+      { id: 'te-a', orgId: 'o-a', partnerId: 'p-1', ticketId: null },
+      { id: 'te-b', orgId: 'o-b', partnerId: 'p-1', ticketId: null },
+      { id: 'te-null', orgId: null, partnerId: 'p-1', ticketId: null },
+    ];
+
+    const result = await approveTimeEntries(
+      ['te-a', 'te-b', 'te-null', 'te-skipped'],
+      true,
+      approved.actor,
+    );
+
+    expect(result).toMatchObject({ updated: 3, skipped: 1 });
+    expect(
+      approved.recordAuditMutation.mock.calls.map(([mutation]) => mutation),
+    ).toEqual([
+      { action: 'time_entry.approved', entryId: 'te-a', orgId: 'o-a' },
+      { action: 'time_entry.approved', entryId: 'te-b', orgId: 'o-b' },
+      { action: 'time_entry.approved', entryId: 'te-null', orgId: null },
+    ]);
+
+    const unapproved = actorWithRecorder();
+    unapproved.actor.manageAll = true;
+    dbMocks.selectResults.push([
+      { id: 'te-a', endedAt: new Date(), partnerId: 'p-1', ticketId: null },
+    ]);
+    dbMocks.updateResult = [
+      { id: 'te-a', orgId: 'o-a', partnerId: 'p-1', ticketId: null },
+    ];
+    await approveTimeEntries(['te-a'], false, unapproved.actor);
+    expect(unapproved.recordAuditMutation).toHaveBeenCalledWith({
+      action: 'time_entry.unapproved',
+      entryId: 'te-a',
+      orgId: 'o-a',
+    });
   });
 });
 

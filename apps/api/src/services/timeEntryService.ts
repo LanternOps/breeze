@@ -30,6 +30,19 @@ export class TimeEntryServiceError extends Error {
   }
 }
 
+export type TimeEntryAuditMutation = {
+  action:
+    | 'time_entry.created'
+    | 'time_entry.started'
+    | 'time_entry.stopped'
+    | 'time_entry.updated'
+    | 'time_entry.deleted'
+    | 'time_entry.approved'
+    | 'time_entry.unapproved';
+  entryId: string;
+  orgId: string | null;
+};
+
 export interface TimeEntryActor {
   userId: string;
   name?: string;
@@ -47,6 +60,19 @@ export interface TimeEntryActor {
    * write onto a ticket the caller can't actually see.
    */
   accessibleOrgIds: string[] | null;
+  recordAuditMutation?: (mutation: TimeEntryAuditMutation) => void;
+}
+
+function recordAuditMutation(
+  actor: TimeEntryActor,
+  action: TimeEntryAuditMutation['action'],
+  entry: { id: string; orgId?: string | null },
+): void {
+  actor.recordAuditMutation?.({
+    action,
+    entryId: entry.id,
+    orgId: entry.orgId ?? null,
+  });
 }
 
 /** Floored whole minutes — matches the SLA pause-folding convention. */
@@ -224,6 +250,7 @@ export async function createTimeEntry(input: CreateTimeEntryInput, actor: TimeEn
     })
     .returning();
   const entry = rows[0]!;
+  recordAuditMutation(actor, 'time_entry.created', entry);
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
@@ -289,6 +316,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     // unique index time_entries_one_running_per_user_uq is the race backstop.
     const autoStopped = await stopRunningEntry(actor);
     if (autoStopped) {
+      recordAuditMutation(actor, 'time_entry.stopped', autoStopped);
       await insertTimeEntryFeedComment(
         autoStopped.ticketId,
         actor,
@@ -337,6 +365,7 @@ export async function startTimer(input: { ticketId?: string; description?: strin
     throw new TimeEntryServiceError('Timer start conflicted with a concurrent request — try again', 409, 'ENTRY_RUNNING');
   }
 
+  recordAuditMutation(actor, 'time_entry.started', entry);
   await emitTimeEntryEvent({
     type: 'time_entry.created',
     timeEntryId: entry.id,
@@ -354,6 +383,7 @@ export async function stopTimer(input: { description?: string; isBillable?: bool
     throw new TimeEntryServiceError('No running timer', 404, 'NO_RUNNING_TIMER');
   }
 
+  recordAuditMutation(actor, 'time_entry.stopped', stopped);
   await insertTimeEntryFeedComment(
     stopped.ticketId,
     actor,
@@ -460,8 +490,12 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
   set.approvedAt = null;
 
   const rows = await db.update(timeEntries).set(set).where(eq(timeEntries.id, id)).returning();
-  const updated = rows[0] ?? entry;
+  const mutated = rows[0];
+  const updated = mutated ?? entry;
 
+  if (mutated) {
+    recordAuditMutation(actor, 'time_entry.updated', mutated);
+  }
   await emitTimeEntryEvent({
     type: 'time_entry.updated',
     timeEntryId: id,
@@ -476,7 +510,13 @@ export async function updateTimeEntry(id: string, input: UpdateTimeEntryInput, a
 export async function deleteTimeEntry(id: string, actor: TimeEntryActor) {
   const entry = await getEntryOr404(id, actor);
   assertCanMutate(entry, actor);
-  await db.delete(timeEntries).where(eq(timeEntries.id, id));
+  const deleted = await db
+    .delete(timeEntries)
+    .where(eq(timeEntries.id, id))
+    .returning({ id: timeEntries.id, orgId: timeEntries.orgId });
+  if (deleted[0]) {
+    recordAuditMutation(actor, 'time_entry.deleted', deleted[0]);
+  }
 
   await insertTimeEntryFeedComment(
     entry.ticketId,
@@ -527,7 +567,12 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
     eligible.push(id);
   }
 
-  let updated: { id: string; partnerId: string; ticketId: string | null }[] = [];
+  let updated: {
+    id: string;
+    partnerId: string;
+    orgId: string | null;
+    ticketId: string | null;
+  }[] = [];
   if (eligible.length > 0) {
     updated = await db
       .update(timeEntries)
@@ -535,7 +580,20 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
         ? { isApproved: true, approvedBy: actor.userId, approvedAt: new Date() }
         : { isApproved: false, approvedBy: null, approvedAt: null })
       .where(inArray(timeEntries.id, eligible))
-      .returning({ id: timeEntries.id, partnerId: timeEntries.partnerId, ticketId: timeEntries.ticketId });
+      .returning({
+        id: timeEntries.id,
+        partnerId: timeEntries.partnerId,
+        orgId: timeEntries.orgId,
+        ticketId: timeEntries.ticketId,
+      });
+  }
+
+  for (const entry of updated) {
+    recordAuditMutation(
+      actor,
+      approve ? 'time_entry.approved' : 'time_entry.unapproved',
+      entry,
+    );
   }
 
   if (updated.length > 0 && approve) {

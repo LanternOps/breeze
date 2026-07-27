@@ -4,7 +4,10 @@ import {
   createAccessToken,
   createRefreshToken,
   verifyToken,
-  createTokenPair
+  createTokenPair,
+  createViewerAccessToken,
+  verifyViewerAccessToken,
+  VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS,
 } from './jwt';
 
 describe('jwt service', () => {
@@ -306,5 +309,108 @@ describe('jwt service', () => {
       expect(refresh?.mep).toBe(2);
       expect(refresh?.fam).toBe('22222222-2222-2222-2222-222222222222');
     });
+  });
+});
+
+describe('Wave 4 viewer-token MFA lineage', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('roots an assured viewer token with one signed absolute expiry boundary', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-25T12:00:00.000Z'));
+
+    const token = await createViewerAccessToken({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: 'viewer-session',
+      mfaSatisfied: true,
+    });
+    const payload = await verifyViewerAccessToken(token);
+
+    expect(payload).toMatchObject({
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: expect.any(Number),
+      exp: expect.any(Number),
+    });
+    expect(payload?.assuranceAbsoluteExpiresAt).toBe(payload?.exp);
+    expect(payload?.exp! - payload?.iat!).toBe(VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS);
+  });
+
+  it('keeps descendants assured without extending the parent or root expiry', async () => {
+    vi.useFakeTimers();
+    const t0 = new Date('2026-07-25T12:00:00.000Z');
+    vi.setSystemTime(t0);
+    const rootToken = await createViewerAccessToken({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: 'root-session',
+      mfaSatisfied: true,
+    });
+    const root = await verifyViewerAccessToken(rootToken);
+    expect(root).not.toBeNull();
+
+    vi.setSystemTime(new Date(t0.getTime() + 60_000));
+    const jwtModule = await import('./jwt');
+    const descendantToken = await jwtModule.createViewerDescendantAccessToken(root!, {
+      sessionId: 'descendant-session',
+    });
+    const descendant = await verifyViewerAccessToken(descendantToken);
+
+    expect(descendant).toMatchObject({
+      sessionId: 'descendant-session',
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: root?.assuranceAbsoluteExpiresAt,
+    });
+    expect(descendant?.exp).toBeLessThanOrEqual(root!.exp!);
+    expect(descendant?.exp).toBeLessThanOrEqual(root!.assuranceAbsoluteExpiresAt!);
+  });
+
+  it('rejects unassured, malformed, or exhausted parents before descendant issuance', async () => {
+    const jwtModule = await import('./jwt');
+    const base = {
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: 'root-session',
+      purpose: 'viewer' as const,
+      jti: 'viewer-jti',
+      iat: 1_000,
+      exp: 2_000,
+    };
+
+    await expect(
+      jwtModule.createViewerDescendantAccessToken(base, { sessionId: 'next' }),
+    ).rejects.toThrow('MFA');
+    await expect(
+      jwtModule.createViewerDescendantAccessToken(
+        { ...base, mfaSatisfied: true, assuranceAbsoluteExpiresAt: Number.NaN },
+        { sessionId: 'next' },
+      ),
+    ).rejects.toThrow('absolute');
+    await expect(
+      jwtModule.createViewerDescendantAccessToken(
+        { ...base, mfaSatisfied: true, assuranceAbsoluteExpiresAt: 2_000, exp: 1 },
+        { sessionId: 'next' },
+      ),
+    ).rejects.toThrow('expired');
+  });
+
+  it('accepts the token until its last millisecond and rejects it at expiry', async () => {
+    vi.useFakeTimers();
+    const t0 = new Date('2026-07-25T12:00:00.000Z');
+    vi.setSystemTime(t0);
+    const token = await createViewerAccessToken({
+      sub: 'viewer-user',
+      email: 'viewer@example.com',
+      sessionId: 'viewer-session',
+      mfaSatisfied: true,
+    });
+
+    vi.setSystemTime(new Date(t0.getTime() + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS * 1000 - 1));
+    expect(await verifyViewerAccessToken(token)).not.toBeNull();
+
+    vi.setSystemTime(new Date(t0.getTime() + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS * 1000));
+    expect(await verifyViewerAccessToken(token)).toBeNull();
   });
 });

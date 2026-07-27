@@ -16,6 +16,20 @@
  * therefore never deleted (explicit `isNotNull` guard makes that intent
  * unambiguous rather than relying only on SQL NULL comparison semantics).
  *
+ * Exemption for live installer tokens (#2775): the Add Device modal's parent
+ * enrollment key is a deliberately transient 60-minute container (PR #739
+ * review finding #1), while the installer_bootstrap_token minted from it can
+ * carry its own independent TTL of up to a year (routes/installer.ts no
+ * longer clamps the child enrollment key to the parent's expiry). Without an
+ * exemption here, this sweep would hard-delete that parent ~7 days after its
+ * own 60-minute expiry — and the CASCADE above would take every outstanding
+ * bootstrap token down with it, silently discarding an admin's 30-day/1-year
+ * selection. The WHERE clause below therefore additionally requires that no
+ * `installer_bootstrap_tokens` row referencing the key is still live (its own
+ * `expires_at` in the future) AND unexhausted (`consumed_count < max_usage`);
+ * such a key is left for a later sweep, once its last token has expired or
+ * been fully consumed.
+ *
  * Scheduling:
  *   - Repeat cron: 04:00 UTC daily (pattern "0 4 * * *")
  *   - `jobId: 'enrollment-key-cleanup'` dedupes the repeatable job across
@@ -42,9 +56,9 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { and, isNotNull, lt } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, lt, notExists, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { enrollmentKeys } from '../db/schema';
+import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 
@@ -69,6 +83,31 @@ function getPurgeAfterDays(): number {
   const parsed = parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PURGE_AFTER_DAYS;
 }
+
+/**
+ * Correlated NOT EXISTS guard (#2775): evaluates true — i.e. the outer
+ * `enrollmentKeys` row is eligible for the purge — only when NO
+ * `installer_bootstrap_tokens` row still points at it with both `expires_at`
+ * in the future AND `consumed_count < max_usage` (a "live, unexhausted"
+ * token). When such a token does exist, this evaluates false and the AND'd
+ * outer WHERE excludes the key from the DELETE; it survives to a later
+ * sweep, once its last token has expired or been fully consumed. Matches the
+ * `exists`/`notExists` correlated-subquery idiom used by
+ * `services/vulnerabilityCorrelation.ts`.
+ */
+const hasNoLiveUnexhaustedBootstrapToken = () =>
+  notExists(
+    dbModule.db
+      .select({ one: sql`1` })
+      .from(installerBootstrapTokens)
+      .where(
+        and(
+          eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
+          gt(installerBootstrapTokens.expiresAt, new Date()),
+          lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
+        ),
+      ),
+  );
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
@@ -107,7 +146,13 @@ export function createEnrollmentKeyCleanupWorker(): Worker {
 
         const deletedRows = await dbModule.db
           .delete(enrollmentKeys)
-          .where(and(isNotNull(enrollmentKeys.expiresAt), lt(enrollmentKeys.expiresAt, cutoff)))
+          .where(
+            and(
+              isNotNull(enrollmentKeys.expiresAt),
+              lt(enrollmentKeys.expiresAt, cutoff),
+              hasNoLiveUnexhaustedBootstrapToken(),
+            ),
+          )
           .returning({ id: enrollmentKeys.id });
         const deletedCount = deletedRows.length;
 

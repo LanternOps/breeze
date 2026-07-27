@@ -1,12 +1,23 @@
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
-import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
-import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
+import {
+  createViewerAccessToken,
+  verifyViewerAccessToken,
+  type ViewerTokenPayload,
+} from '../services/jwt';
+import {
+  createLegacyViewerCompatibilityWsTicket,
+  createWsTicket,
+  consumeDesktopConnectCode,
+  consumeWsTicket,
+  getViewerAccessTokenExpirySeconds,
+} from '../services/remoteSessionAuth';
 import { getIceServers, logSessionAudit, buildRemoteSessionPromptPayload } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -16,6 +27,37 @@ import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { createAuditLogAsync } from '../services/auditService';
+import {
+  bindRemoteConnection,
+  installLocalRemoteConnection,
+  ownsSafeRemoteConnection,
+  removeExactLocalRemoteConnection,
+  renewExactRemoteConnectionLease,
+  type RemoteConnectionIdentity,
+  type RemoteConnectionLease,
+} from '../services/remoteWsOwnership';
+import {
+  getRemoteWsSharedLeaseManager,
+  REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS,
+  type RemoteWsSharedLeaseClaim,
+  type RemoteWsSharedLeaseManager,
+} from '../services/remoteWsSharedLease';
+import {
+  finalizeDesktopSessionOnce,
+  persistDesktopFinalizationIntent,
+  releaseDesktopFinalizationIntent,
+  type DesktopSessionFinalizationInput,
+  type PersistedDesktopFinalizationIntent,
+} from '../services/desktopSessionFinalization';
+import { enqueueDesktopSessionFinalization } from '../jobs/desktopSessionFinalizationWorker';
+import { ensureDesktopStreamStopped } from '../services/desktopSessionStop';
+import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  assertRemoteWsUpgradeRuntimeReady,
+  getRemoteWsUpgradeConnection,
+  requireRemoteWsUpgrade,
+  type RemoteWsUpgradeContext,
+} from '../services/remoteWsUpgrade';
 
 // Zod validation for desktop user messages
 const desktopInputEvent = z.object({
@@ -51,14 +93,17 @@ const desktopMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 // Store active desktop sessions
-interface DesktopSession {
-  userWs: WSContext;
+interface DesktopSession extends RemoteConnectionLease {
+  sharedOwner: RemoteWsSharedLeaseClaim;
+  sharedLeases: RemoteWsSharedLeaseManager;
   agentId: string;
   userId: string;
   deviceId: string;
   orgId: string;
   startedAt: Date;
   pingInterval?: ReturnType<typeof setInterval>;
+  leaseRenewalInterval?: ReturnType<typeof setInterval>;
+  cleanupRetryTimeout?: ReturnType<typeof setTimeout>;
   lastPongAt: number;
   // E2: token-bucket for input events (60 events/sec).
   inputTokens: number;
@@ -67,6 +112,12 @@ interface DesktopSession {
   // E2: audit summary counters
   inputEvents: number;
   frameBytes: number;
+  detachComplete: boolean;
+  stopCommandId?: string;
+  stopConfirmed: boolean;
+  intentAcknowledged: boolean;
+  finalizationInput?: DesktopSessionFinalizationInput;
+  persistedIntent?: PersistedDesktopFinalizationIntent;
 }
 
 // E2: desktop input event token bucket (60 events/sec/session).
@@ -82,6 +133,7 @@ const desktopFrameCallbacks = new Map<string, DesktopFrameCallback>();
 // Server-side ping/pong constants for stale connection detection
 const PING_INTERVAL_MS = 30_000;
 const PONG_TIMEOUT_MS = 10_000;
+const DESKTOP_CLEANUP_RETRY_MS = 1_000;
 
 // E1: Redis-backed sliding window rate limiter for user WS upgrades.
 // Decision: fail closed on Redis outage (matches `rateLimiter` helper default).
@@ -124,6 +176,7 @@ type ViewerAccessResult =
       session: typeof remoteSessions.$inferSelect;
       device: typeof devices.$inferSelect;
       user: Pick<typeof users.$inferSelect, 'id' | 'email' | 'status'>;
+      viewerToken: ViewerTokenPayload;
     }
   | {
       valid: false;
@@ -133,14 +186,15 @@ type ViewerAccessResult =
 
 async function validateViewerSessionAccess(
   authorizationHeader: string | undefined,
-  sessionId: string
+  sessionId: string,
+  prevalidatedViewerToken?: ViewerTokenPayload,
 ): Promise<ViewerAccessResult> {
   if (!authorizationHeader?.startsWith('Bearer ')) {
     return { valid: false, status: 401, error: 'Missing viewer token' };
   }
 
   const token = authorizationHeader.slice(7);
-  const payload = await verifyViewerAccessToken(token);
+  const payload = prevalidatedViewerToken ?? await verifyViewerAccessToken(token);
   if (!payload) {
     return { valid: false, status: 401, error: 'Invalid or expired viewer token' };
   }
@@ -215,7 +269,7 @@ async function validateViewerSessionAccess(
       };
     }
 
-    return { valid: true as const, session, device, user };
+    return { valid: true as const, session, device, user, viewerToken: payload };
   });
 }
 
@@ -332,18 +386,257 @@ export function unregisterDesktopFrameCallback(sessionId: string): void {
   desktopFrameCallbacks.delete(sessionId);
 }
 
+function exactDesktopIdentity(
+  session: DesktopSession,
+  identity: RemoteConnectionIdentity,
+): boolean {
+  return (
+    session.connectionId === identity.connectionId
+    && session.generation === identity.generation
+    && session.instanceId === identity.instanceId
+    && session.leaseToken === identity.leaseToken
+  );
+}
+
+function detachExactDesktopSession(
+  sessionId: string,
+  session: DesktopSession,
+  reason: 'client_close' | 'socket_error' | 'pong_timeout' | 'revoked' | 'setup_failed',
+): void {
+  if (session.detachComplete) return;
+  if (session.pingInterval) clearInterval(session.pingInterval);
+  if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  const current = activeDesktopSessions.get(sessionId);
+  if (current !== session || !exactDesktopIdentity(current, session)) return;
+  unregisterDesktopFrameCallback(sessionId);
+  session.detachComplete = true;
+  try {
+    if (reason === 'revoked') {
+      session.userWs?.close(4003, 'Session revoked');
+    } else if (reason === 'pong_timeout') {
+      session.userWs?.close(4008, 'Pong timeout');
+    } else if (reason === 'socket_error') {
+      session.userWs?.close(1011, 'Desktop session closing');
+    }
+  } catch {
+    // The exact socket may already be closing. Forwarding and callbacks are
+    // inert regardless, and durable stop/finalization must still continue.
+  }
+}
+
+export function closeDesktopSessionLifecycle(
+  sessionId: string,
+  options: {
+    expectedWs: WSContext;
+    connection: RemoteConnectionIdentity;
+    reason: 'client_close' | 'socket_error' | 'pong_timeout' | 'revoked' | 'setup_failed';
+    terminalStatus: 'disconnected' | 'failed';
+    notifyAgent: boolean;
+  },
+): Promise<void> {
+  const session = activeDesktopSessions.get(sessionId);
+  if (
+    !session
+    || session.userWs !== options.expectedWs
+    || !exactDesktopIdentity(session, options.connection)
+  ) {
+    return Promise.resolve();
+  }
+  if (session.cleanupPromise) return session.cleanupPromise;
+  if (session.cleanupRetryTimeout) {
+    clearTimeout(session.cleanupRetryTimeout);
+    session.cleanupRetryTimeout = undefined;
+  }
+
+  // Everything below this point is synchronous through promise publication.
+  // No callback can forward after observing closing/deadline zero.
+  session.state = 'closing';
+  session.safeForwardingUntilMonotonicMs = 0;
+  if (session.pingInterval) clearInterval(session.pingInterval);
+  if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+  const endedAt = new Date();
+  const finalizationInput: DesktopSessionFinalizationInput =
+    session.finalizationInput ?? Object.freeze({
+      version: 1,
+      finalizationId: randomUUID(),
+      sessionId,
+      connection: Object.freeze({ ...options.connection }),
+      orgId: session.orgId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      reason: options.reason,
+      terminalStatus: options.terminalStatus,
+      endedAt: endedAt.toISOString(),
+      startedAt: session.startedAt.toISOString(),
+      inputEvents: Math.max(0, session.inputEvents),
+      frameBytes: Math.max(0, session.frameBytes),
+    });
+  session.finalizationInput = finalizationInput;
+  session.stopCommandId = finalizationInput.finalizationId;
+
+  const cleanupAttempt = (async () => {
+    const closeProof = await session.sharedLeases.beginClose(session.sharedOwner);
+    if (!closeProof.ok && closeProof.reason === 'owner_mismatch') {
+      // A replacement owns Redis. Only detach this exact stale local socket.
+      detachExactDesktopSession(sessionId, session, options.reason);
+      removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, options.connection);
+      return;
+    }
+
+    if (!closeProof.ok) {
+      // Safety beats bookkeeping on coordination loss: detach and issue the
+      // stable stop, but never finalize or release without persisted intent.
+      detachExactDesktopSession(sessionId, session, options.reason);
+      await ensureDesktopStreamStopped(finalizationInput).catch((error) => {
+        console.error('[DesktopWs] safety stop attempt failed', {
+          sessionId: sessionId.slice(0, 12),
+          reason: error instanceof Error ? error.message : 'unknown',
+        });
+      });
+      throw new Error('desktop close ownership proof unavailable');
+    }
+
+    let persisted: PersistedDesktopFinalizationIntent;
+    try {
+      persisted = await persistDesktopFinalizationIntent({
+        finalization: finalizationInput,
+        sharedOwner: session.sharedOwner,
+        sharedLeases: session.sharedLeases,
+      });
+      session.persistedIntent = persisted;
+      session.intentAcknowledged = true;
+    } catch (error) {
+      detachExactDesktopSession(sessionId, session, options.reason);
+      await ensureDesktopStreamStopped(finalizationInput).catch(() => undefined);
+      throw error;
+    }
+
+    // DELETE-LAST: callback/socket detachment follows acknowledged write-ahead.
+    detachExactDesktopSession(sessionId, session, options.reason);
+
+    try {
+      const result = await finalizeDesktopSessionOnce(finalizationInput);
+      if (result === 'finalized' || result === 'already_finalized') {
+        session.stopConfirmed = true;
+        const releasedIntent = await session.sharedLeases.releaseDesktopFinalizationIntent(
+          sessionId,
+          finalizationInput.finalizationId,
+          persisted.canonicalPayload,
+        );
+        if (!releasedIntent) throw new Error('desktop finalization intent release failed');
+        if (activeDesktopSessions.get(sessionId) === session) {
+          removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, options.connection);
+        }
+        await session.sharedLeases.release(session.sharedOwner);
+        return;
+      }
+      throw new Error('desktop finalization stop pending');
+    } catch (inlineError) {
+      try {
+        await enqueueDesktopSessionFinalization({
+          sessionId,
+          finalizationId: finalizationInput.finalizationId,
+        });
+      } catch {
+        // Retain the exact inert owner + intent. A matching retry reuses this
+        // cleanup promise/identity; no unconditional finally releases it.
+        throw inlineError;
+      }
+      if (activeDesktopSessions.get(sessionId) === session) {
+        removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, options.connection);
+      }
+      await session.sharedLeases.release(session.sharedOwner);
+    }
+  })();
+  const cleanup = cleanupAttempt.catch((error) => {
+    // All concurrent callers shared this attempt. Once it fails, the same
+    // inert owner can retry with the frozen payload and stable stop identity.
+    if (activeDesktopSessions.get(sessionId) === session) {
+      session.cleanupPromise = undefined;
+      session.cleanupRetryTimeout = setTimeout(() => {
+        session.cleanupRetryTimeout = undefined;
+        void closeDesktopSessionLifecycle(sessionId, options).catch(() => {
+          // The lifecycle schedules the next exact retry while the same inert
+          // closing entry remains installed.
+        });
+      }, DESKTOP_CLEANUP_RETRY_MS);
+    }
+    throw error;
+  });
+  session.cleanupPromise = cleanup;
+  return cleanup;
+}
+
+function reportRetainedDesktopCleanup(
+  sessionId: string,
+  trigger: 'pong_timeout' | 'revoked' | 'revocation_check_failed' | 'lease_renewal',
+): void {
+  console.error('[DesktopWs] cleanup retained for durable recovery', {
+    sessionId: sessionId.slice(0, 12),
+    trigger,
+  });
+}
+
+async function validateDesktopUpgradeContext(
+  context: RemoteWsUpgradeContext,
+): Promise<Awaited<ReturnType<typeof validateDesktopAccess>>> {
+  const result = context.authorizationPhase === 'complete'
+    ? { ok: true as const, context: context.authorization }
+    : await authorizeConsumedRemoteWsTicket(context.ticket);
+  if (!result.ok) return { valid: false, error: result.reason };
+  const authorization = result.context;
+  return {
+    valid: true,
+    userId: authorization.userId,
+    session: {
+      id: authorization.sessionId,
+      type: 'desktop',
+      userId: authorization.userId,
+      deviceId: authorization.deviceId,
+      orgId: authorization.orgId,
+      status: 'pending',
+    } as typeof remoteSessions.$inferSelect,
+    device: {
+      id: authorization.deviceId,
+      orgId: authorization.orgId,
+      siteId: authorization.siteId,
+      agentId: authorization.agentId,
+      hostname: authorization.deviceHostname ?? '',
+      osType: authorization.deviceOsType ?? '',
+      status: 'online',
+    } as typeof devices.$inferSelect,
+  };
+}
+
 /**
  * Create WebSocket handlers for desktop session
  */
 function createDesktopWsHandlers(
   sessionId: string,
   ticket: string | undefined,
-  caller: { ip: string; userAgent: string }
+  caller: { ip: string; userAgent: string },
+  sharedLeases: RemoteWsSharedLeaseManager,
+  upgradeContext?: RemoteWsUpgradeContext,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateDesktopAccess>> | null = null;
-  const validationPromise = validateDesktopAccess(sessionId, ticket, caller).then(result => {
+  let connectionIdentity: RemoteConnectionIdentity | null = null;
+  const validationPromise = (
+    upgradeContext
+      ? validateDesktopUpgradeContext(upgradeContext)
+      : validateDesktopAccess(sessionId, ticket, caller)
+  ).then(result => {
     validationResult = result;
   });
+  const releaseOpeningReservation = async () => {
+    if (!upgradeContext) return;
+    removeExactLocalRemoteConnection(
+      activeDesktopSessions,
+      sessionId,
+      getRemoteWsUpgradeConnection(upgradeContext),
+    );
+    upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
+    await sharedLeases.release(upgradeContext.sharedClaim);
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -359,6 +652,7 @@ function createDesktopWsHandlers(
         await validationPromise;
 
         if (!validationResult || !validationResult.valid) {
+          await releaseOpeningReservation();
           console.warn(`Desktop WebSocket rejected for session ${sessionId}: ${validationResult?.error}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -371,11 +665,13 @@ function createDesktopWsHandlers(
 
         const { session, device, userId } = validationResult;
         if (!session || !device || !userId) {
+          await releaseOpeningReservation();
           ws.close(4001, 'Invalid session data');
           return;
         }
 
         if (!isAgentConnected(device.agentId)) {
+          await releaseOpeningReservation();
           ws.send(JSON.stringify({
             type: 'error',
             code: 'AGENT_OFFLINE',
@@ -386,7 +682,7 @@ function createDesktopWsHandlers(
         }
 
         // E1: Redis-backed rate limit user WS connections (fail-closed)
-        if (await isUserDesktopWsRateLimited(userId)) {
+        if (!upgradeContext && await isUserDesktopWsRateLimited(userId)) {
           console.warn(`Desktop WebSocket rate limited for user ${userId}`);
           ws.send(JSON.stringify({
             type: 'error',
@@ -397,26 +693,124 @@ function createDesktopWsHandlers(
           return;
         }
 
-        // All validation passed — safe to touch DB state for this session
+        const acquired = upgradeContext
+          ? { ok: true as const, claim: upgradeContext.sharedClaim }
+          : await sharedLeases.acquire('desktop', sessionId);
+        if (!acquired.ok) {
+          ws.close(
+            acquired.reason === 'already_owned'
+              || acquired.reason === 'desktop_finalizing'
+              || acquired.reason === 'desktop_orphan_recovery'
+              ? 4009
+              : 1011,
+            'Desktop session unavailable',
+          );
+          return;
+        }
+
+        // All validation and shared acquisition passed — safe to touch DB
+        // state for this exact connection generation.
         validated = true;
 
-        // Store the desktop session
         const now = Date.now();
-        activeDesktopSessions.set(sessionId, {
-          userWs: ws,
-          agentId: device.agentId,
-          userId,
-          deviceId: device.id,
-          orgId: device.orgId,
-          startedAt: new Date(),
-          lastPongAt: now,
-          inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
-          inputLastRefillMs: now,
-          inputOverageLogged: false,
-          inputEvents: 0,
-          frameBytes: 0,
-        });
+        const existingReservation = upgradeContext
+          ? activeDesktopSessions.get(sessionId)
+          : undefined;
+        if (existingReservation && upgradeContext) {
+          Object.assign(existingReservation, {
+            agentId: device.agentId,
+            userId,
+            deviceId: device.id,
+            orgId: device.orgId,
+            startedAt: new Date(),
+            lastPongAt: now,
+          });
+        }
+        const installed = upgradeContext
+          ? (
+              existingReservation
+              && existingReservation.connectionId === acquired.claim.connectionId
+              && existingReservation.generation === acquired.claim.generation
+              && existingReservation.instanceId === acquired.claim.instanceId
+              && existingReservation.leaseToken === acquired.claim.leaseToken
+                ? { ok: true as const }
+                : { ok: false as const, reason: 'already_owned' as const }
+            )
+          : installLocalRemoteConnection(
+              activeDesktopSessions,
+              sessionId,
+              acquired.claim,
+              (claim): DesktopSession => ({
+                ...claim,
+                state: 'opening',
+                userWs: null,
+                sharedOwner: claim,
+                sharedLeases,
+                agentId: device.agentId,
+                userId,
+                deviceId: device.id,
+                orgId: device.orgId,
+                startedAt: new Date(),
+                lastPongAt: now,
+                inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
+                inputLastRefillMs: now,
+                inputOverageLogged: false,
+                inputEvents: 0,
+                frameBytes: 0,
+                detachComplete: false,
+                stopConfirmed: false,
+                intentAcknowledged: false,
+              }),
+            );
+        if (!installed.ok) {
+          await sharedLeases.release(acquired.claim);
+          ws.close(4009, 'Desktop session already owned');
+          return;
+        }
+        connectionIdentity = {
+          connectionId: acquired.claim.connectionId,
+          generation: acquired.claim.generation,
+          instanceId: acquired.claim.instanceId,
+          leaseToken: acquired.claim.leaseToken,
+        };
+        if (!bindRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          connectionIdentity,
+          ws,
+        )) {
+          removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, connectionIdentity);
+          await sharedLeases.release(acquired.claim);
+          ws.close(1011, 'Desktop session binding failed');
+          return;
+        }
         sessionStored = true;
+        const boundSession = activeDesktopSessions.get(sessionId);
+        if (!boundSession) {
+          throw new Error('desktop connection missing after bind');
+        }
+        const boundIdentity = connectionIdentity;
+        boundSession.leaseRenewalInterval = setInterval(() => {
+          void renewExactRemoteConnectionLease(
+            activeDesktopSessions,
+            sessionId,
+            boundIdentity,
+            ws,
+            () => sharedLeases.renew(boundSession.sharedOwner),
+          ).then((renewed) => {
+            if (!renewed) {
+              void closeDesktopSessionLifecycle(sessionId, {
+                expectedWs: ws,
+                connection: boundIdentity,
+                reason: 'socket_error',
+                terminalStatus: 'failed',
+                notifyAgent: true,
+              }).catch(() => {
+                reportRetainedDesktopCleanup(sessionId, 'lease_renewal');
+              });
+            }
+          });
+        }, REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS);
 
         // Register frame callback — relay binary JPEG frames directly to viewer
         registerDesktopFrameCallback(sessionId, (data: Uint8Array) => {
@@ -425,22 +819,70 @@ function createDesktopWsHandlers(
             const buf = new ArrayBuffer(data.byteLength);
             new Uint8Array(buf).set(data);
             const sess = activeDesktopSessions.get(sessionId);
-            if (sess) {
+            if (
+              sess
+              && connectionIdentity
+              && ownsSafeRemoteConnection(
+                activeDesktopSessions,
+                sessionId,
+                connectionIdentity,
+                ws,
+              )
+            ) {
               sess.frameBytes += data.byteLength;
+              ws.send(buf);
             }
-            ws.send(buf);
           } catch (error) {
             console.error(`Failed to send desktop frame to session ${sessionId}:`, error);
           }
         });
         frameCallbackRegistered = true;
 
-        // Update session status (system scope — WS auth bypasses JWT middleware)
-        await withSystemDbAccessContext(() =>
+        if (!ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          boundIdentity,
+          ws,
+        )) {
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          return;
+        }
+
+        // Update only a still-open row. A prior owner may have made the row
+        // terminal after validation but before this exact lease was bound.
+        const [activated] = await withSystemDbAccessContext(() =>
           db.update(remoteSessions)
             .set({ status: 'active', startedAt: new Date() })
-            .where(eq(remoteSessions.id, sessionId))
+            .where(and(
+              eq(remoteSessions.id, sessionId),
+              inArray(remoteSessions.status, ['pending', 'connecting']),
+            ))
+            .returning({ id: remoteSessions.id })
         );
+        if (
+          !activated
+          || !ownsSafeRemoteConnection(
+            activeDesktopSessions,
+            sessionId,
+            boundIdentity,
+            ws,
+          )
+        ) {
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          return;
+        }
 
         // Send desktop_stream_start command to agent
         const startCommand = {
@@ -454,6 +896,21 @@ function createDesktopWsHandlers(
           }
         };
 
+        if (!ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          boundIdentity,
+          ws,
+        )) {
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          return;
+        }
         const sent = sendCommandToAgent(device.agentId, startCommand);
         if (!sent) {
           ws.send(JSON.stringify({
@@ -461,15 +918,32 @@ function createDesktopWsHandlers(
             code: 'AGENT_SEND_FAILED',
             message: 'Failed to send start command to agent'
           }));
-          activeDesktopSessions.delete(sessionId);
-          unregisterDesktopFrameCallback(sessionId);
-          await withSystemDbAccessContext(() =>
-            db.update(remoteSessions)
-              .set({ status: 'failed', errorMessage: 'Failed to send start command to agent', endedAt: new Date() })
-              .where(eq(remoteSessions.id, sessionId))
-          );
-          await revokeDesktopViewerSession(sessionId);
+          if (connectionIdentity) {
+            await closeDesktopSessionLifecycle(sessionId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              reason: 'setup_failed',
+              terminalStatus: 'failed',
+              notifyAgent: true,
+            });
+          }
           ws.close(4003, 'Agent send failed');
+          return;
+        }
+
+        if (!ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          boundIdentity,
+          ws,
+        )) {
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
           return;
         }
 
@@ -486,7 +960,16 @@ function createDesktopWsHandlers(
         // Start server-side ping/pong for stale connection detection
         pingInterval = setInterval(() => {
           const deskSess = activeDesktopSessions.get(sessionId);
-          if (!deskSess) {
+          if (
+            !deskSess
+            || !connectionIdentity
+            || !ownsSafeRemoteConnection(
+              activeDesktopSessions,
+              sessionId,
+              connectionIdentity,
+              ws,
+            )
+          ) {
             if (pingInterval) clearInterval(pingInterval);
             return;
           }
@@ -494,7 +977,15 @@ function createDesktopWsHandlers(
           if (elapsed > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
             console.warn(`Desktop session ${sessionId} pong timeout (${elapsed}ms), closing`);
             if (pingInterval) clearInterval(pingInterval);
-            ws.close(4008, 'Pong timeout');
+            void closeDesktopSessionLifecycle(sessionId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              reason: 'pong_timeout',
+              terminalStatus: 'failed',
+              notifyAgent: true,
+            }).catch(() => {
+              reportRetainedDesktopCleanup(sessionId, 'pong_timeout');
+            });
             return;
           }
           // Enforce mid-session revocation on the live socket. Nothing else
@@ -507,15 +998,27 @@ function createDesktopWsHandlers(
           // (isViewerSessionRevoked fails closed, matching the connect gate.)
           void isViewerSessionRevoked(sessionId)
             .then((revoked) => {
-              if (revoked && activeDesktopSessions.has(sessionId)) {
+              if (
+                revoked
+                && connectionIdentity
+                && ownsSafeRemoteConnection(
+                  activeDesktopSessions,
+                  sessionId,
+                  connectionIdentity,
+                  ws,
+                )
+              ) {
                 console.warn(`[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`);
                 if (pingInterval) clearInterval(pingInterval);
-                activeDesktopSessions.delete(sessionId);
-                try {
-                  ws.close(4003, 'Session revoked');
-                } catch (closeErr) {
-                  console.error(`[DesktopWs] Failed to close revoked session ${sessionId}:`, closeErr);
-                }
+                void closeDesktopSessionLifecycle(sessionId, {
+                  expectedWs: ws,
+                  connection: connectionIdentity,
+                  reason: 'revoked',
+                  terminalStatus: 'failed',
+                  notifyAgent: true,
+                }).catch(() => {
+                  reportRetainedDesktopCleanup(sessionId, 'revoked');
+                });
               }
             })
             .catch((revErr) => {
@@ -528,11 +1031,33 @@ function createDesktopWsHandlers(
                 revErr
               );
               if (pingInterval) clearInterval(pingInterval);
-              activeDesktopSessions.delete(sessionId);
-              try {
-                ws.close(4003, 'Session revocation check failed');
-              } catch (closeErr) {
-                console.error(`[DesktopWs] Failed to close session ${sessionId} after revocation-check failure:`, closeErr);
+              if (
+                connectionIdentity
+                && ownsSafeRemoteConnection(
+                  activeDesktopSessions,
+                  sessionId,
+                  connectionIdentity,
+                  ws,
+                )
+              ) {
+                void closeDesktopSessionLifecycle(sessionId, {
+                  expectedWs: ws,
+                  connection: connectionIdentity,
+                  reason: 'revoked',
+                  terminalStatus: 'failed',
+                  notifyAgent: true,
+                }).then(() => {
+                  try {
+                    ws.close(4003, 'Session revocation check failed');
+                  } catch {
+                    // The lifecycle already closed the exact socket.
+                  }
+                }).catch(() => {
+                  reportRetainedDesktopCleanup(
+                    sessionId,
+                    'revocation_check_failed',
+                  );
+                });
               }
             });
           try {
@@ -544,7 +1069,7 @@ function createDesktopWsHandlers(
         }, PING_INTERVAL_MS);
 
         const currentSession = activeDesktopSessions.get(sessionId);
-        if (currentSession) {
+        if (currentSession && connectionIdentity) {
           currentSession.pingInterval = pingInterval;
         }
 
@@ -556,30 +1081,20 @@ function createDesktopWsHandlers(
         if (pingInterval) {
           clearInterval(pingInterval);
         }
-        if (sessionStored) {
-          const partial = activeDesktopSessions.get(sessionId);
-          if (partial?.pingInterval) {
-            clearInterval(partial.pingInterval);
-          }
-          activeDesktopSessions.delete(sessionId);
-        }
-        if (frameCallbackRegistered) {
+        if (sessionStored && connectionIdentity) {
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: connectionIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          }).catch((cleanupError) => {
+            console.error(`[DesktopWs] setup cleanup retained for retry ${sessionId}:`, cleanupError);
+          });
+        } else if (frameCallbackRegistered) {
           unregisterDesktopFrameCallback(sessionId);
-        }
-
-        // Best-effort: mark DB session as failed — only if auth/validation already passed.
-        if (validated) {
-          try {
-            await withSystemDbAccessContext(() =>
-              db.update(remoteSessions)
-                .set({ status: 'failed', endedAt: new Date() })
-                .where(eq(remoteSessions.id, sessionId))
-            );
-          } catch (dbError) {
-            console.error(`[DesktopWs] Failed to update session ${sessionId} status to failed:`, dbError);
-          } finally {
-            await revokeDesktopViewerSession(sessionId);
-          }
+        } else {
+          await releaseOpeningReservation();
         }
 
         try {
@@ -603,6 +1118,17 @@ function createDesktopWsHandlers(
           code: 'SESSION_NOT_FOUND',
           message: 'Desktop session not found'
         }));
+        return;
+      }
+      if (
+        !connectionIdentity
+        || !ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          connectionIdentity,
+          ws,
+        )
+      ) {
         return;
       }
 
@@ -702,93 +1228,27 @@ function createDesktopWsHandlers(
       }
     },
 
-    onClose: async (_event: unknown, _ws: WSContext) => {
-      const desktopSession = activeDesktopSessions.get(sessionId);
-
-      if (desktopSession) {
-        // Clear ping interval
-        if (desktopSession.pingInterval) {
-          clearInterval(desktopSession.pingInterval);
-        }
-
-        // Send desktop_stream_stop to agent
-        sendCommandToAgent(desktopSession.agentId, {
-          id: `desk-stop-${sessionId}`,
-          type: 'desktop_stream_stop',
-          payload: { sessionId }
-        });
-
-        // Clean up
-        activeDesktopSessions.delete(sessionId);
-        unregisterDesktopFrameCallback(sessionId);
-
-        // Update session status (system scope — WS auth bypasses JWT middleware)
-        const endedAt = new Date();
-        const durationSeconds = Math.round((endedAt.getTime() - desktopSession.startedAt.getTime()) / 1000);
-
-        try {
-          await withSystemDbAccessContext(() =>
-            db.update(remoteSessions)
-              .set({ status: 'disconnected', endedAt, durationSeconds })
-              .where(eq(remoteSessions.id, sessionId))
-          );
-        } finally {
-          await revokeDesktopViewerSession(sessionId);
-        }
-
-        // E2: write a session summary audit row on close.
-        try {
-          await logSessionAudit(
-            'desktop.session.summary',
-            desktopSession.userId,
-            desktopSession.orgId,
-            {
-              sessionId,
-              deviceId: desktopSession.deviceId,
-              inputEvents: desktopSession.inputEvents,
-              frameBytes: desktopSession.frameBytes,
-              durationMs: endedAt.getTime() - desktopSession.startedAt.getTime(),
-            }
-          );
-        } catch (auditErr) {
-          console.error(`[DesktopWs] Failed to write session summary for ${sessionId}:`, auditErr);
-        }
-
-        console.log(`Desktop session ${sessionId} disconnected (duration: ${durationSeconds}s)`);
-      }
+    onClose: async (_event: unknown, ws: WSContext) => {
+      if (!connectionIdentity) return;
+      await closeDesktopSessionLifecycle(sessionId, {
+        expectedWs: ws,
+        connection: connectionIdentity,
+        reason: 'client_close',
+        terminalStatus: 'disconnected',
+        notifyAgent: true,
+      });
     },
 
-    onError: async (event: unknown, _ws: WSContext) => {
+    onError: async (event: unknown, ws: WSContext) => {
       console.error(`Desktop WebSocket error for session ${sessionId}:`, event);
-      const desktopSession = activeDesktopSessions.get(sessionId);
-      if (desktopSession?.pingInterval) {
-        clearInterval(desktopSession.pingInterval);
-      }
-      activeDesktopSessions.delete(sessionId);
-      unregisterDesktopFrameCallback(sessionId);
-
-      if (desktopSession) {
-        try {
-          sendCommandToAgent(desktopSession.agentId, {
-            id: `desk-stop-${sessionId}`,
-            type: 'desktop_stream_stop',
-            payload: { sessionId }
-          });
-
-          const endedAt = new Date();
-          const durationSeconds = Math.round((endedAt.getTime() - desktopSession.startedAt.getTime()) / 1000);
-
-          await withSystemDbAccessContext(() =>
-            db.update(remoteSessions)
-              .set({ status: 'disconnected', endedAt, durationSeconds })
-              .where(eq(remoteSessions.id, sessionId))
-          );
-        } catch (dbError) {
-          console.error(`Failed to update session ${sessionId} status after error:`, dbError);
-        } finally {
-          await revokeDesktopViewerSession(sessionId);
-        }
-      }
+      if (!connectionIdentity) return;
+      await closeDesktopSessionLifecycle(sessionId, {
+        expectedWs: ws,
+        connection: connectionIdentity,
+        reason: 'socket_error',
+        terminalStatus: 'failed',
+        notifyAgent: true,
+      });
     }
   };
 }
@@ -796,7 +1256,11 @@ function createDesktopWsHandlers(
 /**
  * Create desktop WebSocket routes
  */
-export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
+export function createDesktopWsRoutes(
+  upgradeWebSocket: Function,
+  options: { sharedLeases?: RemoteWsSharedLeaseManager } = {},
+): Hono {
+  assertRemoteWsUpgradeRuntimeReady();
   const app = new Hono();
 
   // Health check for debugging route registration
@@ -873,6 +1337,7 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         sub: codeRecord.userId,
         email: codeRecord.email,
         sessionId: session.id,
+        mfaSatisfied: true,
       });
       const result = {
         accessToken,
@@ -917,7 +1382,26 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
     zValidator('param', desktopSessionIdParamSchema),
     async (c) => {
       const { id: sessionId } = c.req.valid('param');
-      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      const authorizationHeader = c.req.header('Authorization');
+      if (!authorizationHeader?.startsWith('Bearer ')) {
+        return c.json({ error: 'Missing viewer token' }, 401);
+      }
+      const viewerToken = await verifyViewerAccessToken(authorizationHeader.slice(7));
+      if (!viewerToken) {
+        return c.json({ error: 'Invalid or expired viewer token' }, 401);
+      }
+      const mode = process.env.REMOTE_WS_AUTH_MODE === 'pre_upgrade'
+        ? 'pre_upgrade'
+        : 'post_upgrade';
+      if (viewerToken.mfaSatisfied !== true && mode === 'pre_upgrade') {
+        return c.json({ error: 'mfa_unassured' }, 403);
+      }
+
+      const access = await validateViewerSessionAccess(
+        authorizationHeader,
+        sessionId,
+        viewerToken,
+      );
       if (!access.valid) {
         return c.json({ error: access.error }, access.status);
       }
@@ -930,15 +1414,16 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
       }
 
       try {
-        const ticket = await createWsTicket({
+        const ticketInput = {
           sessionId: access.session.id,
-          sessionType: 'desktop',
+          sessionType: 'desktop' as const,
           userId: access.user.id,
-          // Task 16: bind to issuer's trusted IP + UA so a stolen 60s
-          // ticket can't be opened from a different network position.
           ip: getTrustedClientIp(c),
           userAgent: c.req.header('user-agent') ?? '',
-        });
+        };
+        const ticket = access.viewerToken.mfaSatisfied === true
+          ? await createWsTicket({ ...ticketInput, mfaSatisfied: true })
+          : await createLegacyViewerCompatibilityWsTicket({ ...ticketInput, mode });
         return c.json(ticket);
       } catch (error) {
         console.error('[desktop-ws] Failed to create viewer WebSocket ticket:', error);
@@ -1067,7 +1552,49 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/desktop-ws/:id/ws?ticket=xxx
   app.get(
     '/:id/ws',
+    async (c, next) => {
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return c.json({ error: 'Remote ownership unavailable' }, 503);
+      }
+      return requireRemoteWsUpgrade({
+        expectedType: 'desktop',
+        sharedLeases,
+        installLocal: (sessionId, claim) => {
+          const now = Date.now();
+          return installLocalRemoteConnection(
+            activeDesktopSessions,
+            sessionId,
+            claim,
+            (shared): DesktopSession => ({
+              ...shared,
+              state: 'opening',
+              userWs: null,
+              sharedOwner: shared,
+              sharedLeases,
+              agentId: '',
+              userId: '',
+              deviceId: '',
+              orgId: '',
+              startedAt: new Date(),
+              lastPongAt: now,
+              inputTokens: DESKTOP_INPUT_BUCKET_CAPACITY,
+              inputLastRefillMs: now,
+              inputOverageLogged: false,
+              inputEvents: 0,
+              frameBytes: 0,
+              detachComplete: false,
+              stopConfirmed: false,
+              intentAcknowledged: false,
+            }),
+          );
+        },
+        removeLocal: (sessionId, claim) =>
+          removeExactLocalRemoteConnection(activeDesktopSessions, sessionId, claim),
+      })(c, next);
+    },
     upgradeWebSocket((c: {
+      get?: (key: string) => unknown;
       req: {
         param: (key: string) => string;
         query: (key: string) => string | undefined;
@@ -1081,7 +1608,19 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
         ip: getTrustedClientIp(c as Parameters<typeof getTrustedClientIp>[0]),
         userAgent: c.req.header('user-agent') ?? '',
       };
-      return createDesktopWsHandlers(sessionId, ticket, caller);
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return {
+          onOpen: (_event: unknown, ws: WSContext) => {
+            ws.close(1011, 'Remote ownership unavailable');
+          },
+          onMessage: () => undefined,
+          onClose: () => undefined,
+          onError: () => undefined,
+        };
+      }
+      const context = c.get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
+      return createDesktopWsHandlers(sessionId, ticket, caller, sharedLeases, context);
     })
   );
 
@@ -1101,4 +1640,47 @@ export function isDesktopSessionOwnedByAgent(sessionId: string, agentId: string)
  */
 export function getActiveDesktopSessionCount(): number {
   return activeDesktopSessions.size;
+}
+
+export function __resetDesktopWsForTest(): void {
+  for (const session of activeDesktopSessions.values()) {
+    if (session.pingInterval) clearInterval(session.pingInterval);
+    if (session.leaseRenewalInterval) clearInterval(session.leaseRenewalInterval);
+    if (session.cleanupRetryTimeout) clearTimeout(session.cleanupRetryTimeout);
+  }
+  activeDesktopSessions.clear();
+  desktopFrameCallbacks.clear();
+}
+
+export function __createDesktopSharedLeasesForTest(): RemoteWsSharedLeaseManager {
+  let generation = 0;
+  return {
+    acquire: async (kind, sessionId) => {
+      generation += 1;
+      const claim: RemoteWsSharedLeaseClaim = {
+        kind,
+        sessionId,
+        connectionId: '33333333-3333-4333-8333-333333333333',
+        generation,
+        instanceId: '44444444-4444-4444-8444-444444444444',
+        leaseToken: '55555555-5555-4555-8555-555555555555',
+        ownerValue: `test-owner-${generation}`,
+        safeForwardingUntilMonotonicMs: Number.MAX_SAFE_INTEGER,
+      };
+      return { ok: true, claim };
+    },
+    renew: async (claim) => claim,
+    beginClose: async () => ({ ok: true, ownership: 'still_owner' }),
+    release: async () => true,
+    writeDesktopFinalizationIntent: async () => 'written',
+    claimDesktopOrphan: async () => 'claimed',
+    releaseDesktopFinalizationIntent: async () => true,
+    observeDesktopFinalization: async () => ({
+      ownerPresent: false,
+      finalizationId: null,
+      canonicalPayload: null,
+      consistent: true,
+    }),
+    topology: {} as RemoteWsSharedLeaseManager['topology'],
+  };
 }

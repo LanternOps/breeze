@@ -2,6 +2,10 @@ import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
 import { pgErrorCode } from '../utils/pgErrors';
+import {
+  UNMATCHED_ROUTE_LABEL,
+  safeMatchedRouteLabel,
+} from './safeRequestLabel';
 
 // SQLSTATE 42501 (insufficient_privilege) is what forced row-level security
 // raises when `breeze_app` writes a row that fails a policy's WITH CHECK clause
@@ -18,25 +22,142 @@ const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
-const SENSITIVE_KEYS = new Set(['password', 'passwordhash', 'mfasecret', 'token', 'authorization', 'cookie']);
+const ALLOWED_TAG_NAMES = new Set([
+  'method',
+  'route_template',
+  'pg_code',
+  'rls_deny',
+  'user_id',
+  'scope',
+  'org_id',
+  'partner_id',
+]);
+const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
+const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
 
-/** Redact secrets before an event leaves the process (#1379 B3). Exported for test. */
+function isBoundedTagValue(value: unknown): value is string | number | boolean {
+  if (!['string', 'number', 'boolean'].includes(typeof value)) return false;
+  const serialized = String(value);
+  return serialized.length <= 128 && !UNSAFE_TAG_CHARACTERS.test(serialized);
+}
+
+function isSafeRouteTemplateTag(value: unknown): value is string {
+  if (value === UNMATCHED_ROUTE_LABEL) return true;
+  if (typeof value !== 'string') return false;
+  const c = { req: { routePath: value } } as unknown as Context;
+  return safeMatchedRouteLabel(c) === value;
+}
+
+function pickAllowedTags(
+  tags: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> {
+  const picked: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(tags ?? {})) {
+    if (!ALLOWED_TAG_NAMES.has(key)) continue;
+    if (key === 'route_template') {
+      if (isSafeRouteTemplateTag(value)) picked[key] = value;
+      continue;
+    }
+    if (isBoundedTagValue(value)) picked[key] = value;
+  }
+  return picked;
+}
+
+function rebuildSafeFrame(frame: Record<string, unknown>): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  if (
+    typeof frame.function === 'string' &&
+    SAFE_STRUCTURAL_NAME.test(frame.function)
+  ) {
+    safe.function = frame.function;
+  }
+  if (
+    typeof frame.module === 'string' &&
+    SAFE_STRUCTURAL_NAME.test(frame.module)
+  ) {
+    safe.module = frame.module;
+  }
+  for (const numericKey of ['lineno', 'colno'] as const) {
+    const value = frame[numericKey];
+    if (Number.isSafeInteger(value) && Number(value) >= 0) {
+      safe[numericKey] = value;
+    }
+  }
+  if (typeof frame.in_app === 'boolean') safe.in_app = frame.in_app;
+  return safe;
+}
+
+function rebuildSafeException(
+  exception: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(exception?.values)) return undefined;
+
+  const values = exception.values.map((rawValue) => {
+    const value =
+      rawValue && typeof rawValue === 'object'
+        ? rawValue as Record<string, unknown>
+        : {};
+    const type =
+      typeof value.type === 'string' && SAFE_STRUCTURAL_NAME.test(value.type)
+        ? value.type
+        : 'Error';
+    const rebuilt: Record<string, unknown> = { type, value: '[redacted]' };
+    const stacktrace =
+      value.stacktrace && typeof value.stacktrace === 'object'
+        ? value.stacktrace as Record<string, unknown>
+        : undefined;
+    if (Array.isArray(stacktrace?.frames)) {
+      rebuilt.stacktrace = {
+        frames: stacktrace.frames.map((frame) =>
+          rebuildSafeFrame(
+            frame && typeof frame === 'object'
+              ? frame as Record<string, unknown>
+              : {},
+          ),
+        ),
+      };
+    }
+    return rebuilt;
+  });
+
+  return { values };
+}
+
+function setCallerTags(
+  scope: { setTag: (key: string, value: string | number | boolean) => unknown },
+  tags: Record<string, string> | undefined,
+): void {
+  for (const [key, value] of Object.entries(tags ?? {})) {
+    if (
+      ALLOWED_TAG_NAMES.has(key) &&
+      key !== 'route_template' &&
+      isBoundedTagValue(value)
+    ) {
+      scope.setTag(key, value);
+    }
+  }
+}
+
+/** Rebuild safe event surfaces before an event leaves the process. Exported for test. */
 export function scrubEvent<T extends Record<string, any>>(event: T): T {
-  const headers = event?.request?.headers;
-  if (headers) {
-    for (const k of Object.keys(headers)) {
-      if (k.toLowerCase() === 'authorization' || k.toLowerCase() === 'cookie') headers[k] = '[redacted]';
-    }
-  }
-  const extra = event?.extra;
-  if (extra) {
-    for (const k of Object.keys(extra)) {
-      const v = extra[k];
-      if (SENSITIVE_KEYS.has(k.toLowerCase()) || (typeof v === 'string' && v.startsWith('brz_'))) {
-        extra[k] = '[redacted]';
-      }
-    }
-  }
+  const mutableEvent = event as Record<string, any>;
+  mutableEvent.request =
+    typeof mutableEvent.request?.method === 'string'
+      ? { method: mutableEvent.request.method }
+      : undefined;
+  delete mutableEvent.transaction;
+  delete mutableEvent.breadcrumbs;
+  delete mutableEvent.contexts;
+  mutableEvent.tags = pickAllowedTags(mutableEvent.tags);
+  delete mutableEvent.message;
+  delete mutableEvent.logentry;
+  delete mutableEvent.extra;
+  mutableEvent.exception = rebuildSafeException(mutableEvent.exception);
+  mutableEvent.user =
+    typeof mutableEvent.user?.id === 'string' &&
+    isBoundedTagValue(mutableEvent.user.id)
+      ? { id: mutableEvent.user.id }
+      : undefined;
   return event;
 }
 
@@ -89,17 +210,10 @@ export function captureException(
   }
 
   Sentry.withScope((scope) => {
-    if (tags) {
-      for (const [key, value] of Object.entries(tags)) scope.setTag(key, value);
-    }
+    setCallerTags(scope, tags);
     if (c) {
       scope.setTag('method', c.req.method);
-      scope.setTag('path', c.req.path);
-      scope.setContext('request', {
-        method: c.req.method,
-        path: c.req.path,
-        userAgent: c.req.header('user-agent') ?? undefined
-      });
+      scope.setTag('route_template', safeMatchedRouteLabel(c));
     }
 
     // Surface the Postgres SQLSTATE (unwrapping Drizzle's `.cause` chain) as a
@@ -145,10 +259,8 @@ export function captureMessage(
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
-    scope.setExtras(extra ?? {});
-    if (tags) {
-      for (const [key, value] of Object.entries(tags)) scope.setTag(key, value);
-    }
+    void extra;
+    setCallerTags(scope, tags);
     Sentry.captureMessage(message);
   });
 }
@@ -177,9 +289,10 @@ export function setSentryRequestContext(ctx: {
     return;
   }
   Sentry.setUser({ id: ctx.userId });
+  Sentry.setTag('user_id', ctx.userId);
   Sentry.setTag('scope', ctx.scope);
-  Sentry.setTag('orgId', ctx.orgId ?? 'none');
-  Sentry.setTag('partnerId', ctx.partnerId ?? 'none');
+  Sentry.setTag('org_id', ctx.orgId ?? 'none');
+  Sentry.setTag('partner_id', ctx.partnerId ?? 'none');
 }
 
 /**

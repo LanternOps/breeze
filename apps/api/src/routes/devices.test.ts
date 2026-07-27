@@ -24,6 +24,34 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
   generateEnrollmentKey: vi.fn(() => 'ek_test123')
 }));
 
+// Partner-cap enforcement (#2776 task 3.4). Mocked at the wiring level — see
+// enrollmentKeys.test.ts's identically-named helper for rationale.
+const assertTtlWithinCapMock = vi.fn(
+  async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
+);
+vi.mock('../services/enrollmentDefaults', () => ({
+  assertTtlWithinCap: (...args: [string, number | undefined]) =>
+    assertTtlWithinCapMock(...args),
+}));
+
+/**
+ * Configure the mocked partner-cap gate for the current test. Mirrors the
+ * real assertTtlWithinCap contract: null when ttlMinutes is undefined or at/
+ * under the cap, an error string naming the cap when it's exceeded. Default
+ * (set in the outer beforeEach) models "no partner cap configured" — the
+ * product-default ceiling of 525_600 minutes.
+ */
+function mockEnrollmentDefaults(opts: { maxTtlMinutes: number }) {
+  assertTtlWithinCapMock.mockImplementation(
+    async (_orgId: string, ttlMinutes: number | undefined) => {
+      if (ttlMinutes === undefined) return null;
+      return ttlMinutes > opts.maxTtlMinutes
+        ? `ttlMinutes exceeds the partner maximum of ${opts.maxTtlMinutes} minutes`
+        : null;
+    },
+  );
+}
+
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: new Proxy({} as Record<string, { resource: string; action: string }>, {
     get(_target, prop: string) {
@@ -200,6 +228,10 @@ describe('device routes', () => {
       where: vi.fn(() => Promise.resolve())
     }) as any);
     vi.mocked(db.execute).mockImplementation(() => Promise.resolve([]) as any);
+    // resetAllMocks above also wipes assertTtlWithinCapMock's implementation —
+    // restore the permissive default (mirrors "no partner cap configured",
+    // i.e. the product-default 525_600-minute ceiling from resolveEnrollmentDefaults).
+    mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
     app = new Hono();
     app.route('/devices', deviceRoutes);
   });
@@ -441,16 +473,192 @@ describe('device routes', () => {
       expect(res.status).toBe(200);
       expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(1439);
       expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(1441);
+    });
 
-      // Over-cap → clamped to 365 days.
-      valuesMock = captureExpiry();
-      res = await app.request('/devices/onboarding-token', {
+    // #2776 task 3.4 (CRITICAL follow-up): this route used to silently clamp
+    // an over-cap ttlMinutes down to ENROLL_TOKEN_MAX_TTL_MINUTES (365 days)
+    // instead of rejecting it — exactly the silent-discard bypass the
+    // enrollment-defaults plan was written to close. It must now 400 and
+    // name the cap, same as the enrollment-keys mint routes. Since #2777 the
+    // rejection is issued by the request schema itself, before the handler.
+    it('rejects an over-cap ttlMinutes instead of silently clamping it (#2776)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttlMinutes: 99_999_999 })
       });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('525600');
+      // Rejected before the site lookup / insert ever fire.
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an explicit ttlMinutes above a partner-configured cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 43200 })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('1440');
+      expect(assertTtlWithinCapMock).toHaveBeenCalledWith('org-123', 43200);
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('allows an explicit ttlMinutes at exactly a partner-configured cap (#2776)', async () => {
+      mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 1440 })
+      });
+
       expect(res.status).toBe(200);
-      expect(expiryMinutesFrom(valuesMock)).toBe(525_600);
+      expect(valuesMock).toHaveBeenCalled();
+    });
+
+    it('honours ttlMinutes from the request body', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 1, ttlMinutes: 10080 })
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const ttlMs = new Date(body.expiresAt).getTime() - Date.now();
+      // 7 days, allowing 60s of test-execution drift
+      expect(ttlMs).toBeGreaterThan(10080 * 60 * 1000 - 60_000);
+      expect(ttlMs).toBeLessThan(10080 * 60 * 1000 + 60_000);
+    });
+
+    it('rejects ttlMinutes above the 525_600 cap', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 525_601 })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-numeric ttlMinutes instead of silently defaulting', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttlMinutes: 'forever' })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    // Regression (#2777): first-run guided setup (web setup/EnrollDeviceStep)
+    // POSTs with NO body, while fetchWithAuth still sets
+    // `Content-Type: application/json` unconditionally. Under a plain
+    // zValidator('json', ...) that combination 400s with a plain-text
+    // "Malformed JSON in request body" and onboarding dies at the last step.
+    // The route must still mint a default 60-minute single-use token.
+    it('accepts a bodyless POST that still carries a JSON content-type (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      const valuesMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.token).toContain('enroll_');
+      const { expiresAt, maxUsage } = valuesMock.mock.calls[0]![0] as {
+        expiresAt: Date;
+        maxUsage: number;
+      };
+      expect(maxUsage).toBe(1);
+      const minutes = Math.round((expiresAt.getTime() - Date.now()) / 60000);
+      expect(minutes).toBeGreaterThanOrEqual(59);
+      expect(minutes).toBeLessThanOrEqual(61);
+    });
+
+    // Same shape, but with an explicitly empty string body (what a
+    // `curl -X POST -H 'Content-Type: application/json'` script client sends).
+    it('accepts an empty-string body with a JSON content-type (#2777)', async () => {
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: ''
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    // A body that is present but genuinely malformed must still 400 — and the
+    // failure body must be JSON, not Hono's plain-text HTTPException text, so
+    // `await res.json()` in the client's error path doesn't throw.
+    it('returns a JSON 400 for a genuinely malformed body (#2777)', async () => {
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: '{not json'
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      const body = await res.json();
+      expect(body.error).toContain('Malformed JSON');
     });
   });
 

@@ -12,6 +12,7 @@ import {
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
+import { envInt } from '../utils/envInt';
 
 /**
  * Offboarding drain state (#2774).
@@ -29,9 +30,10 @@ import { invalidateAgentTenantCache } from './tenantStatus';
  * adversarial suspensions must sever immediately (see tenantLifecycle.ts).
  */
 
-const RAW_WINDOW_HOURS = Number(process.env.OFFBOARDING_DRAIN_WINDOW_HOURS ?? '72');
-export const OFFBOARDING_DRAIN_WINDOW_HOURS =
-  Number.isFinite(RAW_WINDOW_HOURS) && RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
+// `envInt` cannot return a non-finite number, so the old `Number.isFinite`
+// arm here was unfalsifiable; the `>= 1` floor is the part that matters.
+const RAW_WINDOW_HOURS = envInt('OFFBOARDING_DRAIN_WINDOW_HOURS', 72);
+export const OFFBOARDING_DRAIN_WINDOW_HOURS = RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
 
 const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
 
