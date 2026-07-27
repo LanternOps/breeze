@@ -85,7 +85,23 @@ vi.mock('../../services/permissions', () => ({
 vi.mock('../../services/reportGenerationService', () => ({
   generateReport: vi.fn(),
   previousBaselineFor: vi.fn(),
-  siteScopeRequestAllowed: vi.fn(),
+  assertReportExecutionPreflight: vi.fn(),
+  UnexecutableReportScopeError: class extends Error {},
+}));
+
+// This suite proves audit-byte fidelity, not scope semantics — the site-scope
+// authority layer is exercised by data.sitescope.test.ts, so stub it permissive.
+vi.mock('../../services/siteScope', () => ({
+  decodeSiteScope: vi.fn(() => ({ kind: 'unrestricted' })),
+  intersectSiteScopes: vi.fn((a: unknown) => a),
+  isSiteScopeSubset: vi.fn(() => true),
+  persistedSiteScopeValues: vi.fn(() => ({})),
+  reportRunMultiOrgScopeSqlPredicate: vi.fn(() => ({})),
+  reportRunScopeSqlPredicate: vi.fn(() => ({})),
+  resolveRequestReportAuthority: vi.fn(),
+  resolveRequestReportAuthorityMap: vi.fn(),
+  siteScopeFingerprint: vi.fn(() => 'fp'),
+  unrestrictedReportRunScopeSqlPredicate: vi.fn(() => ({})),
 }));
 
 vi.mock('./helpers', () => ({
@@ -115,12 +131,16 @@ function app() {
   return instance;
 }
 
-function completedRun() {
+/** Access shape returned by getReportRunWithOrgCheck post site-scope authority. */
+function runAccess() {
   return {
-    id: RUN_ID,
-    reportId: '44444444-4444-4444-8444-444444444444',
-    status: 'completed',
-    orgId: ORG_ID,
+    metadata: {
+      id: RUN_ID,
+      reportId: '44444444-4444-4444-8444-444444444444',
+      orgId: ORG_ID,
+    },
+    authority: { scope: { kind: 'unrestricted' } },
+    runScopePredicate: {},
   };
 }
 
@@ -128,7 +148,7 @@ describe('report run sensitive-read audit', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectRows.length = 0;
-    getReportRunMock.mockResolvedValue(completedRun());
+    getReportRunMock.mockResolvedValue(runAccess());
     rowsToCsvMock.mockImplementation((rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
     rowsToTsvMock.mockImplementation((rows: unknown[]) => `tsv:${JSON.stringify(rows)}`);
   });
@@ -136,6 +156,9 @@ describe('report run sensitive-read audit', () => {
   it('audits the exact CSV response bytes and actual result-row count', async () => {
     const rows = [{ hostname: 'pc-1' }, { hostname: 'pc-2' }];
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: { rows, rowCount: 999 },
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -163,6 +186,9 @@ describe('report run sensitive-read audit', () => {
     async (format) => {
       const result = { rows: [{ hostname: 'pc-1' }], rowCount: 1 };
       selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
         result,
         reportType: 'device_inventory',
         reportName: 'Inventory',
@@ -190,6 +216,9 @@ describe('report run sensitive-read audit', () => {
   it('audits TSV-backed Excel output after serialization', async () => {
     const rows = [{ hostname: 'pc-1' }];
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: { rows },
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -219,7 +248,15 @@ describe('report run sensitive-read audit', () => {
   });
 
   it('does not audit a non-completed run', async () => {
-    getReportRunMock.mockResolvedValueOnce({ ...completedRun(), status: 'failed' });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'failed',
+      result: null,
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'csv',
+    }]);
 
     const res = await app().request(`/reports/runs/${RUN_ID}/download`);
 
@@ -229,6 +266,9 @@ describe('report run sensitive-read audit', () => {
 
   it('does not audit an empty tabular report', async () => {
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: { rows: [] },
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -243,6 +283,9 @@ describe('report run sensitive-read audit', () => {
 
   it.each(['json', 'pdf'] as const)('does not audit an empty %s report payload', async (format) => {
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: null,
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -263,6 +306,9 @@ describe('report run sensitive-read audit', () => {
     ['scalar', 'malformed'],
   ])('does not audit an empty or malformed JSON report payload: %s', async (_label, result) => {
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result,
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -278,6 +324,9 @@ describe('report run sensitive-read audit', () => {
   it('allows a meaningful summary-only JSON report and audits zero result rows', async () => {
     const result = { rows: [], summary: { totalDevices: 0 }, generatedAt: '2026-07-25T00:00:00Z' };
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result,
       reportType: 'executive_summary',
       reportName: 'Executive Summary',
@@ -297,6 +346,9 @@ describe('report run sensitive-read audit', () => {
 
   it('does not audit a serialization failure', async () => {
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: { rows: [{ hostname: 'pc-1' }] },
       reportType: 'device_inventory',
       reportName: 'Inventory',
@@ -315,6 +367,9 @@ describe('report run sensitive-read audit', () => {
   it('keeps successful response bytes unchanged when audit delivery is non-blocking', async () => {
     const rows = [{ hostname: 'pc-1' }];
     selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
       result: { rows },
       reportType: 'device_inventory',
       reportName: 'Inventory',

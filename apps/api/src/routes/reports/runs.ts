@@ -352,7 +352,7 @@ runsRoutes.get(
       c.header('Content-Type', 'application/json; charset=UTF-8');
       auditSensitiveRead(c, {
         action: 'report.run.download',
-        orgId: run.orgId,
+        orgId: row.orgId,
         resourceType: 'report_run',
         resourceId: runId,
         format,
@@ -372,7 +372,7 @@ runsRoutes.get(
       c.header('Content-Disposition', `attachment; filename="${baseName}.xls"`);
       auditSensitiveRead(c, {
         action: 'report.run.download',
-        orgId: run.orgId,
+        orgId: row.orgId,
         resourceType: 'report_run',
         resourceId: runId,
         format,
@@ -387,7 +387,7 @@ runsRoutes.get(
     c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
     auditSensitiveRead(c, {
       action: 'report.run.download',
-      orgId: run.orgId,
+      orgId: row.orgId,
       resourceType: 'report_run',
       resourceId: runId,
       format,
