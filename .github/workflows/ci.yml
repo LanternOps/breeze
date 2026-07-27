@@ -1563,6 +1563,11 @@ jobs:
           # Required in production by the Wave 3 live-authorization epoch
           # rollout — compat until the fleet drains version-one writers.
           EVENT_PERMISSION_EPOCH_MODE=compat
+          # Wave 4 remote-access runtime config — required by the base
+          # docker-compose.yml via ${VAR:?...} interpolation guards.
+          REMOTE_ACCESS_ADMISSION_MODE=open
+          REMOTE_WS_AUTH_MODE=post_upgrade
+          REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
           EOF
 
       - name: Build and start containers
