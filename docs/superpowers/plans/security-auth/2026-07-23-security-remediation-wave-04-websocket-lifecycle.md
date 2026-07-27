@@ -603,6 +603,21 @@ drop the denial from the record — a denied attempt should still be auditable, 
 `platformAdmin.ts` is assigned to WAVE 4 for this fix. Wave 7 must not modify that file, to avoid a
 cross-wave merge conflict on a security-audit path.
 
+**D4 — `apps/web/src/components/remote/VncViewer.tsx` is added to Task 8's file list (approved
+2026-07-26).** Task 8 requires that a pre-open rejection become a distinct recoverable state while
+"after `open`, preserve existing disconnected behavior". Those cannot both hold with the file list as
+written: `VncViewer` reports only a bare `onDisconnect()`, so `VncViewerPage` cannot tell a refused
+handshake from a post-open drop. Implementing Task 8 within the original list forced every viewer
+disconnect to become recoverable — which stops the page from releasing the tunnel on an ordinary
+post-open disconnect, leaving a live network path to a customer device open until it times out. That
+is a worse outcome than the defect the task exists to fix.
+
+`VncViewer` already has both facts: it registers a `connect` listener and reads `detail.clean` on
+disconnect. It simply does not forward them. Implement: widen `onDisconnect` to carry whether the
+session had opened and whether the close was clean, and have `VncViewerPage` present the
+rejected/Retry state ONLY when the session never opened, restoring the previous
+release-tunnel-and-navigate behavior for post-open disconnects. Cover both branches with tests.
+
 Task numbering is retained so every existing cross-reference stays valid; only the execution sequence
 changes.
 
