@@ -38,6 +38,12 @@ function renderApiEnvironment(overrides: Record<string, string>): Record<string,
       POSTGRES_IMAGE_REF: IMAGE_DIGEST,
       POSTGRES_PASSWORD: 'compose-postgres-password',
       REDIS_IMAGE_REF: IMAGE_DIGEST,
+      // Remote-access admission/lease configuration is required-with-no-default
+      // (`${VAR:?}`) in docker-compose.yml, so `config` cannot render without
+      // it. Values mirror .env.example.
+      REMOTE_ACCESS_ADMISSION_MODE: 'open',
+      REMOTE_WS_AUTH_MODE: 'post_upgrade',
+      REMOTE_WS_REDIS_TOPOLOGY: 'standalone-single-primary',
       TURN_SECRET: 'compose-turn-secret',
       ...overrides,
     },
