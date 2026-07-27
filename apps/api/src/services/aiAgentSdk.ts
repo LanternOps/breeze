@@ -29,7 +29,7 @@ import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
-import { assertNoPlaintextSecret } from './actionIntents/secretBearingTools';
+import { assertNoPlaintextSecret, isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 
@@ -421,8 +421,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         return { allowed: true };
       }
 
-      // Action plan / hybrid plan mode: check if tool matches an approved plan step
-      if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
+      // Action plan / hybrid plan mode: check if tool matches an approved plan step.
+      // Secret-bearing tools are excluded — they must fall through to the tier-3
+      // createActionIntent branch so the minted credential has an immutable intent
+      // row to be sealed into. (The general case, where any tier-3 tool can execute
+      // via an approved plan with no intent row, is tracked separately in
+      // internal/security/tier3-plan-mode-intent-bypass.md.)
+      if (
+        (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan')
+        && session.activePlanId
+        && !isSecretBearingTool(toolName)
+      ) {
         const match = matchPlanStep(session, toolName, input);
         if (match.matches) {
           // Emit plan_step_start event

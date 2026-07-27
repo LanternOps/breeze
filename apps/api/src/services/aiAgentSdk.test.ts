@@ -1585,30 +1585,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
   });
 
-  describe('Important 4: tier-3-but-intentless paths pin intentId===undefined (current behavior; Task 7 fixes the fail-closed refusal this causes)', () => {
-    it('plan-step shortcut: intentId is undefined for a secret-bearing tool matched against an approved plan step', async () => {
-      vi.mocked(checkGuardrails).mockReturnValue({
-        allowed: true,
-        tier: 3,
-        requiresApproval: true,
-        description: 'Reset password',
-      } as any);
-      mockInsertValues();
-      const session = makeActiveSession({
-        approvalMode: 'action_plan',
-        activePlanId: 'plan-1',
-        approvedPlanSteps: new Map([[0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com' } }]]),
-      });
-
-      const result = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
-
-      expect(result).toEqual({ allowed: true });
-      expect((result as { intentId?: string }).intentId).toBeUndefined();
-      // No durable intent was ever created on this path — confirms this is
-      // the plan-step shortcut, not a disguised tier-3 durable run.
-      expect(mockCreateActionIntent).not.toHaveBeenCalled();
-    });
-
+  describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (out of scope for Task 7 — the plan-step sibling case is fixed below; general defect tracked in internal/security/tier3-plan-mode-intent-bypass.md)', () => {
     it('PAM-helper session: intentId is undefined for a secret-bearing tool auto-approved by organization policy', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -1635,6 +1612,87 @@ describe('inline secret-bearing completion (Task 6)', () => {
       // No durable intent was ever created on this path — confirms this is
       // the PAM-governed helper path, not the tier-3 durable-intent flow.
       expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Task 7: plan-step shortcut excludes secret-bearing tools', () => {
+    beforeEach(() => {
+      // The plan-secret and plan-decision-blocking assertions below only need
+      // createActionIntent to have been reached, not the full release CAS —
+      // stop right after it via a 'rejected' decision, same shortcut the
+      // existing Tier-3 tests above use to avoid re-driving revalidation/CAS
+      // plumbing that is orthogonal to what this describe is proving.
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+    });
+
+    it.each(['action_plan', 'hybrid_plan'] as const)(
+      'does not take the plan shortcut for a secret-bearing tool matched against an approved plan step in %s mode — falls through to createActionIntent',
+      async (mode) => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Reset password',
+        } as any);
+        mockInsertReturning({ id: 'exec-plan-secret' });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-plan-secret', approvalRequestIds: ['appr-plan-secret'] }),
+        );
+        const session = makeActiveSession({
+          approvalMode: mode,
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com', reason: 'r' } }],
+          ]),
+        });
+
+        const result = await createSessionPreToolUse(session)(
+          'm365_reset_password',
+          { userIdentifier: 'a@b.com', reason: 'r' },
+        );
+
+        // The matched plan step is proof the shortcut's own matching logic
+        // would have fired here — reaching createActionIntent anyway (rather
+        // than the plan_step_start/short-circuit `{allowed:true}` the
+        // shortcut returns) is the direct evidence the gate excluded this
+        // tool from taking it.
+        expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+          toolName: 'm365_reset_password',
+        }));
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'plan_step_start' }),
+        );
+      },
+    );
+
+    it('still takes the plan shortcut for a non-secret tool (regression guard: the gate must not broaden beyond secret-bearing tools)', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      const values = mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { deviceId: 'd-1' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      expect(result).toEqual({ allowed: true });
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-1',
+        toolName: 'execute_command',
+        status: 'executing',
+      }));
+      expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'plan_step_start' }));
     });
   });
 });
