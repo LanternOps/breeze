@@ -180,11 +180,18 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services', () => ({}));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn(), writeAuditEvent: vi.fn() }));
 vi.mock('../services/deploymentTargetResolver', () => ({ resolveDeploymentTargets: vi.fn().mockResolvedValue([]) }));
-vi.mock('../services/s3Storage', () => ({
-  uploadBinary: vi.fn(),
-  getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/presigned')),
-  isS3Configured: vi.fn(() => false),
-}));
+vi.mock('../services/s3Storage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/s3Storage')>();
+  return {
+    uploadBinary: vi.fn(),
+    getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/presigned')),
+    isS3Configured: vi.fn(() => false),
+    // routes/software.ts branches on these with `instanceof` (#2794); a mock
+    // that omits them makes the export access throw.
+    S3ConfigError: actual.S3ConfigError,
+    S3OperationError: actual.S3OperationError,
+  };
+});
 vi.mock('../services/redis', () => ({
   isRedisAvailable: vi.fn(() => false),
   getRedisConnection: vi.fn(),
