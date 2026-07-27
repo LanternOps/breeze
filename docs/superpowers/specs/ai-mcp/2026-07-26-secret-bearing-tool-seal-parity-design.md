@@ -290,11 +290,28 @@ never "store it in the clear".
    `resultSecrets.ts` behaviour: drop plaintext, set
    `temporaryPasswordSealFailed`. `sealToolSecrets` must **substitute** `llmText`
    here, or chat promises a reveal that 404s.
-2. **Secret with no intent to live in.** Reachable today via plan mode (§2.4);
-   §4.6 closes it for secret-bearing tools. The check must run in the wrapper
-   **before** `llmText` is composed — postToolUse discovers it too late to
-   change what the model and browser were told, and its throw would be
-   swallowed. Drop the secret, tell the operator to re-reset.
+2. **No intent for the credential to live in.** Reachable today via plan mode
+   (§2.4); §4.6 closes it for secret-bearing tools.
+
+   **Revised after Task 5 review (plan owner ruling).** The original design
+   dropped the credential *after* the reset had happened. That is wrong: the
+   wrapper knows whether an intent exists **before** it invokes the handler, so
+   it can refuse outright rather than performing an irreversible provider-side
+   reset it already knows it cannot record. The guard therefore runs
+   **pre-execution**, and the handler is never called.
+
+   Two distinct operator messages, which must not be conflated:
+   - *refused* — the reset did **not** happen; retrying is safe;
+   - `SECRET_UNAVAILABLE_TEXT` — the reset **did** happen but the credential
+     could not be sealed; the operator must reset again.
+
+   This also removes a live failure mode: without it, a plan-mode reset would
+   reset, discard the credential, instruct the operator to reset again, and
+   repeat — an unbounded loop of real password resets.
+
+   The check must be in the wrapper, not the postToolUse callback:
+   `safePostToolUse` swallows callback exceptions, so a throw there would be
+   absorbed while the model was still told the reset succeeded.
 3. **Size cap.** The worker re-checks `MAX_RESULT_BYTES` after sealing
    (`intentReleaseWorker.ts:343-350`) since ciphertext exceeds plaintext. The
    inline path has no such check; add the equivalent.
