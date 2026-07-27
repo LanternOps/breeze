@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
@@ -419,4 +420,29 @@ func TestReconcilePendingRotationDiscardsExpiredStagedSet(t *testing.T) {
 // that need to manipulate the file directly.
 func secretsPathFor(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), "secrets.yaml")
+}
+
+// An agent that 401'd its way into auth-dead and then repaired its credential
+// via the per-tick reconcile must be allowed to use it immediately.
+//
+// reconcilePendingRotation deliberately runs BEFORE the ShouldSkip() gate,
+// precisely so a stranded agent can recover mid-backoff. If applying the
+// rotated credentials doesn't clear the monitor, the agent holds a known-good
+// token and still sits out the remaining window before it may prove it — a wait
+// bounded only by maxBackoff, which is 30 minutes.
+func TestApplyRotatedCredentialsClearsAuthDeadState(t *testing.T) {
+	h, _ := newRotationTestHeartbeat(t, "http://127.0.0.1:1")
+	h.authMon = authstate.NewMonitor(1)
+
+	h.authMon.RecordAuthFailure() // threshold=1 -> auth-dead
+	if !h.authMon.ShouldSkip() {
+		t.Fatal("precondition: expected auth-dead after the failure threshold")
+	}
+
+	h.applyRotatedCredentials("brz_new_agent", "brz_new_watchdog", "brz_new_helper")
+
+	if h.authMon.ShouldSkip() {
+		t.Fatal("expected the auth monitor cleared after a confirmed rotation — " +
+			"the agent holds known-good credentials and must not serve out the backoff")
+	}
 }

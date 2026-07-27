@@ -224,9 +224,15 @@ func ConfigDir() string {
 // config default and the heartbeat clamp don't drift apart.
 const DefaultPatchScanIntervalHours = 24
 
+// DefaultHeartbeatIntervalSeconds is the default heartbeat cadence. Shared for
+// the same reason as the patch-scan default above: authstate's backoff cap is
+// tuned to sit ABOVE this interval (a cap at or below it suppresses nothing),
+// and that invariant is only enforceable if both sides read one constant.
+const DefaultHeartbeatIntervalSeconds = 60
+
 func Default() *Config {
 	return &Config{
-		HeartbeatIntervalSeconds:     60,
+		HeartbeatIntervalSeconds:     DefaultHeartbeatIntervalSeconds,
 		MetricsIntervalSeconds:       30,
 		ProcessSampleIntervalSeconds: 180,
 		PatchScanIntervalHours:       DefaultPatchScanIntervalHours,

@@ -3774,6 +3774,17 @@ func (h *Heartbeat) applyRotatedCredentials(authToken, watchdogAuthToken, helper
 	h.config.HelperAuthToken = helperAuthToken
 	h.mu.Unlock()
 
+	// The credentials are known-good — the server just confirmed the promotion.
+	// Clearing the auth monitor here matters because this is the ONE repair path
+	// that runs while auth-dead: the per-tick reconcile above deliberately sits
+	// in front of the ShouldSkip() gate, so an agent that 401'd its way into
+	// backoff can fix its token and would otherwise still have to serve out the
+	// remaining window before it was allowed to prove it. Without this the wait
+	// is bounded only by maxBackoff, which is now 30 minutes rather than 30s.
+	if h.authMon != nil {
+		h.authMon.RecordSuccess()
+	}
+
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
 	h.sendWatchdogTokenUpdate(watchdogAuthToken)
 
