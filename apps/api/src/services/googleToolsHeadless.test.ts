@@ -12,14 +12,19 @@ import {
   executeGoogleToolHeadless,
   GoogleConnectionUnavailableError,
   GOOGLE_HEADLESS_ACTIONS,
+  GOOGLE_HEADLESS_SECRET_ACTIONS,
 } from './googleToolsHeadless';
 
 beforeEach(() => resolveMock.mockReset());
 
 describe('googleToolsHeadless parity', () => {
-  it('map covers EXACTLY the tier-3 googleToolTiers entries', () => {
-    const tier3 = Object.entries(googleToolTiers).filter(([, t]) => t === 3).map(([n]) => n).sort();
-    expect(Object.keys(GOOGLE_HEADLESS_ACTIONS).sort()).toEqual(tier3);
+  it('the union of GOOGLE_HEADLESS_ACTIONS and GOOGLE_HEADLESS_SECRET_ACTIONS covers EXACTLY the tier-3 googleToolTiers entries', () => {
+    const headlessKeys = new Set([
+      ...Object.keys(GOOGLE_HEADLESS_ACTIONS),
+      ...Object.keys(GOOGLE_HEADLESS_SECRET_ACTIONS),
+    ]);
+    const tier3 = new Set(Object.entries(googleToolTiers).filter(([, t]) => t === 3).map(([k]) => k));
+    expect(headlessKeys).toEqual(tier3);
   });
   it('isHeadlessGoogleTool: true for a tier-3 tool, false for tier-1 and unknown', () => {
     expect(isHeadlessGoogleTool('google_suspend_user')).toBe(true);
@@ -45,6 +50,12 @@ describe('googleToolsHeadless parity', () => {
     for (const key of Object.keys(GOOGLE_HEADLESS_ACTIONS)) {
       const expectedName = toExpectedActionName(key);
       const action = GOOGLE_HEADLESS_ACTIONS[key];
+      expect(action).toBeDefined();
+      expect(action?.name).toBe(expectedName);
+    }
+    for (const key of Object.keys(GOOGLE_HEADLESS_SECRET_ACTIONS)) {
+      const expectedName = toExpectedActionName(key);
+      const action = GOOGLE_HEADLESS_SECRET_ACTIONS[key];
       expect(action).toBeDefined();
       expect(action?.name).toBe(expectedName);
     }

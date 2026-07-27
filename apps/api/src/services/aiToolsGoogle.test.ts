@@ -30,6 +30,7 @@ import * as client from './googleClient';
 import * as emailSvc from './email';
 import {
   googleLookupUserHandler,
+  googleResetPasswordAction,
   googleResetPasswordHandler,
   googleSuspendUserHandler,
   googleSignOutHandler,
@@ -80,7 +81,9 @@ beforeEach(() => {
 describe('tier-3 guards', () => {
   it('reset requires a reason', async () => {
     const out = await googleResetPasswordHandler({ userEmail: 'u@x.com' }, auth, SESSION);
-    expect(out).toContain('missing_reason');
+    expect(out.kind).toBe('error');
+    if (out.kind !== 'error') throw new Error('expected error');
+    expect(out.llmText).toContain('missing_reason');
   });
   it('lookup requires a user email', async () => {
     const out = await googleLookupUserHandler({}, auth, SESSION);
@@ -106,11 +109,14 @@ describe('directory operations', () => {
     expect(out).toContain('u@x.com');
   });
 
-  it('reset password returns a temporary password and forces change', async () => {
+  it('reset password returns a success carrier with the credential out of band and forces change', async () => {
     const update = vi.fn().mockResolvedValue({});
     (client.getDirectoryClient as any).mockReturnValue({ users: { update } });
-    const out = await googleResetPasswordHandler({ userEmail: 'u@x.com', reason: 'locked out' }, auth, SESSION);
-    expect(out).toContain('Temporary password');
+    const result = await googleResetPasswordHandler({ userEmail: 'u@x.com', reason: 'locked out' }, auth, SESSION);
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('expected success');
+    expect(result.secrets.temporaryPassword.length).toBeGreaterThan(0);
+    expect(result.llmText).not.toContain(result.secrets.temporaryPassword);
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ userKey: 'u@x.com', requestBody: expect.objectContaining({ changePasswordAtNextLogin: true }) }),
     );
@@ -686,5 +692,49 @@ describe('security drift + email report', () => {
     (emailSvc.getEmailService as any).mockReturnValue(null);
     const out = await googleEmailReportHandler({}, auth, SESSION);
     expect(out).toContain('email_not_configured');
+  });
+});
+
+// makeGoogleCtx builds a bare GoogleToolContext for tests that call an action
+// function directly (bypassing session/connection resolution) and wires the
+// already-mocked getDirectoryClient (see the vi.mock('./googleClient', ...)
+// above) to return the fake directory client for the duration of the test —
+// the same pattern every other test in this file uses via
+// `(client.getDirectoryClient as any).mockReturnValue(...)`.
+function makeGoogleCtx(directory: any) {
+  (client.getDirectoryClient as any).mockReturnValue(directory);
+  return {
+    keyJson: '{}',
+    conn: { adminEmail: 'admin@b.com', orgId: 'org-1' },
+    __directory: directory,
+  } as any;
+}
+
+describe('googleResetPasswordAction carrier', () => {
+  it('returns a success carrier whose llmText never contains the credential', async () => {
+    const updated: Array<{ requestBody: { password: string } }> = [];
+    const ctx = makeGoogleCtx({
+      users: { update: async (args: any) => { updated.push(args); return {}; } },
+    });
+
+    const result = await googleResetPasswordAction(ctx, {
+      userEmail: 'a@b.com',
+      reason: 'helpdesk ticket 1',
+    });
+
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('expected success');
+
+    const pw = updated[0]!.requestBody.password;
+    expect(pw.length).toBeGreaterThan(0);
+    expect(result.secrets.temporaryPassword).toBe(pw);
+    expect(result.llmText).not.toContain(pw);
+    expect(result.llmText).toContain('a@b.com');
+  });
+
+  it('returns an error carrier with no secrets when the reason is missing', async () => {
+    const result = await googleResetPasswordAction(makeGoogleCtx({}), { userEmail: 'a@b.com' });
+    expect(result.kind).toBe('error');
+    expect(result).not.toHaveProperty('secrets');
   });
 });

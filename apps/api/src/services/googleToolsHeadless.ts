@@ -31,8 +31,10 @@ import {
   googleRemoveLicenseAction,
   type GoogleToolContext,
 } from './aiToolsGoogle';
+import type { SecretToolResult } from './actionIntents/secretBearingTools';
 
 type GoogleAction = (ctx: GoogleToolContext, input: Record<string, unknown>) => Promise<string>;
+type GoogleSecretAction = (ctx: GoogleToolContext, input: Record<string, unknown>) => Promise<SecretToolResult>;
 
 /** Thrown when the org's Google connection is missing/rotated/inactive at release. */
 export class GoogleConnectionUnavailableError extends Error {
@@ -43,7 +45,6 @@ export class GoogleConnectionUnavailableError extends Error {
 }
 
 export const GOOGLE_HEADLESS_ACTIONS: Record<string, GoogleAction> = {
-  google_reset_password: googleResetPasswordAction,
   google_suspend_user: googleSuspendUserAction,
   google_restore_user: googleRestoreUserAction,
   google_signout: googleSignOutAction,
@@ -64,7 +65,15 @@ export const GOOGLE_HEADLESS_ACTIONS: Record<string, GoogleAction> = {
   google_assign_license: googleAssignLicenseAction,
   google_remove_license: googleRemoveLicenseAction,
 };
-// Invariant: keys(GOOGLE_HEADLESS_ACTIONS) === tier-3 googleToolTiers set.
+
+/** Secret-bearing headless actions. Kept in a separate, precisely-typed map so
+ *  the 20 ordinary actions keep their Promise<string> contract. */
+export const GOOGLE_HEADLESS_SECRET_ACTIONS: Record<string, GoogleSecretAction> = {
+  google_reset_password: googleResetPasswordAction,
+};
+
+// Invariant: keys(GOOGLE_HEADLESS_ACTIONS) ∪ keys(GOOGLE_HEADLESS_SECRET_ACTIONS)
+// === tier-3 googleToolTiers set.
 // Enforced by the parity unit test in googleToolsHeadless.test.ts.
 
 export function isHeadlessGoogleTool(name: string): boolean {
