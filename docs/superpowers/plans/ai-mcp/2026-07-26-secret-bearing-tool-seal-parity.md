@@ -594,6 +594,29 @@ Match the file's existing mock helpers; if `mockHeadlessGoogleSecret` / `runRele
 Run: `pnpm --filter @breeze/api exec vitest run src/jobs/intentReleaseWorker.test.ts -t "secret-bearing release"`
 Expected: FAIL — `stored.temporaryPasswordEnc` is `undefined` and `stored.raw` holds the prose.
 
+- [ ] **Step 3a: Repair the routing gate FIRST — Task 2 broke it**
+
+Task 2 removed `google_reset_password` from `GOOGLE_HEADLESS_ACTIONS`, but `isHeadlessGoogleTool` (`googleToolsHeadless.ts:79-81`) tests membership of that map alone. The worker's gate at `intentReleaseWorker.ts:265-267` is:
+
+```ts
+!isHeadlessGoogleTool(intent.actionName)
+  && !isHeadlessM365Tool(intent.actionName)
+  && requiresLiveSession(intent.actionName)
+```
+
+so on the current branch a durable `google_reset_password` release fails as `session_required` before it ever reaches the invoke. Fix the predicate to mean "this Google tool can run headless", which is true of the secret action too:
+
+```ts
+export function isHeadlessGoogleTool(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_ACTIONS, name)
+    || Object.prototype.hasOwnProperty.call(GOOGLE_HEADLESS_SECRET_ACTIONS, name);
+}
+```
+
+The worker is its only non-test consumer, so this widening is contained.
+
+**The worker's unit tests mock `isHeadlessGoogleTool`** (`intentReleaseWorker.test.ts:37`), so they cannot catch this class of regression — the full suite stayed green while the routing was broken. Add a real (unmocked) assertion in `googleToolsHeadless.test.ts` that `isHeadlessGoogleTool('google_reset_password') === true`, so the gate is pinned by a test that exercises the real function.
+
 - [ ] **Step 3: Branch the invoke on secret-bearing tools**
 
 In `apps/api/src/jobs/intentReleaseWorker.ts`, add imports:
