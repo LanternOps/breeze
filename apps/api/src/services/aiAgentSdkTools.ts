@@ -36,15 +36,25 @@ import {
   googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
   googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
+import {
+  sealToolSecrets,
+  SECRET_UNAVAILABLE_TEXT,
+  type SecretToolResult,
+} from './actionIntents/secretBearingTools';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
  * rate limits, and approval gates. Blocks execution until resolved.
+ *
+ * `intentId` (Task 6) is set only when the tool call has a durable action
+ * intent row it can seal a secret into. Secret-bearing tools use its absence
+ * to fail closed (see makeSessionAwareHandler) rather than mint a credential
+ * with nowhere safe to store it.
  */
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,
-) => Promise<{ allowed: true } | { allowed: false; error: string }>;
+) => Promise<{ allowed: true; intentId?: string } | { allowed: false; error: string }>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
@@ -57,6 +67,10 @@ export type PostToolUseCallback = (
   output: string,
   isError: boolean,
   durationMs: number,
+  /** Present only for secret-bearing tools that sealed a credential. Carries
+   *  the blob destined for action_intents.result, which must never appear in
+   *  `output`. */
+  sealed?: { intentId: string; sealedResult: Record<string, unknown> },
 ) => Promise<void>;
 
 // ============================================
@@ -232,11 +246,12 @@ async function safePostToolUse(
   output: string,
   isError: boolean,
   durationMs: number,
+  sealed?: { intentId: string; sealedResult: Record<string, unknown> },
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
     await withToolTimeout(
-      onPostToolUse(toolName, args, output, isError, durationMs),
+      onPostToolUse(toolName, args, output, isError, durationMs, sealed),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
     );
@@ -415,7 +430,11 @@ function makeSessionAwareHandler(
   toolName: string,
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
-  sessionHandler: (args: Record<string, unknown>, auth: AuthContext, sessionId: string) => Promise<string>,
+  sessionHandler: (
+    args: Record<string, unknown>,
+    auth: AuthContext,
+    sessionId: string,
+  ) => Promise<string | SecretToolResult>,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
@@ -439,8 +458,9 @@ function makeSessionAwareHandler(
     }
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
+    let intentId: string | undefined;
     if (onPreToolUse) {
-      let check: { allowed: true } | { allowed: false; error: string };
+      let check: { allowed: true; intentId?: string } | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -458,6 +478,7 @@ function makeSessionAwareHandler(
           isError: true,
         };
       }
+      intentId = check.intentId;
     }
     try {
       const auth = getAuth();
@@ -467,11 +488,37 @@ function makeSessionAwareHandler(
         orgId: auth.orgId ?? null,
         accessibleOrgIds: auth.accessibleOrgIds ?? null,
       };
-      const result = await withToolTimeout(
+      const handlerResult = await withToolTimeout(
         withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
         toolTimeout,
         toolName,
       );
+
+      // Split a secret carrier BEFORE anything else sees it. Everything downstream —
+      // compaction, the MCP/LLM response, the SSE stream, and DB persistence — may
+      // only ever see llmText.
+      let result: string;
+      let sealed: { intentId: string; sealedResult: Record<string, unknown> } | undefined;
+
+      if (typeof handlerResult === 'string') {
+        result = handlerResult;
+      } else if (handlerResult.kind === 'error') {
+        result = handlerResult.llmText;
+      } else if (!intentId) {
+        // No intent row to seal into: the provider-side reset already happened and
+        // cannot be undone, so fail closed on confidentiality and drop the credential.
+        // This is raised HERE, not in postToolUse, because safePostToolUse swallows
+        // callback throws and the response would already have been composed.
+        console.error(
+          `[AI-SDK] ${toolName} minted a credential with no action intent to seal it into — dropped (fail closed)`,
+        );
+        result = SECRET_UNAVAILABLE_TEXT;
+      } else {
+        const split = sealToolSecrets(handlerResult);
+        result = split.llmText;
+        sealed = { intentId, sealedResult: split.sealedResult };
+      }
+
       const compactResult = compactToolResultForChat(toolName, result);
 
       // Detect error responses returned as JSON strings by tool handlers
@@ -484,7 +531,7 @@ function makeSessionAwareHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;

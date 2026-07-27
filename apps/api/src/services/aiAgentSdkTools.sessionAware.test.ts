@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ============================================
 // Mocks — keep makeSessionAwareHandler isolated from DB + heavy deps.
@@ -32,7 +32,7 @@ vi.mock('./aiToolsM365', () => ({
   registerM365Tools: vi.fn(),
 }));
 
-import { __test__ } from './aiAgentSdkTools';
+import { __test__, type PostToolUseCallback } from './aiAgentSdkTools';
 
 const { makeSessionAwareHandler } = __test__;
 
@@ -40,6 +40,12 @@ type ToolResult = { content: Array<{ type: string; text: string }>; isError?: bo
 
 const fakeAuth = { scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'] } as any;
 const fakeSession = { breezeSessionId: 'sess-123', auth: fakeAuth } as any;
+
+// Aliases used by the secret-bearing-handler tests below, which construct
+// their own getAuth/getActiveSession thunks inline rather than going through
+// the beforeEach-scoped vi.fn() wrappers used by the enforcement-routing suite.
+const authFixture = fakeAuth;
+const sessionFixture = fakeSession;
 
 const firstText = (res: ToolResult) => res.content[0]?.text ?? '';
 
@@ -76,7 +82,7 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
     expect(firstText(res)).toContain('approval_required');
     // postToolUse still records the denied attempt (isError = true).
     expect(onPostToolUse).toHaveBeenCalledWith(
-      'm365_reset_password', expect.any(Object), expect.stringContaining('approval_required'), true, 0,
+      'm365_reset_password', expect.any(Object), expect.stringContaining('approval_required'), true, 0, undefined,
     );
   });
 
@@ -98,6 +104,7 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
       JSON.stringify({ data: { reset: true } }),
       false,
       expect.any(Number),
+      undefined,
     );
   });
 
@@ -131,5 +138,67 @@ describe('makeSessionAwareHandler (M365 enforcement routing)', () => {
     expect(firstText(res)).toContain('no_active_session');
     expect(onPreToolUse).not.toHaveBeenCalled();
     expect(sessionHandler).not.toHaveBeenCalled();
+  });
+});
+
+describe('secret-bearing session-aware handler', () => {
+  const prevKey = process.env.APP_ENCRYPTION_KEY;
+  const prevKeyId = process.env.APP_ENCRYPTION_KEY_ID;
+
+  afterEach(() => {
+    if (prevKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
+    else process.env.APP_ENCRYPTION_KEY = prevKey;
+    if (prevKeyId === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
+    else process.env.APP_ENCRYPTION_KEY_ID = prevKeyId;
+  });
+
+  it('returns only llmText to the model and hands sealedResult to postToolUse', async () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+    process.env.APP_ENCRYPTION_KEY_ID = 'test-key-1';
+    const PW = 'Bz9!oVnL920blvsjqqMy';
+    const post = vi.fn<PostToolUseCallback>(async () => {});
+
+    const handler = makeSessionAwareHandler(
+      'm365_reset_password',
+      () => authFixture,
+      () => sessionFixture,
+      async () => ({
+        kind: 'success' as const,
+        llmText: 'Reset done; credential available for one-time reveal.',
+        secrets: { temporaryPassword: PW },
+      }),
+      async () => ({ allowed: true, intentId: 'intent-1' }),
+      post,
+    );
+
+    const res = await handler({ userIdentifier: 'a@b.com', reason: 'r' });
+
+    expect(JSON.stringify(res)).not.toContain(PW);
+    const sealedArg = post.mock.calls[0]![5];
+    expect(sealedArg?.intentId).toBe('intent-1');
+    expect(sealedArg?.sealedResult.temporaryPasswordEnc).toMatch(/^enc:v3:/);
+  });
+
+  it('fails closed when a secret-bearing tool has no intent to seal into', async () => {
+    const post = vi.fn<PostToolUseCallback>(async () => {});
+    const handler = makeSessionAwareHandler(
+      'm365_reset_password',
+      () => authFixture,
+      () => sessionFixture,
+      async () => ({
+        kind: 'success' as const,
+        llmText: 'Reset done; credential available for one-time reveal.',
+        secrets: { temporaryPassword: 'Bz9!oVnL920blvsjqqMy' },
+      }),
+      async () => ({ allowed: true }),          // no intentId
+      post,
+    );
+
+    const res = (await handler({ userIdentifier: 'a@b.com', reason: 'r' })) as ToolResult;
+    const text = res.content[0]!.text;
+
+    expect(text).not.toContain('Bz9!oVnL920blvsjqqMy');
+    expect(text).toMatch(/could not be stored securely|unavailable/i);
+    expect(post.mock.calls[0]![5]).toBeUndefined();
   });
 });
