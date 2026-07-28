@@ -2356,7 +2356,12 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
     const mtlsSettings = await getOrgMtlsSettings(orgId);
     cert = await cfService.issueCertificate(mtlsSettings.certLifetimeDays);
   } catch (err) {
-    console.error('[agents] mTLS cert issuance failed, falling back to bearer-only auth:', err);
+    // I9: issueCertificate throws a typed, body-free CloudflareMtlsError now;
+    // log the bounded name rather than the whole error object.
+    console.error(
+      '[agents] mTLS cert issuance failed, falling back to bearer-only auth:',
+      err instanceof Error ? err.name : 'unknown',
+    );
     return null;
   }
 

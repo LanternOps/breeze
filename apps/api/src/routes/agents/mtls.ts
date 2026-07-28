@@ -13,7 +13,9 @@ import { authMiddleware, requireMfa, requirePermission } from '../../middleware/
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
+  CloudflareMtlsError,
   CloudflareMtlsService,
+  categorizeCloudflareMtlsError,
   parseIssuedLeafCertificate,
   type CfCertResult,
   type ParsedIssuedCertificate,
@@ -356,12 +358,45 @@ async function agentBearerAuthMiddleware(c: Context, next: () => Promise<void>) 
 
 interface ActiveCertificateRow {
   id: string;
-  serialNumber: string;
+  /**
+   * CANONICAL serial (uppercase hex, no separators) — already passed through
+   * `normalizeCertificateSerial` at the read boundary below. Null when the
+   * stored value normalizes to nothing. NEVER compare a raw stored serial
+   * against an asserted one; see the read boundary's comment.
+   */
+  serialNumber: string | null;
   expiresAt: Date;
   publicKeySpki: string | null;
 }
 
-/** Reads the device's current `active` device_mtls_certificates row, if any. */
+/**
+ * Reads the device's current `active` device_mtls_certificates row, if any.
+ *
+ * FINAL-REVIEW I3: the serial is normalized HERE, at the read boundary, with
+ * the same shared helper `services/agentCertificateBinding.ts` uses on both
+ * the header side (`readAgentCertificateAssertion`) and its own stored side
+ * (`loadAgentCertificateBindingIdentity`). Before this fix the three serial
+ * comparisons in this file compared a RAW stored value against a normalized
+ * asserted one, so any row whose serial isn't already canonical — Task 1's
+ * migration import of historical `devices.mtls_cert_serial_number` values,
+ * and every row written by the legacy renewal path before Task 6's fix —
+ * could never match and renewal 401'd permanently. Worse, the mismatch branch
+ * in `evaluateRenewalAuthorization` fires BEFORE its `mode === 'off'` return,
+ * so those devices were bricked for renewal even with binding mode off, as
+ * soon as Cloudflare started asserting.
+ *
+ * Known reconciliation limitation: Node's `X509Certificate.serialNumber`
+ * renders the DER INTEGER without a leading zero byte, while some providers
+ * render the same serial as `00AB...`. Stripping non-hex characters and
+ * uppercasing (what `normalizeCertificateSerial` does) does NOT reconcile
+ * that difference — `00AB` and `AB` remain distinct. Every serial Breeze
+ * stores comes from `parseIssuedLeafCertificate` (i.e. from
+ * `X509Certificate.serialNumber`) or from a Cloudflare `serial_number` field
+ * normalized on write, and the edge asserts the same certificate's serial, so
+ * the two sides agree in practice; a provider that starts emitting a
+ * zero-padded form would need an explicit leading-zero-trim added here rather
+ * than a wider normalization.
+ */
 async function fetchActiveCertificateRow(deviceId: string): Promise<ActiveCertificateRow | null> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db
@@ -374,7 +409,8 @@ async function fetchActiveCertificateRow(deviceId: string): Promise<ActiveCertif
       .from(deviceMtlsCertificates)
       .where(and(eq(deviceMtlsCertificates.deviceId, deviceId), eq(deviceMtlsCertificates.state, 'active')))
       .limit(1);
-    return row ?? null;
+    if (!row) return null;
+    return { ...row, serialNumber: normalizeCertificateSerial(row.serialNumber) };
   });
 }
 
@@ -426,6 +462,14 @@ async function evaluateRenewalAuthorization(input: {
     // A trusted, verified assertion that names a DIFFERENT certificate than
     // the device's active one is a fail-closed signal in every mode — never
     // treated the same as "no assertion supplied".
+    //
+    // I3: both sides are canonical here. `assertion.serial` was normalized by
+    // `readAgentCertificateAssertion`, `activeCertRow.serialNumber` by
+    // `fetchActiveCertificateRow`'s read boundary. Because this branch runs
+    // BEFORE the `mode === 'off'` return below — deliberately, so a spoof
+    // signal is never ignored — comparing a raw stored serial here previously
+    // bricked renewal for legacy-imported devices in EVERY mode, `off`
+    // included.
     return {
       allowed: false,
       reason: 'renewal_assertion_mismatch',
@@ -441,6 +485,9 @@ async function evaluateRenewalAuthorization(input: {
   const isExpired = !activeCertRow || activeCertRow.expiresAt.getTime() < Date.now();
 
   if (!isExpired) {
+    // I3: canonical-vs-canonical (see fetchActiveCertificateRow). A raw
+    // stored serial here meant an enforce-mode agent presenting the CORRECT
+    // certificate was still denied renewal.
     if (assertion.verified && activeCertRow && assertion.serial === activeCertRow.serialNumber) {
       return { allowed: true };
     }
@@ -851,8 +898,17 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
   try {
     cert = await cfService.issueCertificate(mtlsSettings.certLifetimeDays);
   } catch (err) {
-    console.error('[agents] mTLS cert issuance failed:', String(err));
-    const message = err instanceof Error && err.message.includes('rate limit')
+    // I9: `issueCertificate` now throws a typed, body-free CloudflareMtlsError,
+    // so the rate-limit branch keys off the STATUS instead of substring-
+    // matching a message that used to embed the raw upstream response body
+    // (and was logged verbatim right here).
+    console.error(
+      '[agents] mTLS cert issuance failed:',
+      err instanceof CloudflareMtlsError
+        ? `${err.name}:${categorizeCloudflareMtlsError(err)}`
+        : err instanceof Error ? err.name : 'unknown',
+    );
+    const message = err instanceof CloudflareMtlsError && err.status === 429
       ? 'Certificate renewal failed: rate limited, retry later'
       : 'Certificate renewal failed';
     return c.json({ error: message }, 500);
@@ -902,30 +958,62 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
     // untouched until /renew-cert/confirm activates this row. ----
     const activationExpiresAt = new Date(Date.now() + PENDING_ACTIVATION_TTL_MS);
 
+    // FINAL-REVIEW I8: only the `active` state carries a per-device partial
+    // unique index, so nothing stopped a device from accumulating unbounded
+    // `pending_activation` rows — each one a REAL Cloudflare certificate that
+    // stays valid at the provider until the 5-minute sweep eventually reaches
+    // it. Any agent that repeatedly issued but never confirmed (exactly the
+    // C2 self-host-default case, and any confirm-side failure) piled these up.
+    //
+    // Supersede rather than reject: the agent is entitled to a certificate,
+    // and rejecting would wedge a device whose earlier pending row it can no
+    // longer confirm (lost material after a crash before the durable save).
+    // The prior pending rows are moved to `pending_revocation` with an
+    // immediately-due `next_revoke_attempt_at` INSIDE the same transaction as
+    // the new insert, then revoked post-commit through Task 3's durable
+    // lifecycle — never inside the transaction (#1105: no DB txn held across a
+    // provider HTTP call).
     let insertedId: string | null = null;
+    let supersededPendingIds: string[] = [];
     try {
-      insertedId = await withSystemDbAccessContext(async () => {
-        const [inserted] = await db
-          .insert(deviceMtlsCertificates)
-          .values({
-            orgId: device.orgId,
-            deviceId: device.id,
-            providerCertificateId: cert.id,
-            serialNumber: parsedCert.serialNumber,
-            fingerprintSha256: parsedCert.fingerprintSha256,
-            publicKeySpki: parsedCert.publicKeySpkiBase64,
-            legacyProvenance: false,
-            state: 'pending_activation',
-            issuedAt: new Date(cert.issuedOn),
-            expiresAt: new Date(cert.expiresOn),
-            activationExpiresAt,
-          })
-          .returning({ id: deviceMtlsCertificates.id });
-        return inserted?.id ?? null;
-      });
+      const txOut = await withSystemDbAccessContext(() =>
+        db.transaction(async (tx) => {
+          const nowTs = new Date();
+          const superseded = await tx
+            .update(deviceMtlsCertificates)
+            .set({ state: 'pending_revocation', nextRevokeAttemptAt: nowTs, updatedAt: nowTs })
+            .where(and(
+              eq(deviceMtlsCertificates.deviceId, device.id),
+              eq(deviceMtlsCertificates.state, 'pending_activation'),
+            ))
+            .returning({ id: deviceMtlsCertificates.id });
+
+          const [inserted] = await tx
+            .insert(deviceMtlsCertificates)
+            .values({
+              orgId: device.orgId,
+              deviceId: device.id,
+              providerCertificateId: cert.id,
+              serialNumber: parsedCert.serialNumber,
+              fingerprintSha256: parsedCert.fingerprintSha256,
+              publicKeySpki: parsedCert.publicKeySpkiBase64,
+              legacyProvenance: false,
+              state: 'pending_activation',
+              issuedAt: new Date(cert.issuedOn),
+              expiresAt: new Date(cert.expiresOn),
+              activationExpiresAt,
+            })
+            .returning({ id: deviceMtlsCertificates.id });
+
+          return { id: inserted?.id ?? null, supersededIds: superseded.map((r) => r.id) };
+        }),
+      );
+      insertedId = txOut.id;
+      supersededPendingIds = txOut.supersededIds;
     } catch (err) {
       console.error('[agents] mTLS renew (v2): pending row insert failed:', err instanceof Error ? err.name : 'unknown');
       insertedId = null;
+      supersededPendingIds = [];
     }
 
     if (!insertedId) {
@@ -942,9 +1030,28 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
         resourceType: 'device',
         resourceId: device.id,
         result: 'denied',
-        details: { reason: 'cert_metadata_persist_failed' },
+        // I7: emit the serial on BOTH cert_metadata_persist_failed twins.
+        // The legacy branch's identical audit event already carried it; this
+        // one omitted it, so the same failure was forensically weaker
+        // depending on which protocol the agent spoke. Keeping the serial is
+        // acceptable here — audit `details` is DB-resident, org-scoped, and
+        // classified `excludedOpen` in the tenant export registry.
+        details: { reason: 'cert_metadata_persist_failed', serialNumber: cert.serialNumber },
       });
       return c.json({ error: 'Certificate renewal failed' }, 500);
+    }
+
+    // I8: post-commit durable revoke of any pending row this issuance
+    // superseded. Never fails the renewal — the 5-minute sweep repairs it.
+    for (const supersededId of supersededPendingIds) {
+      try {
+        await revokeCertificateNowOrEnqueue(supersededId);
+      } catch (err) {
+        console.error(
+          '[agents] mTLS renew (v2): superseded-pending revoke-or-enqueue failed unexpectedly:',
+          err instanceof Error ? err.name : 'unknown',
+        );
+      }
     }
 
     writeAuditEvent(c, {
@@ -954,7 +1061,7 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
       action: 'agent.mtls.renew.pending',
       resourceType: 'device',
       resourceId: device.id,
-      details: { protocolVersion: 2 },
+      details: { protocolVersion: 2, supersededPendingCount: supersededPendingIds.length },
     });
 
     if (redis) {
@@ -1064,7 +1171,10 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
   } catch (txErr) {
     console.error(
       '[agents] mTLS renew: transaction failed, revoking orphan cert durably:',
-      txErr instanceof Error ? txErr.message : 'unknown',
+      // Minor (final review): log the error NAME, not `.message` — a raw
+      // postgres message can carry column values / constraint detail. Matches
+      // every sibling catch in this file.
+      txErr instanceof Error ? txErr.name : 'unknown',
     );
     await revokeOrphanCertificateDurably(device, cert, parsedCert, cfService);
     writeAuditEvent(c, {
@@ -1193,8 +1303,34 @@ mtlsRoutes.post(
       return c.json({ error: 'Certificate not found' }, 404);
     }
 
+    // FINAL-REVIEW C4 (idempotent re-confirm): if this row is ALREADY the
+    // device's active certificate, a previous confirm succeeded and its
+    // response was lost in flight. Returning 409 here — as this route used to
+    // — told the agent "confirmation failed", so it kept the material pending,
+    // retried until `activation_expires_at` elapsed, and then DELETED the only
+    // copy of the certificate the server considers active: permanent identity
+    // loss from a single dropped response. Re-confirming an already-active row
+    // for the SAME device is a no-op, so report success and let the agent
+    // adopt the material it is holding.
+    if (pendingRow.state === 'active') {
+      writeAuditEvent(c, {
+        orgId: device.orgId,
+        actorType: 'agent',
+        actorId: device.agentId,
+        action: 'agent.mtls.renew.confirmed',
+        resourceType: 'device',
+        resourceId: device.id,
+        details: { serialNumber: pendingRow.serialNumber, idempotentReplay: true },
+      });
+      return c.json({ success: true, alreadyActive: true });
+    }
+
     if (pendingRow.state !== 'pending_activation') {
-      return c.json({ error: 'Certificate is not pending activation' }, 409);
+      // Terminal, non-adoptable states (revoked / pending_revocation). `state`
+      // is echoed so the agent can distinguish "already yours, adopt it" from
+      // "this certificate is dead, discard it" instead of guessing from a
+      // bare 409 (see agent/internal/heartbeat/heartbeat.go).
+      return c.json({ error: 'Certificate is not pending activation', state: pendingRow.state }, 409);
     }
 
     if (!pendingRow.activationExpiresAt || pendingRow.activationExpiresAt.getTime() < Date.now()) {
@@ -1204,19 +1340,61 @@ mtlsRoutes.post(
     // Confirmation proves possession of the NEW certificate: the assertion's
     // serial must match this pending row's serial, not the device's
     // currently-active (old) certificate.
+    //
+    // FINAL-REVIEW C2/I4 — the assertion REQUIREMENT is mode-gated, matching
+    // the other two mode surfaces:
+    //
+    //   - `off`     the assertion is not required (nor is one expected: the
+    //               binding surface never consults it either). Before this fix
+    //               confirmation demanded a verified assertion in EVERY mode
+    //               while the protocol-v2 issue branch was NOT mode-gated, so
+    //               a current agent — which always sends protocolVersion: 2 —
+    //               could never complete a renewal against the self-host
+    //               default AGENT_MTLS_BINDING_MODE=off: it received pending
+    //               material it could never activate, and the certificate was
+    //               swept and reissued forever.
+    //   - `audit`   same as `off`, but a bounded observation is audit-logged.
+    //   - `enforce` unchanged: a verified, matching assertion is required.
+    //
+    // A verified assertion naming a DIFFERENT certificate still fails closed
+    // in every mode — identical to `evaluateRenewalAuthorization`'s
+    // pre-mode-gate mismatch branch. A trusted spoof signal is never ignored
+    // just because the mode is permissive; only the ABSENCE of an assertion is
+    // tolerated in off/audit.
+    //
+    // I3: `pendingRow.serialNumber` is normalized before comparison, for the
+    // same reason as `fetchActiveCertificateRow`.
+    const mode = getAgentMtlsBindingMode();
     const assertion = readClientCertAssertion(c);
-    if (!assertion.verified || assertion.serial !== pendingRow.serialNumber) {
-      writeAuditEvent(c, {
-        orgId: device.orgId,
-        actorType: 'agent',
-        actorId: device.agentId,
-        action: 'agent.mtls.renew.confirm_denied',
-        resourceType: 'device',
-        resourceId: device.id,
-        result: 'denied',
-        details: { reason: assertion.verified ? 'renewal_assertion_mismatch' : 'renewal_binding_missing' },
-      });
-      return c.json({ error: "Confirmation requires the new certificate's assertion" }, 401);
+    const pendingSerial = normalizeCertificateSerial(pendingRow.serialNumber);
+    const assertionMatches = assertion.verified && assertion.serial === pendingSerial;
+
+    if (!assertionMatches) {
+      const mismatched = assertion.verified;
+      if (mode === 'enforce' || mismatched) {
+        writeAuditEvent(c, {
+          orgId: device.orgId,
+          actorType: 'agent',
+          actorId: device.agentId,
+          action: 'agent.mtls.renew.confirm_denied',
+          resourceType: 'device',
+          resourceId: device.id,
+          result: 'denied',
+          details: { reason: mismatched ? 'renewal_assertion_mismatch' : 'renewal_binding_missing', mode },
+        });
+        return c.json({ error: "Confirmation requires the new certificate's assertion" }, 401);
+      }
+      if (mode === 'audit') {
+        writeAuditEvent(c, {
+          orgId: device.orgId,
+          actorType: 'agent',
+          actorId: device.agentId,
+          action: 'agent.mtls.renew.confirm_binding_observed',
+          resourceType: 'device',
+          resourceId: device.id,
+          details: { reason: 'renewal_binding_missing', mode },
+        });
+      }
     }
 
     const now = new Date();
@@ -1251,7 +1429,9 @@ mtlsRoutes.post(
           const legacyUpdated = await tx
             .update(devices)
             .set({
-              mtlsCertSerialNumber: pendingRow.serialNumber,
+              // I3: store the canonical form, matching the legacy renewal
+              // path's write and what the binding reader expects.
+              mtlsCertSerialNumber: pendingSerial ?? pendingRow.serialNumber,
               mtlsCertExpiresAt: pendingRow.expiresAt,
               mtlsCertIssuedAt: pendingRow.issuedAt,
               mtlsCertCfId: pendingRow.providerCertificateId,
@@ -1270,7 +1450,8 @@ mtlsRoutes.post(
     } catch (txErr) {
       console.error(
         '[agents] mTLS confirm: activation transaction failed:',
-        txErr instanceof Error ? txErr.message : 'unknown',
+        // Minor (final review): error NAME only — see the sibling catch above.
+        txErr instanceof Error ? txErr.name : 'unknown',
       );
       writeAuditEvent(c, {
         orgId: device.orgId,

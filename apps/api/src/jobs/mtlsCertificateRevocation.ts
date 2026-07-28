@@ -139,7 +139,12 @@ function runScheduledSweep(): void {
   activeSweep = sweepDueMtlsCertificateRevocations()
     .then(() => undefined)
     .catch((error) => {
-      console.error('[MtlsCertificateRevocationWorker] sweep failed', error);
+      // Minor (final review): bounded shape only — logging the whole error
+      // object leaks postgres `detail`/`where` (column values). Matches the
+      // `{ errorCode: error.name }` pattern used by the enqueue catch above.
+      console.error('[MtlsCertificateRevocationWorker] sweep failed', {
+        errorCode: error instanceof Error ? error.name : 'unknown',
+      });
       captureException(error instanceof Error ? error : new Error(String(error)));
     })
     .finally(() => {
@@ -160,11 +165,11 @@ export function initializeMtlsCertificateRevocationWorker(): void {
   );
 
   worker.on('error', (error) => {
-    console.error('[MtlsCertificateRevocationWorker] Worker error:', error);
+    console.error('[MtlsCertificateRevocationWorker] Worker error:', { errorCode: error.name });
     captureException(error);
   });
   worker.on('failed', (job, error) => {
-    console.error(`[MtlsCertificateRevocationWorker] Job ${job?.id} failed:`, error);
+    console.error(`[MtlsCertificateRevocationWorker] Job ${job?.id} failed:`, { errorCode: error?.name ?? 'unknown' });
     captureException(error);
   });
 

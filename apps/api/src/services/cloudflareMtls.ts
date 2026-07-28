@@ -154,13 +154,32 @@ export class CloudflareMtlsService {
       }),
     });
 
+    // FINAL-REVIEW I9: the issue path used to throw
+    // `Cloudflare API error ${status}: ${text}` with the RAW upstream body,
+    // and routes/agents/mtls.ts logs that message on issuance failure. This
+    // module's own contract (see the file docblock) is that error messages are
+    // body-free — it was only ever applied to `revokeCertificate`. The issue
+    // path now throws the same typed, bounded `CloudflareMtlsError`: no
+    // response body, no certificate material, and a `retryable` flag callers
+    // can act on instead of substring-matching the message.
     if (resp.status === 429) {
-      throw new Error('Cloudflare rate limit exceeded (429). Retry later.');
+      throw new CloudflareMtlsError(
+        'issue',
+        429,
+        true,
+        'Cloudflare mTLS certificate issuance rate limited',
+      );
     }
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => '(unable to read response body)');
-      throw new Error(`Cloudflare API error ${resp.status}: ${text}`);
+      throw new CloudflareMtlsError(
+        'issue',
+        resp.status,
+        resp.status >= 500,
+        resp.status >= 500
+          ? 'Cloudflare mTLS certificate issuance failed with a provider server error'
+          : 'Cloudflare mTLS certificate issuance failed with a provider client error',
+      );
     }
 
     const json = await resp.json() as {

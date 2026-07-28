@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { createHash, createPrivateKey, sign } from 'crypto';
+import { createHash, generateKeyPairSync, sign } from 'crypto';
 
 // -------------------------------------------------------------------
 // Fixtures — real, static, self-signed EC P-256 certs/keys (10y validity),
@@ -27,14 +27,20 @@ const NEW_CERT_SPKI_BASE64 =
   'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEWRbjJpAM7YEJ8yJPuAa2a1ArAqGnr6OSG9m8TuvM6Qkrs15Hp/01lwAUvj75Fao3HS6mejW5zoAsFCcjWmUs8w==';
 
 const OLD_CERT_SERIAL = '74C7AF668B8D3D98D464006774AB7889D4B57578';
-const OLD_CERT_SPKI_BASE64 =
-  'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHQhHWPXOBUcwUQCuDdw3afWmgfUZwZnYI7VVrTrHUhzqyz4SchUHYVZRnGpF/eIIukUK1hXjk3TmMHA4ZTrKEw==';
-const OLD_CERT_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgdRUx8apGcQ9ctNfx
-bowZRDWsEu3leRXBUQkZd9m0ktShRANCAAQdCEdY9c4FRzBRAK4N3Ddp9aaB9RnB
-mdgjtVWtOsdSHOrLPhJyFQdhVlGcakX94gi6RQrWFeOTdOYwcDhlOsoT
------END PRIVATE KEY-----`;
-const OLD_CERT_PRIVATE_KEY = createPrivateKey(OLD_CERT_PRIVATE_KEY_PEM);
+
+// Minor (final review): the OLD certificate's EC private key used to be a
+// literal PEM block committed to this file. It was a throwaway test key, but a
+// committed `-----BEGIN PRIVATE KEY-----` block is exactly what Gitleaks and
+// every other secret scanner flags, and triaging a known-benign hit on every
+// scan is a standing cost. Generate an ephemeral P-256 pair at suite load
+// instead and derive the SPKI FROM it, so the keypair and the SPKI the
+// recovery-proof verifier checks against can never drift apart the way two
+// hand-pinned constants can.
+const { privateKey: OLD_CERT_PRIVATE_KEY, publicKey: OLD_CERT_PUBLIC_KEY } =
+  generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+const OLD_CERT_SPKI_BASE64 = OLD_CERT_PUBLIC_KEY
+  .export({ type: 'spki', format: 'der' })
+  .toString('base64');
 
 // -------------------------------------------------------------------
 // Mocks
@@ -418,6 +424,22 @@ function mockDbInsertOk(id: string | null = NEW_CERT_ROW_ID) {
       returning: vi.fn().mockResolvedValue(id ? [{ id }] : []),
     }),
   } as any);
+}
+
+// FINAL-REVIEW I8: the protocol-v2 pending-issuance path is now a single
+// transaction — supersede any existing `pending_activation` rows for the
+// device, THEN insert the new one — so a device can no longer accumulate
+// unbounded pending rows, each holding a real (still-valid) Cloudflare
+// certificate. Queues both steps in call order.
+function mockV2PendingIssue(id: string | null = NEW_CERT_ROW_ID, supersededIds: string[] = []) {
+  txUpdateMock.mockReturnValueOnce({
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(supersededIds.map((sid) => ({ id: sid }))),
+      }),
+    }),
+  } as any);
+  mockTxInsertOk(id);
 }
 
 // Queues one call to tx.select(...).from(...).where(...).limit(1) inside the
@@ -979,7 +1001,7 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
       expiresAt: new Date(Date.now() + 10_000),
       publicKeySpki: OLD_CERT_SPKI_BASE64,
     });
-    mockDbInsertOk(NEW_CERT_ROW_ID);
+    mockV2PendingIssue(NEW_CERT_ROW_ID);
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -998,10 +1020,53 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
       expiresAt: expiresOn,
       serialNumber: NEW_CERT_SERIAL,
     });
-    // The old row is untouched here — no transaction / demote call for v2 issuance.
-    expect(dbTransactionMock).not.toHaveBeenCalled();
+    // The old ACTIVE row is untouched here — v2 issuance never demotes, that
+    // only happens at /renew-cert/confirm. (A transaction DOES run now: I8's
+    // supersede-then-insert of prior pending rows. It performs no demote.)
     expect(queueCertificateRevocationCoreMock).not.toHaveBeenCalled();
     expect(revokeCertificateNowOrEnqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('supersedes a pre-existing pending_activation row instead of accumulating a second one (I8)', async () => {
+    // FINAL-REVIEW I8: only `active` carries a per-device partial unique
+    // index, so nothing stopped unbounded pending rows piling up — each one a
+    // REAL Cloudflare certificate valid at the provider until the 5-minute
+    // sweep reached it. Any agent that issued but never confirmed (exactly the
+    // C2 self-host-default case) accumulated these indefinitely.
+    const STALE_PENDING_ID = 'stale-pending-row-id';
+    const expiresOn = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-v2-supersede',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY-V2',
+      serialNumber: NEW_CERT_SERIAL,
+      expiresOn,
+      issuedOn: new Date().toISOString(),
+    });
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockOrgSettingsLookup({ mtls: { certLifetimeDays: 30 } });
+    mockActiveCertLookup({
+      id: OLD_ACTIVE_CERT_ROW_ID,
+      serialNumber: OLD_CERT_SERIAL,
+      expiresAt: new Date(Date.now() + 10_000),
+      publicKeySpki: OLD_CERT_SPKI_BASE64,
+    });
+    mockV2PendingIssue(NEW_CERT_ROW_ID, [STALE_PENDING_ID]);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 2 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).certificateId).toBe(NEW_CERT_ROW_ID);
+    // The superseded row is handed to the DURABLE revoke lifecycle
+    // post-commit, never revoked inline inside the transaction (#1105).
+    expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(STALE_PENDING_ID);
+    // The old ACTIVE row is still untouched — superseding pending rows is not
+    // a demotion.
+    expect(queueCertificateRevocationCoreMock).not.toHaveBeenCalled();
   });
 
   it('revokes the orphan provider cert DURABLY when the pending row fails to persist', async () => {
@@ -1022,7 +1087,7 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
     mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup();
     mockActiveCertLookup(null);
-    mockDbInsertOk(null); // the pending_activation insert returns 0 rows
+    mockV2PendingIssue(null); // the pending_activation insert returns 0 rows
     mockDbInsertOk(ORPHAN_MARKER_ROW_ID); // the durable marker-row insert succeeds
 
     const res = await buildApp().request('/agents/renew-cert', {
@@ -1052,7 +1117,7 @@ describe('POST /renew-cert — protocol v2 (capable agent)', () => {
     mockDeviceLookup(baseActiveDeviceRow());
     mockOrgSettingsLookup();
     mockActiveCertLookup(null);
-    mockDbInsertOk(null); // the pending_activation insert returns 0 rows
+    mockV2PendingIssue(null); // the pending_activation insert returns 0 rows
     mockDbInsertOk(null); // the durable marker-row insert ALSO returns 0 rows
 
     const res = await buildApp().request('/agents/renew-cert', {
@@ -1254,7 +1319,7 @@ describe('POST /renew-cert — mode-gated proof/binding (AGENT_MTLS_BINDING_MODE
       expiresAt: new Date(Date.now() - 3600 * 1000),
       publicKeySpki: OLD_CERT_SPKI_BASE64,
     });
-    mockDbInsertOk(NEW_CERT_ROW_ID);
+    mockV2PendingIssue(NEW_CERT_ROW_ID);
 
     const res = await app.request('/agents/renew-cert', {
       method: 'POST',
@@ -1559,7 +1624,8 @@ describe('POST /renew-cert/confirm', () => {
     expect(dbTransactionMock).not.toHaveBeenCalled();
   });
 
-  it('denies confirmation with no certificate assertion at all', async () => {
+  it('denies confirmation with no certificate assertion at all in enforce mode', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
     mockDeviceLookup(baseActiveDeviceRow());
     mockPendingCertLookup({
       id: NEW_CERT_ROW_ID,
@@ -1579,6 +1645,176 @@ describe('POST /renew-cert/confirm', () => {
     });
 
     expect(res.status).toBe(401);
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+});
+
+// =====================================================================
+// FINAL-REVIEW C2 / I4: the confirmation assertion requirement is
+// mode-gated, so a CURRENT agent — which always sends protocolVersion: 2 —
+// can complete a renewal against the self-host default
+// AGENT_MTLS_BINDING_MODE=off, where no edge asserts anything at all.
+// Before this fix the v2 issue branch was NOT mode-gated but confirm
+// ALWAYS required a verified assertion, so such an agent received pending
+// material it could never activate: renewal never completed, and the
+// certificate was swept and reissued forever.
+// =====================================================================
+describe('POST /renew-cert/confirm — mode-gated assertion requirement (C2/I4)', () => {
+  const originalMode = process.env.AGENT_MTLS_BINDING_MODE;
+
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  afterEach(() => {
+    if (originalMode === undefined) {
+      delete process.env.AGENT_MTLS_BINDING_MODE;
+    } else {
+      process.env.AGENT_MTLS_BINDING_MODE = originalMode;
+    }
+  });
+
+  function stagePendingConfirm(serial = NEW_CERT_SERIAL) {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'pending_activation',
+      serialNumber: serial,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+    mockTxActiveLookup({ id: OLD_ACTIVE_CERT_ROW_ID });
+    mockTxUpdateOk(); // activate the pending row
+    mockTxUpdateOk(); // legacy devices columns
+  }
+
+  function confirmRequest(extraHeaders: Record<string, string> = {}) {
+    return buildApp().request('/agents/renew-cert/confirm', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        'Content-Type': 'application/json',
+        ...extraHeaders,
+      },
+      body: JSON.stringify({ protocolVersion: 2, certificateId: NEW_CERT_ROW_ID }),
+    });
+  }
+
+  for (const mode of ['off', 'audit'] as const) {
+    it(`completes a v2 renewal confirmation with NO assertion in ${mode} mode (two-phase activate + demote + durable revoke still run)`, async () => {
+      process.env.AGENT_MTLS_BINDING_MODE = mode;
+      stagePendingConfirm();
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true });
+      // The full two-phase flow still runs — permissive mode relaxes the
+      // assertion requirement ONLY, never the lifecycle.
+      expect(dbTransactionMock).toHaveBeenCalled();
+      expect(queueCertificateRevocationCoreMock).toHaveBeenCalledWith(expect.anything(), OLD_ACTIVE_CERT_ROW_ID);
+      expect(revokeCertificateNowOrEnqueueMock).toHaveBeenCalledWith(OLD_ACTIVE_CERT_ROW_ID);
+    });
+
+    it(`still fails closed on a VERIFIED but MISMATCHED assertion in ${mode} mode`, async () => {
+      // A trusted spoof signal is never ignored just because the mode is
+      // permissive — mirrors evaluateRenewalAuthorization's pre-mode-gate
+      // mismatch branch. Only the ABSENCE of an assertion is tolerated.
+      process.env.AGENT_MTLS_BINDING_MODE = mode;
+      trustsForwardedHeadersFromMock.mockReturnValue(true);
+      stagePendingConfirm();
+
+      const res = await confirmRequest(setAssertionHeaders(OLD_CERT_SERIAL));
+
+      expect(res.status).toBe(401);
+      expect(dbTransactionMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('still REQUIRES a matching assertion in enforce mode', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    stagePendingConfirm();
+
+    const res = await confirmRequest();
+
+    expect(res.status).toBe(401);
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a matching assertion in enforce mode', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    stagePendingConfirm();
+
+    const res = await confirmRequest(setAssertionHeaders(NEW_CERT_SERIAL));
+
+    expect(res.status).toBe(200);
+    expect(dbTransactionMock).toHaveBeenCalled();
+  });
+
+  it('matches a legacy NON-CANONICAL stored serial against a canonical asserted one (I3)', async () => {
+    // A pending/active row imported by Task 1's migration, or written by the
+    // legacy renewal path before Task 6's fix, stores the provider's raw
+    // serial rendering (colon-separated, lowercase). The asserted serial is
+    // normalized at the header read boundary, so comparing against a RAW
+    // stored value could never match and 401'd permanently.
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    trustsForwardedHeadersFromMock.mockReturnValue(true);
+    const rawStoredSerial = NEW_CERT_SERIAL
+      .toLowerCase()
+      .replace(/(..)(?=.)/g, '$1:');
+    expect(rawStoredSerial).not.toBe(NEW_CERT_SERIAL); // fixture sanity
+    stagePendingConfirm(rawStoredSerial);
+
+    const res = await confirmRequest(setAssertionHeaders(NEW_CERT_SERIAL));
+
+    expect(res.status).toBe(200);
+    expect(dbTransactionMock).toHaveBeenCalled();
+  });
+
+  it('treats a re-confirm of an ALREADY-ACTIVE row as success instead of 409 (C4: dropped confirm response must not cost the agent its identity)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'active', // a previous confirm already activated it
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+
+    const res = await confirmRequest();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, alreadyActive: true });
+    // Idempotent no-op: no second activation transaction.
+    expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it('409s WITH the row state for a terminal (revoked) certificate so the agent can discard rather than adopt', async () => {
+    mockDeviceLookup(baseActiveDeviceRow());
+    mockPendingCertLookup({
+      id: NEW_CERT_ROW_ID,
+      deviceId: DEVICE_ID,
+      state: 'revoked',
+      serialNumber: NEW_CERT_SERIAL,
+      activationExpiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+      issuedAt: new Date(),
+      providerCertificateId: 'cf-cert-new',
+    });
+
+    const res = await confirmRequest();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).state).toBe('revoked');
+    expect(dbTransactionMock).not.toHaveBeenCalled();
   });
 });
 
