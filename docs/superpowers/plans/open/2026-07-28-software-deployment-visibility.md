@@ -40,60 +40,60 @@ The UI is pointless if the rows lie, so this lands first.
 
 ### 1.1 Migrations (two idempotent files)
 
-- [ ] `apps/api/migrations/2026-XX-XX-software-deployments-dispatched-at.sql`
+- [x] `apps/api/migrations/2026-XX-XX-software-deployments-dispatched-at.sql`
   - `ALTER TABLE software_deployments ADD COLUMN IF NOT EXISTS dispatched_at timestamptz;`
   - Backfill for shipped rows: `UPDATE software_deployments SET dispatched_at = created_at WHERE schedule_type = 'immediate' AND dispatched_at IS NULL;` (wrapped in the `DO $$ ... GET DIAGNOSTICS ... RAISE WARNING` row-count pattern per CLAUDE.md).
   - Purpose: idempotent claim marker so the scheduler can `UPDATE ... SET dispatched_at = now() WHERE id = $1 AND dispatched_at IS NULL RETURNING id` and never double-dispatch across API instances.
-- [ ] `apps/api/migrations/2026-XX-XX-deployment-results-device-command-id.sql`
+- [x] `apps/api/migrations/2026-XX-XX-deployment-results-device-command-id.sql`
   - `ALTER TABLE deployment_results ADD COLUMN IF NOT EXISTS device_command_id uuid;` (nullable, no FK to keep the agent hot path unconstrained — `device_commands` is intentionally RLS-free/system-scoped).
   - Purpose: links a result row to the queued `device_commands` row when the offline fallback (1.2) is used, enabling result reconciliation, cancel purge (PR 2), and "queued — device offline" display (PR 3).
-- [ ] Mirror both columns in `apps/api/src/db/schema/software.ts`; run `pnpm db:check-drift`.
-- [ ] No RLS/cascade work: no new tables. Confirm `rls-coverage` and `tenantCascade` suites still pass untouched.
+- [x] Mirror both columns in `apps/api/src/db/schema/software.ts`; run `pnpm db:check-drift`.
+- [x] No RLS/cascade work: no new tables. Confirm `rls-coverage` and `tenantCascade` suites still pass untouched.
 
 ### 1.2 Honest dispatch with offline queueing
 
-- [ ] Extract the per-device dispatch loop (`softwareDeployment.ts:253-312`) into a shared `dispatchSoftwareInstallToDevice(deployment, device, command)` helper (same file) so the scheduler (1.3) and retry (1.5) reuse it — including variable resolution, EDR resolution, and the failure pre-writes, which already work well.
-- [ ] In the helper: try `sendCommandToAgent(device.agentId, command)`. On `false`, fall back to `queueCommand(device.id, 'software_install', payload, createdBy)` (`services/commandQueue.ts:454`) — this writes a `device_commands` row that the agent claims on its next poll/reconnect. Store the returned UUID in `deployment_results.device_command_id` for that row.
+- [x] Extract the per-device dispatch loop (`softwareDeployment.ts:253-312`) into a shared `dispatchSoftwareInstallToDevice(deployment, device, command)` helper (same file) so the scheduler (1.3) and retry (1.5) reuse it — including variable resolution, EDR resolution, and the failure pre-writes, which already work well.
+- [x] In the helper: try `sendCommandToAgent(device.agentId, command)`. On `false`, fall back to `queueCommand(device.id, 'software_install', payload, createdBy)` (`services/commandQueue.ts:454`) — this writes a `device_commands` row that the agent claims on its next poll/reconnect. Store the returned UUID in `deployment_results.device_command_id` for that row.
   - The queued payload must carry `deploymentId` and the same fields as the WS command payload (`softwareDeployment.ts:296-308`); the agent handler (`handlers_software_install.go`) dispatches on command `type`, so both transports hit the same code.
-- [ ] Set `software_deployments.dispatched_at = now()` when the immediate path runs.
-- [ ] **Result reconciliation for the queued path.** Queued commands report results with their UUID id, which flows through the UUID branch of `routes/agents/commands.ts` (L239+) into `device_commands` — but nothing updates `deployment_results`. After the existing `device_commands` update, add: if `command.type === 'software_install'` and `command.payload.deploymentId` is set, apply the same status mapping as the `sw-install-` branch (L184-219: exit-code check, redaction, `status='pending'` guard) to the matching `deployment_results` row. Extract that mapping into a small shared helper rather than duplicating it.
-- [ ] **WS orphan-result branch.** Add a `sw-install-` branch to `processOrphanedCommandResult` (`routes/agentWs.ts:1050+`) mirroring the `commands.ts` regex handler, so a result that arrives over WS still lands if the agent's HTTP POST goroutine (`heartbeat.go:4075-4081`) fails. The `status='pending'` guard makes double-delivery a no-op.
+- [x] Set `software_deployments.dispatched_at = now()` when the immediate path runs.
+- [x] **Result reconciliation for the queued path.** Queued commands report results with their UUID id, which flows through the UUID branch of `routes/agents/commands.ts` (L239+) into `device_commands` — but nothing updates `deployment_results`. After the existing `device_commands` update, add: if `command.type === 'software_install'` and `command.payload.deploymentId` is set, apply the same status mapping as the `sw-install-` branch (L184-219: exit-code check, redaction, `status='pending'` guard) to the matching `deployment_results` row. Extract that mapping into a small shared helper rather than duplicating it.
+- [x] **WS orphan-result branch.** Add a `sw-install-` branch to `processOrphanedCommandResult` (`routes/agentWs.ts:1050+`) mirroring the `commands.ts` regex handler, so a result that arrives over WS still lands if the agent's HTTP POST goroutine (`heartbeat.go:4075-4081`) fails. The `status='pending'` guard makes double-delivery a no-op.
 
 ### 1.3 Scheduler for `scheduled` and `maintenance_window` deployments
 
-- [ ] New `apps/api/src/jobs/softwareDeploymentScheduler.ts`, BullMQ repeatable job every 60s (registration pattern: `staleCommandReaper.ts:838-851` — remove existing repeatables first, then `repeat: { every: ... }`). Register wherever the reaper is registered at boot.
-- [ ] Each tick, under `withSystemDbAccessContext`:
+- [x] New `apps/api/src/jobs/softwareDeploymentScheduler.ts`, BullMQ repeatable job every 60s (registration pattern: `staleCommandReaper.ts:838-851` — remove existing repeatables first, then `repeat: { every: ... }`). Register wherever the reaper is registered at boot.
+- [x] Each tick, under `withSystemDbAccessContext`:
   - Select `software_deployments` where `dispatched_at IS NULL` and (`schedule_type = 'scheduled' AND scheduled_at <= now()`, or `schedule_type = 'maintenance_window'` and the linked window is currently open — copy the window-evaluation logic from `jobs/deploymentWorker.ts:668-694`).
   - Claim each via the `dispatched_at IS NULL` conditional update; skip rows another instance claimed.
   - Run the shared dispatch helper for each pending result row of the claimed deployment.
-- [ ] Worker-created writes stay System A (`deployment_results`) — no new tables, no new tenancy questions.
+- [x] Worker-created writes stay System A (`deployment_results`) — no new tables, no new tenancy questions.
 
 ### 1.4 Reject what never runs
 
-- [ ] In the create route + shared Zod validator (`POST /software/deployments`, `software.ts:1095-1172`, and `packages/shared` validator if the schema lives there): reject `deploymentType: 'uninstall' | 'update'` with a 400 and a clear "not yet supported" message. Accepted-then-ignored is the current behavior and the worst option.
-- [ ] Require `maintenanceWindowId` when `scheduleType = 'maintenance_window'`, and `scheduledAt` (in the future) when `scheduleType = 'scheduled'`.
+- [x] In the create route + shared Zod validator (`POST /software/deployments`, `software.ts:1095-1172`, and `packages/shared` validator if the schema lives there): reject `deploymentType: 'uninstall' | 'update'` with a 400 and a clear "not yet supported" message. Accepted-then-ignored is the current behavior and the worst option.
+- [x] Require `maintenanceWindowId` when `scheduleType = 'maintenance_window'`, and `scheduledAt` (in the future) when `scheduleType = 'scheduled'`.
 
 ### 1.5 Stale reaper for `deployment_results`
 
-- [ ] Add `reapStaleSoftwareDeploymentResults()` to `jobs/staleCommandReaper.ts`, called from the same tick as the System B reaper (`:462-509`, use it as the template). Two tiers:
+- [x] Add `reapStaleSoftwareDeploymentResults()` to `jobs/staleCommandReaper.ts`, called from the same tick as the System B reaper (`:462-509`, use it as the template). Two tiers:
   - **Delivered but silent:** result rows `pending` whose command was actually delivered (WS-dispatched, or `device_command_id` row in status `sent`/`completed`) and whose deployment `dispatched_at` is older than `SOFTWARE_INSTALL_TIMEOUT_MS` (55 min — above the agent's 15 min download + 30 min install ceilings) → `failed`, `errorMessage: 'Server-side timeout: no response from agent'`.
   - **Queued, never delivered** (offline device, `device_commands` row still `pending`): leave alone until `SOFTWARE_QUEUED_EXPIRY_MS` (7 days), then → `failed`, `'Device did not come online before the deployment expired'`, and mark the linked `device_commands` row `cancelled` so it can't fire later.
-- [ ] Export both constants for tests.
+- [x] Export both constants for tests.
 
 ### 1.6 Retry endpoint
 
-- [ ] `POST /software/deployments/:id/retry` in `routes/software.ts`. Optional body `{ deviceIds?: string[] }` to retry a subset; default = all `failed` rows.
-- [ ] For each targeted `failed` row: reset `status='pending'`, increment `retryCount`, null out `startedAt/completedAt/exitCode/output/errorMessage/device_command_id`, then re-dispatch via the shared helper. Return `{ retriedDeviceIds, skippedDeviceIds }`.
-- [ ] Audit as `software.deployment.retry` (alongside the existing `.create` at `software.ts:1159` and `.cancel` at `:1434`).
+- [x] `POST /software/deployments/:id/retry` in `routes/software.ts`. Optional body `{ deviceIds?: string[] }` to retry a subset; default = all `failed` rows.
+- [x] For each targeted `failed` row: reset `status='pending'`, increment `retryCount`, null out `startedAt/completedAt/exitCode/output/errorMessage/device_command_id`, then re-dispatch via the shared helper. Return `{ retriedDeviceIds, skippedDeviceIds }`.
+- [x] Audit as `software.deployment.retry` (alongside the existing `.create` at `software.ts:1159` and `.cancel` at `:1434`).
 
 ### 1.7 Tests (PR 1)
 
-- [ ] `services/softwareDeployment.test.ts`: offline fallback queues a `device_commands` row + records `device_command_id`; WS-success path does not queue; `dispatched_at` set.
-- [ ] `routes/agents/commands.test.ts`: queued-path result updates both `device_commands` and `deployment_results`; second result is a no-op (pending guard); shared mapping helper covered for exit-code → failed.
-- [ ] `jobs/softwareDeploymentScheduler.test.ts`: due `scheduled` row dispatches once (claim races: second claim no-ops); future `scheduledAt` untouched; closed maintenance window untouched, open window dispatches.
-- [ ] `jobs/staleCommandReaper.test.ts`: both reap tiers, constants respected, System B reaping unaffected.
-- [ ] Route tests: create rejects `uninstall`/`update` and bad schedule combos; retry resets rows, increments `retryCount`, skips non-failed rows.
-- [ ] `autoMigrate.test.ts` ordering still green; `pnpm db:check-drift` clean.
+- [x] `services/softwareDeployment.test.ts`: offline fallback queues a `device_commands` row + records `device_command_id`; WS-success path does not queue; `dispatched_at` set.
+- [x] `routes/agents/commands.test.ts`: queued-path result updates both `device_commands` and `deployment_results`; second result is a no-op (pending guard); shared mapping helper covered for exit-code → failed.
+- [x] `jobs/softwareDeploymentScheduler.test.ts`: due `scheduled` row dispatches once (claim races: second claim no-ops); future `scheduledAt` untouched; closed maintenance window untouched, open window dispatches.
+- [x] `jobs/staleCommandReaper.test.ts`: both reap tiers, constants respected, System B reaping unaffected.
+- [x] Route tests: create rejects `uninstall`/`update` and bad schedule combos; retry resets rows, increments `retryCount`, skips non-failed rows.
+- [x] `autoMigrate.test.ts` ordering still green; `pnpm db:check-drift` clean.
 
 ---
 
