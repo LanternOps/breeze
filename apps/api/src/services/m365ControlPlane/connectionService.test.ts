@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { M365_PERMISSION_PROFILES, type CompleteConsentResult, type RetestResult } from '@breeze/shared/m365';
+import { M365_PERMISSION_PROFILES, type CompleteConsentResult, type RetestRequest, type RetestResult } from '@breeze/shared/m365';
 
 const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
   dbMocks: {
@@ -172,6 +172,7 @@ import {
   ConnectionLifecycleError,
   applyIdentityVerificationResult,
   applyRetestResult,
+  createConnectionService,
   deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
@@ -659,5 +660,87 @@ describe('customer Graph-read connection lifecycle', () => {
     });
     expect(disconnected.status).toBe('revoked');
     expect(disconnected.consentAttemptId).not.toBe(ATTEMPT_ID);
+  });
+});
+
+describe('createConnectionService factory (non-read profile)', () => {
+  const actionsManifest = M365_PERMISSION_PROFILES['customer-graph-actions'];
+  const ACTIONS_REQUIRED = actionsManifest.applicationPermissionAssignments ?? [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+    dbMocks.order.length = 0;
+    contextMocks.callerDepth = 0;
+  });
+
+  function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
+    success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+    organizationDisplayName: 'Contoso', manifestVersion: 1,
+    verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
+    observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
+    grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
+  } satisfies RetestResult))) {
+    const createExecutorClient = vi.fn(() => ({ retest }));
+    const service = createConnectionService({
+      profile: 'customer-graph-actions',
+      manifest: actionsManifest,
+      loadRuntimeConfig: () => ({
+        clientId: CLIENT_ID,
+        callbackUrl: 'https://console.example.test/api/v1/m365/consent/callback',
+        vaultRef: 'akv://vault.example/m365-customer-graph-actions/0123456789abcdef0123456789abcdef',
+        credentialVersion: '0123456789abcdef0123456789abcdef',
+        executorUrl: 'https://actions-executor.example.test',
+      }),
+      createExecutorClient,
+      retest: (client, request) => client.retest(request),
+    });
+    return { service, createExecutorClient, retest };
+  }
+
+  it('threads deps.profile and deps.manifest through list + grant-health', async () => {
+    dbMocks.selectResults.push([row({
+      profile: 'customer-graph-actions',
+      permissionManifestVersion: actionsManifest.version,
+      observedGrants: [...ACTIONS_REQUIRED],
+    })]);
+
+    const { service } = actionsService();
+    const listed = await service.listConnections(ORG_ID);
+
+    expect(listed).toHaveLength(1);
+    const [connection] = listed;
+    expect(connection!.profile).toBe('customer-graph-actions');
+    expect(connection!.grantHealth.requiredGrants).toEqual(ACTIONS_REQUIRED);
+    expect(connection!.grantHealth.state).toBe('active');
+  });
+
+  it('drops rows whose stored profile does not match the bound profile', async () => {
+    dbMocks.selectResults.push([row({ profile: 'customer-graph-read' })]);
+    const { service } = actionsService();
+    expect(await service.listConnections(ORG_ID)).toEqual([]);
+  });
+
+  it('builds its executor via deps.createExecutorClient and retests via deps.retest', async () => {
+    dbMocks.selectResults.push([row({ profile: 'customer-graph-actions' })]);
+    dbMocks.updateResults.push(
+      (set) => [row({ profile: 'customer-graph-actions', ...set })],
+      (set) => [row({ profile: 'customer-graph-actions', ...set })],
+    );
+
+    const { service, createExecutorClient, retest } = actionsService();
+    const result = await service.retestConnection({
+      id: CONNECTION_ID, orgId: ORG_ID, auth: auth(),
+      correlationId: '99999999-9999-4999-8999-999999999999',
+    });
+
+    expect(createExecutorClient).toHaveBeenCalledOnce();
+    expect(retest).toHaveBeenCalledWith({
+      correlationId: '99999999-9999-4999-8999-999999999999', tenantId: TENANT_ID,
+    });
+    expect(result.profile).toBe('customer-graph-actions');
+    expect(result.status).toBe('active');
   });
 });

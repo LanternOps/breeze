@@ -5,7 +5,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BODY_DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const MAX_TOKEN_LIFETIME_SECONDS = 60;
 
-export type ExecutorOperation = 'execute-action';
+export type ExecutorOperation = 'execute-action' | 'complete-consent' | 'retest';
 
 export interface InternalRequestAuthenticationInput {
   authorization: string | undefined;

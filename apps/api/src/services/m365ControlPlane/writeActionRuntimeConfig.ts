@@ -12,6 +12,8 @@ const CREDENTIAL_VERSION = /^[0-9a-f]{32}$/;
 const VAULT_REF = /^akv:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/m365-customer-graph-actions\/([0-9a-f]{32})$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const EXECUTOR_AUDIENCE = 'm365-graph-actions-executor' as const;
+const CALLBACK_PATH = '/api/v1/m365/actions-consent/callback';
+const LOCAL_CALLBACK_ORIGIN = 'http://localhost:3001';
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -26,10 +28,12 @@ export interface M365CustomerGraphActionsRuntimeConfig {
   clientId: string;
   vaultRef: string;
   credentialVersion: string;
+  callbackUrl: string;
   executorUrl: string;
   executorAudience: typeof EXECUTOR_AUDIENCE;
   executorSigningPrivateJwk: M365ExecutorSigningPrivateJwk;
   executorSigningKid: string;
+  onboardingOrgIds: '*' | readonly string[];
 }
 
 function flagEnabled(raw: string | undefined): boolean {
@@ -40,6 +44,29 @@ function required(source: Environment, name: string): string {
   const value = source[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function parseCallbackUrl(source: Environment): string {
+  const configured = [source.PUBLIC_URL, source.PUBLIC_APP_URL, source.PUBLIC_API_URL]
+    .map((value) => value?.trim())
+    .find((value): value is string => Boolean(value));
+  const originInput = configured || (source.NODE_ENV === 'production' ? undefined : LOCAL_CALLBACK_ORIGIN);
+  if (!originInput) {
+    throw new Error(
+      'PUBLIC_URL, PUBLIC_APP_URL, or PUBLIC_API_URL is required for the M365 actions consent callback in production',
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(originInput);
+  } catch {
+    throw new Error('The configured M365 actions consent callback origin must be a valid HTTP(S) URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('The configured M365 actions consent callback origin must be a valid HTTP(S) URL');
+  }
+  return `${parsed.origin}${CALLBACK_PATH}`;
 }
 
 function parseExecutorUrl(source: Environment): string {
@@ -128,6 +155,23 @@ function parseSigningPrivateJwk(source: Environment, expectedKid: string): M365E
   return parsed as M365ExecutorSigningPrivateJwk;
 }
 
+function parseActionsOnboardingOrgIds(source: Environment): '*' | readonly string[] {
+  const raw = source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS?.trim();
+  if (!raw) {
+    if (!flagEnabled(source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED)) return [];
+    throw new Error('M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS is required when onboarding is enabled');
+  }
+  if (raw === '*') return '*';
+
+  const ids = raw.split(',').map((value) => value.trim());
+  if (ids.some((value) => !CANONICAL_UUID.test(value))) {
+    throw new Error(
+      'M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS must be literal * or comma-separated canonical UUIDs',
+    );
+  }
+  return [...new Set(ids)];
+}
+
 function parseGraphActionsToolsOrgIds(source: Environment): '*' | readonly string[] {
   const raw = source.M365_GRAPH_ACTIONS_TOOLS_ORG_IDS?.trim();
   if (!raw) {
@@ -179,11 +223,23 @@ export function loadM365CustomerGraphActionsRuntimeConfig(
     clientId,
     vaultRef,
     credentialVersion,
+    callbackUrl: parseCallbackUrl(source),
     executorUrl: parseExecutorUrl(source),
     executorAudience,
     executorSigningPrivateJwk: parseSigningPrivateJwk(source, executorSigningKid),
     executorSigningKid,
+    onboardingOrgIds: parseActionsOnboardingOrgIds(source),
   };
+}
+
+export function isM365CustomerGraphActionsOnboardingEnabledForOrg(
+  orgId: string,
+  source: Environment = process.env,
+): boolean {
+  if (!flagEnabled(source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED)) return false;
+  if (!CANONICAL_UUID.test(orgId)) return false;
+  const allowlist = loadM365CustomerGraphActionsRuntimeConfig(source).onboardingOrgIds;
+  return allowlist === '*' || allowlist.includes(orgId);
 }
 
 /**
@@ -207,8 +263,13 @@ export function isM365GraphActionsEnabledForOrg(
 export function validateM365CustomerGraphActionsRuntimeConfigAtBoot(
   source: Environment = process.env,
 ): void {
-  if (flagEnabled(source.M365_GRAPH_ACTIONS_TOOLS_ENABLED)) {
+  if (
+    flagEnabled(source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED)
+    || flagEnabled(source.M365_GRAPH_ACTIONS_TOOLS_ENABLED)
+  ) {
     loadM365CustomerGraphActionsRuntimeConfig(source);
+  }
+  if (flagEnabled(source.M365_GRAPH_ACTIONS_TOOLS_ENABLED)) {
     // loadM365CustomerGraphActionsRuntimeConfig() above does not validate
     // the tools allowlist (M365_GRAPH_ACTIONS_TOOLS_ORG_IDS) — it's read
     // lazily on the hot tool-registration path via
