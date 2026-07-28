@@ -1962,6 +1962,223 @@ describe('inline secret-bearing completion (Task 6)', () => {
 });
 
 // ============================================
+// Task 2: advance the plan index and emit plan_step_start only once the
+// step is genuinely authorized (release CAS won + revalidated), never
+// before.
+// ============================================
+
+describe('Task 2: plan index advances only once the step is authorized', () => {
+  beforeEach(() => {
+    mockCreateActionIntent.mockReset();
+    mockWaitForIntentDecision.mockReset();
+    mockTransitionIntent.mockReset();
+    mockRevalidateApprovedIntentForRelease.mockReset();
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} });
+    // Default chainable for the inline release-win system read (loads the
+    // intent row + winning approval before revalidation) — same shape as the
+    // Tier 3 describe's beforeEach above.
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest' }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+    } as any);
+  });
+
+  it('advances and emits plan_step_start after the release CAS is won', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-adv' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-adv', approvalRequestIds: ['appr-plan-adv'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-adv' });
+    expect(session.currentPlanStepIndex).toBe(1);
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'plan_step_start',
+      planId: 'plan-1',
+      stepIndex: 0,
+      toolName: 'execute_command',
+    }));
+  });
+
+  it('does NOT advance when the approval is denied', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-deny' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-deny', approvalRequestIds: ['appr-plan-deny'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(session.currentPlanStepIndex).toBe(0);
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'plan_step_start' }),
+    );
+  });
+
+  it('does NOT advance when the release CAS is lost to the worker', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-lost' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-lost', approvalRequestIds: ['appr-plan-lost'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(false);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result).toEqual({
+      allowed: false,
+      error: 'This action is already being completed by the approval worker; it will not run twice.',
+    });
+    expect(session.currentPlanStepIndex).toBe(0);
+  });
+
+  // Regression guards restored from PR #2853. Task 1 necessarily inverted the
+  // originals (they asserted the pre-Task-1 early-advance behavior); they
+  // become meaningful again now that the advance happens at the authorize
+  // point instead of being removed outright.
+  it('a following step still matches after an earlier tier-3 step was authorized (regression guard restored from PR #2853)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValueOnce({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-seq-0' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-seq-0', approvalRequestIds: ['appr-plan-seq-0'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([
+        [0, { toolName: 'execute_command', input: { command: 'whoami' } }],
+        [1, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }],
+      ]),
+    });
+
+    // Step 0: effective tier 3 — goes through the durable intent, wins the
+    // release CAS, and is authorized. The index must land on 1.
+    const first = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+    expect(first).toEqual({ allowed: true, intentId: 'intent-plan-seq-0' });
+    expect(session.currentPlanStepIndex).toBe(1);
+
+    // Step 1: effective tier 2, non-secret — eligible for the plan shortcut.
+    // If the plan desynced (e.g. treated every later call as a deviation
+    // because it stopped reading matchPlanStep against the advanced index),
+    // this would fall through to the per-step approval bridge instead of
+    // matching step 1 and taking the shortcut.
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Take screenshot',
+    } as any);
+    const values = mockInsertValues();
+
+    const second = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(second).toEqual({ allowed: true });
+    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1); // not called again for step 1
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'take_screenshot',
+      status: 'executing',
+    }));
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'plan_step_start',
+      stepIndex: 1,
+      toolName: 'take_screenshot',
+    }));
+    expect(session.currentPlanStepIndex).toBe(2);
+  });
+
+  it('a plan ENDING on an approved tier-3 step reaches completion (regression guard restored from PR #2853)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-end' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-end', approvalRequestIds: ['appr-plan-end'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const preResult = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-plan-end' });
+    expect(session.currentPlanStepIndex).toBe(1);
+
+    mockTransitionIntent.mockClear();
+    const postToolUse = createSessionPostToolUse(session);
+    await postToolUse(
+      'execute_command',
+      { command: 'whoami' },
+      JSON.stringify({ status: 'completed' }),
+      false,
+      10,
+    );
+
+    // This is the "stranded plan" bug PR #2853 fixed: a plan whose LAST step
+    // requires durable tier-3 approval must still reach plan_complete once
+    // that step is genuinely authorized and finishes — not get stuck with
+    // activePlanId set forever.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'plan_complete', planId: 'plan-1', status: 'completed' }),
+    );
+    expect(session.activePlanId).toBeNull();
+  });
+});
+
+// ============================================
 // safeParseJson
 // ============================================
 

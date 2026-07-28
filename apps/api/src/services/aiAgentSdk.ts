@@ -770,6 +770,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         pendingIntentBySession.set(session, intent.id);
         createdIntentId = intent.id;
 
+        // The step is now genuinely authorized: the intent was approved, we
+        // won the executing CAS, and the requester's authorization was
+        // re-proved. Only now is it correct to record plan progress.
+        // Advancing any earlier would mark a step complete that may never
+        // run (see the plan block above).
+        if (matchedPlanStepIndex !== null && session.activePlanId) {
+          session.eventBus.publish({
+            type: 'plan_step_start',
+            planId: session.activePlanId,
+            stepIndex: matchedPlanStepIndex,
+            toolName,
+          });
+          session.currentPlanStepIndex = matchedPlanStepIndex + 1;
+        }
+
         // Mark as executing
         try {
           await withDbAccessContext(
