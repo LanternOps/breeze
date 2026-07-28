@@ -147,6 +147,7 @@ const unenrolledUser = {
 };
 
 const baseAuth = {
+  principal: { kind: 'user_session' } as const,
   user: {
     id: 'user-123',
     email: 'test@example.com',

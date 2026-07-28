@@ -135,6 +135,7 @@ describe('restore routes', () => {
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
+        principal: { kind: 'user_session' },
         user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
         scope: 'organization',
         orgId: 'org-1',

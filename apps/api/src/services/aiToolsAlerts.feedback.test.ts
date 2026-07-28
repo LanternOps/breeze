@@ -43,6 +43,7 @@ function handlerFor(name: string): AiTool['handler'] {
 
 function makeAuth(): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: '11111111-1111-4111-8111-111111111111', email: 'user@example.com', name: 'User', isPlatformAdmin: false },
     token: {} as never,
     partnerId: null,

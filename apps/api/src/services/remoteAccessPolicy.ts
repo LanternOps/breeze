@@ -113,6 +113,7 @@ export function invalidateRemoteAccessCache(deviceId?: string): void {
 // ---------------------------------------------------------------------------
 
 const systemAuth: AuthContext = {
+  principal: { kind: 'system', reason: 'remote-access-policy-resolution' },
   user: { id: 'system', email: 'system', name: 'System', isPlatformAdmin: false },
   token: {} as any,
   partnerId: null,

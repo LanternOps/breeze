@@ -50,6 +50,7 @@ function makeAuth(overrides?: Partial<AuthContext>): AuthContext {
       return allowedSiteIds.includes(siteId);
     },
     ...overrides,
+    principal: overrides?.principal ?? { kind: 'user_session' },
   };
 }
 

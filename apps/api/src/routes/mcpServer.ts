@@ -31,7 +31,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
 import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
-import type { AuthContext } from '../middleware/auth';
+import type { AuthContext, PrincipalKind } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
@@ -479,6 +479,7 @@ async function buildCheckedAuthFromApiKey(
     scopes: apiKey.scopes,
     principalType: apiKey.principalType,
     principalId: apiKey.principalId ?? null,
+    oauthGrantId: apiKey.oauthGrantId ?? null,
   });
 
   // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
@@ -1875,7 +1876,19 @@ async function buildAuthFromApiKey(apiKey: {
   scopes: string[];
   principalType?: string;
   principalId?: string | null;
+  /**
+   * Set when this "API key" is actually an MCP-OAuth bearer grant.
+   * bearerTokenAuth injects OAuth tokens through the SAME apiKey context slot
+   * (id `oauth:<jti>`, keyPrefix `oauth`), so without this the two are
+   * indistinguishable here and an OAuth grant would be labelled `api_key`.
+   * Same discriminator `mcpPrincipalKey` already uses.
+   */
+  oauthGrantId?: string | null;
 }): Promise<AuthContext | null> {
+  const principal: PrincipalKind = apiKey.oauthGrantId
+    ? { kind: 'oauth_grant', grantId: apiKey.oauthGrantId }
+    : { kind: 'api_key', apiKeyId: apiKey.id };
+
   const user = {
     id: apiKey.createdBy,
     email: `apikey-${apiKey.name}@breeze.local`,
@@ -1941,6 +1954,9 @@ async function buildAuthFromApiKey(apiKey: {
     }
     const allowedSiteIds = authz.allowedSiteIds;
     return {
+      // `user` here is the key's CREATOR (apiKey.createdBy), not a caller who
+      // logged in. Without this discriminator the two are indistinguishable.
+      principal,
       user,
       token: {} as AuthContext['token'],
       partnerId,
@@ -1996,6 +2012,7 @@ async function buildAuthFromApiKey(apiKey: {
   };
 
   return {
+    principal,
     user,
     token: {} as AuthContext['token'],
     partnerId: apiKey.partnerId,

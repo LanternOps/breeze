@@ -120,6 +120,10 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
   // Set a synthetic auth context for the streaming session manager
   // Helper sessions use a synthetic "device" user identity
   const syntheticAuth: AuthContext = {
+    // A Helper desktop session: authenticated by device credential, not by a
+    // human login. `user.id` is the DEVICE id, so this context never denotes
+    // a person even though it occupies the user slot.
+    principal: { kind: 'helper', deviceId: device.id },
     user: {
       id: device.id, // Use device ID as the "user" ID for helper sessions
       email: `helper@${device.hostname}`,

@@ -194,6 +194,7 @@ async function cleanupScenario(s: Scenario) {
 function requesterAuth(s: Scenario): AuthContext {
   const { orgCondition, canAccessOrg } = buildOrgAccessClosures([s.orgId]);
   return {
+    principal: { kind: 'user_session' },
     user: { id: s.requester.id, email: s.requester.email, name: 'Requester', isPlatformAdmin: false },
     token: {
       sub: s.requester.id,

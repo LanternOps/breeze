@@ -91,6 +91,7 @@ function getTool(): AiTool {
 
 function makeAuth(canAccessOrg = true): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'user-1', email: 'tech@example.com', name: 'Tech User', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: 'partner-1',
