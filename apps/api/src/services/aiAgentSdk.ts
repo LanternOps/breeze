@@ -615,6 +615,14 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       const description = guardrailCheck.description ?? `Execute ${toolName}`;
 
       if (guardrailCheck.tier >= 3) {
+        // Hoisted above the try below (unlike `intent`, which stays
+        // block-scoped inside it): several statements after the
+        // approved -> executing CAS win (the system-context select,
+        // revalidateApprovedIntentForRelease, the plan_step_start publish)
+        // can still throw, and the catch below needs the intent id to
+        // self-heal the row back to `failed` — `intent` itself would already
+        // be out of scope by the time the catch runs.
+        let wonIntentId: string | undefined;
         // Wrapped so an uncaught throw anywhere in this flow (e.g.
         // waitForIntentDecision, transitionIntent, the system-context
         // select, or revalidateApprovedIntentForRelease — none of which are
@@ -766,6 +774,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             });
           }
 
+          // Won the CAS: record the intent id so the outer catch can
+          // self-heal `executing -> failed` if anything below throws before
+          // the tool actually runs (see the `wonIntentId` declaration above).
+          wonIntentId = intent.id;
+
           // Won the release: re-prove the requester's CURRENT authorization
           // before executing. The inline path runs the tool under the live
           // `session.auth` captured when the tool call began — which can be up to
@@ -845,6 +858,24 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
         } catch (err) {
           console.error('[AI-SDK] Unexpected error in tier-3 durable-intent flow:', toolName, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
+          // Best-effort self-heal: if we already won the approved -> executing
+          // CAS above, this row would otherwise be stuck at `executing` until
+          // the stale-execution reaper sweeps it (20 min) — CAS it straight to
+          // `failed`, mirroring the revalidation branch's pattern just above.
+          // Wrapped in its own try/catch so a failure HERE cannot mask the
+          // original error being handled.
+          if (wonIntentId) {
+            try {
+              await transitionIntent(wonIntentId, 'executing', 'failed', { errorCode: 'execution_error' });
+            } catch (transitionErr) {
+              console.error(
+                '[AI-SDK] Failed to CAS action intent to failed after unexpected tier-3 error:',
+                wonIntentId,
+                transitionErr,
+              );
+            }
+          }
           return await failMatchedPlanStep({
             allowed: false,
             error: 'An unexpected error occurred while processing this action; it was not executed.',
@@ -1426,6 +1457,7 @@ export async function abortActivePlan(session: ActiveSession): Promise<boolean> 
     );
   } catch (err) {
     console.error('[AI-SDK] Failed to abort plan in DB:', planId, err);
+    captureException(err);
     // Still proceed with abort — safety takes priority over DB consistency
   }
 

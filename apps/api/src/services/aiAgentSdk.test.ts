@@ -2496,6 +2496,68 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     expect(session.approvedPlanSteps.size).toBe(0);
   });
 
+  it('CASes the intent executing -> failed (self-heal) when an uncaught error is thrown AFTER winning the release CAS', async () => {
+    // Distinct from "aborts the plan when an uncaught error is thrown
+    // mid-flow" above: that test throws from waitForIntentDecision, which
+    // fires BEFORE the approved -> executing CAS is even attempted, so
+    // mockTransitionIntent is only ever called once (and never wins). This
+    // test throws from the post-CAS-win system-context read instead — the
+    // window where `intent` (declared with `let` inside the try) has
+    // already gone out of scope by the time the catch runs, so only a
+    // hoisted id captured at the CAS win can be used to self-heal the row.
+    // Without that self-heal the intent is stranded at `executing` until
+    // the stale-execution reaper sweeps it 20 minutes later.
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-selfheal' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-selfheal', approvalRequestIds: ['appr-selfheal'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the approved -> executing CAS
+    // Override this test's system-context select (intent-row + winning-
+    // approval read) to throw synchronously, simulating a DB hiccup strictly
+    // after the CAS win.
+    vi.mocked(db.select).mockImplementation(() => {
+      throw new Error('system-context select blew up');
+    });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({
+      allowed: false,
+      error: 'An unexpected error occurred while processing this action; it was not executed.',
+    });
+    // The CAS that won release ('approved' -> 'executing') is the first
+    // call; the self-heal CAS ('executing' -> 'failed') must be the second.
+    expect(mockTransitionIntent).toHaveBeenNthCalledWith(
+      1,
+      'intent-selfheal',
+      'approved',
+      'executing',
+      expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+      { requireNotExpired: true },
+    );
+    expect(mockTransitionIntent).toHaveBeenNthCalledWith(
+      2,
+      'intent-selfheal',
+      'executing',
+      'failed',
+      { errorCode: 'execution_error' },
+    );
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
   // ----------------------------------------------------------------------
   // Important 2 (guard clause): only a call that MATCHED an approved plan
   // step may stop the plan. A tier-3 call that deviated from the plan
