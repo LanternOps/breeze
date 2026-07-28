@@ -1,6 +1,9 @@
-// Canonical grant-matching semantics, shared by every permission check in
-// the platform: a permission row matches a required resource/action when it
-// names it exactly OR carries the '*' wildcard on that axis.
+// Canonical grant-matching semantics: a permission row matches a required
+// resource/action when it names it exactly OR carries the '*' wildcard on
+// that axis. Shared by services/permissions.ts (hasPermission) and
+// services/siteScope.ts; a few older call sites (e.g.
+// services/remoteWsAuthorization.ts) still inline the same comparison —
+// prefer this helper for new code.
 //
 // This lives in its own dependency-free module (no db/schema imports) so that
 // enforcement paths like services/siteScope.ts can share it without pulling in
