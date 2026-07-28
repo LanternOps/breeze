@@ -269,6 +269,7 @@ import {
   shutdownIncidentSlaMonitor,
 } from './jobs/incidentJobs';
 import { initializeStaleCommandReaper, shutdownStaleCommandReaper } from './jobs/staleCommandReaper';
+import { initializeSoftwareDeploymentScheduler, shutdownSoftwareDeploymentScheduler } from './jobs/softwareDeploymentScheduler';
 import { initializePamJobs, shutdownPamJobs } from './jobs/pamJobs';
 import { initializeApprovalExpiryReaper, shutdownApprovalExpiryReaper } from './jobs/approvalExpiryReaper';
 import { initializeOffboardingDrainReaper, shutdownOffboardingDrainReaper } from './jobs/offboardingDrainReaper';
@@ -1285,6 +1286,7 @@ async function initializeWorkers(): Promise<void> {
     ['incidentTimelineEnricher', initializeIncidentTimelineEnricher],
     ['incidentSlaMonitor', initializeIncidentSlaMonitor],
     ['staleCommandReaper', initializeStaleCommandReaper],
+    ['softwareDeploymentScheduler', initializeSoftwareDeploymentScheduler],
     ['pamJobs', initializePamJobs],
     ['approvalExpiryReaper', initializeApprovalExpiryReaper],
     ['offboardingDrainReaper', initializeOffboardingDrainReaper],
@@ -1471,6 +1473,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAlertCorrelationWorker,
     shutdownAlertWorkers,
     shutdownStaleCommandReaper,
+    shutdownSoftwareDeploymentScheduler,
     shutdownPamJobs,
     shutdownApprovalExpiryReaper,
     shutdownOffboardingDrainReaper,
