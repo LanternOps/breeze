@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceCommands, deploymentResults } from '../../db/schema';
+import { deviceCommands } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
@@ -32,6 +32,10 @@ import { updateRestoreJobByCommandId } from '../../services/restoreResultPersist
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
 import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
+import {
+  applySoftwareInstallResult,
+  SW_INSTALL_COMMAND_ID_REGEX,
+} from '../../services/softwareDeploymentResult';
 
 export const commandsRoutes = new Hono();
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -175,48 +179,21 @@ commandsRoutes.post(
       // Software install commands carry their tracking IDs in the commandId
       // itself: `sw-install-<deploymentUuid>-<deviceUuid>`. Persist the
       // outcome to deployment_results so the dashboard reflects reality.
-      const swInstallMatch = commandId.match(
-        /^sw-install-([0-9a-f-]{36})-([0-9a-f-]{36})$/i,
-      );
+      const swInstallMatch = commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
       if (swInstallMatch) {
         const [, deploymentIdFromCmd, deviceIdFromCmd] = swInstallMatch;
         if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
-          const drStatus =
-            data.status === 'completed'
-              ? data.exitCode && data.exitCode !== 0
-                ? 'failed'
-                : 'completed'
-              : 'failed';
-          const completedAt = new Date();
-          // Prefer agent-reported startedAt (post-#631); fall back to
-          // reconstructing from durationMs for older agents that don't carry it.
-          const startedAt = data.startedAt
-            ? new Date(data.startedAt)
-            : data.durationMs
-              ? new Date(completedAt.getTime() - data.durationMs)
-              : completedAt;
-          await db
-            .update(deploymentResults)
-            .set({
-              status: drStatus,
-              startedAt,
-              completedAt,
-              exitCode: data.exitCode ?? null,
-              // Defense-in-depth: redact PEM private-key blocks from persisted
-              // software-install output/errors (mirrors buildStoredCommandResult).
-              output: data.stdout != null ? redactSecretsFromOutput(data.stdout) : null,
-              errorMessage:
-                data.error != null
-                  ? redactSecretsFromOutput(data.error)
-                  : data.stderr != null
-                    ? redactSecretsFromOutput(data.stderr)
-                    : null,
-            })
-            .where(and(
-              eq(deploymentResults.deploymentId, deploymentIdFromCmd),
-              eq(deploymentResults.deviceId, deviceId),
-              eq(deploymentResults.status, 'pending'),
-            ));
+          await applySoftwareInstallResult({
+            deploymentId: deploymentIdFromCmd,
+            deviceId,
+            status: data.status,
+            exitCode: data.exitCode,
+            stdout: data.stdout,
+            stderr: data.stderr,
+            error: data.error,
+            startedAt: data.startedAt,
+            durationMs: data.durationMs,
+          });
         }
       }
       return c.json({ success: true });
@@ -361,6 +338,37 @@ commandsRoutes.post(
         await handleSensitiveDataCommandResult(command, normalizedData);
       } catch (err) {
         console.error(`[agents] sensitive data post-processing failed for ${commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    // Offline-queued software installs (dispatchSoftwareInstallToDevice
+    // fallback): the result arrives with the device_commands UUID instead of
+    // the sw-install-<deployment>-<device> id, so reconcile the matching
+    // deployment_results row here. deviceId comes from the authenticated agent
+    // context; the payload's deploymentId was written server-side at queue
+    // time. The status='pending' guard in the helper makes replays a no-op.
+    if (command.type === 'software_install') {
+      try {
+        const payload =
+          command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
+            ? (command.payload as Record<string, unknown>)
+            : {};
+        if (typeof payload.deploymentId === 'string') {
+          await applySoftwareInstallResult({
+            deploymentId: payload.deploymentId,
+            deviceId,
+            status: normalizedData.status,
+            exitCode: normalizedData.exitCode,
+            stdout: normalizedData.stdout,
+            stderr: normalizedData.stderr,
+            error: normalizedData.error,
+            startedAt: normalizedData.startedAt,
+            durationMs: normalizedData.durationMs,
+          });
+        }
+      } catch (err) {
+        console.error(`[agents] software install deployment-result reconciliation failed for ${commandId}:`, err);
         captureException(err);
       }
     }

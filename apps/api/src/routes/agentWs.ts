@@ -51,6 +51,10 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { logSessionAudit, classifyConsentDenyAction, resolveConsentMarkerSessionId } from './remote/helpers';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
+import {
+  applySoftwareInstallResult,
+  SW_INSTALL_COMMAND_ID_REGEX,
+} from '../services/softwareDeploymentResult';
 import { UUID_REGEX } from '../utils/uuid';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
@@ -1148,6 +1152,44 @@ export async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
+      captureException(err);
+    }
+    return;
+  }
+
+  // Software install results dispatched over WS carry their tracking IDs in
+  // the commandId itself: `sw-install-<deploymentUuid>-<deviceUuid>`. The
+  // agent normally POSTs these to the HTTP result route
+  // (routes/agents/commands.ts), but if that goroutine fails the result can
+  // still arrive here — without this branch the deployment_results row
+  // strands as 'pending' forever. The helper's status='pending' guard makes
+  // double delivery (HTTP + WS) a no-op.
+  const swInstallMatch = result.commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
+  if (swInstallMatch) {
+    const [, swDeploymentId, swDeviceId] = swInstallMatch;
+    // Bind to the socket's authenticated device identity, like the other
+    // branches: a compromised agent must not write another device's row.
+    if (!swDeploymentId || !swDeviceId || swDeviceId !== authenticatedDeviceId) {
+      console.warn(
+        `[AgentWs] Rejecting software-install result ${result.commandId} from agent ${agentId}: ` +
+        `authenticatedDevice=${authenticatedDeviceId}`
+      );
+      return;
+    }
+    try {
+      await applySoftwareInstallResult({
+        deploymentId: swDeploymentId,
+        deviceId: authenticatedDeviceId,
+        status: result.status,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        error: result.error,
+        startedAt: result.startedAt,
+        durationMs: result.durationMs,
+      });
+    } catch (err) {
+      console.error(`[AgentWs] Failed to apply software-install result ${result.commandId}:`, err);
       captureException(err);
     }
     return;

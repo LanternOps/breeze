@@ -360,6 +360,127 @@ describe('agent commands routes', () => {
     expect(serialized).not.toContain('BODYb64lineTwo');
   });
 
+  // Offline-fallback path: the install command was queued as a device_commands
+  // row (UUID id), so the result flows through the UUID branch and must ALSO
+  // reconcile the matching deployment_results row via the payload deploymentId.
+  describe('queued software_install result reconciliation', () => {
+    const deploymentUuid = '44444444-4444-4444-8444-444444444444';
+
+    function swInstallCommandRow(overrides: Record<string, unknown> = {}) {
+      return {
+        id: commandId,
+        deviceId: 'device-1',
+        type: 'software_install',
+        status: 'sent',
+        targetRole: 'agent',
+        payload: { deploymentId: deploymentUuid, downloadUrl: 'https://dl/pkg.exe' },
+        ...overrides,
+      };
+    }
+
+    it('updates both device_commands and deployment_results for a queued install result', async () => {
+      selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow()]));
+      const deviceCommandsChain = chainMock([{ id: commandId }]);
+      const deploymentResultsChain = chainMock([]);
+      updateMock
+        .mockReturnValueOnce(deviceCommandsChain)
+        .mockReturnValueOnce(deploymentResultsChain);
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'installed',
+          durationMs: 12_000,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ success: true });
+
+      // device_commands terminal write happened…
+      const cmdStored = deviceCommandsChain.set.mock.calls[0][0];
+      expect(cmdStored.status).toBe('completed');
+
+      // …and the deployment_results row was reconciled with the shared mapping.
+      const drStored = deploymentResultsChain.set.mock.calls[0][0];
+      expect(drStored.status).toBe('completed');
+      expect(drStored.exitCode).toBe(0);
+      expect(drStored.output).toBe('installed');
+      expect(drStored.completedAt).toBeInstanceOf(Date);
+      // startedAt reconstructed from durationMs.
+      expect(drStored.completedAt.getTime() - drStored.startedAt.getTime()).toBe(12_000);
+    });
+
+    it('maps a completed result with non-zero exit code to a failed deployment_results row', async () => {
+      selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow()]));
+      const deviceCommandsChain = chainMock([{ id: commandId }]);
+      const deploymentResultsChain = chainMock([]);
+      updateMock
+        .mockReturnValueOnce(deviceCommandsChain)
+        .mockReturnValueOnce(deploymentResultsChain);
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 1603,
+          stderr: 'msi fatal error',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const drStored = deploymentResultsChain.set.mock.calls[0][0];
+      expect(drStored.status).toBe('failed');
+      expect(drStored.exitCode).toBe(1603);
+      expect(drStored.errorMessage).toBe('msi fatal error');
+    });
+
+    it('is a no-op on a second result delivery (device_commands already terminal)', async () => {
+      selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow({ status: 'completed' })]));
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+        }),
+      });
+
+      // Route accepts the replay but writes nothing — neither device_commands
+      // nor deployment_results.
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ success: true });
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('skips deployment_results reconciliation when the payload has no deploymentId', async () => {
+      selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow({ payload: {} })]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      // Only the device_commands terminal write — no deployment_results update.
+      expect(updateMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('rejects normal agent results for watchdog-targeted commands', async () => {
     selectMock.mockReturnValueOnce(
       chainMock([

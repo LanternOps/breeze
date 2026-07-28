@@ -12,6 +12,7 @@ import {
 import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
+import { queueCommand } from './commandQueue';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 
 export interface CreateSoftwareDeploymentInput {
@@ -48,6 +49,67 @@ export interface CreateSoftwareDeploymentResult {
   status: 'pending' | 'failed';
   message?: string;
   dispatchedDeviceIds: string[];
+}
+
+export type SoftwareInstallDispatchTransport = 'ws' | 'queued';
+
+export interface SoftwareInstallDispatchOutcome {
+  /** 'ws' = delivered over the live agent socket; 'queued' = written to device_commands for pickup on next poll/reconnect. */
+  transport: SoftwareInstallDispatchTransport;
+  /** device_commands row id when the offline-queue fallback was used, else null. */
+  deviceCommandId: string | null;
+}
+
+/**
+ * Dispatch one software_install command to one device — the shared per-device
+ * unit reused by the immediate path (createSoftwareDeployment), the scheduler
+ * (jobs/softwareDeploymentScheduler), and the retry endpoint.
+ *
+ * Callers are responsible for everything that happens BEFORE dispatch
+ * (presign/EDR resolution, `{{...}}` variable substitution, failure
+ * pre-writes) and hand this function the fully-resolved command payload.
+ * The payload MUST carry `deploymentId` — the queued-path result
+ * reconciliation in routes/agents/commands.ts keys on it.
+ *
+ * Honest dispatch (#1.2): when the agent has no live WS socket,
+ * sendCommandToAgent returns false; instead of silently dropping the command
+ * (the old fire-and-forget bug), fall back to queueCommand so the agent picks
+ * it up on its next poll/reconnect, and link the queued device_commands row
+ * id into deployment_results.device_command_id for reconciliation, cancel
+ * purge, and "queued — device offline" display.
+ */
+export async function dispatchSoftwareInstallToDevice(
+  deploymentId: string,
+  device: { id: string; agentId: string },
+  payload: AgentCommand['payload'],
+  createdBy?: string | null,
+): Promise<SoftwareInstallDispatchOutcome> {
+  const command: AgentCommand = {
+    id: `sw-install-${deploymentId}-${device.id}`,
+    type: 'software_install',
+    payload,
+  };
+
+  if (sendCommandToAgent(device.agentId, command)) {
+    return { transport: 'ws', deviceCommandId: null };
+  }
+
+  // Agent offline: queue the SAME payload as a device_commands row. The agent
+  // handler dispatches on command type, so both transports hit the same code.
+  const queued = await queueCommand(device.id, 'software_install', payload, createdBy ?? undefined);
+  const deviceCommandId = queued?.id ?? null;
+  if (deviceCommandId) {
+    await db
+      .update(deploymentResults)
+      .set({ deviceCommandId })
+      .where(
+        and(
+          eq(deploymentResults.deploymentId, deploymentId),
+          eq(deploymentResults.deviceId, device.id),
+        ),
+      );
+  }
+  return { transport: 'queued', deviceCommandId };
 }
 
 export async function createSoftwareDeployment(
@@ -248,6 +310,14 @@ export async function createSoftwareDeployment(
       : undefined;
     const forceReinstall = options?.forceReinstall === true;
 
+    // Claim marker (#1.2): the immediate dispatch path is now running for this
+    // deployment. Scheduled/maintenance-window rows get theirs set by the
+    // scheduler's conditional-claim update instead.
+    await db
+      .update(softwareDeployments)
+      .set({ dispatchedAt: new Date() })
+      .where(eq(softwareDeployments.id, deployment.id));
+
     const dispatchedDeviceIds: string[] = [];
     let variableFailureCount = 0;
     for (const device of targetDevices) {
@@ -290,24 +360,24 @@ export async function createSoftwareDeployment(
         deviceSilentInstallArgs = resolved.silentInstallArgs;
       }
 
-      const command: AgentCommand = {
-        id: `sw-install-${deployment.id}-${device.id}`,
-        type: 'software_install',
-        payload: {
-          deploymentId: deployment.id,
-          downloadUrl: deviceDownloadUrl,
-          checksum: versionRecord.checksum,
-          fileName:
-            versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-          fileType: versionRecord.fileType ?? 'exe',
-          silentInstallArgs: deviceSilentInstallArgs,
-          softwareName: catalogItem.name,
-          version: versionRecord.version,
-          ...(detectionRules ? { detectionRules } : {}),
-          forceReinstall,
-        },
+      // deploymentId MUST be in the payload: the WS transport tracks it via
+      // the sw-install-<deployment>-<device> command id, but the queued
+      // fallback's device_commands row only has the payload to key result
+      // reconciliation on.
+      const payload: AgentCommand['payload'] = {
+        deploymentId: deployment.id,
+        downloadUrl: deviceDownloadUrl,
+        checksum: versionRecord.checksum,
+        fileName:
+          versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
+        fileType: versionRecord.fileType ?? 'exe',
+        silentInstallArgs: deviceSilentInstallArgs,
+        softwareName: catalogItem.name,
+        version: versionRecord.version,
+        ...(detectionRules ? { detectionRules } : {}),
+        forceReinstall,
       };
-      sendCommandToAgent(device.agentId, command);
+      await dispatchSoftwareInstallToDevice(deployment.id, device, payload, createdBy);
       dispatchedDeviceIds.push(device.id);
     }
 
