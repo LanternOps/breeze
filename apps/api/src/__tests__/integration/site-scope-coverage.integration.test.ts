@@ -152,6 +152,13 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/inventory.ts:PUT /:id/network',
   'routes/agents/inventory.ts:PUT /:id/software',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
+  // Agent-token mTLS renewal confirm (Wave 5 Task 4/6). The atomic
+  // activate+demote writes device_mtls_certificates and devices.mtls_cert_*
+  // for the AUTHENTICATED agent's own device only — deviceId is device.id
+  // from the bearer match and the pending row is 404'd unless
+  // pendingRow.deviceId === device.id. No user session, no user-supplied
+  // device input, so allowedSiteIds never applies.
+  'routes/agents/mtls.ts:POST /renew-cert/confirm',
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
   'routes/agents/state.ts:PUT /:id/registry-state',

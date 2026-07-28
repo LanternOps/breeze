@@ -412,16 +412,39 @@ Both `agentAuthMiddleware` and `validateAgentToken` in `agentWs.ts` load the sam
 
 Document and test this exact protected set:
 
-- REST identity: `^/api/v1/agents/[0-9a-fA-F-]{36}(?:/.*)?$`
+- REST identity: `^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$`
 - capable confirmation: exact `/api/v1/agents/renew-cert/confirm`
-- command WebSocket: `^/api/v1/agent-ws/[0-9a-fA-F-]{36}/ws$`
+- command WebSocket: `^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$`
+- extension agent mount: `^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$`
 
-The exact exemptions are `/api/v1/agents/enroll`, `/api/v1/agents/renew-cert`, and `/api/v1/agents/renew-cert/challenge`. Do not use `contains`, `/renew-cert*`, or another broad substring exemption. Confirmation is protected because it proves the newly issued identity.
+> **AMENDED after the final whole-branch review (finding C3).** This section originally
+> specified a 36-character `[0-9a-fA-F-]{36}` identity segment, i.e. a UUID shape. That was
+> wrong in both directions and the wave shipped it into `docker/Caddyfile.prod`, both operator
+> docs and the CI check.
+>
+> The path parameter on every agent route is the **agent ID**, not a device UUID. It is
+> `randomBytes(32).toString('hex')` — a **64-character hex string** (`generateAgentId`,
+> `apps/api/src/routes/agents/helpers.ts:2071`), matched against `devices.agent_id` by
+> `apps/api/src/middleware/agentAuth.ts` and `apps/api/src/routes/agentWs.ts`. A `{36}` pattern
+> therefore matches **no** agent route at all, so the rule protected nothing; and it **does**
+> match the 36-character UUID **admin** routes (`/api/v1/agents/<deviceId>/approve`, `/reject`,
+> `/quarantined` — `apps/api/src/routes/agents/mtls.ts`, user-JWT + `requirePermission`,
+> `z.string().guid()`), which would have blocked administrators, whose browsers have no client
+> certificate, once the rule went live. `{64}` cannot match a 36-character UUID, so the admin
+> surface is now excluded structurally rather than by an exemption entry that could be dropped.
+>
+> The fourth pattern was added at the same time: extensions declaring `agentRoutes: true` mount
+> a second agent-token device-identity surface at `/api/v1/ext/<extension>/agent/<agentId>` and
+> `/api/v1/<routeNamespace>/agent/<agentId>` (`apps/api/src/extensions/gateway.ts`,
+> `apps/api/src/extensions/loader.ts`), authenticated by the same `agentAuthMiddleware`. The
+> original protected set omitted it.
+
+The exact exemptions are `/api/v1/agents/enroll`, `/api/v1/agents/renew-cert`, and `/api/v1/agents/renew-cert/challenge` — **exactly three**, enforced by cardinality, not just by presence. Do not use `contains`, `/renew-cert*`, an inequality (`ne` / `!=`), or another broad substring exemption. Confirmation is protected because it proves the newly issued identity.
 
 At the final trusted reverse proxy:
 
-1. discard inbound `X-Breeze-Client-Cert-Verified` and `X-Breeze-Client-Cert-Serial`;
-2. discard raw provider certificate headers from untrusted upstreams;
+1. discard inbound `X-Breeze-Client-Cert-Verified` and `X-Breeze-Client-Cert-Serial` — **globally, via a site-level `request_header -...`, never with a `header_up` inside the same `reverse_proxy` that sets them.** Caddy compiles a `reverse_proxy`'s `header_up` lines into one header-operation set and applies deletes **after** sets regardless of source order, so a co-located discard erases the assertion just derived and the origin receives nothing (final-review finding C1, reproduced against real `caddy:2`). Global placement also closes finding I6: `/api/v1/mcp/sse`, `/api/v1/ai/sessions/*/stream`, `/api/v1/helper/chat/sessions/*/messages`, `/oauth/*` and the OAuth `.well-known` endpoints all reach the same `api:3001` origin through their own `handle` blocks and were previously unstripped;
+2. discard raw provider certificate headers from untrusted upstreams — on **every** route that reaches the API origin, all four of `Cf-Client-Cert-Verified`, `-Serial`, `-Der-Base64`, `-Sha256`;
 3. set the two Breeze headers only from a verified Cloudflare mTLS result or an operator-configured local mTLS verifier;
 4. never forward the client certificate PEM or private material.
 

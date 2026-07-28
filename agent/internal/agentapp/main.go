@@ -642,45 +642,47 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	var tlsCfg *tls.Config
 	if cfg.MtlsCertPEM != "" {
 		if mtls.IsExpired(cfg.MtlsCertExpires) {
-			log.Warn("mTLS certificate expired, attempting renewal")
-			// Use bearer-only client for renewal (no mTLS required)
-			renewClient := api.NewClient(cfg.ServerURL, secureToken.Reveal(), cfg.AgentID)
-			renewResp, err := renewClient.RenewCert()
+			// FINAL-REVIEW I2: this used to synchronously call the LEGACY
+			// bearer-only RenewCert here, with no recovery proof. That request
+			// is denied outright under AGENT_MTLS_BINDING_MODE=enforce (an
+			// expired active row requires a valid proof — see
+			// evaluateRenewalAuthorization), and it also bypassed the
+			// two-phase pending/confirm protocol and its durable staging
+			// entirely, so a crash mid-renewal could strand a real Cloudflare
+			// certificate with no local record.
+			//
+			// Renewal is now owned solely by the heartbeat's
+			// maybeSelfInitiateCertRenewal, which runs at Start() and on every
+			// tick: it presents the current certificate when it is still
+			// valid, builds a proof-of-possession from the expired
+			// certificate's private key when it is not, and stages the result
+			// durably before confirming. Startup only needs to avoid loading a
+			// dead certificate into the TLS config, so the agent runs
+			// bearer-only for at most one tick while that completes.
+			//
+			// The private key is deliberately LEFT IN PLACE: it is the input
+			// to the recovery proof. Clearing it here would destroy the only
+			// thing that can re-establish this device's identity.
+			// The certificate and key are deliberately LEFT IN PLACE rather
+			// than cleared: the expired certificate's private key is the
+			// input to the recovery proof, and MtlsCertPEM/MtlsCertExpires
+			// are what tell the heartbeat there IS an identity to recover.
+			// Clearing either (as this path used to, on renewal failure)
+			// destroys the only thing that can re-establish this device's
+			// identity and silently downgrades it to bearer-only forever.
+			// Only the TLS config is skipped, so the expired certificate is
+			// never presented in a handshake.
+			log.Warn("mTLS certificate expired; running bearer-only until the heartbeat's recovery renewal completes",
+				"expires", cfg.MtlsCertExpires)
+		} else {
+			var err error
+			tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
 			if err != nil {
-				log.Error("mTLS cert renewal request failed, continuing without mTLS", "error", err.Error())
-				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
-			} else if renewResp.Quarantined {
-				log.Error("device quarantined by server, continuing without mTLS")
-				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
-			} else if renewResp.Mtls != nil {
-				// Validate the cert/key pair before saving
-				if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
-					log.Error("renewed cert/key pair is invalid, continuing without mTLS", "error", verifyErr.Error())
-					cfg.MtlsCertPEM = ""
-				} else {
-					cfg.MtlsCertPEM = renewResp.Mtls.Certificate
-					cfg.MtlsKeyPEM = renewResp.Mtls.PrivateKey
-					cfg.MtlsCertExpires = renewResp.Mtls.ExpiresAt
-					cfg.AuthToken = secureToken.Reveal()
-					if saveErr := config.SaveTo(cfg, cfgFile); saveErr != nil {
-						log.Error("failed to save renewed mTLS cert to config", "error", saveErr.Error())
-					}
-					cfg.AuthToken = ""
-					log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
-				}
-			} else {
-				log.Warn("renewal response contained no cert data, continuing without mTLS")
-				cfg.MtlsCertPEM = ""
+				log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err.Error())
+				tlsCfg = nil
+			} else if tlsCfg != nil {
+				log.Info("mTLS client certificate loaded")
 			}
-		}
-
-		var err error
-		tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
-		if err != nil {
-			log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err.Error())
-			tlsCfg = nil
-		} else if tlsCfg != nil {
-			log.Info("mTLS client certificate loaded")
 		}
 	}
 
@@ -1073,6 +1075,30 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// applyEnrollResponseIdentity copies the identity/credential fields an
+// EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
+// HelperAuthToken, OrgID, SiteID, and DeviceID.
+//
+// DeviceID (security remediation Wave 5 Task 5) is the server's devices.id
+// UUID — distinct from AgentID/devices.agent_id — and is required to build
+// the expired-certificate mTLS renewal recovery proof
+// (mtls.BuildRenewalProofCanonicalBytes / config.Config.DeviceID). The
+// enrollment route has always returned it; nothing previously copied it into
+// the agent's persisted config, which left recovery-proof signing silently
+// unavailable end-to-end even though every other piece was wired up and
+// tested. Extracted as a named helper, mirroring
+// resolveBackupServerURL/assertHostnameNonEmpty above, so it's unit-testable
+// without going through enrollDevice's os.Exit-on-error call chain.
+func applyEnrollResponseIdentity(cfg *config.Config, enrollResp *api.EnrollResponse) {
+	cfg.AgentID = enrollResp.AgentID
+	cfg.AuthToken = enrollResp.AuthToken
+	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
+	cfg.HelperAuthToken = enrollResp.HelperAuthToken
+	cfg.OrgID = enrollResp.OrgID
+	cfg.SiteID = enrollResp.SiteID
+	cfg.DeviceID = enrollResp.DeviceID
+}
+
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
 // never proceed with an empty or whitespace-only hostname, because the
 // downstream substitution used to write the device UUID there and
@@ -1271,12 +1297,7 @@ func enrollDevice(enrollmentKey string) {
 		enrollError(cat, friendly, err)
 	}
 
-	cfg.AgentID = enrollResp.AgentID
-	cfg.AuthToken = enrollResp.AuthToken
-	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
-	cfg.HelperAuthToken = enrollResp.HelperAuthToken
-	cfg.OrgID = enrollResp.OrgID
-	cfg.SiteID = enrollResp.SiteID
+	applyEnrollResponseIdentity(cfg, enrollResp)
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not

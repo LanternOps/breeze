@@ -16,6 +16,7 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import { users } from './schema/users';
 import * as oauthSchema from './schema/oauth';
 import { quotes } from './schema/quotes';
+import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 
 describe('autoMigrate', () => {
   describe('detectState', () => {
@@ -363,6 +364,91 @@ describe('Wave 3 durable live authorization expansion', () => {
     )?.[1];
 
     expect(allowlist).toContain("'oauth_revocation_retries'");
+  });
+});
+
+describe('Wave 5 device mTLS certificate history', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
+
+  it('orders the certificate-history migration immediately after the reserved Wave 3 quote-capability migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+    const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
+
+    expect(files).toContain(certificateHistory);
+    // -d..-f is still reserved for later waves, so assert adjacency within
+    // the block and that the block remains the contiguous lexical tail,
+    // rather than pinning this file as the single last migration.
+    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
+    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expect(reservedBlock.indexOf(certificateHistory)).toBe(reservedBlock.indexOf(quoteCapability) + 1);
+  });
+
+  it('defines the composite FK, state checks, indexes, and column shape for device_mtls_certificates', () => {
+    const cfg = getTableConfig(deviceMtlsCertificates);
+
+    expect(cfg.columns.map((c) => c.name).sort()).toEqual(
+      [
+        'activated_at',
+        'activation_expires_at',
+        'created_at',
+        'device_id',
+        'expires_at',
+        'fingerprint_sha256',
+        'id',
+        'issued_at',
+        'last_revoke_error',
+        'legacy_provenance',
+        'next_revoke_attempt_at',
+        'org_id',
+        'provider_certificate_id',
+        'public_key_spki',
+        'revoke_attempts',
+        'revoked_at',
+        'serial_number',
+        'state',
+        'updated_at',
+      ].sort(),
+    );
+
+    expect(cfg.foreignKeys.map((fk) => fk.getName())).toContain(
+      'device_mtls_certificates_device_org_fkey',
+    );
+
+    expect(cfg.checks.map((check) => check.name).sort()).toEqual(
+      [
+        'device_mtls_certificates_active_time_chk',
+        'device_mtls_certificates_fingerprint_chk',
+        'device_mtls_certificates_pending_expiry_chk',
+        'device_mtls_certificates_revoked_time_chk',
+        'device_mtls_certificates_state_chk',
+      ].sort(),
+    );
+
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(
+      [
+        'device_mtls_certificates_one_active_uq',
+        'device_mtls_certificates_org_device_state_idx',
+        'device_mtls_certificates_org_serial_uq',
+        'device_mtls_certificates_provider_uq',
+        'device_mtls_certificates_retry_idx',
+      ].sort(),
+    );
+  });
+
+  it('enables and forces RLS with all four breeze_has_org_access policies plus breeze_app grants in the migration file', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, certificateHistory), 'utf8');
+
+    expect(migrationSql).toMatch(/ALTER TABLE device_mtls_certificates ENABLE ROW LEVEL SECURITY/);
+    expect(migrationSql).toMatch(/ALTER TABLE device_mtls_certificates FORCE ROW LEVEL SECURITY/);
+    for (const cmd of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+      expect(migrationSql).toMatch(new RegExp(`FOR ${cmd}[\\s\\S]*?breeze_has_org_access`));
+    }
+    expect(migrationSql).toMatch(
+      /GRANT SELECT, INSERT, UPDATE, DELETE ON device_mtls_certificates TO breeze_app/,
+    );
   });
 });
 

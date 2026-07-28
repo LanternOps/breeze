@@ -363,6 +363,11 @@ describe('isRequestConnectionSecure (#1618 — Secure flag tracks real transport
     expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'http' }).c)).toBe(false);
   });
 
+  it('treats a malformed X-Forwarded-Proto value from a trusted proxy as insecure (TRANSPORT-001)', () => {
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'httpz' }).c)).toBe(false);
+    expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'quic' }).c)).toBe(false);
+  });
+
   it('uses the first (client-facing) hop of a proxy chain', () => {
     expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'https, http' }).c)).toBe(true);
     expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'http, https' }).c)).toBe(false);

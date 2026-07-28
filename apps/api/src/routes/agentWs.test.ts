@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { and, eq, notInArray } from 'drizzle-orm';
 
@@ -95,7 +95,27 @@ vi.mock('../db/schema', () => ({
   softwarePolicies: {},
   sensitiveDataPolicies: {},
   peripheralPolicies: {},
+  // Security remediation Wave 5, Task 6 — services/agentCertificateBinding.ts
+  // (imported transitively via validateAgentToken) reads this table.
+  deviceMtlsCertificates: {
+    deviceId: 'deviceMtlsCertificates.deviceId',
+    state: 'deviceMtlsCertificates.state',
+    serialNumber: 'deviceMtlsCertificates.serialNumber',
+    createdAt: 'deviceMtlsCertificates.createdAt',
+  },
 }));
+
+// Security remediation Wave 5, Task 6 — validateAgentToken now calls
+// enforceAgentCertificateBinding, which resolves the certificate-assertion
+// trust gate via trustsForwardedHeadersFrom. This file's real (unmocked)
+// terminalWs/tunnelWs/etc. chain also pulls getTrustedClientIp and friends
+// from the SAME module, so this must stay a partial mock (importOriginal)
+// rather than replacing the whole module — a full replacement here would be
+// the "missing mock export = suite-wide import failure" trap.
+vi.mock('../services/clientIp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/clientIp')>();
+  return { ...actual, trustsForwardedHeadersFrom: vi.fn(() => false) };
+});
 
 // terminalWs is only PARTIALLY mocked. The late-`terminal_start`-failure
 // regressions have to resolve a failure against the exact connection
@@ -236,6 +256,7 @@ import {
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
 import { isRedisAvailable } from '../services/redis';
+import { checkAgentCertificateBinding } from '../services/agentCertificateBinding';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getAgentTenantState } from '../services/tenantStatus';
@@ -364,6 +385,172 @@ describe('validateAgentToken — tenant-status gate', () => {
     const result = await validateAgentToken('agent-1', TOKEN);
 
     expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+});
+
+// Security remediation Wave 5, Task 6 — the shared certificate/device
+// binding decision (services/agentCertificateBinding.ts) runs inside
+// validateAgentToken after every other check, using the SAME pure check as
+// agentAuthMiddleware (REST).
+describe('validateAgentToken — certificate/device binding (Wave 5 Task 6)', () => {
+  const TOKEN = 'brz_ws_binding_test_token';
+  const ACTIVE_SERIAL = 'AABBCCDDEEFF00112233';
+  const OTHER_SERIAL = '00112233AABBCCDDEEFF';
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    agentTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
+    status: 'online',
+    agentTokenSuspendedAt: null,
+  };
+
+  function queueSelectOnce(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue(rows),
+          orderBy: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(rows) })),
+        })),
+      })),
+    } as any);
+  }
+
+  function assertion(overrides: Partial<{ assertionTrusted: boolean; assertedVerified: boolean; assertedSerial: string | null }> = {}) {
+    return {
+      assertionTrusted: false,
+      assertedVerified: false,
+      assertedSerial: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+  });
+
+  afterEach(() => {
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+  });
+
+  it('mode off (default): never queries the certificate identity table', async () => {
+    queueSelectOnce([deviceRow]);
+
+    const result = await validateAgentToken('agent-1', TOKEN);
+
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('mode enforce: allows through with a trusted, matching certificate assertion', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken(
+      'agent-1',
+      TOKEN,
+      assertion({ assertionTrusted: true, assertedVerified: true, assertedSerial: ACTIVE_SERIAL }),
+    );
+
+    expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', role: 'agent' } });
+  });
+
+  it('mode enforce: refuses the upgrade when no assertion is presented and an active cert is on file', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken('agent-1', TOKEN, assertion());
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it("mode enforce: refuses an assertion naming a DIFFERENT device's serial (bearer token cannot choose another device's identity)", async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken(
+      'agent-1',
+      TOKEN,
+      assertion({ assertionTrusted: true, assertedVerified: true, assertedSerial: OTHER_SERIAL }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it('mode enforce: ignores a verified claim from an untrusted source (spoofed header) and refuses', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken(
+      'agent-1',
+      TOKEN,
+      assertion({ assertionTrusted: false, assertedVerified: true, assertedSerial: ACTIVE_SERIAL }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it('mode audit: a mismatched assertion is observed but never blocks the upgrade', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken(
+      'agent-1',
+      TOKEN,
+      assertion({ assertionTrusted: true, assertedVerified: true, assertedSerial: OTHER_SERIAL }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('mode enforce: a legacy device with no certificate identity at all is allowed through (compatibility)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([]); // no active row
+    queueSelectOnce([]); // no historical row either
+    queueSelectOnce([{ legacySerial: null }]); // no legacy column either
+
+    const result = await validateAgentToken('agent-1', TOKEN, assertion());
+
+    expect(result.ok).toBe(true);
+  });
+
+  // REST (agentAuthMiddleware) and WS (validateAgentToken) both delegate to
+  // enforceAgentCertificateBinding, so identical inputs are structurally
+  // guaranteed to agree — this pins that for the WS side directly against
+  // the pure decision function REST also calls.
+  it('produces the same decision the pure checkAgentCertificateBinding function would for identical inputs', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([deviceRow]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const result = await validateAgentToken(
+      'agent-1',
+      TOKEN,
+      assertion({ assertionTrusted: true, assertedVerified: true, assertedSerial: OTHER_SERIAL }),
+    );
+
+    const pureDecision = checkAgentCertificateBinding({
+      mode: 'enforce',
+      assertionTrusted: true,
+      assertedVerified: true,
+      assertedSerial: OTHER_SERIAL,
+      storedSerial: ACTIVE_SERIAL,
+      storedState: 'active',
+    });
+
+    expect(result.ok).toBe(pureDecision.allowed);
   });
 });
 

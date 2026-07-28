@@ -59,7 +59,16 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     `MFA-SEED-${suffix}`,
     `MFA-RECOVERY-${suffix}`,
     `API-KEY-HASH-${suffix}`,
+    // device_mtls_certificates (Wave 5 Task 2): provider id, serial,
+    // fingerprint, SPKI, and sanitized revoke error must never appear in a
+    // tenant archive — only non-secret lifecycle metadata is exported.
+    `MTLS-PROVIDER-ID-${suffix}`,
+    `MTLS-SERIAL-${suffix}`,
+    `MTLS-SPKI-${suffix}`,
+    `MTLS-REVOKE-ERROR-${suffix}`,
   ];
+  const mtlsFingerprintSentinel = `MTLSFINGERPRINT${suffix}`.padEnd(64, '0');
+  prohibitedSentinels.push(mtlsFingerprintSentinel);
   await db.execute(sql`
     INSERT INTO users (
       id, partner_id, org_id, email, name,
@@ -81,9 +90,10 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
   `);
 
   // Org A: 2 sites + 2 device_groups. Org B: 1 site + 1 device_group.
+  const siteA1 = crypto.randomUUID();
   await db.execute(sql`
     INSERT INTO sites (id, org_id, name) VALUES
-      (${crypto.randomUUID()}, ${orgA}, 'A-Site-1'),
+      (${siteA1}, ${orgA}, 'A-Site-1'),
       (${crypto.randomUUID()}, ${orgA}, 'A-Site-2'),
       (${crypto.randomUUID()}, ${orgB}, 'B-Site-1')
   `);
@@ -92,6 +102,27 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       (${crypto.randomUUID()}, ${orgA}, 'A-Group-1'),
       (${crypto.randomUUID()}, ${orgA}, 'A-Group-2'),
       (${crypto.randomUUID()}, ${orgB}, 'B-Group-1')
+  `);
+
+  // device_mtls_certificates (Wave 5 Task 2): a device + one certificate
+  // history row carrying sentinel provider id, serial, fingerprint, SPKI,
+  // and a sanitized revoke error — proves the export excludes them and
+  // cascadeDeleteOrg removes the row.
+  const deviceId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+    VALUES (${deviceId}, ${orgA}, ${siteA1}, ${'roundtrip-agent-' + suffix}, 'roundtrip-host', 'windows', '11', 'amd64', '1.0.0')
+  `);
+  await db.execute(sql`
+    INSERT INTO device_mtls_certificates (
+      org_id, device_id, provider_certificate_id, serial_number,
+      fingerprint_sha256, public_key_spki, state, issued_at, expires_at,
+      activated_at, revoke_attempts, last_revoke_error
+    ) VALUES (
+      ${orgA}, ${deviceId}, ${'MTLS-PROVIDER-ID-' + suffix}, ${'MTLS-SERIAL-' + suffix},
+      ${mtlsFingerprintSentinel}, ${'MTLS-SPKI-' + suffix}, 'active', now(), now() + interval '1 year',
+      now(), 2, ${'MTLS-REVOKE-ERROR-' + suffix}
+    )
   `);
 
   return { partnerId, orgA, orgB, prohibitedSentinels };
@@ -124,6 +155,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(byName.get('device_groups.json')?.rowCount).toBe(2);
     // organizations.json is the org's own id-keyed row.
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
+    // device_mtls_certificates.json carries the one certificate history row.
+    expect(byName.get('device_mtls_certificates.json')?.rowCount).toBe(1);
     // Every manifest entry carries a sha256.
     for (const f of manifest.files) {
       expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -139,6 +172,19 @@ describe('tenant export + erasure round-trip (live DB)', () => {
       'mfa_secret',
       'mfa_recovery_codes',
       'key_hash',
+      // device_mtls_certificates excluded columns (Wave 5 Task 2) — checked
+      // by key name too, not just sentinel value, so the assertion still
+      // catches a future policy edit that flips one of these back to
+      // include. serial_number is deliberately NOT checked by key name here:
+      // device_hardware/device_warranty legitimately export their OWN
+      // serial_number column, so the bare key name collides across tables —
+      // the sentinel-value loop below is what proves the mTLS serial itself
+      // never leaks.
+      'provider_certificate_id',
+      'fingerprint_sha256',
+      'public_key_spki',
+      'last_revoke_error',
+      'next_revoke_attempt_at',
     ]) {
       expect(serializedZip).not.toContain(prohibitedKey);
     }
@@ -154,12 +200,14 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // Sanity: both orgs populated before erasure.
     expect(await rowCount(db, 'sites', orgA)).toBe(2);
     expect(await rowCount(db, 'sites', orgB)).toBe(1);
+    expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(1);
 
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
     // Target org fully wiped.
     expect(await rowCount(db, 'sites', orgA)).toBe(0);
     expect(await rowCount(db, 'device_groups', orgA)).toBe(0);
+    expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
     )) as unknown as Array<{ n: number }>;
@@ -173,10 +221,17 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     )) as unknown as Array<{ n: number }>;
     expect(orgBRows[0]?.n).toBe(1);
 
-    // Stats account for at least the 5 rows we seeded into org A.
-    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(5);
+    // Stats account for at least the 7 rows we seeded into org A (the
+    // original 5 plus the device + device_mtls_certificates row added for
+    // Wave 5 Task 2).
+    expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(7);
     expect(stats.tablesDeleted['sites']).toBe(2);
     expect(stats.tablesDeleted['device_groups']).toBe(2);
     expect(stats.tablesDeleted['organizations']).toBe(1);
+    // device_mtls_certificates is deleted explicitly (via its cascade-list
+    // registration), not merely as a side effect of the devices row's
+    // ON DELETE CASCADE — proves the table is genuinely wired into the walk.
+    expect(stats.tablesDeleted['device_mtls_certificates']).toBe(1);
+    expect(stats.tablesDeleted['devices']).toBe(1);
   });
 });

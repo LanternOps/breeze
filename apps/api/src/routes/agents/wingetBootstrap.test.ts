@@ -58,6 +58,11 @@ vi.mock('../../services/clientIp', () => ({
   // 'unknown' short-circuits the per-IP rate-limit / IP-change-audit branch
   // in agentAuthMiddleware — irrelevant to what this suite is verifying.
   getTrustedClientIp: vi.fn(() => 'unknown'),
+  // Security remediation Wave 5, Task 6 — agentAuthMiddleware now also calls
+  // readAgentCertificateAssertion (services/agentCertificateBinding.ts),
+  // which reads this. AGENT_MTLS_BINDING_MODE defaults to off in these
+  // tests, so the value here is never consulted, but the export must exist.
+  trustsForwardedHeadersFrom: vi.fn(() => false),
 }));
 
 vi.mock('../../services/tenantStatus', () => ({

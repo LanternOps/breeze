@@ -110,3 +110,4 @@ export * from './abuseSignals';
 export * from './servicePrincipals';
 export * from './partnerServicePrincipals';
 export * from './extensions';
+export * from './deviceMtlsCertificates';

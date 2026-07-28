@@ -159,6 +159,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // first and the group rows delete cleanly.
   'device_link_groups',
   'device_metrics',
+  // device_mtls_certificates (Wave 5 Task 2, security remediation): composite
+  // FK (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE ON DELETE
+  // CASCADE DEFERRABLE INITIALLY DEFERRED, so it must be a child of devices in
+  // the topological FK-safe order — this alphabetical slot (before
+  // 'device_network') already satisfies that; topologicalCascadeOrder()
+  // verifies it against pg_constraint at runtime regardless.
+  'device_mtls_certificates',
   'device_network',
   'device_patches',
   'device_process_samples',

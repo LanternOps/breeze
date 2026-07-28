@@ -477,6 +477,15 @@ const envSchema = z
     // -- Production-required -------------------------------------------------
     CORS_ALLOWED_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
+    // Security remediation Wave 5, Task 8 (TRANSPORT-001): PUBLIC_API_URL is
+    // the ONLY source for the canonical HTTPS redirect Location
+    // (services/requestTransport.ts) — inbound Host is never trusted or
+    // reflected. Shape is only checked when FORCE_HTTPS=true (see the
+    // superRefine block below); PUBLIC_API_URL is used unvalidated in many
+    // other places (installer links, agent enrollment, etc.) when
+    // FORCE_HTTPS is off, so this must not retroactively boot-refuse existing
+    // deployments that don't force HTTPS.
+    PUBLIC_API_URL: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
@@ -634,6 +643,17 @@ const envSchema = z
     PARTNER_HOOKS_URL: z.string().url().optional(),
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
     IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
+
+    // Security remediation Wave 5, Task 6 — the agent certificate/device
+    // binding compatibility mode (services/agentCertificateBinding.ts),
+    // shared by agent REST auth and the command WebSocket. Defaults to `off`
+    // (NOT `enforce`, unlike IP_ALLOWLIST_ENFORCEMENT_MODE above) so an
+    // unconfigured production deploy keeps booting exactly as before this
+    // feature landed; an explicit but INVALID value still boot-refuses below
+    // rather than silently falling back. Deliberately absent from
+    // .env.example — see envComposeParity.test.ts's guard, which would then
+    // require Compose wiring this task does not scope.
+    AGENT_MTLS_BINDING_MODE: z.enum(['off', 'audit', 'enforce']).default('off'),
 
     // -- Email-to-ticket ingest (Phase 4) ------------------------------------
     // Both optional. If MAILGUN_INBOUND_SIGNING_KEY is unset, `verify()` returns
@@ -811,6 +831,78 @@ const envSchema = z
             'ANTHROPIC_BASE_URL must be a well-formed http(s) URL (e.g. http://localhost:8000 or '
             + 'https://litellm.internal/v1).',
         });
+      }
+    }
+
+    // PUBLIC_API_URL canonical form (Wave 5, Task 8 — TRANSPORT-001): the
+    // force-HTTPS redirect (services/requestTransport.ts) builds its
+    // Location ONLY from PUBLIC_API_URL, never from inbound Host. That
+    // guarantee is only as good as PUBLIC_API_URL itself, so when
+    // FORCE_HTTPS=true it must be unambiguous: https, no embedded
+    // credentials (userinfo would either leak into every redirect or get
+    // silently dropped depending on the client), and no query/fragment
+    // (those would duplicate or get clobbered on every redirect since only
+    // the request's OWN path/query are carried over). Gated purely on
+    // FORCE_HTTPS=true, not NODE_ENV/isProduction — PUBLIC_API_URL is used
+    // unvalidated in many other places when FORCE_HTTPS is off, so this must
+    // never retroactively boot-refuse an existing deployment that doesn't
+    // force HTTPS.
+    {
+      const forceHttpsNormalized = (data.FORCE_HTTPS ?? '').trim().toLowerCase();
+      const isForceHttpsEnabled = forceHttpsNormalized === 'true' || forceHttpsNormalized === '1';
+      if (isForceHttpsEnabled) {
+        const publicApiUrlRaw = data.PUBLIC_API_URL?.trim();
+        if (!publicApiUrlRaw) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['PUBLIC_API_URL'],
+            message:
+              'PUBLIC_API_URL is required when FORCE_HTTPS=true — the canonical HTTPS redirect Location is built from it alone.',
+          });
+        } else {
+          let parsedPublicApiUrl: URL | null = null;
+          try {
+            parsedPublicApiUrl = new URL(publicApiUrlRaw);
+          } catch {
+            parsedPublicApiUrl = null;
+          }
+          if (!parsedPublicApiUrl) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['PUBLIC_API_URL'],
+              message: 'PUBLIC_API_URL must be a well-formed URL when FORCE_HTTPS=true.',
+            });
+          } else {
+            if (parsedPublicApiUrl.protocol !== 'https:') {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must use https:// when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.username || parsedPublicApiUrl.password) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a username or password when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.search) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a query string when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.hash) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a fragment when FORCE_HTTPS=true.',
+              });
+            }
+          }
+        }
       }
     }
 
@@ -1519,6 +1611,7 @@ export function validateConfig(): AppConfig {
     PARTNER_API_CURSOR_SIGNING_KEY: env.PARTNER_API_CURSOR_SIGNING_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
+    PUBLIC_API_URL: env.PUBLIC_API_URL,
     TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
     TRUSTED_PROXY_CIDRS: env.TRUSTED_PROXY_CIDRS,
     AGENT_ENROLLMENT_SECRET: env.AGENT_ENROLLMENT_SECRET,
@@ -1593,6 +1686,7 @@ export function validateConfig(): AppConfig {
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: env.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
     MAILGUN_INBOUND_SIGNING_KEY: env.MAILGUN_INBOUND_SIGNING_KEY,
     TICKETS_INBOUND_DOMAIN: env.TICKETS_INBOUND_DOMAIN,
+    AGENT_MTLS_BINDING_MODE: env.AGENT_MTLS_BINDING_MODE,
   });
 
   if (!result.success) {

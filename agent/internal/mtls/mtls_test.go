@@ -1,12 +1,16 @@
 package mtls
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"testing"
@@ -334,5 +338,158 @@ func TestNeedsRenewalBrandNewCert(t *testing.T) {
 
 	if NeedsRenewal(issued, expires) {
 		t.Fatal("should not need renewal for brand new cert")
+	}
+}
+
+// ---------- Wave 5 Task 5: ParseExpiryTime / CertificateNotAfter /
+// renewal-proof canonicalization + signing ----------
+
+func TestParseExpiryTimeExported(t *testing.T) {
+	got, err := ParseExpiryTime("2026-06-15T12:30:00Z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Year() != 2026 || got.Month() != 6 || got.Day() != 15 {
+		t.Fatalf("parsed time = %v, expected 2026-06-15", got)
+	}
+}
+
+func TestParseExpiryTimeExportedInvalid(t *testing.T) {
+	if _, err := ParseExpiryTime("not-a-date"); err == nil {
+		t.Fatal("expected error for invalid date")
+	}
+}
+
+func TestCertificateNotAfterReturnsRealExpiry(t *testing.T) {
+	notAfter := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	certPEM, _ := generateTestCert(t, time.Now().Add(-1*time.Hour), notAfter)
+
+	got, err := CertificateNotAfter(certPEM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.Equal(notAfter) {
+		t.Fatalf("NotAfter = %v, want %v", got, notAfter)
+	}
+}
+
+func TestCertificateNotAfterInvalidPEM(t *testing.T) {
+	tests := []string{"", "garbage", "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}
+	for _, in := range tests {
+		if _, err := CertificateNotAfter(in); err == nil {
+			t.Fatalf("expected error for input %q", in)
+		}
+	}
+}
+
+func TestBuildRenewalProofCanonicalBytesMatchesServerSpec(t *testing.T) {
+	got := BuildRenewalProofCanonicalBytes("device-123", "chal-abc", 1780000000)
+	want := "breeze-mtls-renew-v1\ndevice-123\nchal-abc\n1780000000"
+	if string(got) != want {
+		t.Fatalf("canonical bytes = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRenewalProofCanonicalBytesDifferByField(t *testing.T) {
+	base := BuildRenewalProofCanonicalBytes("device-1", "chal-1", 100)
+	cases := [][]byte{
+		BuildRenewalProofCanonicalBytes("device-2", "chal-1", 100),
+		BuildRenewalProofCanonicalBytes("device-1", "chal-2", 100),
+		BuildRenewalProofCanonicalBytes("device-1", "chal-1", 200),
+	}
+	for _, c := range cases {
+		if string(c) == string(base) {
+			t.Fatalf("expected canonical bytes to differ: %q vs %q", base, c)
+		}
+	}
+}
+
+// generateTestRSAKeyPEM returns a PKCS#1-encoded RSA private key PEM, used to
+// exercise SignRenewalProof's RSA branch.
+func generateTestRSAKeyPEM(t *testing.T) string {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}
+	return string(pem.EncodeToMemory(block))
+}
+
+func TestSignRenewalProofECDSAVerifiesWithNodeCryptoDefaults(t *testing.T) {
+	_, keyPEM := generateTestCert(t, time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour))
+	block, _ := pem.Decode([]byte(keyPEM))
+	if block == nil {
+		t.Fatal("failed to decode generated EC key PEM")
+	}
+	ecKey, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse EC key: %v", err)
+	}
+
+	sigB64, err := SignRenewalProof(keyPEM, "device-1", "chal-1", 1780000000)
+	if err != nil {
+		t.Fatalf("SignRenewalProof: %v", err)
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		t.Fatalf("signature is not valid base64: %v", err)
+	}
+
+	digest := sha256.Sum256(BuildRenewalProofCanonicalBytes("device-1", "chal-1", 1780000000))
+	// ecdsa.VerifyASN1 is exactly what node:crypto.verify uses for an EC key
+	// with the default (DER) dsaEncoding — this is the cross-runtime contract
+	// SignRenewalProof exists to satisfy.
+	if !ecdsa.VerifyASN1(&ecKey.PublicKey, digest[:], sig) {
+		t.Fatal("ASN.1 DER signature failed verification — does not match node:crypto's default EC encoding")
+	}
+}
+
+func TestSignRenewalProofRSAVerifiesWithNodeCryptoDefaults(t *testing.T) {
+	keyPEM := generateTestRSAKeyPEM(t)
+	block, _ := pem.Decode([]byte(keyPEM))
+	rsaKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse RSA key: %v", err)
+	}
+
+	sigB64, err := SignRenewalProof(keyPEM, "device-1", "chal-1", 1780000000)
+	if err != nil {
+		t.Fatalf("SignRenewalProof: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		t.Fatalf("signature is not valid base64: %v", err)
+	}
+
+	digest := sha256.Sum256(BuildRenewalProofCanonicalBytes("device-1", "chal-1", 1780000000))
+	// rsa.VerifyPKCS1v15 with crypto.SHA256 is node:crypto's default RSA
+	// verify padding/hash for a plain RSA key — the cross-runtime contract
+	// SignRenewalProof exists to satisfy.
+	if err := rsa.VerifyPKCS1v15(&rsaKey.PublicKey, crypto.SHA256, digest[:], sig); err != nil {
+		t.Fatalf("PKCS#1 v1.5 signature failed verification: %v", err)
+	}
+}
+
+func TestSignRenewalProofRejectsUnparseableKey(t *testing.T) {
+	if _, err := SignRenewalProof("not-a-key", "device-1", "chal-1", 100); err == nil {
+		t.Fatal("expected error for unparseable key")
+	}
+}
+
+func TestSignRenewalProofSignaturesDifferBetweenChallenges(t *testing.T) {
+	_, keyPEM := generateTestCert(t, time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour))
+
+	sig1, err := SignRenewalProof(keyPEM, "device-1", "chal-1", 100)
+	if err != nil {
+		t.Fatalf("SignRenewalProof: %v", err)
+	}
+	sig2, err := SignRenewalProof(keyPEM, "device-1", "chal-2", 100)
+	if err != nil {
+		t.Fatalf("SignRenewalProof: %v", err)
+	}
+	if sig1 == sig2 {
+		t.Fatal("expected signatures over different canonical bytes to differ")
 	}
 }

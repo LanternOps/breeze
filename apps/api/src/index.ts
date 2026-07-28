@@ -188,6 +188,10 @@ import {
   initializeOAuthRevocationRetryWorker,
   shutdownOAuthRevocationRetryWorker,
 } from './jobs/oauthRevocationRetryWorker';
+import {
+  initializeMtlsCertificateRevocationWorker,
+  shutdownMtlsCertificateRevocationWorker,
+} from './jobs/mtlsCertificateRevocation';
 import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
 import { initializeQuoteSendWorker, shutdownQuoteSendWorker } from './jobs/quoteSendQueue';
 import {
@@ -1235,6 +1239,10 @@ async function initializeWorkers(): Promise<void> {
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
+    // Wave 5 Task 3: durable/idempotent provider certificate revocation
+    // (worker + 5-minute sweep for due retries and expired pending-activation
+    // rows). initializeMtlsCertificateRevocationWorker is synchronous.
+    ['mtlsCertificateRevocationWorker', async () => { initializeMtlsCertificateRevocationWorker(); }],
     // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
     // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
     ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
@@ -1441,6 +1449,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownOAuthRevocationRetryWorker,
+    shutdownMtlsCertificateRevocationWorker,
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
