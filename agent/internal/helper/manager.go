@@ -336,6 +336,29 @@ func (m *Manager) Apply(settings *Settings) {
 		}
 	}
 
+	// After an agent upgrade, m.sessions starts empty in memory. A helper
+	// spawned into a non-console (e.g. RDP) session before the upgrade may
+	// still be running, but the console-only enumerator never surfaces that
+	// session key — so without this merge it would run unmanaged until
+	// logoff and its sessions/<key> dir would linger. Fold on-disk session
+	// directories into m.sessions so the stale loop below sees (and stops)
+	// them via the same refreshPID/ensureStoppedSession mechanics.
+	if entries, err := os.ReadDir(filepath.Join(m.baseDir, "sessions")); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			key := entry.Name()
+			if activeKeys[key] {
+				continue
+			}
+			if _, exists := m.sessions[key]; exists {
+				continue
+			}
+			m.sessions[key] = newSessionState(key, m.baseDir)
+		}
+	}
+
 	for key, state := range m.sessions {
 		if activeKeys[key] {
 			continue
