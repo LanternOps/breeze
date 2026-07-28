@@ -28,20 +28,16 @@ Because mutations use **app-only** authentication (certificate client-credential
 
 ## Entra application and permission manifest
 
-Create one dedicated multitenant application for Customer Graph Actions. Do not reuse the read application or any other. The authoritative manifest is the shared code profile `customer-graph-actions` in `packages/shared/src/m365/profiles.ts`; configure exactly these Microsoft Graph **application** permissions and grant customer-admin consent through Breeze:
+Create one dedicated multitenant application for Customer Graph Actions. Do not reuse the read application or any other. The authoritative manifest is the shared code profile `customer-graph-actions` (manifest version 1) in `packages/shared/src/m365/profiles.ts`; configure exactly these Microsoft Graph **application** permissions and grant customer-admin consent through Breeze:
 
-| Permission | Purpose |
-|---|---|
-| `User.ReadWrite.All` | Disable a user (`accountEnabled=false`); base for user mutations. |
-| `User-PasswordProfile.ReadWrite.All` | Reset a user's password (`passwordProfile` with `forceChangePasswordNextSignIn`). |
-| `Group.ReadWrite.All` | Group membership/state mutations. |
-| `DeviceManagementManagedDevices.PrivilegedOperations.All` | Privileged Intune device operations. |
-| `DeviceManagementConfiguration.ReadWrite.All` | Intune configuration mutations. |
-| `Sites.ReadWrite.All` | SharePoint/site mutations. |
+| Permission | App role ID | Purpose |
+|---|---|---|
+| `User.ReadWrite.All` | `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4` | Disable a user (`accountEnabled=false`); base for user mutations. |
+| `User-PasswordProfile.ReadWrite.All` | `56760768-b641-451f-8906-e1b8ab31bca7` | Reset a user's password (`passwordProfile` with `forceChangePasswordNextSignIn`). |
 
-All belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. Note the app is consented for a **broader** action set than is wired today: the only mutations currently shipped are `m365.user.disable` (needs `User.ReadWrite.All`) and `m365.user.reset_password` (needs `User-PasswordProfile.ReadWrite.All`). The remaining scopes are provisioned for the planned action catalog; grant them per your least-privilege posture — you may consent only the two currently exercised scopes and expand as actions ship.
+Both belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. This is the **complete, exact** current manifest — `applicationPermissionAssignments` in `profiles.ts` carries exactly these two app-role GUIDs, and a real-tenant consent must reconcile to exactly these two grants, no more and no fewer (see the [real-tenant runbook](../runbooks/m365-customer-graph-actions-real-tenant.md)). The only mutations currently shipped are `m365.user.disable` (`m365_disable_user`, needs `User.ReadWrite.All`) and `m365.user.reset_password` (`m365_reset_password`, needs `User-PasswordProfile.ReadWrite.All`).
 
-> **Gap to close before rollout:** unlike the read profile, `customer-graph-actions` does not yet carry an `applicationPermissionAssignments` table (the explicit `appRoleId` GUID map) in `profiles.ts`. Capture the app-role GUIDs for these scopes from the Entra registration in the change ticket, and add the assignment map to the shared manifest if/when actions gains app-role reconciliation like read has.
+A **roadmap** of four additional scopes (`Group.ReadWrite.All`, `DeviceManagementManagedDevices.PrivilegedOperations.All`, `DeviceManagementConfiguration.ReadWrite.All`, `Sites.ReadWrite.All`) is recorded as commented-out entries in `profiles.ts` for the planned action catalog. Do **not** request customer-admin consent for any of them yet — each one needs its own manifest version bump, app-role GUID capture, and customer re-consent before its corresponding action ships. Consenting a scope Breeze cannot yet exercise only widens the mutation blast radius for no benefit.
 
 ## Key Vault and certificate ownership
 
@@ -71,7 +67,9 @@ Use deployment secret mounts or the platform secret store. Do not put private JW
 
 | Name | Required value/constraint |
 |---|---|
-| `M365_GRAPH_ACTIONS_TOOLS_ENABLED` | `false` for dark deployment. Gates the M365 Tier-3 action tools and headless dispatch. Enabling it forces full validation of the executor configuration rows below at boot. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED` | `false` for dark deployment. Gates the org-facing "Customer Graph Actions" consent card (connect/retest/disconnect). Independent of `M365_GRAPH_ACTIONS_TOOLS_ENABLED` below — either flag alone forces full validation of the executor configuration rows below at boot (see [deploy gotchas](#deploy-gotchas)). |
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS` | Canonical lowercase Breeze org UUIDs, comma-separated, or literal `*`. **Required** when the onboarding flag is enabled — boot refuses otherwise. Expand gradually; use `*` only after limited rollout is accepted. |
+| `M365_GRAPH_ACTIONS_TOOLS_ENABLED` | `false` for dark deployment. Gates the M365 Tier-3 action AI tools (`m365_disable_user`, `m365_reset_password`) and the durable action-intents release worker's headless dispatch. Enabling it forces full validation of the executor configuration rows below at boot, **and** requires `APP_ENCRYPTION_KEY_ID` (see [Reveal-path prerequisite](#reveal-path-prerequisite-temporary-passwords)). |
 | `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS` | Canonical lowercase Breeze org UUIDs, comma-separated, or literal `*`. **Required** when the tools flag is enabled — boot refuses otherwise. Expand gradually; use `*` only after limited rollout is accepted. |
 | `M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID` | Canonical lowercase Entra application/client GUID (the actions app; not the read app). |
 | `M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION` | Exact 32-character lowercase hex Key Vault version. |
@@ -81,11 +79,14 @@ Use deployment secret mounts or the platform secret store. Do not put private JW
 | `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID` | Key ID shared with the executor's public verification JWK. |
 | `M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Absolute path to the API's Ed25519 private signing JWK. The regular file must deny group/other access (`0600` or stricter) and must not be a symlink. |
 
+Unlike the read profile, the API has **no** `M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL` variable of its own: it derives the consent callback origin from whichever of `PUBLIC_URL`, `PUBLIC_APP_URL`, or `PUBLIC_API_URL` is set (first match wins), appends the fixed path `/api/v1/m365/actions-consent/callback`, and requires one of those three to be set in production. See [deploy gotcha (b)](#deploy-gotchas).
+
 ### Executor
 
 | Name | Required value/constraint |
 |---|---|
 | `M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID` | Same canonical client GUID as the API. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL` | Exact HTTPS consent callback URI: origin + path pinned to `/api/v1/m365/actions-consent/callback`, no query/fragment/credentials. **Must byte-match** the origin the API derived (`PUBLIC_URL`/`PUBLIC_APP_URL`/`PUBLIC_API_URL`) plus that same path — see [deploy gotcha (c)](#deploy-gotchas). |
 | `M365_CUSTOMER_GRAPH_ACTIONS_VAULT_URL` | Exact HTTPS Key Vault origin. |
 | `M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF` | Same version-pinned reference as the API. |
 | `M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION` | Same 32-character lowercase hex version as the API. |
@@ -108,7 +109,7 @@ Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. W
 | `APP_ENCRYPTION_KEY` | Dedicated random secret-encryption key (already required in production). |
 | `APP_ENCRYPTION_KEY_ID` | Key id enabling AAD-bound `enc:v3` ciphertext. **Without it, `encryptSecret` falls back to non-AAD `v1`, which the reset-password seal guard refuses — the credential is dropped fail-closed and can never be revealed.** |
 
-Set both in `/opt/breeze/.env` **and** map them explicitly in the API service `environment:` block on every deployment (compose interpolation only happens for listed vars). This is separate from, and additional to, the Key Vault and executor configuration above.
+Set both in `/opt/breeze/.env` **and** map them explicitly in the API service `environment:` block on every deployment (compose interpolation only happens for listed vars). This is separate from, and additional to, the Key Vault and executor configuration above. **Boot itself now enforces this**: `apps/api/src/config/validate.ts` refuses to start the API when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true` and `APP_ENCRYPTION_KEY_ID` is unset or empty — this is not only a runtime seal-time failure, it is a boot-time configuration error. See [deploy gotcha (a)](#deploy-gotchas).
 
 ### Secret ownership matrix
 
@@ -128,6 +129,22 @@ Place the executor behind private authenticated HTTPS ingress. Only Breeze API w
 Allow controlled HTTPS egress only for the configured Key Vault host, the Microsoft identity endpoints needed for token acquisition, and `graph.microsoft.com`. If managed identity is used, allow only the platform identity endpoint it requires; if workload identity is used, mount the federation token read-only. Deny arbitrary Graph hosts, customer-supplied URLs, generic internet egress, and inbound access from web, worker, agent, or user networks.
 
 The executor has no general Graph proxy: it fixes the per-tenant token endpoint, `https://graph.microsoft.com/.default`, and the specific typed mutations it performs.
+
+## Compose / Docker deployment
+
+The executor itself is **not** a service block in `docker-compose.yml` or `deploy/docker-compose.prod.yml`, and `scripts/security/check-supply-chain-hardening.sh` enforces that a service literally named `m365-graph-read-executor:` never reappears in either file — the same rule the read executor already lives under. Actions follows the identical model for the identical reason: a private-identity workload (managed/workload identity, private authenticated ingress, controlled egress to Key Vault + Microsoft) cannot be represented as an ordinary sidecar on the shared `breeze` bridge network without weakening that isolation. Deploy the executor's separately released, digest-pinned image (`ghcr.io/lanternops/breeze/m365-graph-actions-executor@sha256:<digest>`) in its own identity-capable environment (see `.env.example` / `deploy/.env.example` for the required `--read-only --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=64m` hardening flags and the numeric `1001:1001`/`0400` file-secret ownership requirement).
+
+What **is** threaded through the generic Compose stack is the API side of the contract — the two onboarding vars, the two tools vars, and the executor-facing config/signing vars from the [Breeze API table above](#breeze-api), plus the `m365_graph_actions_executor_signing_private_jwk` Docker secret. Nothing else about the actions executor is compose-aware; the executor process is provisioned and pointed at by URL/audience/kid entirely out of band.
+
+## Deploy gotchas
+
+Three deploy-time traps were found while wiring this task's compose plumbing. Each one silently makes the feature unusable rather than failing at the point a self-hoster would expect:
+
+**(a) `APP_ENCRYPTION_KEY_ID` must be threaded through compose, not just set in `.env`.** Both `APP_ENCRYPTION_KEY_ID` and (already-present) `APP_ENCRYPTION_KEY` must be present **both** in `/opt/breeze/.env` **and** the `api` service's `environment:` block on EU+US (and in the self-host `docker-compose.yml`) *before* `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`. Compose only interpolates variables it explicitly lists — a value set only in `.env` with no matching `environment:` line is silently inert (the established `IS_HOSTED`/#570 gap class). Boot now refuses to start outright when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true` and `APP_ENCRYPTION_KEY_ID` is missing (`apps/api/src/config/validate.ts`), because the reset-password reveal seals its temporary credential with AAD-bound `enc:v3` ciphertext and fails closed without a key id.
+
+**(b) Enabling actions tools-only still requires a `PUBLIC_URL` var.** The boot validator (`validateM365CustomerGraphActionsRuntimeConfigAtBoot`) loads the full actions executor descriptor — including the consent callback URL — whenever **either** `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED` **or** `M365_GRAPH_ACTIONS_TOOLS_ENABLED` is set, not only when onboarding is on. The descriptor's callback-URL parser requires one of `PUBLIC_URL`, `PUBLIC_APP_URL`, or `PUBLIC_API_URL` to be set in production (it has no default). A deployment that enables only the AI tools (leaving onboarding off, e.g. because consent already happened out of band) still needs one of those three vars set or the API refuses to boot — this is easy to miss because nothing about "tools" reads like it should care about a public URL.
+
+**(c) The executor's callback URL must byte-match the API's derived one.** `M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL` on the **executor** is a separate, independently-configured value from the API's derived `{PUBLIC_URL origin}/api/v1/m365/actions-consent/callback`. The executor compares the `redirectUri` it receives per-request against its own configured value with strict equality (`apps/m365-graph-actions-executor/src/operations.ts`); any mismatch — a different origin, a trailing slash, `http` vs `https`, a different `PUBLIC_APP_URL` chosen over `PUBLIC_API_URL` on the API side — fails the identity-verification leg with `identity_token_invalid`. Set both from the same source of truth and verify byte-for-byte equality as part of every deploy that touches either app's public origin configuration.
 
 ## Deployment and rollout
 

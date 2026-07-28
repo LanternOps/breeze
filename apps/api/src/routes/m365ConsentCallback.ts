@@ -9,8 +9,11 @@ import { Hono, type Context } from 'hono';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema';
 import {
+  buildClearM365ActionsConsentBindingCookie,
   buildClearM365ConsentBindingCookie,
+  buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
+  inspectM365ActionsConsentBindingCookie,
   inspectM365ConsentBindingCookie,
   type M365ConsentBrowserBinding,
   type M365ConsentBindingPhase,
@@ -19,30 +22,44 @@ import {
   applyIdentityVerificationResult,
   markConsentAttemptFailed,
   transitionAdminConsentToIdentity,
-  type ConsentAttemptSnapshot,
-  type CustomerGraphReadConnectionSnapshot,
+  type M365ConnectionSnapshot,
+  type M365ConsentAttemptSnapshot,
 } from '../services/m365ControlPlane/connectionService';
 import {
   consumeConsentSession,
   hashTenantHint,
   prepareIdentityVerificationSession,
   type M365ConsentSession,
+  type M365ConsentSessionProfile,
   type PreparedIdentityVerificationSession,
 } from '../services/m365ControlPlane/consentSessionService';
-import { createGraphReadExecutorClient } from '../services/m365ControlPlane/graphReadExecutorClient';
+import {
+  createGraphActionsExecutorClient,
+  type GraphActionsExecutorClientConfig,
+} from '../services/m365ControlPlane/graphActionsExecutorClient';
+import {
+  createGraphReadExecutorClient,
+  type GraphReadExecutorClientConfig,
+} from '../services/m365ControlPlane/graphReadExecutorClient';
 import { buildMicrosoftIdentityAuthorizationUrl } from '../services/m365ControlPlane/microsoftAuthorization';
+import { loadM365CustomerGraphReadRuntimeConfig } from '../services/m365ControlPlane/runtimeConfig';
+import { actionsConnectionService } from '../services/m365ControlPlane/writeActionConnectionService';
+import { loadM365CustomerGraphActionsRuntimeConfig } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
-  loadM365CustomerGraphReadRuntimeConfig,
-  type M365CustomerGraphReadRuntimeConfig,
-} from '../services/m365ControlPlane/runtimeConfig';
-import {
+  recordM365CustomerGraphActionsEvent,
+  recordM365CustomerGraphActionsMetric,
   recordM365CustomerGraphReadEvent,
   recordM365CustomerGraphReadMetric,
-  type M365CustomerGraphReadAuditInput,
-  type M365CustomerGraphReadEvent,
 } from '../services/m365ControlPlane/metrics';
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The two M365 profiles that run the two-phase consent callback. */
+type CallbackProfile = M365ConsentSessionProfile;
+
+/** Profile-parameterized snapshot types — one interface, narrowed per instance. */
+type CallbackConnectionSnapshot = M365ConnectionSnapshot<CallbackProfile>;
+type CallbackAttemptSnapshot = M365ConsentAttemptSnapshot<CallbackProfile>;
 
 export type ParsedM365ConsentCallback =
   | { kind: 'admin_success'; state: string; tenantId: string }
@@ -128,76 +145,232 @@ interface CallbackRuntimeConfig {
   callbackUrl: string;
 }
 
+/**
+ * Superset of CallbackRuntimeConfig carrying the executor-signing fields both
+ * the read and actions runtime configs expose. Kept loose (string audience)
+ * so both profile-specific configs satisfy it structurally; the strict
+ * literal audience is only required at the point each concrete executor
+ * client constructor is called.
+ */
+interface CallbackExecutorRuntimeConfig extends CallbackRuntimeConfig {
+  executorUrl: string;
+  executorAudience: string;
+  executorSigningPrivateJwk: Record<string, unknown>;
+  executorSigningKid: string;
+}
+
+interface CallbackExecutorClient {
+  completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
+}
+
+/** The subset of a profile-bound ConnectionService the callback route needs. */
+interface CallbackConnectionServiceLike {
+  markConsentAttemptFailed(
+    input: CallbackAttemptSnapshot,
+    errorCode: string,
+  ): Promise<CallbackConnectionSnapshot>;
+  transitionAdminConsentToIdentity(input: {
+    attempt: CallbackAttemptSnapshot;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{ connection: CallbackConnectionSnapshot; actorId: string }>;
+  applyIdentityVerificationResult(
+    input: CallbackAttemptSnapshot,
+    result: CompleteConsentResult,
+  ): Promise<CallbackConnectionSnapshot>;
+}
+
+interface CallbackEventNames {
+  verificationFailed: string;
+  adminConsentReturned: string;
+  tenantBindingVerified: string;
+  grantDriftDetected: string;
+}
+
+interface CallbackAuditInput {
+  event: string;
+  orgId: string;
+  connectionId: string;
+  profile: CallbackProfile;
+  consentAttemptId: string;
+  manifestVersion?: number;
+  outcome: string;
+  correlationId?: string;
+  verifiedTenantId?: string;
+  actorId?: string;
+}
+
 interface CallbackDependencies {
+  profile: CallbackProfile;
+  redirectBase: string;
+  events: CallbackEventNames;
   verifyBindingCookie(cookieHeader: string | undefined): M365ConsentBrowserBinding | 'expired' | null;
   buildBindingCookie(binding: M365ConsentBrowserBinding): string;
   clearBindingCookie(): string;
-  loadAttempt(binding: M365ConsentBrowserBinding): Promise<ConsentAttemptSnapshot | null>;
+  loadAttempt(binding: M365ConsentBrowserBinding): Promise<CallbackAttemptSnapshot | null>;
   consumeSession(input: Parameters<typeof consumeConsentSession>[0]): Promise<M365ConsentSession | null>;
-  markAttemptFailed(input: ConsentAttemptSnapshot, outcome: string): Promise<CustomerGraphReadConnectionSnapshot>;
+  markAttemptFailed(input: CallbackAttemptSnapshot, outcome: string): Promise<CallbackConnectionSnapshot>;
   prepareIdentitySession(input: { tenantHint: string }): PreparedIdentityVerificationSession;
   buildIdentityUrl(input: Parameters<typeof buildMicrosoftIdentityAuthorizationUrl>[0]): string;
-  transitionAdminPhase(input: Parameters<typeof transitionAdminConsentToIdentity>[0]): ReturnType<typeof transitionAdminConsentToIdentity>;
+  transitionAdminPhase(input: {
+    attempt: CallbackAttemptSnapshot;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{ connection: CallbackConnectionSnapshot; actorId: string }>;
   completeIdentity(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
-  applyIdentityResult(input: ConsentAttemptSnapshot, result: CompleteConsentResult): Promise<CustomerGraphReadConnectionSnapshot>;
+  applyIdentityResult(input: CallbackAttemptSnapshot, result: CompleteConsentResult): Promise<CallbackConnectionSnapshot>;
   loadConfig(): CallbackRuntimeConfig;
   correlationId(): string;
-  audit(c: Context, input: M365CustomerGraphReadAuditInput): void;
-  metric(event: M365CustomerGraphReadEvent, outcome: PublicOutcome): void;
+  audit(c: Context, input: CallbackAuditInput): void;
+  metric(event: string, outcome: PublicOutcome): void;
 }
 
-async function loadAttemptFromBinding(
-  binding: M365ConsentBrowserBinding,
-): Promise<ConsentAttemptSnapshot | null> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const rows = await db.select().from(m365Connections).where(and(
-      eq(m365Connections.id, binding.connectionId),
-      eq(m365Connections.profile, 'customer-graph-read'),
-      eq(m365Connections.consentAttemptId, binding.consentAttemptId),
-    )).limit(1);
-    const row = rows[0];
-    if (!row?.orgId || !row.consentAttemptId || row.profile !== 'customer-graph-read') return null;
-    return {
-      id: row.id,
-      orgId: row.orgId,
-      profile: 'customer-graph-read',
-      consentAttemptId: row.consentAttemptId,
-      status: row.status,
-    };
-  }));
+/** Fixed per-profile event names — the audit/metric event enums are profile-scoped siblings. */
+const CALLBACK_EVENT_NAMES: Record<CallbackProfile, CallbackEventNames> = {
+  'customer-graph-read': {
+    verificationFailed: 'm365.customer_graph_read.verification_failed',
+    adminConsentReturned: 'm365.customer_graph_read.admin_consent_returned',
+    tenantBindingVerified: 'm365.customer_graph_read.tenant_binding_verified',
+    grantDriftDetected: 'm365.customer_graph_read.grant_drift_detected',
+  },
+  'customer-graph-actions': {
+    verificationFailed: 'm365.customer_graph_actions.verification_failed',
+    adminConsentReturned: 'm365.customer_graph_actions.admin_consent_returned',
+    tenantBindingVerified: 'm365.customer_graph_actions.tenant_binding_verified',
+    grantDriftDetected: 'm365.customer_graph_actions.grant_drift_detected',
+  },
+};
+
+/**
+ * Builds the profile-scoped attempt lookup: the WHERE clause pins both the
+ * connection id AND the profile column, so a binding minted for one profile
+ * can never resolve an attempt row that belongs to the other — even though
+ * the browser-binding cookie itself carries no profile field.
+ */
+function buildLoadAttemptFromBinding(
+  profile: CallbackProfile,
+): (binding: M365ConsentBrowserBinding) => Promise<CallbackAttemptSnapshot | null> {
+  return async function loadAttemptFromBinding(
+    binding: M365ConsentBrowserBinding,
+  ): Promise<CallbackAttemptSnapshot | null> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const rows = await db.select().from(m365Connections).where(and(
+        eq(m365Connections.id, binding.connectionId),
+        eq(m365Connections.profile, profile),
+        eq(m365Connections.consentAttemptId, binding.consentAttemptId),
+      )).limit(1);
+      const row = rows[0];
+      if (!row?.orgId || !row.consentAttemptId || row.profile !== profile) return null;
+      return {
+        id: row.id,
+        orgId: row.orgId,
+        profile,
+        consentAttemptId: row.consentAttemptId,
+        status: row.status,
+      };
+    }));
+  };
 }
 
-function completeIdentityWithRuntime(input: CompleteConsentRequest): Promise<CompleteConsentResult> {
-  const config: M365CustomerGraphReadRuntimeConfig = loadM365CustomerGraphReadRuntimeConfig();
-  return createGraphReadExecutorClient({
+function completeIdentityWithRuntime(
+  loadRuntimeConfig: () => CallbackExecutorRuntimeConfig,
+  createExecutorClient: (config: CallbackExecutorRuntimeConfig) => CallbackExecutorClient,
+): (input: CompleteConsentRequest) => Promise<CompleteConsentResult> {
+  return (input) => createExecutorClient(loadRuntimeConfig()).completeIdentityVerification(input);
+}
+
+function defaultLoadRuntimeConfig(profile: CallbackProfile): () => CallbackExecutorRuntimeConfig {
+  return profile === 'customer-graph-actions'
+    ? loadM365CustomerGraphActionsRuntimeConfig
+    : loadM365CustomerGraphReadRuntimeConfig;
+}
+
+function defaultCreateExecutorClient(
+  profile: CallbackProfile,
+): (config: CallbackExecutorRuntimeConfig) => CallbackExecutorClient {
+  if (profile === 'customer-graph-actions') {
+    return (config) => createGraphActionsExecutorClient({
+      executorUrl: config.executorUrl,
+      executorAudience: config.executorAudience,
+      signingPrivateJwk: config.executorSigningPrivateJwk,
+      signingKid: config.executorSigningKid,
+    } as GraphActionsExecutorClientConfig);
+  }
+  return (config) => createGraphReadExecutorClient({
     executorUrl: config.executorUrl,
     executorAudience: config.executorAudience,
     signingPrivateJwk: config.executorSigningPrivateJwk,
     signingKid: config.executorSigningKid,
-  }).completeIdentityVerification(input);
+  } as GraphReadExecutorClientConfig);
 }
 
-const defaultDependencies: CallbackDependencies = {
-  verifyBindingCookie: (header) => {
-    const inspected = inspectM365ConsentBindingCookie(header);
-    if (inspected.status === 'expired') return 'expired';
-    return inspected.status === 'valid' ? inspected.binding : null;
-  },
-  buildBindingCookie: (binding) => buildM365ConsentBindingCookie(binding),
-  clearBindingCookie: () => buildClearM365ConsentBindingCookie(),
-  loadAttempt: loadAttemptFromBinding,
-  consumeSession: consumeConsentSession,
-  markAttemptFailed: markConsentAttemptFailed,
-  prepareIdentitySession: prepareIdentityVerificationSession,
-  buildIdentityUrl: buildMicrosoftIdentityAuthorizationUrl,
-  transitionAdminPhase: transitionAdminConsentToIdentity,
-  completeIdentity: completeIdentityWithRuntime,
-  applyIdentityResult: applyIdentityVerificationResult,
-  loadConfig: loadM365CustomerGraphReadRuntimeConfig,
-  correlationId: randomUUID,
-  audit: recordM365CustomerGraphReadEvent,
-  metric: recordM365CustomerGraphReadMetric,
-};
+function defaultConnectionService(profile: CallbackProfile): CallbackConnectionServiceLike {
+  return profile === 'customer-graph-actions'
+    ? actionsConnectionService
+    : { markConsentAttemptFailed, transitionAdminConsentToIdentity, applyIdentityVerificationResult };
+}
+
+/**
+ * Profile-scoped binding functions. Each profile has its own cookie name,
+ * cookie Path, and HMAC context (see browserBinding.ts) — the actions
+ * instance never builds, clears, or verifies the read instance's cookie
+ * and vice versa, so a browser only ever round-trips the correct cookie to
+ * the correct callback path, and a cross-profile replay fails signature
+ * verification even if forged past Path scoping.
+ */
+function defaultBindingFunctions(profile: CallbackProfile): {
+  inspect: typeof inspectM365ConsentBindingCookie;
+  build: typeof buildM365ConsentBindingCookie;
+  buildClear: typeof buildClearM365ConsentBindingCookie;
+} {
+  return profile === 'customer-graph-actions'
+    ? {
+      inspect: inspectM365ActionsConsentBindingCookie,
+      build: buildM365ActionsConsentBindingCookie,
+      buildClear: buildClearM365ActionsConsentBindingCookie,
+    }
+    : {
+      inspect: inspectM365ConsentBindingCookie,
+      build: buildM365ConsentBindingCookie,
+      buildClear: buildClearM365ConsentBindingCookie,
+    };
+}
+
+function buildDefaultDependencies(
+  profile: CallbackProfile,
+  loadRuntimeConfig: () => CallbackExecutorRuntimeConfig,
+  createExecutorClient: (config: CallbackExecutorRuntimeConfig) => CallbackExecutorClient,
+  connectionService: CallbackConnectionServiceLike,
+): CallbackDependencies {
+  const binding = defaultBindingFunctions(profile);
+  return {
+    profile,
+    redirectBase: `/integrations#m365/${profile}`,
+    events: CALLBACK_EVENT_NAMES[profile],
+    verifyBindingCookie: (header) => {
+      const inspected = binding.inspect(header);
+      if (inspected.status === 'expired') return 'expired';
+      return inspected.status === 'valid' ? inspected.binding : null;
+    },
+    buildBindingCookie: (bound) => binding.build(bound),
+    clearBindingCookie: () => binding.buildClear(),
+    loadAttempt: buildLoadAttemptFromBinding(profile),
+    consumeSession: consumeConsentSession,
+    markAttemptFailed: connectionService.markConsentAttemptFailed,
+    prepareIdentitySession: prepareIdentityVerificationSession,
+    buildIdentityUrl: buildMicrosoftIdentityAuthorizationUrl,
+    transitionAdminPhase: connectionService.transitionAdminConsentToIdentity,
+    completeIdentity: completeIdentityWithRuntime(loadRuntimeConfig, createExecutorClient),
+    applyIdentityResult: connectionService.applyIdentityVerificationResult,
+    loadConfig: () => {
+      const config = loadRuntimeConfig();
+      return { clientId: config.clientId, callbackUrl: config.callbackUrl };
+    },
+    correlationId: randomUUID,
+    audit: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsEvent : recordM365CustomerGraphReadEvent,
+    metric: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsMetric : recordM365CustomerGraphReadMetric,
+  };
+}
 
 function constantTimeTextEqual(left: string, right: string): boolean {
   const a = Buffer.from(left, 'utf8');
@@ -205,7 +378,7 @@ function constantTimeTextEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function outcomeFromConnection(value: CustomerGraphReadConnectionSnapshot): PublicOutcome {
+function outcomeFromConnection(value: CallbackConnectionSnapshot): PublicOutcome {
   if (value.status === 'active') return 'active';
   if (value.status === 'degraded') return 'degraded';
   return PUBLIC_OUTCOMES.has(value.lastErrorCode as PublicOutcome)
@@ -222,37 +395,62 @@ function errorOutcome(error: unknown): PublicOutcome {
   return 'executor_unavailable';
 }
 
-export function createM365ConsentCallbackRoutes(
-  overrides: Partial<CallbackDependencies> = {},
-): Hono {
-  const dependencies = { ...defaultDependencies, ...overrides };
-  const routes = new Hono();
+export interface CreateM365ConsentCallbackRoutesOverrides extends Partial<CallbackDependencies> {
+  /** Full runtime-config loader (superset of `loadConfig`'s clientId/callbackUrl). */
+  loadRuntimeConfig?: () => CallbackExecutorRuntimeConfig;
+  /** Builds the executor client used to complete identity verification. */
+  createExecutorClient?: (config: CallbackExecutorRuntimeConfig) => CallbackExecutorClient;
+  /** Profile-bound connection-lifecycle service (markConsentAttemptFailed / transitionAdminConsentToIdentity / applyIdentityVerificationResult). */
+  connectionService?: CallbackConnectionServiceLike;
+}
 
-  routes.get('/consent/callback', async (c) => {
+export function createM365ConsentCallbackRoutes(
+  overrides: CreateM365ConsentCallbackRoutesOverrides = {},
+): Hono {
+  const profile = overrides.profile ?? 'customer-graph-read';
+  const loadRuntimeConfig = overrides.loadRuntimeConfig ?? defaultLoadRuntimeConfig(profile);
+  const createExecutorClient = overrides.createExecutorClient ?? defaultCreateExecutorClient(profile);
+  const connectionService = overrides.connectionService ?? defaultConnectionService(profile);
+
+  const dependencies: CallbackDependencies = {
+    ...buildDefaultDependencies(profile, loadRuntimeConfig, createExecutorClient, connectionService),
+    ...overrides,
+  };
+  const routes = new Hono();
+  const callbackPath = dependencies.profile === 'customer-graph-actions'
+    ? '/actions-consent/callback'
+    : '/consent/callback';
+  // Full mounted pathname — must match the redirect_uri Microsoft is sent back to
+  // (config.callbackUrl), which microsoftAuthorization.ts's requireRedirectUri
+  // validates against exactly. The read and actions instances mount distinct
+  // suffixes under the same '/m365' base (see index.ts).
+  const expectedCallbackPath = `/api/v1/m365${callbackPath}`;
+
+  routes.get(callbackPath, async (c) => {
     const correlationId = dependencies.correlationId();
     const terminalRedirect = (outcome: PublicOutcome) => {
       c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
-      return c.redirect(`/integrations#m365/customer-graph-read/${outcome}`);
+      return c.redirect(`${dependencies.redirectBase}/${outcome}`);
     };
     const terminalFailure = (
       outcome: PublicOutcome,
-      attempt?: ConsentAttemptSnapshot,
+      attempt?: CallbackAttemptSnapshot,
       actorId?: string,
     ) => {
       if (attempt) {
         dependencies.audit(c, {
-          event: 'm365.customer_graph_read.verification_failed',
+          event: dependencies.events.verificationFailed,
           orgId: attempt.orgId,
           connectionId: attempt.id,
           profile: attempt.profile,
           consentAttemptId: attempt.consentAttemptId,
-          manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
+          manifestVersion: M365_PERMISSION_PROFILES[dependencies.profile].version,
           outcome,
           correlationId,
           ...(actorId ? { actorId } : {}),
         });
       } else {
-        dependencies.metric('m365.customer_graph_read.verification_failed', outcome);
+        dependencies.metric(dependencies.events.verificationFailed, outcome);
       }
       return terminalRedirect(outcome);
     };
@@ -286,12 +484,13 @@ export function createM365ConsentCallbackRoutes(
           tenantId: parsed.tenantId,
           clientId: config.clientId,
           redirectUri: config.callbackUrl,
+          expectedCallbackPath,
           state: prepared.rawState,
           nonce: prepared.nonce,
           codeChallenge: prepared.codeChallenge,
         });
       } catch {
-        dependencies.metric('m365.customer_graph_read.verification_failed', 'executor_unavailable');
+        dependencies.metric(dependencies.events.verificationFailed, 'executor_unavailable');
         return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
       }
 
@@ -311,18 +510,18 @@ export function createM365ConsentCallbackRoutes(
         if (errorOutcome(error) === 'consent_state_mismatch') {
           return terminalFailure('consent_state_mismatch', attempt);
         }
-        dependencies.metric('m365.customer_graph_read.verification_failed', 'executor_unavailable');
+        dependencies.metric(dependencies.events.verificationFailed, 'executor_unavailable');
         return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
       }
 
       c.header('Set-Cookie', preparedCookie, { append: true });
       dependencies.audit(c, {
-        event: 'm365.customer_graph_read.admin_consent_returned',
+        event: dependencies.events.adminConsentReturned,
         orgId: attempt.orgId,
         connectionId: attempt.id,
         profile: attempt.profile,
         consentAttemptId: attempt.consentAttemptId,
-        manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
+        manifestVersion: M365_PERMISSION_PROFILES[dependencies.profile].version,
         outcome: 'identity_verification_started',
         correlationId,
         actorId,
@@ -342,6 +541,7 @@ export function createM365ConsentCallbackRoutes(
       connectionId: binding.connectionId,
       orgId: attempt.orgId,
       consentAttemptId: binding.consentAttemptId,
+      profile: dependencies.profile,
     });
     if (!session) return terminalFailure('consent_state_mismatch', attempt);
 
@@ -409,13 +609,13 @@ export function createM365ConsentCallbackRoutes(
         } as const;
         dependencies.audit(c, {
           ...event,
-          event: 'm365.customer_graph_read.tenant_binding_verified',
+          event: dependencies.events.tenantBindingVerified,
           outcome,
         });
         if (driftOutcome) {
           dependencies.audit(c, {
             ...event,
-            event: 'm365.customer_graph_read.grant_drift_detected',
+            event: dependencies.events.grantDriftDetected,
             outcome: driftOutcome,
           });
         }
@@ -431,3 +631,15 @@ export function createM365ConsentCallbackRoutes(
 }
 
 export const m365ConsentCallbackRoutes = createM365ConsentCallbackRoutes();
+
+export const m365ActionsConsentCallbackRoutes = createM365ConsentCallbackRoutes({
+  profile: 'customer-graph-actions',
+  loadRuntimeConfig: loadM365CustomerGraphActionsRuntimeConfig,
+  createExecutorClient: (config) => createGraphActionsExecutorClient({
+    executorUrl: config.executorUrl,
+    executorAudience: config.executorAudience,
+    signingPrivateJwk: config.executorSigningPrivateJwk,
+    signingKid: config.executorSigningKid,
+  } as GraphActionsExecutorClientConfig),
+  connectionService: actionsConnectionService,
+});

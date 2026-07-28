@@ -5,7 +5,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partners, organizations, sites, devices, agentVersions } from '../db/schema';
+import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -1366,13 +1366,105 @@ orgRoutes.get('/organizations/:id/effective-settings',
   }
 );
 
-const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
+// #2879 — statuses a partner may move a SUSPENDED org to through the narrow
+// lifecycle exception in updateOrgHandler. Deliberately excludes:
+//   - 'suspended' (no-op),
+//   - 'churned'   (jumping a suspended org straight to churned would skip the
+//                  offboarding drain and strand agents with no self_uninstall
+//                  delivery — the drain reaper flips offboarding→churned),
+//   - 'pending'   (not an exit state).
+const SUSPENDED_LIFECYCLE_EXIT_STATUSES: readonly string[] = ['active', 'trial', 'offboarding'];
+
+/**
+ * #2879 — suspended→offboarding (and suspended→active/trial reactivation) was
+ * unreachable: computeAccessibleOrgIds filters partner visibility to
+ * active/trial orgs, so a suspended org 404s on PATCH /organizations/:id and
+ * the partner can never offboard (or reactivate) a customer it suspended —
+ * a one-way door that made #2808's drain-entry fix dead code on the real path.
+ *
+ * This is a deliberately NARROW override: it only ever authorizes a
+ * status-only payload moving a suspended, partner-owned org to a lifecycle
+ * exit state. Suspended orgs stay invisible to every other route and to
+ * general accessible-org computation — suspension continues to cut off
+ * access everywhere else.
+ */
+async function canApplySuspendedOrgLifecycleTransition(
+  auth: AuthContext,
+  orgId: string,
+  data: Record<string, unknown>
+): Promise<boolean> {
+  // Status-only: nothing else (name/settings/billing) may ride along on the
+  // override — editing a suspended org's data stays blocked.
+  const keys = Object.keys(data);
+  if (keys.length !== 1 || keys[0] !== 'status') return false;
+  if (typeof data.status !== 'string' || !SUSPENDED_LIFECYCLE_EXIT_STATUSES.includes(data.status)) {
+    return false;
+  }
+  if (!auth.partnerId) return false;
+  // partner_users.org_access 'none' (or an unresolved membership) fails closed.
+  if (auth.partnerOrgAccess !== 'all' && auth.partnerOrgAccess !== 'selected') return false;
+
+  // The suspended org is invisible to this request's RLS context (it is
+  // excluded from accessibleOrgIds), so the ownership check must run under a
+  // fresh system-scope transaction. Every predicate is equality-keyed by the
+  // caller's own partnerId/userId, so this can only surface facts about the
+  // caller's own tenant — never another partner's.
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId, status: organizations.status })
+        .from(organizations)
+        .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+        .limit(1);
+      if (!org || org.partnerId !== auth.partnerId || org.status !== 'suspended') {
+        return false;
+      }
+      if (auth.partnerOrgAccess === 'selected') {
+        // 'selected' users only get the override for orgs in their selection
+        // (computeAccessibleOrgIds can't tell us — it already filtered the
+        // suspended org out — so re-read the raw selection list).
+        const [membership] = await db
+          .select({ orgIds: partnerUsers.orgIds })
+          .from(partnerUsers)
+          .where(and(eq(partnerUsers.userId, auth.user.id), eq(partnerUsers.partnerId, auth.partnerId!)))
+          .limit(1);
+        if (!(membership?.orgIds ?? []).includes(orgId)) return false;
+      }
+      return true;
+    })
+  );
+}
+
+// #2879 — a membership-less platform admin resolves no role row in
+// getUserPermissions (permissions derive only from partner/org memberships),
+// so requirePermission 403s ("No permissions found") and system scope cannot
+// drive org lifecycle transitions either. scope='system' is only minted for —
+// and live-bound to — users with isPlatformAdmin=true (authMiddleware SR2-02),
+// and platformAdminMiddleware (/admin/*) already treats that flag as the
+// grant, so this mirrors the established authority model. Applied ONLY to the
+// org update route, not globally.
+const requireOrgWriteOrPlatformAdmin = async (c: Context, next: Next) => {
+  const auth = c.get('auth') as AuthContext | undefined;
+  if (auth?.scope === 'system' && auth.user?.isPlatformAdmin === true) {
+    return next();
+  }
+  return requireOrgWrite(c, next);
+};
+
+const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPlatformAdmin, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
+  // #2879 — suspended orgs are outside canAccessOrg/accessibleOrgIds, so a
+  // partner-scope status-only lifecycle transition (suspended→offboarding /
+  // reactivation) gets one narrow escape hatch; anything else stays a 404.
+  let suspendedLifecycleOverride = false;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    suspendedLifecycleOverride = await canApplySuspendedOrgLifecycleTransition(auth, id, data);
+    if (!suspendedLifecycleOverride) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
   }
 
   if (data.settings) {
@@ -1472,13 +1564,31 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     updates.contractEnd = data.contractEnd ? new Date(data.contractEnd) : null;
   }
 
-  const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
+  // #2879 — the override path re-asserts, in the UPDATE itself, exactly the
+  // facts canApplySuspendedOrgLifecycleTransition checked (partner-owned AND
+  // still suspended), so a concurrent change between check and write can only
+  // produce a 0-row update → 404, never a write to an org that stopped
+  // qualifying. It must also run under a system context: the request's
+  // partner RLS context can't see the suspended org, so the same UPDATE
+  // would silently match 0 rows there.
+  const conditions = suspendedLifecycleOverride
+    ? and(
+        eq(organizations.id, id),
+        eq(organizations.partnerId, auth.partnerId!),
+        eq(organizations.status, 'suspended'),
+        isNull(organizations.deletedAt)
+      )
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const [organization] = await db
+  const runUpdate = () => db
     .update(organizations)
     .set(updates)
     .where(conditions)
     .returning();
+
+  const [organization] = suspendedLifecycleOverride
+    ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
+    : await runUpdate();
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
@@ -1509,7 +1619,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     resourceType: 'organization',
     resourceId: organization.id,
     resourceName: organization.name,
-    details: { changedFields: Object.keys(data) }
+    details: {
+      changedFields: Object.keys(data),
+      // #2879 — flag transitions that used the suspended-org escape hatch so
+      // forensic review of override usage is a single audit-log filter.
+      ...(suspendedLifecycleOverride ? { suspendedLifecycleOverride: true } : {})
+    }
   });
 
   return c.json(organization);

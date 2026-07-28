@@ -247,6 +247,20 @@ describe('metrics routes', () => {
     expect(body).toContain('# TYPE breeze_action_intents_total counter');
   });
 
+  it('registers both M365 customer-graph consent counters on the live registry', async () => {
+    const res = await app.request('/metrics', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // Read and actions consent surfaces must both be registered so their
+    // recorders are live (not the default no-op). The actions counter was
+    // once defined but never registered here — this guards that regression.
+    expect(body).toContain('# HELP breeze_m365_customer_graph_read_events_total');
+    expect(body).toContain('# HELP breeze_m365_customer_graph_actions_events_total');
+  });
+
   it('requires auth for metrics endpoints', async () => {
     const res = await app.request('/metrics');
     expect(res.status).toBe(401);

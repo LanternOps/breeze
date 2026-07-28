@@ -42,6 +42,11 @@ export type QuoteServiceErrorCode =
   // partner). Any violation collapses to this single 422 code.
   | 'INVALID_CONTRACT_TEMPLATE'
   | 'INVALID_STATE'
+  // Durable single-use replay backstop (#2875, quoteAcceptService): the public
+  // response token's jti was already consumed on the quote row (2026-08-06-c
+  // columns) — a replayed link, rejected 401 even when the Redis revocation
+  // marker has been lost.
+  | 'RESPONSE_CONSUMED'
   | 'QUOTE_EXPIRED'
   | 'NOT_CONVERTED'
   | 'REORDER_IDS_MISMATCH'
@@ -72,7 +77,7 @@ export type QuoteServiceErrorCode =
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
+    public status: 400 | 401 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
     public code?: QuoteServiceErrorCode
   ) {
     super(message);

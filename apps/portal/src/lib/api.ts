@@ -179,8 +179,23 @@ export async function apiRequest<T>(
     });
 
     if (response.status === 401) {
+      // Callers that opt out of the login redirect (the public token-gated
+      // quote routes, SSR forwarding) are NOT session-authed: a 401 there is
+      // about the request's own credential (e.g. a consumed/replayed quote
+      // link, #2875), not the portal session. Don't wipe a logged-in user's
+      // auth state over it, and surface the API's real error body instead of
+      // the hardcoded session message.
+      if (config.redirectOnUnauthorized === false) {
+        const body = await response.json().catch(() => ({}));
+        return {
+          error: body?.error || 'Session expired',
+          code: typeof body?.code === 'string' ? body.code : undefined,
+          statusCode: response.status,
+          headers: response.headers
+        };
+      }
       clearAuth();
-      if (config.redirectOnUnauthorized !== false && typeof window !== 'undefined') {
+      if (typeof window !== 'undefined') {
         void navigateTo('/login', { replace: true });
       }
       return {

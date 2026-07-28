@@ -207,6 +207,60 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('M365 customer Graph-actions onboarding + reveal key', () => {
+    it('refuses boot when actions onboarding is enabled without a complete descriptor', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: 'true',
+        M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID/);
+      });
+    });
+
+    it('requires APP_ENCRYPTION_KEY_ID when write-action tools are enabled', () => {
+      // Tools-enabled boot also validates the full actions executor descriptor
+      // (Task 4's validateM365CustomerGraphActionsRuntimeConfigAtBoot, which
+      // runs before the new key-id check) — supply a complete, valid
+      // descriptor here so this test isolates the APP_ENCRYPTION_KEY_ID rule
+      // rather than tripping the earlier descriptor check.
+      const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-actions-boot-'));
+      const signingJwkFile = join(dir, 'signing.jwk');
+      writeFileSync(signingJwkFile, JSON.stringify({
+        kty: 'OKP',
+        crv: 'Ed25519',
+        alg: 'EdDSA',
+        use: 'sig',
+        kid: 'graph-actions-api-1',
+        x: Buffer.alloc(32, 1).toString('base64url'),
+        d: Buffer.alloc(32, 2).toString('base64url'),
+      }), { mode: 0o600 });
+      chmodSync(signingJwkFile, 0o600);
+
+      try {
+        withEnv({
+          ...validEnv,
+          M365_GRAPH_ACTIONS_TOOLS_ENABLED: 'true',
+          M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: '*',
+          M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: '33333333-3333-4333-8333-333333333333',
+          M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION: '0123456789abcdef0123456789abcdef',
+          M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF:
+            'akv://customer-vault.vault.azure.net/m365-customer-graph-actions/0123456789abcdef0123456789abcdef',
+          M365_GRAPH_ACTIONS_EXECUTOR_URL: 'https://m365-graph-actions.internal.example.test',
+          M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: 'm365-graph-actions-executor',
+          M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: signingJwkFile,
+          M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: 'graph-actions-api-1',
+          PUBLIC_URL: 'https://console.example.test',
+          APP_ENCRYPTION_KEY_ID: '',
+        }, () => {
+          expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('rejects production with only the administrator DATABASE_URL', () => {
     withEnv({
       ...validEnv,
