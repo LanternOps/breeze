@@ -499,13 +499,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           //
           // Deliberately do NOT advance session.currentPlanStepIndex here.
           // Advancing before the approval resolves is the defect this change
-          // removes: at least six exits below return allowed:false after this
-          // point (denial, timeout, ledger failure, intent-creation failure,
-          // lost release CAS, revalidation failure, thrown errors), and a
-          // stale index makes postToolUse emit plan_step_complete for a step
-          // that never ran and can mark the plan completed. The advance now
-          // happens at the authorize point instead, in the durable tier-3
-          // approval branch below.
+          // removes: at least eight exits below return allowed:false after
+          // this point (denial, timeout, ledger failure, intent-creation
+          // failure, lost release CAS, intent-row-vanished, revalidation
+          // failure, thrown errors), and a stale index makes postToolUse
+          // emit plan_step_complete for a step that never ran and can mark
+          // the plan completed. The advance now happens at the authorize
+          // point instead, in the durable tier-3 approval branch below.
           //
           // Also deliberately no plan_step_start / aiToolExecutions row here:
           // the tier-3 branch creates its own approval-record row and

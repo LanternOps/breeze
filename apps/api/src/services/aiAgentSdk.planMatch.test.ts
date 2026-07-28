@@ -255,11 +255,17 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
 
   // The one tier-3 case retained in this file: every OTHER deviation test
   // below moved to effective tier 2 so a genuine arg mismatch is what makes
-  // them meaningful. This one instead pins the tier gate itself — a tier-3
-  // deviation must fall through to the durable action-intents branch
-  // regardless of what matchPlanStep says, which is guaranteed by
-  // `guardrailCheck.tier < 3` alone (design doc §3.1), independent of the
-  // arg-matching logic under test everywhere else in this file.
+  // them meaningful. This one's args are ALSO tampered (`command` mutated),
+  // so `match.matches` is already false and the `guardrailCheck.tier < 3`
+  // shortcut clause is irrelevant here — it does not exercise the tier gate.
+  // What it actually pins is the separate tier>=3 branch selector further
+  // down (durable action-intents vs the tier-2 legacy bridge, ~aiAgentSdk.ts
+  // :617): a tier-3 call must land in the durable branch (fresh intent,
+  // waitForIntentDecision) rather than the legacy waitForApproval bridge.
+  // For coverage of the actual tier gate (a step whose args DO still match
+  // but whose effective tier is 3), see "does NOT shortcut a
+  // statically-tier-3 step" and "does NOT shortcut an ACTION-ESCALATED
+  // tier-3 step" in aiAgentSdk.test.ts.
   it('requires fresh approval (via the durable tier-3 branch) when a high-impact arg (command) is mutated at effective tier 3', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
@@ -307,10 +313,12 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
 
     // Effective tier 2: a genuine deviation must reach the tier-2 legacy
     // bridge (waitForApproval), never the tier-3 durable-intent branch and
-    // never the shortcut's plan_step_start. If matchPlanStep were gutted to
-    // always match, this would instead take the shortcut and none of these
-    // would fire — this is the load-bearing proof that it's the tier gate,
-    // not the arg-matching logic, under test here.
+    // never the shortcut's plan_step_start. Tier is fixed at 2 here and the
+    // args deviate (`deviceId` changed), so `match.matches` is false
+    // regardless of the tier clause — if matchPlanStep were gutted to always
+    // match, this would instead take the shortcut and none of these
+    // assertions would fire. This is the load-bearing proof of
+    // matchPlanStep's arg-matching logic, not the tier gate.
     expect(waitForApproval).toHaveBeenCalled();
     expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(

@@ -1804,9 +1804,9 @@ describe('inline secret-bearing completion (Task 6)', () => {
     it.each(['action_plan', 'hybrid_plan'] as const)(
       // NOTE: this originally used execute_command at (mocked) tier 3,
       // asserting the shortcut still fires. That is exactly the bypass this
-      // branch closes (design doc §3.1: "no effective-tier-3 action executes
-      // without a durable approval") — keeping it as-written would pin the
-      // vulnerability as "correct". Swapped to an effective-tier-2 tool so
+      // branch closes (design doc §5: "All paths fail closed — no tier-3
+      // action runs without a durable approval.") — keeping it as-written
+      // would pin the vulnerability as "correct". Swapped to an effective-tier-2 tool so
       // this test still guards its original, valid intent: the gate must not
       // broaden beyond secret-bearing tools for tools that ARE eligible for
       // the shortcut.
@@ -1844,8 +1844,8 @@ describe('inline secret-bearing completion (Task 6)', () => {
       // that a REJECTED terminal step still completed the plan. Deferring the
       // index advance until the step is genuinely authorized (design doc
       // docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md
-      // §3.2 — "never advance currentPlanStepIndex before the step is
-      // authorized") removes exactly that early advance — it was the
+      // §3.2 — "do not advance on the decline path at all... advance only
+      // once the step is genuinely authorized") removes exactly that early advance — it was the
       // mechanism by which a rejected/never-run step could get silently
       // marked `plan_step_complete`/`completed`. The advance now happens only
       // once the step is genuinely authorized (at the release-CAS-won +
@@ -2343,13 +2343,14 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
 
   // ----------------------------------------------------------------------
   // Per-exit coverage for sites the `it.each(denials)` block above does NOT
-  // reach: the shared ledger-insert failure (534/538, before the tier>=3
-  // split), the intent-row-vanished exit (766), and the revalidation-failed
-  // exit (775). A prior review unwrapped all four simultaneously and the
-  // suite stayed green — these tests close that gap, one exit per test.
+  // reach: the shared ledger-insert try/catch and the `!approvalExec` check
+  // (both before the tier>=3 split), the `!intentRow` exit after winning the
+  // release CAS, and the `!revalidation.ok` exit. A prior review unwrapped
+  // all four simultaneously and the suite stayed green — these tests close
+  // that gap, one exit per test.
   // ----------------------------------------------------------------------
 
-  it('aborts the plan when creating the approval ledger record throws (line 534)', async () => {
+  it('aborts the plan when creating the approval ledger record throws', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
@@ -2374,7 +2375,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     expect(session.approvedPlanSteps.size).toBe(0);
   });
 
-  it('aborts the plan when the approval ledger insert returns no row (line 538)', async () => {
+  it('aborts the plan when the approval ledger insert returns no row', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
@@ -2398,7 +2399,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     expect(session.approvedPlanSteps.size).toBe(0);
   });
 
-  it('aborts the plan when the intent row vanished after winning the release CAS (line 766)', async () => {
+  it('aborts the plan when the intent row vanished after winning the release CAS', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
@@ -2432,7 +2433,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     expect(session.approvedPlanSteps.size).toBe(0);
   });
 
-  it('aborts the plan when the release CAS is won but revalidation fails (line 775)', async () => {
+  it('aborts the plan when the release CAS is won but revalidation fails', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
