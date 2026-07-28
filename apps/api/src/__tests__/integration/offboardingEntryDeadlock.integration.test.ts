@@ -143,6 +143,36 @@ describe('#2877 offboarding entry inside the request transaction', () => {
     expect(after.startedAt!.getTime()).toBeLessThanOrEqual(queued[0]!.createdAt.getTime());
   });
 
+  runDb('a failure after entry, before commit, rolls back status + stamp + uninstalls together', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const org = await createOrganization({ partnerId: partner.id, status: 'active' });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id, 'rollback');
+
+    // The atomicity half of #2877: if any part of the drain work (stamp,
+    // command cancel, self_uninstall insert) ever moves back onto its own
+    // connection, it would COMMIT here despite the request transaction
+    // rolling back — leaving pending self_uninstalls against an org whose
+    // status reverted to active. This is the torn state QA observed, in the
+    // worst direction, and the deadlock tests alone cannot catch it (a
+    // fresh-connection INSERT takes no conflicting lock).
+    await expect(
+      withDbAccessContext(partnerRequestContext(partner.id, [org.id]), async () => {
+        await db
+          .update(organizations)
+          .set({ status: 'offboarding', updatedAt: new Date() })
+          .where(eq(organizations.id, org.id));
+        await beginOrganizationOffboarding(org.id, null);
+        throw new Error('simulated post-entry handler failure');
+      })
+    ).rejects.toThrow('simulated post-entry handler failure');
+
+    const after = await readOrg(org.id);
+    expect(after.status).toBe('active');
+    expect(after.startedAt).toBeNull();
+    expect(await readUninstalls(device.id)).toHaveLength(0);
+  });
+
   runDb('finalize report counts the drain\'s completed uninstall (no JS/DB clock skew)', async () => {
     const partner = await createPartner({ status: 'active' });
     const org = await createOrganization({ partnerId: partner.id, status: 'active' });

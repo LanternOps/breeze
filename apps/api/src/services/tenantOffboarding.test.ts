@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const { selectMock, updateMock, insertMock, hasDbAccessContextMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -280,8 +280,16 @@ describe('#2877 ambient request-transaction reuse', () => {
     setupWrites();
   });
 
+  // mockReturnValue (not Once): a second inCallerOrSystemDbContext call site
+  // inside the same flow must also see the ambient context, not silently fall
+  // to the system branch mid-test. Restored here so it can't leak into the
+  // background-caller suites.
+  afterEach(() => {
+    hasDbAccessContextMock.mockReturnValue(false);
+  });
+
   it('entry runs on the ambient context — no fresh connection is opened', async () => {
-    hasDbAccessContextMock.mockReturnValueOnce(true);
+    hasDbAccessContextMock.mockReturnValue(true);
     queueSelect([]); // devices
 
     await beginOrganizationOffboarding('org-1', 'user-1');
@@ -293,7 +301,7 @@ describe('#2877 ambient request-transaction reuse', () => {
   });
 
   it('abort runs on the ambient context — no fresh connection is opened', async () => {
-    hasDbAccessContextMock.mockReturnValueOnce(true);
+    hasDbAccessContextMock.mockReturnValue(true);
     updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
     queueSelect([{ id: 'd1' }]); // devices in org
     updateReturningQueue.push([{ id: 'cmd-1' }]); // cancelled commands
