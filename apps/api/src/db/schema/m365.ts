@@ -94,7 +94,7 @@ export const m365ConsentSessions = pgTable(
     connectionId: uuid('connection_id').notNull(),
     orgId: uuid('org_id').notNull(),
     profile: varchar('profile', { length: 64 })
-      .$type<'customer-graph-read'>()
+      .$type<'customer-graph-read' | 'customer-graph-actions'>()
       .notNull(),
     consentAttemptId: uuid('consent_attempt_id').notNull(),
     userId: uuid('user_id').notNull(),
@@ -131,7 +131,7 @@ export const m365ConsentSessions = pgTable(
     }).onDelete('cascade'),
     profileCheck: check(
       'm365_consent_sessions_profile_check',
-      sql`${t.profile} = 'customer-graph-read'`,
+      sql`${t.profile} IN ('customer-graph-read', 'customer-graph-actions')`,
     ),
     phaseCheck: check(
       'm365_consent_sessions_phase_check',

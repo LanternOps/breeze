@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildClearM365ActionsConsentBindingCookie,
   buildClearM365ConsentBindingCookie,
+  buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
   inspectM365ConsentBindingCookie,
+  verifyM365ActionsConsentBindingCookie,
   verifyM365ConsentBindingCookie,
 } from './browserBinding';
 
@@ -81,5 +84,53 @@ describe('M365 consent browser binding', () => {
     expect(buildClearM365ConsentBindingCookie(env)).toBe(
       'breeze_m365_graph_read_consent=; Path=/api/v1/m365/consent/callback; HttpOnly; SameSite=Lax; Secure; Max-Age=0',
     );
+  });
+});
+
+describe('M365 actions-profile browser binding', () => {
+  it('mints a cookie with the actions cookie name and Path, distinct from the read profile', () => {
+    const env = { APP_ENCRYPTION_KEY: 'test-app-encryption-key' };
+    const cookie = buildM365ActionsConsentBindingCookie(ADMIN_BINDING, env, new Date(1_000));
+    const value = /breeze_m365_graph_actions_consent=([^;]+)/.exec(cookie)?.[1];
+
+    expect(cookie).toContain('breeze_m365_graph_actions_consent=');
+    expect(cookie).toContain('Path=/api/v1/m365/actions-consent/callback');
+    expect(cookie).not.toContain('Path=/api/v1/m365/consent/callback');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('Max-Age=600');
+    expect(verifyM365ActionsConsentBindingCookie(
+      `breeze_m365_graph_actions_consent=${value}`,
+      env,
+      new Date(1_001),
+    )).toEqual(ADMIN_BINDING);
+    expect(buildClearM365ActionsConsentBindingCookie(env)).toBe(
+      'breeze_m365_graph_actions_consent=; Path=/api/v1/m365/actions-consent/callback; HttpOnly; SameSite=Lax; Max-Age=0',
+    );
+  });
+
+  it('never verifies with the read cookie name, even under the correct key', () => {
+    const env = { APP_ENCRYPTION_KEY: 'shared-key' };
+    // A cookie header using the actions cookie name but built by the READ
+    // instance (wrong HMAC context baked into its signature) must not verify
+    // against the actions instance, and the actions cookie renamed to the
+    // read cookie name must not verify against the read instance either —
+    // proving isolation holds on both the cookie name AND the HMAC context,
+    // not just Path scoping (which a forged header, unlike a real browser,
+    // does not enforce).
+    const readCookie = buildM365ConsentBindingCookie(ADMIN_BINDING, env, new Date(1_000));
+    const readValue = /breeze_m365_graph_read_consent=([^;]+)/.exec(readCookie)?.[1];
+    const actionsCookie = buildM365ActionsConsentBindingCookie(ADMIN_BINDING, env, new Date(1_000));
+    const actionsValue = /breeze_m365_graph_actions_consent=([^;]+)/.exec(actionsCookie)?.[1];
+
+    expect(verifyM365ActionsConsentBindingCookie(
+      `breeze_m365_graph_actions_consent=${readValue}`,
+      env,
+      new Date(1_001),
+    )).toBeNull();
+    expect(verifyM365ConsentBindingCookie(
+      `breeze_m365_graph_read_consent=${actionsValue}`,
+      env,
+      new Date(1_001),
+    )).toBeNull();
   });
 });

@@ -18,6 +18,8 @@ function validEnv(overrides: Record<string, string | undefined> = {}) {
   return {
     NODE_ENV: 'production',
     M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: CLIENT_ID,
+    M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL:
+      'https://console.example.test/api/v1/m365/actions-consent/callback',
     M365_CUSTOMER_GRAPH_ACTIONS_VAULT_URL: 'https://customer-vault.vault.azure.net',
     M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF:
       `akv://customer-vault.vault.azure.net/m365-customer-graph-actions/${CREDENTIAL_VERSION}`,
@@ -37,6 +39,7 @@ describe('M365 Graph-actions executor config', () => {
   it('loads the fixed Graph-actions profile and public internal-auth key', () => {
     expect(loadExecutorConfig(validEnv())).toEqual({
       clientId: CLIENT_ID,
+      callbackUrl: 'https://console.example.test/api/v1/m365/actions-consent/callback',
       vaultUrl: 'https://customer-vault.vault.azure.net',
       vaultRef: `akv://customer-vault.vault.azure.net/m365-customer-graph-actions/${CREDENTIAL_VERSION}`,
       credentialVersion: CREDENTIAL_VERSION,
@@ -52,6 +55,7 @@ describe('M365 Graph-actions executor config', () => {
 
   it.each([
     'M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID',
+    'M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL',
     'M365_CUSTOMER_GRAPH_ACTIONS_VAULT_URL',
     'M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF',
     'M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION',
@@ -68,6 +72,9 @@ describe('M365 Graph-actions executor config', () => {
 
   it.each([
     ['an uppercase client UUID', { M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: CLIENT_ID.toUpperCase() }, /CLIENT_ID/],
+    ['a callback on the wrong path', { M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL: 'https://console.example.test/other' }, /CALLBACK_URL/],
+    ['a callback query', { M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL: 'https://console.example.test/api/v1/m365/actions-consent/callback?next=1' }, /CALLBACK_URL/],
+    ['a non-HTTPS callback', { M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL: 'http://console.example.test/api/v1/m365/actions-consent/callback' }, /CALLBACK_URL/],
     ['a non-HTTPS vault URL', { M365_CUSTOMER_GRAPH_ACTIONS_VAULT_URL: 'http://customer-vault.vault.azure.net' }, /VAULT_URL/],
     ['a vault URL with a path', { M365_CUSTOMER_GRAPH_ACTIONS_VAULT_URL: 'https://customer-vault.vault.azure.net/secrets' }, /VAULT_URL/],
     ['a per-customer secret', { M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF: `akv://customer-vault.vault.azure.net/m365-customer-graph-actions-${CLIENT_ID}/${CREDENTIAL_VERSION}` }, /VAULT_REF/],

@@ -24,6 +24,10 @@ import M365CustomerGraphReadCard, {
   M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS,
   type M365CustomerGraphReadCallbackResult,
 } from "./M365CustomerGraphReadCard";
+import M365CustomerGraphActionsCard, {
+  M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS,
+  type M365CustomerGraphActionsCallbackResult,
+} from "./M365CustomerGraphActionsCard";
 import Pax8Integration from "./Pax8Integration";
 import TdSynnexCatalogPanel from "../settings/TdSynnexCatalogPanel";
 import TdSynnexEcExpressPanel from "../settings/TdSynnexEcExpressPanel";
@@ -129,6 +133,8 @@ function parseHash(fallbackTab: TabId): {
   accountingSub?: AccountingSubTab;
   customerGraphReadResult?: M365CustomerGraphReadCallbackResult;
   consumeCustomerGraphReadResult?: boolean;
+  customerGraphActionsResult?: M365CustomerGraphActionsCallbackResult;
+  consumeCustomerGraphActionsResult?: boolean;
 } {
   if (typeof window === "undefined") return { tab: fallbackTab };
   const hash = window.location.hash.replace(/^#/, "");
@@ -143,6 +149,19 @@ function parseHash(fallbackTab: TabId): {
       identitySub: "m365",
       customerGraphReadResult,
       consumeCustomerGraphReadResult: true,
+    };
+  }
+  const customerGraphActionsPrefix = "m365/customer-graph-actions/";
+  if (hash.startsWith(customerGraphActionsPrefix)) {
+    const candidate = hash.slice(customerGraphActionsPrefix.length);
+    const customerGraphActionsResult = M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS.find(
+      (result) => result === candidate,
+    );
+    return {
+      tab: "identity",
+      identitySub: "m365",
+      customerGraphActionsResult,
+      consumeCustomerGraphActionsResult: true,
     };
   }
   if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
@@ -191,6 +210,11 @@ export default function IntegrationsPage({
     refreshKey: number;
     orgId: string | null;
   }>({ result: null, refreshKey: 0, orgId: null });
+  const [customerGraphActionsCallback, setCustomerGraphActionsCallback] = useState<{
+    result: M365CustomerGraphActionsCallbackResult | null;
+    refreshKey: number;
+    orgId: string | null;
+  }>({ result: null, refreshKey: 0, orgId: null });
 
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
@@ -217,6 +241,24 @@ export default function IntegrationsPage({
         );
       } else {
         setCustomerGraphReadCallback((current) =>
+          current.result === null && current.orgId === null
+            ? current
+            : { ...current, result: null, orgId: null },
+        );
+      }
+      if (parsed.consumeCustomerGraphActionsResult) {
+        setCustomerGraphActionsCallback((current) => ({
+          result: parsed.customerGraphActionsResult ?? null,
+          refreshKey: current.refreshKey + 1,
+          orgId: callbackOrgId,
+        }));
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}#m365`,
+        );
+      } else {
+        setCustomerGraphActionsCallback((current) =>
           current.result === null && current.orgId === null
             ? current
             : { ...current, result: null, orgId: null },
@@ -258,6 +300,10 @@ export default function IntegrationsPage({
   const visibleCustomerGraphReadResult = callbackOrgId !== null
     && customerGraphReadCallback.orgId === callbackOrgId
     ? customerGraphReadCallback.result
+    : null;
+  const visibleCustomerGraphActionsResult = callbackOrgId !== null
+    && customerGraphActionsCallback.orgId === callbackOrgId
+    ? customerGraphActionsCallback.result
     : null;
 
   return (
@@ -439,6 +485,10 @@ export default function IntegrationsPage({
           <M365CustomerGraphReadCard
             callbackResult={visibleCustomerGraphReadResult}
             callbackRefreshKey={customerGraphReadCallback.refreshKey}
+          />
+          <M365CustomerGraphActionsCard
+            callbackResult={visibleCustomerGraphActionsResult}
+            callbackRefreshKey={customerGraphActionsCallback.refreshKey}
           />
         </div>
       )}
