@@ -110,6 +110,13 @@ const TARGET_GLOBS = [
   'src/components/contracts/ContractDocumentsSection.tsx',
   'src/components/contracts/TemplatesTab.tsx',
   'src/components/settings/PartnerCompanyTab.tsx',
+  // Invoice/quote money-moment hosts (issue / send / delete / title / line
+  // mutations): every mutation already routes through runAction, but the files
+  // sat outside the guarded set — a future bare mutation on the highest-stakes
+  // billing surfaces would have shipped with zero CI signal (PR #2829 review).
+  'src/components/billing/InvoiceActions.tsx',
+  'src/components/billing/quotes/QuoteHeaderMeta.tsx',
+  'src/components/billing/quotes/QuoteLineRows.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -301,7 +308,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(76);
+    expect(absoluteFiles.length).toBe(79);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

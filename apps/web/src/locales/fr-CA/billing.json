@@ -523,7 +523,8 @@
         "addSome": "Ajoutez-en dans Product Catalog",
         "empty": "Aucun article dans le catalogue.",
         "loadError": "Impossible de charger le catalogue. Rouvrez l'éditeur pour réessayer : vos articles existants sont conservés.",
-        "searchPlaceholder": "Rechercher par nom ou SKU dans le catalogue"
+        "searchPlaceholder": "Rechercher par nom ou SKU dans le catalogue",
+        "capNote": "Affichage des {{count}} premiers articles du catalogue — recherchez pour trouver les autres."
       },
       "categories": {
         "hardware": "Matériel",
@@ -687,7 +688,7 @@
         "labelPlaceholder": "Libellé du tableau (facultatif, ex. Services mensuels)",
         "notTaxable": "Non taxable",
         "qty": "Qté",
-        "recurrence": "Récurrence",
+        "recurrence": "Facturation",
         "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne",
         "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
@@ -794,6 +795,9 @@
         "noTargets": "Ajoutez une section de prix, puis déplacez ces lignes vers celle-ci.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Lignes non affectées"
+      },
+      "unsavedField": {
+        "lines": "Lignes"
       }
     },
     "actions": {
@@ -828,12 +832,12 @@
         "ccToggle": "Cc",
         "includePdfLabel": "Joindre le PDF de la proposition",
         "invalidEmail": "Adresse courriel non valide : {{addresses}}",
-        "message": "Nous enverrons cette proposition par courriel à {{orgName}} et la marquerons Envoyée — {{amount}} dû à l'acceptation. Cette action est irréversible.",
+        "message": "Nous enverrons cette proposition par courriel à {{orgName}} et la marquerons Envoyée — {{amount}} dû à l'acceptation. Vous aurez 30 secondes pour annuler après confirmation.",
         "messageLabel": "Ajouter un message personnel (facultatif)",
         "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans le courriel, au-dessus du lien d'acceptation.",
         "paymentEnabled": "Le paiement en ligne est activé — le client peut payer par carte après acceptation.",
-        "paymentNoteNoStripe": "À l'acceptation, le client n'aura pas d'option de paiement en ligne. Connectez Stripe dans Paramètres → Intégrations pour en proposer une.",
-        "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans Paramètres → Intégrations pour encaisser l'acompte à l'acceptation.",
+        "paymentNoteNoStripe": "À l'acceptation, le client n'aura pas d'option de paiement en ligne. Connectez Stripe dans <integrationsLink>Paramètres → Intégrations</integrationsLink> pour en proposer une.",
+        "paymentWarningDeposit": "Cette proposition demande un acompte, mais les clients ne peuvent pas encore payer en ligne — connectez Stripe dans <integrationsLink>Paramètres → Intégrations</integrationsLink> pour encaisser l'acompte à l'acceptation.",
         "recipientRequired": "Saisissez au moins un destinataire pour envoyer.",
         "signaturePreviewLabel": "Signature (définie dans Paramètres → Image de marque) :",
         "subjectLabel": "Objet",
@@ -843,7 +847,8 @@
         "toLabel": "À",
         "toPlaceholder": "Ajouter un destinataire…",
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
-        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi."
+        "zeroTotalWarning": "Ce devis totalise $0.00 — vérifiez que ses lignes sont tarifées avant l'envoi.",
+        "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez une adresse courriel ou ajoutez-en une dans les <orgLink>paramètres de l'organisation</orgLink>."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — {{orgName}} n'a pas d'adresse courriel de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
@@ -860,7 +865,15 @@
       "undoError": "Impossible d'annuler l'envoi.",
       "undoSend": "Annuler l'envoi",
       "undoSuccess": "Envoi annulé — le devis reste un brouillon.",
-      "undoTooLate": "Trop tard pour annuler — la proposition a déjà été envoyée."
+      "undoTooLate": "Trop tard pour annuler — la proposition a déjà été envoyée.",
+      "sendNow": "Envoyer maintenant",
+      "savingTimeout": "Vos modifications sont encore en cours d'enregistrement — l'envoi a été annulé. Réessayez une fois tout enregistré.",
+      "sendNowCancelError": "Envoi immédiat impossible — la proposition sera tout de même envoyée comme prévu.",
+      "sendNowAlready": "Déjà en route — la proposition est en cours d'envoi.",
+      "sendCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'envoi a donc été annulé. Corrigez le champ signalé et réessayez.",
+      "sendBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis envoyez.",
+      "unsavedHint": "« {{field}} » contient une modification non enregistrée — l'envoi sera disponible une fois enregistrée.",
+      "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l'envoi sera disponible une fois enregistrée."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -889,7 +902,7 @@
         "item": "Article",
         "noLines": "Aucune ligne dans ce tableau.",
         "qty": "Qté",
-        "recurrence": "Récurrence",
+        "recurrence": "Facturation",
         "tax": "Taxe",
         "total": "Total",
         "unitPrice": "Prix unitaire"
@@ -1111,7 +1124,8 @@
         "editor": "Éditeur",
         "preview": "Aperçu",
         "detail": "Détail"
-      }
+      },
+      "loading": "Chargement du devis…"
     }
   },
   "billingUi": {
@@ -1130,7 +1144,14 @@
       "perMonth": "/mois",
       "perYear": "/an"
     },
-    "unsaved": "Non enregistré"
+    "unsaved": "Non enregistré",
+    "showCostMargin": "Afficher coût et marge",
+    "hideCostMargin": "Masquer coût et marge",
+    "orgCombobox": {
+      "searchPlaceholder": "Rechercher des organisations…",
+      "noResults": "Aucune organisation correspondante.",
+      "capNote": "Affichage des {{count}} premières correspondances — continuez à taper pour affiner."
+    }
   },
   "bulk": {
     "bulkActionBar": {
@@ -1158,7 +1179,9 @@
       "manualLine": "Ligne manuelle",
       "noCatalogItems": "Aucun article dans le catalogue.",
       "searchCatalog": "Rechercher par nom ou SKU dans le catalogue",
-      "sourceAria": "Source d'ajout de ligne"
+      "sourceAria": "Source d'ajout de ligne",
+      "catalogLoadFailed": "Le catalogue n'a pas pu être chargé, aucun article ne peut donc être affiché.",
+      "retry": "Réessayer"
     },
     "billTo": {
       "addInSettings": "Ajoutez-en un dans les paramètres de l'organisation",
@@ -1194,7 +1217,6 @@
     "saved": "Enregistré",
     "success": {
       "lineAdded": "Ligne ajoutée",
-      "lineRemoved": "Ligne supprimée",
       "notesSaved": "Notes enregistrées",
       "termsSaved": "Conditions enregistrées"
     },
@@ -1222,7 +1244,21 @@
     },
     "unapprovedTime": "{{count}} lignes référencent du temps non approuvé. Vérifiez avant émission.",
     "unapprovedTime_one": "{{count}} ligne référence du temps non approuvé. Vérifiez avant émission.",
-    "unapprovedTime_other": "{{count}} lignes référencent du temps non approuvé. Vérifiez avant émission."
+    "unapprovedTime_other": "{{count}} lignes référencent du temps non approuvé. Vérifiez avant émission.",
+    "autosaveHint": "Les modifications sont enregistrées automatiquement. Un contour ambre signale une modification non enregistrée.",
+    "lastSaved": {
+      "saved": "Enregistré à {{time}}",
+      "saving": "Enregistrement…"
+    },
+    "undo": {
+      "lineDeleted": "Ligne supprimée",
+      "tooLate": "Trop tard pour annuler — cette ligne a déjà été supprimée.",
+      "partialFlush": "{{applied}} suppression(s) de ligne appliquée(s) ; {{failed}} ont échoué et ont été restaurées."
+    },
+    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
+    "unsavedField": {
+      "lines": "Lignes"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1248,10 +1284,16 @@
     "issueSuccess": "Facture émise",
     "issuing": "Émission…",
     "noVisibleLineHint": "Ajoutez au moins une ligne visible par le client pour émettre.",
-    "preparing": "Préparation…"
+    "preparing": "Préparation…",
+    "savingHint": "Enregistrement des modifications… L'émission sera disponible une fois tout enregistré.",
+    "savingTitle": "Enregistrement de vos modifications — l'émission sera disponible une fois tout enregistré.",
+    "issueCanceledSaveFailed": "Une modification n'a pas pu être enregistrée, l'émission a donc été annulée. Corrigez le champ signalé et réessayez.",
+    "issueCanceledStillSaving": "Vos modifications sont toujours en cours d'enregistrement — l'émission a été annulée. Réessayez une fois tout enregistré.",
+    "issueBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la, puis émettez.",
+    "unsavedHint": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée.",
+    "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l'émission sera disponible une fois enregistrée."
   },
   "invoiceDetail": {
-    "accountingView": "Vue comptable (coût, marge, composants masqués)",
     "deposit": {
       "duePrefix": "Acompte de",
       "dueSuffix": "dû — {{paid}} sur {{total}} payé.",
@@ -1272,7 +1314,8 @@
       "price": "Prix",
       "qty": "Qté",
       "tax": "Taxe",
-      "total": "Total"
+      "total": "Total",
+      "allHidden": "Toutes les lignes sont internes uniquement. Utilisez « Afficher coût et marge » pour les voir."
     },
     "paymentMethods": {
       "cash": "Espèces",
@@ -1344,7 +1387,10 @@
       "reissuedSuccess": "Facture annulée et réémise en brouillon",
       "success": "Facture annulée",
       "title": "Annuler la facture"
-    }
+    },
+    "empty": "Cette facture n'a encore aucune ligne.",
+    "addContentInEditor": "Ajouter des lignes dans l'Éditeur",
+    "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes"
   },
   "invoiceDocument": {
     "billTo": "Facturer à",

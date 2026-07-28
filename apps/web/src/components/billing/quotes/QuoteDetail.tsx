@@ -1,13 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Eye, EyeOff } from 'lucide-react';
 import '../../../lib/i18n';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
-import { RecurringBillingNote, MarginPanel } from '../billingUi';
+import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -45,22 +44,13 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   // sees it. Gating on read (not write) keeps cost visibility consistent with the
   // editor's read-only line rows, which show the cost band to read users too.
   const canSeeMargin = can('quotes', 'read');
-  // Same persisted preference the editor's "Show cost & margin" toggle writes.
-  // That toggle's contract is "no margin on screen" — it must hold when a
-  // screen-sharing tech switches tabs, so Detail reads (and can flip) the same
-  // key. Detail needs its own control anyway: for non-draft quotes the editor
-  // tab (and its toggle) doesn't exist.
-  const SHOW_INTERNAL_KEY = 'breeze:quote-editor-show-margin';
-  const [showMargin, setShowMargin] = useState(
-    () => typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_INTERNAL_KEY) === '1',
-  );
-  const toggleMargin = useCallback(() => {
-    setShowMargin((v) => {
-      const next = !v;
-      try { localStorage.setItem(SHOW_INTERNAL_KEY, next ? '1' : '0'); } catch { /* private mode — session-only */ }
-      return next;
-    });
-  }, []);
+  // Same persisted preference the editor's "Show cost & margin" toggle writes
+  // (shared billing-wide via useShowMargin). That toggle's contract is "no
+  // margin on screen" — it must hold when a screen-sharing tech switches tabs
+  // or opens an invoice, so Detail reads (and can flip) the same key. Detail
+  // needs its own control anyway: for non-draft quotes the editor tab (and its
+  // toggle) doesn't exist.
+  const [showMargin, toggleMargin] = useShowMargin();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
   const currency = quote.currencyCode;
@@ -128,7 +118,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                   type="button"
                   onClick={() => { if (typeof window !== 'undefined') window.location.hash = '#editor'; }}
                   data-testid="quote-detail-empty-edit"
-                  className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
                 >
                   {t('quotes.detail.addContentInEditor')}
                 </button>
@@ -224,16 +214,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.title')}</h3>
               {canSeeMargin && (
-                <button
-                  type="button"
-                  onClick={toggleMargin}
-                  aria-pressed={showMargin}
-                  data-testid="quote-detail-toggle-margin"
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors hover:bg-muted ${showMargin ? 'border-primary/40 bg-primary/10 text-primary' : 'text-muted-foreground'}`}
-                >
-                  {showMargin ? <EyeOff className="h-3 w-3" aria-hidden="true" /> : <Eye className="h-3 w-3" aria-hidden="true" />}
-                  {showMargin ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
-                </button>
+                <MarginToggle show={showMargin} onToggle={toggleMargin} testId="quote-detail-toggle-margin" />
               )}
             </div>
             <dl className="space-y-1 text-sm tabular-nums">

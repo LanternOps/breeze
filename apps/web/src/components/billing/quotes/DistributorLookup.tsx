@@ -240,7 +240,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
               {lifecycle && (
                 <span
                   data-testid={`quote-distributor-eol-${p.synnexSku}`}
-                  className="rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive"
+                  className="rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
                 >
                   {lifecycle === 'eol'
                     ? t('quotes.distributorLookup.endOfLife')
@@ -250,7 +250,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
               {outOfStock && (
                 <span
                   data-testid={`quote-distributor-oos-${p.synnexSku}`}
-                  className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                  className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
                 >
                   {t('quotes.distributorLookup.outOfStock')}
                 </span>
@@ -292,7 +292,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 onClick={() => { if (parsed != null) onImportAdd(p, parsed); }}
                 disabled={busy || parsed == null}
                 data-testid={`quote-distributor-add-${p.synnexSku}`}
-                className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {t('quotes.distributorLookup.importAndAdd')}
               </button>

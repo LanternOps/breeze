@@ -543,7 +543,8 @@
         "addSome": "Agregue algunos en el catálogo de productos",
         "empty": "Sin artículos de catálogo.",
         "loadError": "No se pudo cargar el catálogo. Vuelva a abrir el editor para volver a intentarlo: sus elementos existentes están seguros.",
-        "searchPlaceholder": "Buscar catálogo por nombre o SKU"
+        "searchPlaceholder": "Buscar catálogo por nombre o SKU",
+        "capNote": "Se muestran los primeros {{count}} artículos del catálogo: busca para encontrar el resto."
       },
       "categories": {
         "hardware": "Hardware",
@@ -719,7 +720,7 @@
         "labelPlaceholder": "Etiqueta de tabla (opcional, por ejemplo, servicios mensuales)",
         "notTaxable": "No sujeto a impuestos",
         "qty": "Cantidad",
-        "recurrence": "Recurrencia",
+        "recurrence": "Facturación",
         "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila; en secciones largas, se desplaza verticalmente con el encabezado fijo",
         "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
@@ -794,6 +795,9 @@
         "noTargets": "Agrega una sección de precios y luego mueve estas líneas a ella.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Líneas sin asignar"
+      },
+      "unsavedField": {
+        "lines": "Líneas"
       }
     },
     "actions": {
@@ -828,12 +832,12 @@
         "ccToggle": "Cc",
         "includePdfLabel": "Adjuntar el PDF de la propuesta",
         "invalidEmail": "Dirección de correo no válida: {{addresses}}",
-        "message": "Enviaremos esta propuesta por correo electrónico a {{orgName}} y la marcaremos como Enviada - {{amount}} al momento de su aceptación. Esto no se puede deshacer.",
+        "message": "Enviaremos esta propuesta por correo electrónico a {{orgName}} y la marcaremos como Enviada - {{amount}} al momento de su aceptación. Tendrás 30 segundos para deshacer después de confirmar.",
         "messageLabel": "Agregar un mensaje personal (opcional)",
         "messagePlaceholder": "Incluye una nota breve: aparecerá en el correo, encima del enlace para aceptar.",
         "paymentEnabled": "El pago en línea está habilitado: el cliente puede pagar con tarjeta después de aceptar.",
-        "paymentNoteNoStripe": "Cuando el cliente acepte, no tendrá una opción de pago en línea. Conecta Stripe en Configuración → Integraciones para ofrecerla.",
-        "paymentWarningDeposit": "Esta propuesta solicita un depósito, pero los clientes aún no pueden pagar en línea: conecta Stripe en Configuración → Integraciones para poder cobrar el depósito al aceptar.",
+        "paymentNoteNoStripe": "Cuando el cliente acepte, no tendrá una opción de pago en línea. Conecta Stripe en <integrationsLink>Configuración → Integraciones</integrationsLink> para ofrecerla.",
+        "paymentWarningDeposit": "Esta propuesta solicita un depósito, pero los clientes aún no pueden pagar en línea: conecta Stripe en <integrationsLink>Configuración → Integraciones</integrationsLink> para poder cobrar el depósito al aceptar.",
         "recipientRequired": "Ingresa al menos un destinatario para enviar.",
         "signaturePreviewLabel": "Firma (configurada en Configuración → Marca):",
         "subjectLabel": "Asunto",
@@ -843,7 +847,8 @@
         "toLabel": "Para",
         "toPlaceholder": "Agregar destinatario…",
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
-        "zeroTotalWarning": "Esta cotización totaliza $0.00 — verifica que sus ítems tengan precio antes de enviar."
+        "zeroTotalWarning": "Esta cotización totaliza $0.00 — verifica que sus ítems tengan precio antes de enviar.",
+        "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
@@ -860,7 +865,15 @@
       "undoError": "No se pudo cancelar el envío.",
       "undoSend": "Deshacer envío",
       "undoSuccess": "Envío cancelado — la cotización sigue siendo un borrador.",
-      "undoTooLate": "Demasiado tarde para deshacer — la propuesta ya se envió."
+      "undoTooLate": "Demasiado tarde para deshacer — la propuesta ya se envió.",
+      "sendNow": "Enviar ahora",
+      "savingTimeout": "Aún se están guardando los cambios: se canceló el envío. Inténtelo de nuevo cuando todo esté guardado.",
+      "sendNowCancelError": "No se pudo enviar de inmediato: la propuesta se enviará igualmente según lo programado.",
+      "sendNowAlready": "Ya está en camino: la propuesta se está enviando ahora.",
+      "sendCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló el envío. Corrija el campo resaltado e inténtelo de nuevo.",
+      "sendBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego envíe.",
+      "unsavedHint": "«{{field}}» tiene un cambio sin guardar: enviar se desbloqueará cuando se guarde.",
+      "unsavedTitle": "«{{field}}» tiene un cambio sin guardar: enviar se desbloqueará cuando se guarde."
     },
     "detail": {
       "addContentInEditor": "Agregar contenido en el Editor",
@@ -889,7 +902,7 @@
         "item": "Artículo",
         "noLines": "No hay líneas en esta tabla.",
         "qty": "Cantidad",
-        "recurrence": "Recurrencia",
+        "recurrence": "Facturación",
         "tax": "Impuesto",
         "total": "Total",
         "unitPrice": "Precio unitario"
@@ -1111,7 +1124,8 @@
         "editor": "Editor",
         "preview": "Vista previa",
         "detail": "Detalles"
-      }
+      },
+      "loading": "Cargando cotización…"
     }
   },
   "billingUi": {
@@ -1130,7 +1144,14 @@
       "perMonth": "/mo",
       "perYear": "/yr"
     },
-    "unsaved": "No guardado"
+    "unsaved": "No guardado",
+    "showCostMargin": "Mostrar costo y margen",
+    "hideCostMargin": "Ocultar costo y margen",
+    "orgCombobox": {
+      "searchPlaceholder": "Buscar organizaciones…",
+      "noResults": "No hay organizaciones que coincidan.",
+      "capNote": "Se muestran las primeras {{count}} coincidencias: sigue escribiendo para acotar."
+    }
   },
   "bulk": {
     "bulkActionBar": {
@@ -1158,7 +1179,9 @@
       "manualLine": "linea manual",
       "noCatalogItems": "Sin artículos de catálogo.",
       "searchCatalog": "Buscar catálogo por nombre o SKU",
-      "sourceAria": "Agregar fuente de línea"
+      "sourceAria": "Agregar fuente de línea",
+      "catalogLoadFailed": "No se pudo cargar el catálogo, por lo que no se pueden mostrar artículos.",
+      "retry": "Reintentar"
     },
     "billTo": {
       "addInSettings": "Agregar uno en la configuración de la organización",
@@ -1194,7 +1217,6 @@
     "saved": "Guardado",
     "success": {
       "lineAdded": "Línea agregada",
-      "lineRemoved": "Línea eliminada",
       "notesSaved": "Notas guardadas",
       "termsSaved": "Términos guardados"
     },
@@ -1222,7 +1244,21 @@
     },
     "unapprovedTime": "Las líneas {{count}} hacen referencia a horas no aprobadas. Revisar antes de emitir.",
     "unapprovedTime_one": "{{count}} referencia de línea hora no aprobada. Revisar antes de emitir.",
-    "unapprovedTime_other": "Las líneas {{count}} hacen referencia a horas no aprobadas. Revisar antes de emitir."
+    "unapprovedTime_other": "Las líneas {{count}} hacen referencia a horas no aprobadas. Revisar antes de emitir.",
+    "autosaveHint": "Los cambios se guardan automáticamente. Un contorno ámbar marca una edición sin guardar.",
+    "lastSaved": {
+      "saved": "Guardado a las {{time}}",
+      "saving": "Guardando…"
+    },
+    "undo": {
+      "lineDeleted": "Línea eliminada",
+      "tooLate": "Ya no se puede deshacer: esa línea ya fue eliminada.",
+      "partialFlush": "Se aplicaron {{applied}} eliminación(es); {{failed}} fallaron y se restauraron."
+    },
+    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas",
+    "unsavedField": {
+      "lines": "Líneas"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1248,10 +1284,16 @@
     "issueSuccess": "Factura emitida",
     "issuing": "Emitiendo…",
     "noVisibleLineHint": "Agregue al menos una línea visible para el cliente para emitir.",
-    "preparing": "Preparando…"
+    "preparing": "Preparando…",
+    "savingHint": "Guardando cambios… Emitir se desbloqueará cuando todo esté guardado.",
+    "savingTitle": "Guardando sus cambios: Emitir se desbloqueará cuando todo esté guardado.",
+    "issueCanceledSaveFailed": "Un cambio no se pudo guardar, por lo que se canceló la emisión. Corrija el campo resaltado e inténtelo de nuevo.",
+    "issueCanceledStillSaving": "Sus cambios aún se están guardando; la emisión se canceló. Inténtelo de nuevo cuando todo esté guardado.",
+    "issueBlockedUnsaved": "«{{field}}» tiene un cambio sin guardar. Corríjalo allí y luego emita.",
+    "unsavedHint": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde.",
+    "unsavedTitle": "«{{field}}» tiene un cambio sin guardar: emitir se desbloqueará cuando se guarde."
   },
   "invoiceDetail": {
-    "accountingView": "Vista contable (costo, margen, componentes ocultos)",
     "deposit": {
       "duePrefix": "Depósito de",
       "dueSuffix": "vencido — {{paid}} de {{total}} pagado.",
@@ -1272,7 +1314,8 @@
       "price": "Precio",
       "qty": "Cantidad",
       "tax": "Impuesto",
-      "total": "Total"
+      "total": "Total",
+      "allHidden": "Todas las líneas son solo internas. Use “Mostrar costo y margen” para verlas."
     },
     "paymentMethods": {
       "cash": "Efectivo",
@@ -1344,7 +1387,10 @@
       "reissuedSuccess": "Factura anulada y reemitida como borrador",
       "success": "Factura anulada",
       "title": "factura anulada"
-    }
+    },
+    "empty": "Esta factura aún no tiene líneas.",
+    "addContentInEditor": "Agregar líneas en el Editor",
+    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas"
   },
   "invoiceDocument": {
     "billTo": "Cobrar a",

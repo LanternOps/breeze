@@ -26,7 +26,7 @@ import {
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 import InvoiceActions from './InvoiceActions';
-import { MarginPanel } from './billingUi';
+import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -50,7 +50,15 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     : t(/* i18n-dynamic */ `invoice.status.${invoice.status}`);
   const stripeConnected = detail.stripeConnected === true;
 
-  const [accountingView, setAccountingView] = useState(false);
+  // The billing-wide persisted "internal costs on screen?" preference — the SAME
+  // key the quote editor/detail toggles write, so "hide cost & margin" holds
+  // when a screen-sharing tech moves between a quote and an invoice. It gates
+  // the cost/margin columns, the hidden (internal-only) lines, and the margin
+  // panel as one internal view (previously the margin panel rendered
+  // unconditionally for anyone with read access, and the per-line "Accounting
+  // view" checkbox was a separate, unpersisted control — so hiding margin on a
+  // quote didn't carry over here).
+  const [showMargin, toggleMargin] = useShowMargin();
   const [payments, setPayments] = useState<InvoicePayment[]>([]);
   const [paymentsError, setPaymentsError] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -96,18 +104,18 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
 
   const refresh = useCallback(() => { onChanged(); void loadPayments(); }, [onChanged, loadPayments]);
 
-  // In customer view, hide cost/margin columns and hidden bundle children.
-  const visibleLines = useMemo(
-    () => (accountingView ? lines : lines.filter((l) => l.customerVisible)),
-    [accountingView, lines],
-  );
-
   // Cost/margin is an internal read affordance, visible to anyone who can read
   // the invoice (the same read-level gate the quote rails use for `quotes:read`;
-  // cost is a read affordance, not a write one). Independent of the per-line
-  // Accounting view toggle below, which defaults off. Uses the shared cents math
+  // cost is a read affordance, not a write one). Uses the shared cents math
   // so the figure is rounded + labelled identically to a quote's.
   const canSeeMargin = can('invoices', 'read');
+  const internalView = canSeeMargin && showMargin;
+
+  // In customer view, hide cost/margin columns and hidden bundle children.
+  const visibleLines = useMemo(
+    () => (internalView ? lines : lines.filter((l) => l.customerVisible)),
+    [internalView, lines],
+  );
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
 
   const lineMargin = (l: InvoiceLine): string => {
@@ -302,34 +310,61 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
 
   return (
     <div className="space-y-6" data-testid="invoice-detail">
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        {/* Lines + accounting toggle */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox" checked={accountingView}
-                onChange={(e) => setAccountingView(e.target.checked)}
-                data-testid="invoice-accounting-toggle"
-              />
-              {t('invoiceDetail.accountingView')}
-            </label>
-          </div>
+      {/* xl (not lg): matches the editor tab and QuoteDetail — below xl the rail
+          stacks under the content so the lines table isn't starved into sideways
+          scrolling. min-w-0 lets this 1fr track shrink below the table's content
+          width so the page doesn't scroll horizontally on a phone. */}
+      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
+        {/* Lines + internal-view toggle */}
+        <div className="min-w-0 space-y-4">
+          {canSeeMargin && lines.length > 0 && (
+            <div className="flex items-center justify-end">
+              <MarginToggle show={showMargin} onToggle={toggleMargin} testId="invoice-detail-toggle-margin" />
+            </div>
+          )}
+          {lines.length === 0 ? (
+            <div className="rounded-lg border border-dashed bg-card p-8 text-center" data-testid="invoice-detail-empty">
+              <p className="text-sm text-muted-foreground">{t('invoiceDetail.empty')}</p>
+              {invoice.status === 'draft' && can('invoices', 'write') && (
+                <button
+                  type="button"
+                  onClick={() => { if (typeof window !== 'undefined') window.location.hash = '#editor'; }}
+                  data-testid="invoice-detail-empty-edit"
+                  className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  {t('invoiceDetail.addContentInEditor')}
+                </button>
+              )}
+            </div>
+          ) : (
           <div className="rounded-lg border bg-card shadow-xs">
-            <table className="w-full text-sm" data-testid="invoice-detail-lines">
+            {/* Labeled, keyboard-reachable scroll region: the internal view runs
+                to 7 columns, well past a phone viewport — scroll inside the card
+                instead of bleeding past its rounded edge (QuoteDetail pattern). */}
+            <div className="overflow-x-auto" role="region" aria-label={t('invoiceDetail.linesScrollAria')} tabIndex={0}>
+            <table className="w-full min-w-[32rem] text-sm" data-testid="invoice-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-2 font-medium">{t('invoiceDetail.lines.description')}</th>
                   <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.qty')}</th>
                   <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.price')}</th>
-                  {accountingView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.cost')}</th>}
-                  {accountingView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.margin')}</th>}
+                  {internalView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.cost')}</th>}
+                  {internalView && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.margin')}</th>}
                   {showTax && <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.tax')}</th>}
                   <th className="px-3 py-2 text-right font-medium">{t('invoiceDetail.lines.total')}</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleLines.map((l) => {
+                {visibleLines.length === 0 ? (
+                  // Lines exist but every one is internal-only and the internal
+                  // view is off — say so instead of rendering a bare header.
+                  <tr>
+                    <td colSpan={4 + (showTax ? 1 : 0)} className="px-3 py-6 text-center text-sm text-muted-foreground" data-testid="invoice-detail-all-hidden">
+                      {t('invoiceDetail.lines.allHidden')}
+                    </td>
+                  </tr>
+                ) : (
+                visibleLines.map((l) => {
                   const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, invoice.taxRate) : null;
                   return (
                   <tr
@@ -341,24 +376,30 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       <span className={l.parentLineId ? '' : 'font-medium text-foreground'}>
                         {l.parentLineId ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(l)}
                       </span>
-                      {accountingView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
+                      {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
-                    {accountingView && <td className="px-3 py-2 text-right">{l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)}</td>}
-                    {accountingView && <td className="px-3 py-2 text-right">{lineMargin(l)}</td>}
+                    {internalView && <td className="px-3 py-2 text-right">{l.costBasis == null ? '—' : formatMoney(l.costBasis, currency)}</td>}
+                    {internalView && <td className="px-3 py-2 text-right">{lineMargin(l)}</td>}
                     {showTax && <td className="px-3 py-2 text-right text-muted-foreground">{tax === null ? '—' : formatMoney(tax, currency)}</td>}
                     <td className="px-3 py-2 text-right">{formatMoney(l.lineTotal, currency)}</td>
                   </tr>
                   );
-                })}
+                })
+                )}
               </tbody>
             </table>
+            </div>
           </div>
+          )}
         </div>
 
-        {/* Right rail: summary + payments + actions */}
+        {/* Right rail: summary + payments + actions. The summary card keeps the
+            shadow and the large Balance-Due figure so it reads as the anchor; the
+            surrounding from/terms/payments cards are flatter (border only) so the
+            rail isn't a stack of equal-weight boxes (mirrors QuoteDetail). */}
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
@@ -440,13 +481,15 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             )}
             {/* Internal margin summary — profitability stays visible after the
                 invoice is issued and the Editor tab disappears (same reason
-                QuoteDetail renders it). Never reaches the customer document. */}
-            {canSeeMargin && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
+                QuoteDetail renders it). Never reaches the customer document.
+                Gated on the SAME persisted toggle as the cost/margin columns so
+                "hide cost & margin" holds across the whole surface. */}
+            {internalView && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
           </div>
 
           {/* Seller From block */}
           {invoice.sellerSnapshot && (
-            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-from">
+            <div className="rounded-lg border bg-card p-4" data-testid="invoice-detail-from">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.from')}</h3>
               <div className="space-y-0.5 text-sm">
                 {invoice.sellerSnapshot.name && (
@@ -470,7 +513,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
 
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
-            <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-terms">
+            <div className="rounded-lg border bg-card p-4" data-testid="invoice-detail-terms">
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.terms')}</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{invoice.termsAndConditions}</p>
             </div>
@@ -505,7 +548,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </div>
 
           {/* Payments */}
-          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-payments">
+          <div className="rounded-lg border bg-card p-4" data-testid="invoice-payments">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceDetail.payments.title')}</h3>
             {paymentsError ? (
               <p className="text-sm text-destructive" data-testid="invoice-payments-error">

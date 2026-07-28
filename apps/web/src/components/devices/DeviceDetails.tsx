@@ -236,7 +236,7 @@ export default function DeviceDetails({
   // Never throws — a registry failure or zero enabled contributions simply
   // appends no extension tabs (see useExtensionSlotDescriptors).
   const extensionTabDescriptors = useExtensionSlotDescriptors("device.detail.tabs", 1);
-  const [activeTab, setActiveTab] = useHashState<Tab>("overview", tabFromHash);
+  const [hashTab, setActiveTab] = useHashState<Tab>("overview", tabFromHash);
   const [focusedAnomalyId, setFocusedAnomalyId] = useHashState<
     string | undefined
   >(undefined, anomalyIdFromHash);
@@ -278,6 +278,19 @@ export default function DeviceDetails({
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+  // Linked Profiles only means something for a device that is actually in a
+  // link group — a multi-boot peer, or a member of a vm_host group (#2865).
+  // Everything else would land on a two-paragraph "not part of a linked group"
+  // explainer, so the tab is omitted entirely rather than rendered dead.
+  const isLinked = device.linkGroupId != null;
+
+  // `tabFromHash` validates against the static VALID_TABS list and cannot know
+  // about linkage, so a `#linked-profiles` deep link on an unlinked device
+  // would otherwise select a tab that has no button and no panel — a blank
+  // content area. Resolve it back to Overview here, where linkage is known.
+  const activeTab: Tab =
+    hashTab === "linked-profiles" && !isLinked ? "overview" : hashTab;
+
   const tabs: {
     id: Tab;
     label: string;
@@ -297,12 +310,16 @@ export default function DeviceDetails({
       icon: <Info className="h-4 w-4" />,
       title: t("deviceDetails.osNetworkAndSystemDetails"),
     },
-    {
-      id: "linked-profiles",
-      label: t("deviceDetails.linkedProfiles"),
-      icon: <Link2 className="h-4 w-4" />,
-      title: t("deviceDetails.multiBootOsProfilesLinkedTo"),
-    },
+    ...(isLinked
+      ? [
+          {
+            id: "linked-profiles" as Tab,
+            label: t("deviceDetails.linkedProfiles"),
+            icon: <Link2 className="h-4 w-4" />,
+            title: t("deviceDetails.multiBootOsProfilesLinkedTo"),
+          },
+        ]
+      : []),
     // --- Monitoring ---
     {
       id: "performance",

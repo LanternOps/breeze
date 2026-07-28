@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { DocumentWorkspace, type DocumentTab } from './shared/DocumentWorkspace';
 import { StatusPill } from './shared/StatusPill';
+import { MarginToggle, useShowMargin } from './billingUi';
 import InvoiceEditor from './InvoiceEditor';
 import InvoiceDetail from './InvoiceDetail';
 import InvoiceDocumentPreview from './InvoiceDocument';
@@ -22,7 +23,7 @@ const TAB_LABELS: { value: Tab; labelKey: string }[] = [
 ];
 
 interface Props {
-  invoiceId?: string;
+  id?: string;
 }
 
 function readTab(isDraft: boolean): Tab {
@@ -32,23 +33,53 @@ function readTab(isDraft: boolean): Tab {
   return isDraft ? 'editor' : 'detail';
 }
 
-export default function InvoiceWorkspace({ invoiceId }: Props) {
+export default function InvoiceWorkspace({ id }: Props) {
   const { t } = useTranslation('billing');
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
+  // True while the editor has work genuinely in flight — the header Issue
+  // buttons wait for quiescence so they can't race a blur-save.
+  const [editorSavePending, setEditorSavePending] = useState(false);
+  // Label of a field left dirty with nothing in flight (its save failed, or
+  // never fired). Kept separate from editorSavePending because the two need
+  // opposite handling: one is worth waiting for, the other never resolves.
+  const [editorUnsavedField, setEditorUnsavedField] = useState<string | null>(null);
+  // Monotonic count of editor save FAILURES. A failed save can still produce
+  // "quiescence" (a failed delete-flush restores its rows; a failed line
+  // blur-save clears its in-flight key), so InvoiceActions must cancel a
+  // queued Issue on failure — waiting for quiet alone would issue an invoice
+  // that contradicts what the user last saw.
+  const [saveFailureNonce, setSaveFailureNonce] = useState(0);
+  const reportSaveFailure = useCallback(() => setSaveFailureNonce((n) => n + 1), []);
+  // Cost/margin visibility is workspace state so the toggle can live in the
+  // pinned header while the editor's margin panel consumes it (mirrors
+  // QuoteWorkspace; the shared hook keeps the Detail tab's pill in sync).
+  const [showMargin, toggleShowMargin] = useShowMargin();
+  // Bridge between the editor's deferred deletions (undo grace window) and the
+  // header's Issue: the editor registers a "flush now" hook, and InvoiceActions
+  // calls it when Issue is clicked while edits are pending — so a held Issue
+  // fires as soon as the deferred DELETE lands instead of waiting out the
+  // remainder of the undo window (mirrors QuoteWorkspace's Send bridge).
+  const pendingDeleteFlushRef = useRef<(() => void) | null>(null);
+  const registerPendingDeleteFlush = useCallback((flush: (() => void) | null) => {
+    pendingDeleteFlushRef.current = flush;
+  }, []);
+  const flushEditorPendingDeletes = useCallback(() => {
+    pendingDeleteFlushRef.current?.();
+  }, []);
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page spinner would remount the form and
   // discard the user's in-progress local state and cursor position. Only the
   // initial load shows the spinner / replaces the view on error.
   const fetchDetail = useCallback(async (quiet = false) => {
-    if (!invoiceId) { setError(t('invoiceWorkspace.errors.missingId')); setLoading(false); return; }
+    if (!id) { setError(t('invoiceWorkspace.errors.missingId')); setLoading(false); return; }
     try {
       if (!quiet) setLoading(true);
       setError(undefined);
-      const res = await fetchWithAuth(`/invoices/${invoiceId}`);
+      const res = await fetchWithAuth(`/invoices/${id}`);
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 404) { if (!quiet) setError(t('invoiceWorkspace.errors.notFound')); return; }
       if (!res.ok) throw new Error(t('invoiceWorkspace.errors.loadFailed'));
@@ -61,7 +92,7 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [invoiceId, t]);
+  }, [id, t]);
 
   const load = useCallback(() => fetchDetail(false), [fetchDetail]);
   const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
@@ -142,13 +173,46 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
       // money-moment) and Download are reachable from any tab, not buried inside
       // the Editor tab. The Detail tab suppresses its rail copy (actionsInHeader)
       // so the two never render at once.
-      actions={<InvoiceActions detail={detail} onChanged={reload} variant="header" />}
+      // The cost/margin toggle joins the header actions while the Editor tab is
+      // up, so the "no margin on screen" control is available without scrolling
+      // (same placement + testid grammar as QuoteWorkspace).
+      actions={
+        <>
+          {isDraft && activeTab === 'editor' && (
+            <MarginToggle show={showMargin} onToggle={toggleShowMargin} testId="invoice-editor-toggle-internal" size="md" />
+          )}
+          <InvoiceActions
+            detail={detail}
+            onChanged={reload}
+            variant="header"
+            savePending={editorSavePending}
+            unsavedFieldLabel={editorUnsavedField}
+            saveFailureNonce={saveFailureNonce}
+            onIssueWhilePending={flushEditorPendingDeletes}
+          />
+        </>
+      }
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}
     >
-      {activeTab === 'editor' && isDraft && (
-        <InvoiceEditor detail={detail} onChanged={() => void reload()} />
+      {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
+          unmounting discarded any half-typed add-line input the moment a tech
+          flipped to Preview "just to check" — brutal mid-flow data loss.
+          Hidden-but-mounted also keeps the savePending gate live while
+          previewing (mirrors QuoteWorkspace). */}
+      {isDraft && (
+        <div className={activeTab === 'editor' ? '' : 'hidden'}>
+          <InvoiceEditor
+            detail={detail}
+            onChanged={() => void reload()}
+            onPendingEditsChange={setEditorSavePending}
+            onUnsavedEditsChange={setEditorUnsavedField}
+            onSaveFailure={reportSaveFailure}
+            onRegisterPendingDeleteFlush={registerPendingDeleteFlush}
+            showMargin={showMargin}
+          />
+        </div>
       )}
       {activeTab === 'preview' && (
         <InvoiceDocumentPreview detail={detail} />

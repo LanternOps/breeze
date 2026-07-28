@@ -1,10 +1,18 @@
-// The workspace header's identity row for a DRAFT quote: the page title IS the
-// editable quote title (seamless h1-styled input, blur-save, same amber/green
-// save language as every other field), with the customer selector beside it —
-// replacing the editor's former title/customer strip so the once-per-quote
-// setup no longer occupies a band above the canvas. Rendered into
-// DocumentWorkspace's titleSlot by QuoteWorkspace; non-draft quotes keep the
-// plain read-only h1.
+// The workspace header's identity chrome for a DRAFT quote, in two pieces:
+//
+//   QuoteHeaderMeta       — the page title IS the editable quote title
+//                           (seamless h1-styled input, blur-save, same
+//                           amber/green save language as every other field).
+//                           Rendered into DocumentWorkspace's titleSlot.
+//   QuoteCustomerSwitcher — the customer (organization) selector, rendered
+//                           into DocumentWorkspace's metaSlot on its OWN line
+//                           under the title. It used to sit inline between the
+//                           title and the status pill, which squeezed the
+//                           title and left the select floating mis-aligned in
+//                           the header row.
+//
+// Non-draft quotes keep the plain read-only h1 and no switcher. Each piece
+// reports its own pending state; QuoteWorkspace ORs them into the Send gate.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
@@ -12,25 +20,35 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { runAction } from '../../../lib/runAction';
 import { useOrgStore } from '../../../stores/orgStore';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
 import { type QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { UNAUTHORIZED, SrSaved, fieldRing, seamless, useSavedFlash } from './quoteEditorShared';
 
 interface Props {
   detail: QuoteDetailData;
   onChanged: () => void;
-  /** Reports in-flight/dirty state so the workspace can hold Send (merged with
-   *  the editor's own savePending). */
+  /** Reports IN-FLIGHT state so the workspace can hold Send (merged with the
+   *  editor's own savePending). Deliberately not true for a merely-dirty
+   *  field — see the note on the effects below. */
   onPendingChange?: (pending: boolean) => void;
+  /** Reports a translated field label when this surface's save FAILED and the
+   *  field is still dirty, so Send can name it instead of waiting forever. */
+  onUnsavedChange?: (label: string | null) => void;
+  /** Reports every save FAILURE (the workspace bumps its failure nonce). A
+   *  failed title PATCH still reads as "quiet" once titleBusy clears, so a
+   *  queued Send must be canceled by this signal rather than open a composer
+   *  carrying a stale title (same contract as QuoteEditor's onSaveFailure). */
+  onSaveFailure?: () => void;
 }
 
-export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
+export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedChange, onSaveFailure }: Props) {
   const { t } = useTranslation('billing');
   const { quote } = detail;
 
-  // ---- editable title (h1) -------------------------------------------------
   const [title, setTitle] = useState(quote.title ?? '');
   const [titleDirty, setTitleDirty] = useState(false);
   const [titleBusy, setTitleBusy] = useState(false);
+  const [titleFailed, setTitleFailed] = useState(false);
   const [titleSaved, flashTitleSaved] = useSavedFlash();
   useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
 
@@ -46,32 +64,72 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
         onUnauthorized: UNAUTHORIZED,
       });
       setTitleDirty(false);
+      setTitleFailed(false);
       flashTitleSaved();
       onChanged();
-    } catch { /* runAction toasted */ } finally {
+    } catch {
+      // runAction toasted. The field STAYS dirty (nothing reverted it), so
+      // record the failure — reporting dirty as "pending" is what used to pin
+      // "Saving changes…" over the Send button for the rest of the session.
+      setTitleFailed(true);
+      // …and bump the workspace failure nonce: a Send queued behind this save
+      // sees only "quiet" when titleBusy clears, and must cancel instead.
+      onSaveFailure?.();
+    } finally {
       setTitleBusy(false);
     }
-  }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, t]);
+  }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, onSaveFailure, t]);
 
-  // ---- customer (organization) reassignment --------------------------------
+  // Pending means IN FLIGHT only. A dirty title is not a promise of a save: the
+  // Send gate still holds from the first keystroke because clicking Send blurs
+  // this field first, and that blur-save lands in `titleBusy` before the click
+  // handler runs.
+  useEffect(() => { onPendingChange?.(titleBusy); }, [titleBusy, onPendingChange]);
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
+  // Failed AND still dirty — see the same pairing in InvoiceEditor.
+  const unsavedLabel = !titleBusy && titleFailed && titleDirty ? t('quotes.editor.title.label') : null;
+  useEffect(() => { onUnsavedChange?.(unsavedLabel); }, [unsavedLabel, onUnsavedChange]);
+  useEffect(() => () => onUnsavedChange?.(null), [onUnsavedChange]);
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="quote-header-meta">
+      {/* NOT an <h1> wrapper: "heading level 1, edit text" is a confusing AT
+          announcement. DocumentWorkspace renders an sr-only h1 with the
+          document identity whenever a titleSlot replaces the visual heading. */}
+      <div className="min-w-0 flex-1">
+        <input
+          type="text"
+          value={title}
+          maxLength={200}
+          placeholder={quote.quoteNumber ?? t('quotes.editor.title.placeholder')}
+          aria-label={t('quotes.editor.title.label')}
+          onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+          onBlur={() => void saveTitle()}
+          disabled={titleBusy}
+          data-testid="quote-title"
+          className={`w-full rounded-md border bg-transparent px-2 py-0.5 text-xl font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(titleDirty, titleSaved))}`}
+        />
+      </div>
+      <SrSaved show={titleSaved} testId="quote-title-saved" />
+    </div>
+  );
+}
+
+export function QuoteCustomerSwitcher({ detail, onChanged, onPendingChange }: Props) {
+  const { t } = useTranslation('billing');
+  const { quote } = detail;
+
   const organizations = useOrgStore((s) => s.organizations);
-  const orgOptions = useMemo(() => {
-    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
-    if (!sorted.some((o) => o.id === quote.orgId)) {
-      sorted.unshift({
-        id: quote.orgId,
-        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
-      } as (typeof sorted)[number]);
-    }
-    return sorted;
-  }, [organizations, quote.orgId, detail.billTo?.name]);
+  const orgOptions = useMemo(
+    () => orgComboboxOptions(
+      organizations,
+      quote.orgId,
+      detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
+    ),
+    [organizations, quote.orgId, detail.billTo?.name],
+  );
 
   const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
-  // The select's `title` is a mouse-hover tooltip — the ONLY way to read a long
-  // org name once the select's own max-w-56 clips it. Falls back to the
-  // generic help copy only when nothing resolves (shouldn't happen in
-  // practice: customerOrgId always defaults to the quote's own org).
-  const selectedOrgName = orgOptions.find((o) => o.id === customerOrgId)?.name?.trim();
   const [customerBusy, setCustomerBusy] = useState(false);
   useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
   // Reassignment clears site + bill-to and re-resolves tax, so a select change
@@ -105,44 +163,29 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange }: Props) {
     })();
   }, [quote.id, quote.orgId, orgOptions, onChanged, t]);
 
-  const pending = titleBusy || titleDirty || customerBusy;
-  useEffect(() => { onPendingChange?.(pending); }, [pending, onPendingChange]);
+  useEffect(() => { onPendingChange?.(customerBusy); }, [customerBusy, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="quote-header-meta">
-      <h1 className="min-w-0 flex-1">
-        <input
-          type="text"
-          value={title}
-          maxLength={200}
-          placeholder={quote.quoteNumber ?? t('quotes.editor.title.placeholder')}
-          aria-label={t('quotes.editor.title.label')}
-          onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-          onBlur={() => void saveTitle()}
-          disabled={titleBusy}
-          data-testid="quote-title"
-          className={`w-full rounded-md border bg-transparent px-2 py-0.5 text-xl font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(titleDirty, titleSaved))}`}
-        />
-      </h1>
-      <SrSaved show={titleSaved} testId="quote-title-saved" />
-      <select
+    <div className="mt-0.5 flex min-w-0 items-center gap-1" data-testid="quote-header-customer">
+      <span className="shrink-0 text-xs text-muted-foreground" aria-hidden="true">
+        {t('quotes.editor.customer.label')}:
+      </span>
+      {/* Typeahead, not a native select: an MSP with 150 orgs needs to search
+          for the customer, not scroll an unsearchable browser list. A pick
+          only STAGES the change — the warning confirm below commits it. */}
+      <OrgCombobox
+        options={orgOptions}
         value={customerOrgId}
-        aria-label={t('quotes.editor.customer.label')}
-        title={selectedOrgName || t('quotes.editor.customer.help')}
-        onChange={(e) => {
-          const id = e.target.value;
+        onSelect={(id) => {
           if (id === customerOrgId) return;
           setPendingCustomer({ id, name: orgOptions.find((o) => o.id === id)?.name ?? '' });
         }}
         disabled={customerBusy}
-        data-testid="quote-customer"
-        className="h-8 max-w-56 shrink-0 rounded-md border border-transparent bg-transparent px-2 text-sm text-muted-foreground transition-colors hover:border-border focus:border-border focus:outline-hidden disabled:opacity-60"
-      >
-        {orgOptions.map((o) => (
-          <option key={o.id} value={o.id}>{o.name}</option>
-        ))}
-      </select>
+        label={t('quotes.editor.customer.label')}
+        variant="seamless"
+        testId="quote-customer"
+      />
 
       <ConfirmDialog
         open={pendingCustomer !== null}
