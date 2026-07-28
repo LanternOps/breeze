@@ -15,17 +15,20 @@ import { authMiddleware } from '../middleware/auth';
 import { inArray, eq } from 'drizzle-orm';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
+import { writeRouteAudit } from '../services/auditEvents';
 
-// Hoist the createSoftwareDeployment mock factory so the reference is available
-// both inside the vi.mock factory and in the test body.
-const { createDeploymentMock } = vi.hoisted(() => ({
+// Hoist the softwareDeployment service mock factories so the references are
+// available both inside the vi.mock factory and in the test body.
+const { createDeploymentMock, dispatchInstallMock } = vi.hoisted(() => ({
   createDeploymentMock: vi.fn(),
+  dispatchInstallMock: vi.fn(),
 }));
 
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/softwareDeployment', () => ({
   createSoftwareDeployment: createDeploymentMock,
+  dispatchSoftwareInstallToDevice: dispatchInstallMock,
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -80,10 +83,12 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
-  softwareDeployments: { id: 'id', orgId: 'org_id' },
-  deploymentResults: { deploymentId: 'deployment_id', status: 'status' },
+  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id' },
+  deploymentResults: { deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status', retryCount: 'retry_count' },
   softwareInventory: { deviceId: 'device_id', name: 'name' },
-  devices: { id: 'id', orgId: 'org_id', agentId: 'agent_id' },
+  devices: { id: 'id', orgId: 'org_id', agentId: 'agent_id', siteId: 'site_id', hostname: 'hostname', customFields: 'custom_fields' },
+  organizations: { id: 'id', name: 'name' },
+  sites: { id: 'id', orgId: 'org_id', name: 'name' },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -642,6 +647,28 @@ describe('software routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('rejects non-immediate scheduleType with 400 (never runs on this endpoint)', async () => {
+      // The legacy route has no scheduledAt/maintenanceWindowId fields, so a
+      // 'scheduled' or 'maintenance_window' deployment created here would sit
+      // pending forever (#1.4 reject-what-never-runs).
+      for (const scheduleType of ['scheduled', 'maintenance_window']) {
+        const res = await app.request('/software/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            softwareId: '11111111-1111-4111-8111-111111111111',
+            version: '1.0.0',
+            targets: { deviceIds: ['22222222-2222-4222-8222-222222222222'] },
+            configuration: { scheduleType },
+          })
+        });
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toMatch(/not supported/i);
+      }
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /software/deployments', () => {
@@ -785,6 +812,303 @@ describe('software routes', () => {
       expect(createDeploymentMock).toHaveBeenCalledWith(
         expect.objectContaining({ targetType: 'all' })
       );
+    });
+
+    // §1.4 Reject what never runs — create-time validation.
+    describe('create validation', () => {
+      const baseBody = {
+        name: 'Test Deploy',
+        softwareVersionId: VERSION_ID,
+        deploymentType: 'install',
+        targetType: 'devices',
+        targetIds: [DEVICE_ID],
+        scheduleType: 'immediate',
+      };
+
+      const post = (overrides: Record<string, unknown>) =>
+        app.request('/software/deployments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ ...baseBody, ...overrides }),
+        });
+
+      it.each(['uninstall', 'update'])(
+        'rejects deploymentType %s with 400 (not yet supported)',
+        async (deploymentType) => {
+          const res = await post({ deploymentType });
+          expect(res.status).toBe(400);
+          const body = await res.json();
+          expect(body.error).toMatch(/not yet supported/i);
+          expect(createDeploymentMock).not.toHaveBeenCalled();
+          expect(db.select).not.toHaveBeenCalled();
+        },
+      );
+
+      it('rejects maintenance scheduleType without maintenanceWindowId', async () => {
+        const res = await post({ scheduleType: 'maintenance' });
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toMatch(/maintenanceWindowId/);
+        expect(createDeploymentMock).not.toHaveBeenCalled();
+      });
+
+      it('rejects scheduled scheduleType without scheduledAt', async () => {
+        const res = await post({ scheduleType: 'scheduled' });
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toMatch(/scheduledAt/);
+        expect(createDeploymentMock).not.toHaveBeenCalled();
+      });
+
+      it('rejects scheduled scheduleType with a past scheduledAt', async () => {
+        const res = await post({
+          scheduleType: 'scheduled',
+          scheduledAt: new Date(Date.now() - 60_000).toISOString(),
+        });
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toMatch(/future/i);
+        expect(createDeploymentMock).not.toHaveBeenCalled();
+      });
+
+      it('accepts scheduled scheduleType with a future scheduledAt', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectResult([versionRow]))
+          .mockReturnValueOnce(selectResult([catalogRow]));
+        vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+        createDeploymentMock.mockResolvedValueOnce({
+          deploymentId: 'dep-sched',
+          deployment: { id: 'dep-sched' },
+          status: 'pending',
+          dispatchedDeviceIds: [],
+        });
+
+        const res = await post({
+          scheduleType: 'scheduled',
+          scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        });
+        expect(res.status).toBe(201);
+      });
+    });
+  });
+
+  describe('POST /software/deployments/:id/retry', () => {
+    const DEP_ID    = '99999999-9999-4999-8999-999999999999';
+    const VERSION_ID = '11111111-1111-4111-8111-111111111111';
+    const DEVICE_A  = '22222222-2222-4222-8222-222222222222';
+    const DEVICE_B  = '33333333-3333-4333-8333-333333333333';
+
+    const deploymentRow = {
+      id: DEP_ID,
+      orgId: 'org-123',
+      name: 'Retry Deploy',
+      softwareVersionId: VERSION_ID,
+      deploymentType: 'install',
+      scheduleType: 'immediate',
+      dispatchedAt: new Date('2026-07-27T00:00:00Z'),
+      options: null,
+    };
+    const versionRow = {
+      id: VERSION_ID,
+      catalogId: 'cat-1',
+      version: '1.0.0',
+      s3Key: null,
+      downloadUrl: 'https://example.com/pkg.exe',
+      checksum: 'abc123',
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/S',
+      detectionRules: null,
+    };
+    const catalogRow = {
+      id: 'cat-1',
+      orgId: 'org-123',
+      name: 'TestApp',
+      integrationProvider: null,
+    };
+
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    // Introspectable update chain so tests can assert the .set() payload.
+    const updateChain = (rows: any) => {
+      const returning = vi.fn().mockResolvedValue(rows);
+      const where = vi.fn(() => ({ returning }));
+      const set = vi.fn(() => ({ where }));
+      return { set, where, returning };
+    };
+
+    const retry = (body?: unknown) =>
+      app.request(`/software/deployments/${DEP_ID}/retry`, {
+        method: 'POST',
+        headers: body !== undefined
+          ? { 'Content-Type': 'application/json', Authorization: 'Bearer token' }
+          : { Authorization: 'Bearer token' },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+
+    beforeEach(() => {
+      dispatchInstallMock.mockResolvedValue({ transport: 'ws', deviceCommandId: null });
+    });
+
+    it('flips failed rows to pending with incremented retryCount, cleared fields, and re-dispatches (no body)', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))  // deployment lookup
+        .mockReturnValueOnce(selectResult([versionRow]))     // version lookup
+        .mockReturnValueOnce(selectResult([catalogRow]))     // catalog lookup
+        .mockReturnValueOnce(selectResult([                  // target devices
+          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
+        ]));
+      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry(); // no JSON body at all — defaults to all failed rows
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+      });
+
+      // Reset semantics: pending, retryCount incremented via SQL, prior-attempt
+      // fields nulled including the queued-command link.
+      expect(flip.set).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'pending',
+        retryCount: expect.anything(),
+        startedAt: null,
+        completedAt: null,
+        exitCode: null,
+        output: null,
+        errorMessage: null,
+        deviceCommandId: null,
+      }));
+
+      // Re-dispatch goes through the shared dispatch helper with the rebuilt payload.
+      expect(dispatchInstallMock).toHaveBeenCalledTimes(1);
+      expect(dispatchInstallMock).toHaveBeenCalledWith(
+        DEP_ID,
+        expect.objectContaining({ id: DEVICE_A, agentId: 'agent-a' }),
+        expect.objectContaining({
+          deploymentId: DEP_ID,
+          downloadUrl: 'https://example.com/pkg.exe',
+          silentInstallArgs: '/S',
+          softwareName: 'TestApp',
+          version: '1.0.0',
+          forceReinstall: false,
+        }),
+        'user-123',
+      );
+    });
+
+    it('audits the retry as software.deployment.retry', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([
+          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
+        ]));
+      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry({});
+      expect(res.status).toBe(200);
+
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: 'org-123',
+        action: 'software.deployment.retry',
+        resourceType: 'software_deployment',
+        resourceId: DEP_ID,
+        resourceName: 'Retry Deploy',
+        details: expect.objectContaining({ retriedCount: 1, skippedCount: 0 }),
+      }));
+    });
+
+    it('scopes the flip to the requested deviceIds subset', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([
+          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
+        ]));
+      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry({ deviceIds: [DEVICE_A] });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+      });
+
+      // The UPDATE's WHERE must include the deviceIds subset filter
+      // (deploymentResults.deviceId mocks to the literal 'device_id').
+      expect(inArray).toHaveBeenCalledWith('device_id', [DEVICE_A]);
+    });
+
+    it('reports requested devices that did not flip (non-failed / not part of deployment) as skipped', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([
+          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
+        ]));
+      // Only DEVICE_A was actually in failed status.
+      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry({ deviceIds: [DEVICE_A, DEVICE_B] });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [DEVICE_B],
+      });
+
+      // Only the flipped row is re-dispatched.
+      expect(dispatchInstallMock).toHaveBeenCalledTimes(1);
+      expect(dispatchInstallMock).toHaveBeenCalledWith(
+        DEP_ID,
+        expect.objectContaining({ id: DEVICE_A }),
+        expect.anything(),
+        'user-123',
+      );
+    });
+
+    it('returns 409 when the deployment was never dispatched', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ ...deploymentRow, dispatchedAt: null }])
+      );
+
+      const res = await retry({});
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/not been dispatched/i);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(dispatchInstallMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the deployment belongs to another org', async () => {
+      // Org-scoped lookup (eq(softwareDeployments.orgId, 'org-123')) finds nothing.
+      vi.mocked(db.select).mockReturnValueOnce(selectResult([]));
+
+      const res = await retry({});
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Deployment not found' });
+      expect(eq).toHaveBeenCalledWith('org_id', 'org-123');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(dispatchInstallMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-UUID deviceIds entry with 400', async () => {
+      const res = await retry({ deviceIds: ['not-a-uuid'] });
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

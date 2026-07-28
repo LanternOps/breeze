@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '../lib/validation';
+import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, sql, desc, like, or, inArray, isNotNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
@@ -10,6 +10,8 @@ import {
   deploymentResults,
   softwareInventory,
   devices,
+  organizations,
+  sites,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -35,7 +37,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
-import { createSoftwareDeployment } from '../services/softwareDeployment';
+import {
+  createSoftwareDeployment,
+  dispatchSoftwareInstallToDevice,
+} from '../services/softwareDeployment';
+import {
+  resolveInstallerVariables,
+  type InstallerVariableContext,
+} from '../services/installerVariables';
 import { detectionRulesSchema } from '@breeze/shared';
 
 export const softwareRoutes = new Hono();
@@ -390,6 +399,44 @@ const createDeploymentSchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   maintenanceWindowId: z.string().guid().optional(),
   options: z.record(z.string(), z.unknown()).optional()
+}).superRefine((data, ctx) => {
+  // Reject what never runs (#1.4): nothing dispatches uninstall/update
+  // deployments today — accepting them inserted rows that sat pending forever.
+  if (data.deploymentType === 'uninstall' || data.deploymentType === 'update') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['deploymentType'],
+      message: 'Uninstall/update deployments are not yet supported',
+    });
+  }
+  // A maintenance-window deployment without a window can never be evaluated by
+  // the scheduler — it would sit undispatched forever.
+  if (data.scheduleType === 'maintenance' && !data.maintenanceWindowId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['maintenanceWindowId'],
+      message: 'maintenanceWindowId is required for maintenance-window deployments',
+    });
+  }
+  if (data.scheduleType === 'scheduled') {
+    if (!data.scheduledAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scheduledAt'],
+        message: 'scheduledAt is required for scheduled deployments',
+      });
+    } else if (new Date(data.scheduledAt).getTime() <= Date.now()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scheduledAt'],
+        message: 'scheduledAt must be in the future',
+      });
+    }
+  }
+});
+
+const retryDeploymentSchema = z.object({
+  deviceIds: z.array(z.string().guid()).max(1000).optional(),
 });
 
 const cancelDeploymentSchema = z.object({
@@ -1195,6 +1242,19 @@ softwareRoutes.post(
         })
         .partial()
         .optional(),
+    }).superRefine((data, ctx) => {
+      // Reject what never runs (#1.4): this legacy route carries no scheduledAt
+      // or maintenanceWindowId field, so a non-immediate deployment created here
+      // can never be picked up by the scheduler — it would sit pending forever.
+      const scheduleType = data.configuration?.scheduleType ?? 'immediate';
+      if (scheduleType !== 'immediate') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['configuration', 'scheduleType'],
+          message:
+            'Scheduled and maintenance-window deployments are not supported on this endpoint — use POST /software/deployments',
+        });
+      }
     })
   ),
   async (c) => {
@@ -1440,6 +1500,281 @@ softwareRoutes.post(
     const statusMap = await getDeploymentStatusMap([id]);
 
     return c.json({ data: { ...deployment, status: statusMap.get(id) ?? 'cancelled' } });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Retry dispatch helper
+// ---------------------------------------------------------------------------
+
+// TODO(plan 2026-07-28-software-deployment-visibility §1.6): fold into the
+// shared fan-out `buildAndDispatchSoftwareInstalls` (services/
+// softwareDeployment.ts) once its failure pre-writes can be scoped to a
+// device subset. Today that helper fails EVERY deployment_results row of the
+// deployment on EDR-resolution/missing-installer errors (fine for the
+// create/scheduler paths where all rows are pending) — on a retry that would
+// clobber previously COMPLETED rows to failed. This local variant mirrors it
+// exactly (presigned URL, EDR per-org resolution, `{{...}}` installer-variable
+// substitution, detection rules, forceReinstall) but restricts all failure
+// writes to the retried rows only.
+async function redispatchSoftwareInstall(opts: {
+  deployment: typeof softwareDeployments.$inferSelect;
+  orgId: string;
+  deviceIds: string[];
+  createdBy: string | null;
+}): Promise<{ dispatchedDeviceIds: string[]; error?: string }> {
+  const { deployment, orgId, deviceIds } = opts;
+
+  const failTargets = async (errorMessage: string) => {
+    await db.update(deploymentResults)
+      .set({ status: 'failed', errorMessage, completedAt: new Date() })
+      .where(and(
+        eq(deploymentResults.deploymentId, deployment.id),
+        inArray(deploymentResults.deviceId, deviceIds),
+      ));
+  };
+
+  const [versionRecord] = await db.select().from(softwareVersions)
+    .where(eq(softwareVersions.id, deployment.softwareVersionId));
+  if (!versionRecord) {
+    const error = 'Software version no longer exists for this deployment';
+    await failTargets(error);
+    return { dispatchedDeviceIds: [], error };
+  }
+
+  const [catalogItem] = await db.select({
+    id: softwareCatalog.id,
+    orgId: softwareCatalog.orgId,
+    name: softwareCatalog.name,
+    integrationProvider: softwareCatalog.integrationProvider,
+  }).from(softwareCatalog)
+    .where(eq(softwareCatalog.id, versionRecord.catalogId));
+  if (!catalogItem) {
+    const error = 'Catalog item no longer exists for this deployment';
+    await failTargets(error);
+    return { dispatchedDeviceIds: [], error };
+  }
+
+  // Presigned URL for the stored installer, falling back to the version's
+  // static downloadUrl (mirrors createSoftwareDeployment, #1808).
+  let downloadUrl: string | null = null;
+  if (versionRecord.s3Key && isS3Configured()) {
+    try {
+      downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
+    } catch (err) {
+      console[isS3NotFound(err) ? 'warn' : 'error'](
+        `[software-retry] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
+        err,
+      );
+    }
+  }
+  downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
+
+  // Built-in EDR packages: resolve per-org keys server-side before dispatch.
+  let resolvedInstaller: ResolvedInstaller | null = null;
+  if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
+    const resolved = await resolveEdrInstaller({
+      provider: catalogItem.integrationProvider,
+      orgId,
+      downloadUrlTemplate: versionRecord.downloadUrl,
+      silentInstallArgsTemplate: versionRecord.silentInstallArgs,
+    });
+    if ('error' in resolved) {
+      await failTargets(resolved.error);
+      return { dispatchedDeviceIds: [], error: resolved.error };
+    }
+    resolvedInstaller = resolved;
+  }
+
+  const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
+  const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
+
+  if (!finalDownloadUrl) {
+    const error =
+      'No installer available for this version — upload an installer (or check storage configuration) before retrying.';
+    await failTargets(error);
+    return { dispatchedDeviceIds: [], error };
+  }
+
+  const targetDevices = await db.select({
+    id: devices.id,
+    agentId: devices.agentId,
+    siteId: devices.siteId,
+    hostname: devices.hostname,
+    customFields: devices.customFields,
+  })
+    .from(devices)
+    .where(and(
+      eq(devices.orgId, orgId),
+      inArray(devices.id, deviceIds),
+    ));
+
+  // `{{...}}` installer variables: load org + site names once (not per device).
+  const templatesUseVariables =
+    (finalDownloadUrl?.includes('{{') ?? false) ||
+    (finalSilentInstallArgs?.includes('{{') ?? false);
+
+  let orgName = '';
+  const siteNames = new Map<string, string>();
+  if (templatesUseVariables) {
+    const [org] = await db.select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    orgName = org?.name ?? '';
+    const siteRows = await db.select({ id: sites.id, name: sites.name })
+      .from(sites)
+      .where(eq(sites.orgId, orgId));
+    for (const s of siteRows) siteNames.set(s.id, s.name);
+  }
+
+  const detectionRules = Array.isArray(versionRecord.detectionRules)
+    ? versionRecord.detectionRules
+    : undefined;
+  const deploymentOptions = (deployment.options ?? null) as Record<string, unknown> | null;
+  const forceReinstall = deploymentOptions?.forceReinstall === true;
+
+  const dispatchedDeviceIds: string[] = [];
+  for (const device of targetDevices) {
+    let deviceDownloadUrl = finalDownloadUrl;
+    let deviceSilentInstallArgs = finalSilentInstallArgs;
+    if (templatesUseVariables) {
+      const ctx: InstallerVariableContext = {
+        org: { id: orgId, name: orgName },
+        site: { id: device.siteId, name: siteNames.get(device.siteId) ?? '' },
+        device: {
+          hostname: device.hostname,
+          customFields: (device.customFields as Record<string, unknown> | null) ?? {},
+        },
+      };
+      const resolved = resolveInstallerVariables(finalDownloadUrl, finalSilentInstallArgs, ctx);
+      if (resolved.unresolved.length > 0) {
+        await db.update(deploymentResults)
+          .set({
+            status: 'failed',
+            errorMessage: `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
+            completedAt: new Date(),
+          })
+          .where(and(
+            eq(deploymentResults.deploymentId, deployment.id),
+            eq(deploymentResults.deviceId, device.id),
+          ));
+        continue;
+      }
+      deviceDownloadUrl = resolved.downloadUrl ?? finalDownloadUrl;
+      deviceSilentInstallArgs = resolved.silentInstallArgs;
+    }
+
+    // deploymentId MUST ride in the payload — the queued fallback's
+    // device_commands row keys result reconciliation on it.
+    const payload: AgentCommand['payload'] = {
+      deploymentId: deployment.id,
+      downloadUrl: deviceDownloadUrl,
+      checksum: versionRecord.checksum,
+      fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
+      fileType: versionRecord.fileType ?? 'exe',
+      silentInstallArgs: deviceSilentInstallArgs,
+      softwareName: catalogItem.name,
+      version: versionRecord.version,
+      ...(detectionRules ? { detectionRules } : {}),
+      forceReinstall,
+    };
+    await dispatchSoftwareInstallToDevice(deployment.id, device, payload, opts.createdBy);
+    dispatchedDeviceIds.push(device.id);
+  }
+
+  return { dispatchedDeviceIds };
+}
+
+// POST /deployments/:id/retry - Retry failed per-device results
+softwareRoutes.post(
+  '/deployments/:id/retry',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareExecute,
+  requireMfa(),
+  zValidator('param', deploymentIdParamSchema),
+  optionalJsonValidator(retryDeploymentSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const { id } = c.req.valid('param');
+    const { deviceIds } = c.req.valid('json');
+
+    const [deployment] = await db.select().from(softwareDeployments)
+      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+    if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
+
+    // Retrying an undispatched scheduled/maintenance deployment makes no sense —
+    // its rows are pending because the scheduler hasn't run it yet, not failed.
+    if (!deployment.dispatchedAt) {
+      return c.json(
+        { error: 'Deployment has not been dispatched yet — only deployments that already ran can be retried' },
+        409,
+      );
+    }
+
+    // Flip targeted failed rows back to pending, bumping retryCount and
+    // clearing prior-attempt fields. .returning() tells us which rows actually
+    // flipped — requested devices that were not in failed status (or not part
+    // of this deployment) are reported as skipped.
+    const conditions = [
+      eq(deploymentResults.deploymentId, id),
+      eq(deploymentResults.status, 'failed'),
+    ];
+    if (deviceIds && deviceIds.length > 0) {
+      conditions.push(inArray(deploymentResults.deviceId, deviceIds));
+    }
+
+    const flipped = await db.update(deploymentResults)
+      .set({
+        status: 'pending',
+        retryCount: sql`${deploymentResults.retryCount} + 1`,
+        startedAt: null,
+        completedAt: null,
+        exitCode: null,
+        output: null,
+        errorMessage: null,
+        deviceCommandId: null,
+      })
+      .where(and(...conditions))
+      .returning({ deviceId: deploymentResults.deviceId });
+
+    const retriedDeviceIds = flipped.map((row) => row.deviceId);
+    const retriedSet = new Set(retriedDeviceIds);
+    const skippedDeviceIds = (deviceIds ?? []).filter((deviceId) => !retriedSet.has(deviceId));
+
+    let dispatchError: string | undefined;
+    if (retriedDeviceIds.length > 0) {
+      const dispatchResult = await redispatchSoftwareInstall({
+        deployment,
+        orgId,
+        deviceIds: retriedDeviceIds,
+        createdBy: auth.user?.id ?? null,
+      });
+      dispatchError = dispatchResult.error;
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.deployment.retry',
+      resourceType: 'software_deployment',
+      resourceId: id,
+      resourceName: deployment.name,
+      details: {
+        retriedCount: retriedDeviceIds.length,
+        skippedCount: skippedDeviceIds.length,
+        ...(deviceIds && deviceIds.length > 0 ? { requestedDeviceIds: deviceIds } : {}),
+      },
+    });
+
+    return c.json({
+      retriedDeviceIds,
+      skippedDeviceIds,
+      ...(dispatchError ? { message: dispatchError } : {}),
+    });
   }
 );
 
