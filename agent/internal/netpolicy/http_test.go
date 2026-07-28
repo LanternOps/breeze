@@ -157,35 +157,58 @@ func TestValidateURL(t *testing.T) {
 		name       string
 		raw        string
 		purpose    Purpose
+		origins    []string
 		wantReason string // "" means accept
 	}{
-		{"control plane https", "https://cdn.example/file.bin", ControlPlaneDownload, ""},
-		{"control plane http", "http://breeze.lan:8080/file.bin", ControlPlaneDownload, ""},
-		{"managed software https", "https://cdn.example/app.msi", ManagedSoftwareDownload, ""},
-		{"managed software http rejected", "http://cdn.example/app.msi", ManagedSoftwareDownload, ReasonSchemeNotAllowed},
-		{"file scheme", "file:///etc/shadow", ControlPlaneDownload, ReasonSchemeNotAllowed},
-		{"gopher scheme", "gopher://cdn.example/x", ControlPlaneDownload, ReasonSchemeNotAllowed},
-		{"relative url", "/just/a/path", ControlPlaneDownload, ReasonSchemeNotAllowed},
-		{"empty host", "https:///file.bin", ControlPlaneDownload, ReasonEmptyHost},
-		{"userinfo", "https://user:pw@cdn.example/f", ControlPlaneDownload, ReasonUserinfoPresent},
-		{"userinfo without password", "https://user@cdn.example/f", ControlPlaneDownload, ReasonUserinfoPresent},
-		{"port zero", "https://cdn.example:0/f", ControlPlaneDownload, ReasonInvalidPort},
-		{"port too large", "https://cdn.example:99999/f", ControlPlaneDownload, ReasonInvalidPort},
-		{"mapped ipv4 literal", "https://[::ffff:127.0.0.1]/f", ControlPlaneDownload, ReasonAmbiguousIPEncoding},
-		{"decimal ipv4 literal", "https://2130706433/f", ControlPlaneDownload, ReasonAmbiguousIPEncoding},
-		{"octal ipv4 literal", "https://0177.0.0.1/f", ControlPlaneDownload, ReasonAmbiguousIPEncoding},
-		{"gcp metadata hostname", "http://metadata.google.internal/computeMetadata/v1/", ControlPlaneDownload, ReasonForbiddenHostname},
-		{"gcp metadata hostname trailing dot", "http://metadata.google.internal./x", ControlPlaneDownload, ReasonForbiddenHostname},
+		{"control plane https", "https://cdn.example/file.bin", ControlPlaneDownload, nil, ""},
+		// Cleartext is permitted only for an EXACT configured control-plane
+		// origin — keying it on Purpose alone would let a hostile control plane
+		// name any host and get an executable artifact over a MITM-able channel.
+		{"control plane http to configured origin", "http://breeze.lan:8080/file.bin", ControlPlaneDownload,
+			[]string{"http://breeze.lan:8080"}, ""},
+		{"control plane http to unconfigured host", "http://attacker.example/agent.msi", ControlPlaneDownload,
+			[]string{"http://breeze.lan:8080"}, ReasonCleartextNotAllowed},
+		{"control plane http with no origins configured", "http://breeze.lan:8080/file.bin", ControlPlaneDownload,
+			nil, ReasonCleartextNotAllowed},
+		{"control plane http to lookalike of configured origin", "http://evil.breeze.lan:8080/x", ControlPlaneDownload,
+			[]string{"http://breeze.lan:8080"}, ReasonCleartextNotAllowed},
+		{"control plane http on a different port", "http://breeze.lan:9090/x", ControlPlaneDownload,
+			[]string{"http://breeze.lan:8080"}, ReasonCleartextNotAllowed},
+		{"managed software https", "https://cdn.example/app.msi", ManagedSoftwareDownload, nil, ""},
+		{"managed software http rejected", "http://cdn.example/app.msi", ManagedSoftwareDownload, nil, ReasonSchemeNotAllowed},
+		// A control-plane origin never downgrades managed software.
+		{"managed software http to a control plane origin", "http://breeze.lan:8080/app.msi", ManagedSoftwareDownload,
+			[]string{"http://breeze.lan:8080"}, ReasonSchemeNotAllowed},
+		{"file scheme", "file:///etc/shadow", ControlPlaneDownload, nil, ReasonSchemeNotAllowed},
+		{"gopher scheme", "gopher://cdn.example/x", ControlPlaneDownload, nil, ReasonSchemeNotAllowed},
+		{"relative url", "/just/a/path", ControlPlaneDownload, nil, ReasonSchemeNotAllowed},
+		{"empty host", "https:///file.bin", ControlPlaneDownload, nil, ReasonEmptyHost},
+		{"userinfo", "https://user:pw@cdn.example/f", ControlPlaneDownload, nil, ReasonUserinfoPresent},
+		{"userinfo without password", "https://user@cdn.example/f", ControlPlaneDownload, nil, ReasonUserinfoPresent},
+		{"port zero", "https://cdn.example:0/f", ControlPlaneDownload, nil, ReasonInvalidPort},
+		{"port too large", "https://cdn.example:99999/f", ControlPlaneDownload, nil, ReasonInvalidPort},
+		{"mapped ipv4 literal", "https://[::ffff:127.0.0.1]/f", ControlPlaneDownload, nil, ReasonAmbiguousIPEncoding},
+		{"decimal ipv4 literal", "https://2130706433/f", ControlPlaneDownload, nil, ReasonAmbiguousIPEncoding},
+		{"octal ipv4 literal", "https://0177.0.0.1/f", ControlPlaneDownload, nil, ReasonAmbiguousIPEncoding},
+		{"empty label", "https://host..example/f", ControlPlaneDownload, nil, ReasonInvalidHostname},
+		// The named-hostname and forbidden-literal controls report themselves,
+		// not the cleartext rule: the cleartext gate runs last.
+		{"gcp metadata hostname", "http://metadata.google.internal/computeMetadata/v1/", ControlPlaneDownload, nil, ReasonForbiddenHostname},
+		{"gcp metadata hostname trailing dot", "http://metadata.google.internal./x", ControlPlaneDownload, nil, ReasonForbiddenHostname},
+		{"gcp metadata hostname extra dots", "http://metadata.google.internal../x", ControlPlaneDownload, nil, ReasonForbiddenHostname},
 		// Shape only: the address checks happen at dial time, but a literal
 		// loopback URL has nothing to resolve so it is caught here too.
-		{"loopback literal", "http://127.0.0.1:8080/f", ControlPlaneDownload, ReasonForbiddenAddress},
-		{"ipv6 loopback literal", "http://[::1]:8080/f", ControlPlaneDownload, ReasonForbiddenAddress},
-		{"metadata literal", "http://169.254.169.254/latest/meta-data/", ControlPlaneDownload, ReasonForbiddenAddress},
+		{"loopback literal", "http://127.0.0.1:8080/f", ControlPlaneDownload, nil, ReasonForbiddenAddress},
+		{"ipv6 loopback literal", "http://[::1]:8080/f", ControlPlaneDownload, nil, ReasonForbiddenAddress},
+		{"metadata literal", "http://169.254.169.254/latest/meta-data/", ControlPlaneDownload, nil, ReasonForbiddenAddress},
+		{"cgnat literal is not forbidden by shape", "https://100.64.1.2/f", ControlPlaneDownload, nil, ""},
+		{"reserved literal", "http://240.1.2.3/f", ControlPlaneDownload, nil, ReasonForbiddenAddress},
+		{"broadcast literal", "http://255.255.255.255/f", ControlPlaneDownload, nil, ReasonForbiddenAddress},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateURL(tt.raw, Policy{Purpose: tt.purpose})
+			err := ValidateURL(tt.raw, Policy{Purpose: tt.purpose, ControlPlaneOrigins: tt.origins})
 			if tt.wantReason == "" {
 				if err != nil {
 					t.Fatalf("ValidateURL(%q) = %v, want nil", tt.raw, err)
@@ -194,6 +217,36 @@ func TestValidateURL(t *testing.T) {
 			}
 			assertReason(t, err, tt.wantReason)
 		})
+	}
+}
+
+// An approved private origin makes a private ADDRESS reachable. It never
+// downgrades the channel to cleartext.
+func TestApprovedPrivateOriginDoesNotGrantCleartext(t *testing.T) {
+	p := Policy{
+		Purpose:                ControlPlaneDownload,
+		ApprovedPrivateOrigins: []string{"http://repo.lan"},
+	}
+	assertReason(t, ValidateURL("http://repo.lan/file.bin", p), ReasonCleartextNotAllowed)
+
+	p.Purpose = ManagedSoftwareDownload
+	assertReason(t, ValidateURL("http://repo.lan/app.msi", p), ReasonSchemeNotAllowed)
+}
+
+// A cleartext control-plane request must not be a springboard: the redirect
+// target is a separate origin and needs its own cleartext permission.
+func TestRedirectCleartextOffTheControlPlaneRejected(t *testing.T) {
+	res, rec := newHarness(t, redirectHandler())
+	res.set("breeze.lan", publicAddrs(t, "203.0.113.10"))
+	res.set("attacker.example", publicAddrs(t, "203.0.113.20"))
+	p := testPolicy(res, rec)
+	p.ControlPlaneOrigins = []string{"http://breeze.lan:8080"}
+	c := mustClient(t, p)
+
+	_, _, err := get(c, "http://breeze.lan:8080/to?u=http://attacker.example/hop/0")
+	assertReason(t, err, ReasonCleartextNotAllowed)
+	if want := []string{"203.0.113.10:8080"}; !equalStrings(rec.dialed(), want) {
+		t.Fatalf("dialed %v, want only the control-plane hop %v", rec.dialed(), want)
 	}
 }
 
@@ -266,15 +319,25 @@ func TestClientRejectsMixedPublicAndUnsafeAnswer(t *testing.T) {
 	}
 }
 
+// https so the cleartext gate is not what rejects this — the private address is.
+// The request is rejected before any connect, so no TLS handshake happens.
 func TestClientRejectsPrivateAddressForUnapprovedOrigin(t *testing.T) {
-	res, rec := newHarness(t, okHandler())
-	res.set("repo.lan", publicAddrs(t, "10.0.0.5"))
-	c := mustClient(t, testPolicy(res, rec))
+	for name, addr := range map[string]string{
+		"rfc1918": "10.0.0.5",
+		"ula":     "fd00::1",
+		"cgnat":   "100.64.1.2",
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, rec := newHarness(t, okHandler())
+			res.set("repo.lan", publicAddrs(t, addr))
+			c := mustClient(t, testPolicy(res, rec))
 
-	_, _, err := get(c, "http://repo.lan/file.bin")
-	assertReason(t, err, ReasonPrivateAddressNotAllowed)
-	if dialed := rec.dialed(); len(dialed) != 0 {
-		t.Fatalf("policy dialed %v; nothing must be dialed", dialed)
+			_, _, err := get(c, "https://repo.lan/file.bin")
+			assertReason(t, err, ReasonPrivateAddressNotAllowed)
+			if dialed := rec.dialed(); len(dialed) != 0 {
+				t.Fatalf("policy dialed %v; nothing must be dialed", dialed)
+			}
+		})
 	}
 }
 
@@ -297,42 +360,54 @@ func TestClientAllowsPrivateAddressForConfiguredControlPlaneOrigin(t *testing.T)
 	}
 }
 
+// A customer-hosted managed-software repo on a private address, over https
+// (the only channel managed software ever gets). example.com is the hostname
+// because that is what the test server's certificate is valid for.
 func TestClientAllowsPrivateAddressForApprovedPrivateOrigin(t *testing.T) {
-	res, rec := newHarness(t, okHandler())
-	res.set("repo.lan", publicAddrs(t, "192.168.20.7"))
+	res, rec, _, pool := newTLSHarness(t, okHandler())
+	res.set("example.com", publicAddrs(t, "192.168.20.7"))
 	p := testPolicy(res, rec)
-	p.ApprovedPrivateOrigins = []string{"http://repo.lan"}
+	p.Purpose = ManagedSoftwareDownload
+	p.ControlPlaneOrigins = nil
+	p.ApprovedPrivateOrigins = []string{"https://example.com"}
 	c := mustClient(t, p)
+	baseTransport(t, c).TLSClientConfig.RootCAs = pool
 
-	if _, _, err := get(c, "http://repo.lan/app.msi"); err != nil {
+	if _, _, err := get(c, "https://example.com/app.msi"); err != nil {
 		t.Fatalf("request to the approved private origin failed: %v", err)
 	}
-	if want := []string{"192.168.20.7:80"}; !equalStrings(rec.dialed(), want) {
+	if want := []string{"192.168.20.7:443"}; !equalStrings(rec.dialed(), want) {
 		t.Fatalf("dialed %v, want %v", rec.dialed(), want)
 	}
 }
 
 // The allowlist is exact: a lookalike hostname under the approved suffix, a
-// different port and a different scheme are all separate origins.
+// different port and a different scheme are all separate origins. The approved
+// origin is https here so each case isolates the private-address rule; the
+// scheme-mismatch case necessarily reports the cleartext rule instead, which is
+// the same exactness proved one layer earlier.
 func TestClientRejectsPrivateAddressForLookalikeOrigins(t *testing.T) {
-	lookalikes := []string{
-		"http://evil.breeze.lan:8080/x", // suffix lookalike
-		"http://breeze.lan.evil:8080/x", // prefix lookalike
-		"http://breeze.lan:9090/x",      // port mismatch
-		"https://breeze.lan:8080/x",     // scheme mismatch
+	lookalikes := []struct {
+		raw        string
+		wantReason string
+	}{
+		{"https://evil.breeze.lan:8080/x", ReasonPrivateAddressNotAllowed}, // suffix lookalike
+		{"https://breeze.lan.evil:8080/x", ReasonPrivateAddressNotAllowed}, // prefix lookalike
+		{"https://breeze.lan:9090/x", ReasonPrivateAddressNotAllowed},      // port mismatch
+		{"http://breeze.lan:8080/x", ReasonCleartextNotAllowed},            // scheme mismatch
 	}
-	for _, raw := range lookalikes {
-		t.Run(raw, func(t *testing.T) {
+	for _, tt := range lookalikes {
+		t.Run(tt.raw, func(t *testing.T) {
 			res, rec := newHarness(t, okHandler())
 			for _, h := range []string{"breeze.lan", "evil.breeze.lan", "breeze.lan.evil"} {
 				res.set(h, publicAddrs(t, "10.0.0.5"))
 			}
 			p := testPolicy(res, rec)
-			p.ControlPlaneOrigins = []string{"http://breeze.lan:8080"}
+			p.ControlPlaneOrigins = []string{"https://breeze.lan:8080"}
 			c := mustClient(t, p)
 
-			_, _, err := get(c, raw)
-			assertReason(t, err, ReasonPrivateAddressNotAllowed)
+			_, _, err := get(c, tt.raw)
+			assertReason(t, err, tt.wantReason)
 			if dialed := rec.dialed(); len(dialed) != 0 {
 				t.Fatalf("policy dialed %v; nothing must be dialed", dialed)
 			}
@@ -418,7 +493,7 @@ func TestRedirectToUnsafeTargetRejected(t *testing.T) {
 	res.set("evil.example", publicAddrs(t, "169.254.169.254"))
 	c := mustClient(t, testPolicy(res, rec))
 
-	_, _, err := get(c, "http://cdn.example/to?u=http://evil.example/hop/0")
+	_, _, err := get(c, "http://cdn.example/to?u=https://evil.example/hop/0")
 	assertReason(t, err, ReasonForbiddenAddress)
 	if want := []string{"203.0.113.10:80"}; !equalStrings(rec.dialed(), want) {
 		t.Fatalf("dialed %v, want only the first hop %v", rec.dialed(), want)
@@ -430,7 +505,7 @@ func TestRedirectToForbiddenHostnameRejected(t *testing.T) {
 	res.set("cdn.example", publicAddrs(t, "203.0.113.10"))
 	c := mustClient(t, testPolicy(res, rec))
 
-	_, _, err := get(c, "http://cdn.example/to?u=http://metadata.google.internal/computeMetadata/v1/")
+	_, _, err := get(c, "http://cdn.example/to?u=https://metadata.google.internal/computeMetadata/v1/")
 	assertReason(t, err, ReasonForbiddenHostname)
 }
 
@@ -440,7 +515,7 @@ func TestRedirectToPrivateAddressRejected(t *testing.T) {
 	res.set("inside.lan", publicAddrs(t, "10.1.2.3"))
 	c := mustClient(t, testPolicy(res, rec))
 
-	_, _, err := get(c, "http://cdn.example/to?u=http://inside.lan/hop/0")
+	_, _, err := get(c, "http://cdn.example/to?u=https://inside.lan/hop/0")
 	assertReason(t, err, ReasonPrivateAddressNotAllowed)
 }
 
@@ -589,8 +664,9 @@ func TestTLSServerNameIsTheRequestHostname(t *testing.T) {
 func TestRedirectHTTPSToHTTPRejected(t *testing.T) {
 	res, rec, _, pool := newTLSHarness(t, redirectHandler())
 	res.set("example.com", publicAddrs(t, "203.0.113.10"))
-	// Control-plane purpose permits plain HTTP outright, so a rejection here can
-	// only come from the downgrade rule.
+	// http://example.com is a configured cleartext origin here, so the cleartext
+	// gate passes it: a rejection can only come from the downgrade rule. Being
+	// configured for cleartext never excuses downgrading an https exchange.
 	c := mustClient(t, testPolicy(res, rec))
 	baseTransport(t, c).TLSClientConfig.RootCAs = pool
 
@@ -657,8 +733,16 @@ func TestRequestTimeout(t *testing.T) {
 	if _, _, err := get(c, "http://cdn.example/slow"); err == nil {
 		t.Fatal("expected a timeout error")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("request took %v; the policy timeout was not enforced", elapsed)
+	elapsed := time.Since(start)
+	// Lower bound: the request must actually have waited for the deadline. A
+	// policy rejection would return instantly and pass a one-sided assertion.
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("request failed after %v, before the 100ms deadline — it did not time out", elapsed)
+	}
+	// Upper bound: 5x the configured timeout. Loose enough for a loaded CI
+	// runner, tight enough to catch a timeout set to the wrong value.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("request took %v; the 100ms policy timeout was not enforced", elapsed)
 	}
 }
 
@@ -789,12 +873,27 @@ func TestConcurrentRequestsShareOneClient(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
+// cleartextTestOrigins are the public test hosts, listed as configured
+// control-plane origins because that is the ONLY way plain HTTP is permitted.
+// Every one of them resolves to a public address in tests, so the private-
+// address reachability that also comes with a control-plane origin is never
+// what a test is leaning on.
+var cleartextTestOrigins = []string{
+	"http://cdn.example",
+	"http://cdn.example:8080",
+	"http://sub.cdn.example",
+	"http://other.example",
+	"http://evil.example",
+	"http://example.com",
+}
+
 func testPolicy(res *stubResolver, rec *dialRecorder) Policy {
 	return Policy{
-		Purpose:        ControlPlaneDownload,
-		RequestTimeout: 10 * time.Second,
-		Resolver:       res,
-		rawDial:        rec.dial,
+		Purpose:             ControlPlaneDownload,
+		ControlPlaneOrigins: cleartextTestOrigins,
+		RequestTimeout:      10 * time.Second,
+		Resolver:            res,
+		rawDial:             rec.dial,
 	}
 }
 

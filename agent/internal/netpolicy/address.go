@@ -35,7 +35,9 @@ const (
 	ReasonUserinfoPresent          = "userinfo_present"
 	ReasonInvalidPort              = "invalid_port"
 	ReasonAmbiguousIPEncoding      = "ambiguous_ip_encoding"
+	ReasonInvalidHostname          = "invalid_hostname"
 	ReasonForbiddenHostname        = "forbidden_hostname"
+	ReasonCleartextNotAllowed      = "cleartext_not_allowed"
 	ReasonInvalidOrigin            = "invalid_origin"
 	ReasonInvalidPolicy            = "invalid_policy"
 	ReasonResolutionFailed         = "resolution_failed"
@@ -99,12 +101,33 @@ var forbiddenHostnames = map[string]struct{}{
 
 // IPv6 prefixes that embed an IPv4 address in their text form. An attacker who
 // cannot get a raw 127.0.0.1 past the classifier will otherwise try the same
-// destination wrapped in one of these.
+// destination wrapped in one of these. IPv4-mapped (::ffff:0:0/96) is absent
+// because classifyAddress unmaps before classifying.
 var (
-	prefix6to4   = netip.MustParsePrefix("2002::/16")    // RFC 3056
-	prefixTeredo = netip.MustParsePrefix("2001::/32")    // RFC 4380
-	prefixNAT64  = netip.MustParsePrefix("64:ff9b::/96") // RFC 6052 well-known
+	prefix6to4       = netip.MustParsePrefix("2002::/16")       // RFC 3056
+	prefixTeredo     = netip.MustParsePrefix("2001::/32")       // RFC 4380
+	prefixNAT64      = netip.MustParsePrefix("64:ff9b::/96")    // RFC 6052 well-known
+	prefixV4Compat   = netip.MustParsePrefix("::/96")           // RFC 4291 IPv4-compatible (deprecated)
+	prefixV4Translat = netip.MustParsePrefix("::ffff:0:0:0/96") // RFC 6145 IPv4-translated
 )
+
+// reservedForbiddenPrefixes are ranges that are reachable on a real network but
+// are never a legitimate download source. They are forbidden outright,
+// alongside the named classes, and no Policy field can re-enable them.
+// 255.255.255.255 falls inside 240.0.0.0/4 and is additionally excluded by the
+// IsGlobalUnicast test below.
+var reservedForbiddenPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),     // RFC 1122 "this network"
+	netip.MustParsePrefix("192.0.0.0/24"),  // RFC 6890 IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"), // RFC 2544 benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),   // RFC 1112 reserved, incl. 255.255.255.255
+}
+
+// prefixCGNAT is RFC 6598 carrier-grade NAT space. It is also Tailscale's
+// range, so a tailnet-joined endpoint would otherwise be an SSRF pivot onto
+// arbitrary tailnet peers. A legitimate CDN is never CGNAT, so it is gated by
+// exact-origin approval exactly like RFC1918 and ULA rather than banned.
+var prefixCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 
 // classifyAddress classifies a resolved address by its effective destination,
 // not its text form: an IPv4-mapped, 6to4, Teredo or NAT64 encoding is
@@ -122,14 +145,16 @@ func classifyAddress(a netip.Addr) addressClass {
 	return worst
 }
 
+// classifyEffective is a POSITIVE test: an address has to earn "public" by
+// being global unicast and outside every reserved range. A closed deny list
+// leaves whatever it forgets dialable, which is the wrong failure direction for
+// a package that assumes its input is hostile.
+//
+// IsGlobalUnicast already excludes unspecified, loopback, multicast (including
+// link-local and interface-local) and link-local unicast, plus the IPv4
+// broadcast address.
 func classifyEffective(a netip.Addr) addressClass {
-	switch {
-	case a.IsUnspecified(),
-		a.IsLoopback(),
-		a.IsLinkLocalUnicast(),
-		a.IsLinkLocalMulticast(),
-		a.IsInterfaceLocalMulticast(),
-		a.IsMulticast():
+	if !a.IsGlobalUnicast() {
 		return classForbidden
 	}
 	for _, m := range metadataAddresses {
@@ -137,7 +162,12 @@ func classifyEffective(a netip.Addr) addressClass {
 			return classForbidden
 		}
 	}
-	if a.IsPrivate() {
+	for _, p := range reservedForbiddenPrefixes {
+		if p.Contains(a) {
+			return classForbidden
+		}
+	}
+	if a.IsPrivate() || prefixCGNAT.Contains(a) {
 		return classPrivate
 	}
 	return classPublic
@@ -156,7 +186,7 @@ func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
 		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
 	case prefixTeredo.Contains(a):
 		return netip.AddrFrom4([4]byte{^b[12], ^b[13], ^b[14], ^b[15]}), true
-	case prefixNAT64.Contains(a):
+	case prefixNAT64.Contains(a), prefixV4Compat.Contains(a), prefixV4Translat.Contains(a):
 		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
 	}
 	return netip.Addr{}, false
@@ -188,11 +218,13 @@ func validateResolution(addrs []netip.Addr, privateAllowed bool) error {
 	return nil
 }
 
-// normalizeHostname lowercases a host and drops one trailing root dot so that
-// "Host.Example." and "host.example" compare equal.
+// normalizeHostname lowercases a host and drops every trailing root dot so that
+// "Host.Example.", "host.example.." and "host.example" all compare equal. A
+// single TrimSuffix would let "metadata.google.internal.." slip past the
+// forbidden-hostname map.
 func normalizeHostname(host string) string {
 	h := strings.ToLower(strings.TrimSpace(host))
-	return strings.TrimSuffix(h, ".")
+	return strings.TrimRight(h, ".")
 }
 
 func isForbiddenHostname(normalized string) bool {
@@ -222,6 +254,12 @@ func checkHostShape(host string) error {
 	}
 	if isNumericLookingHost(h) {
 		return &PolicyError{Reason: ReasonAmbiguousIPEncoding}
+	}
+	// An empty label ("host..example", ".host") is not a valid DNS name, and
+	// tolerating one would give every hostname-level control a trivial bypass
+	// spelling.
+	if strings.HasPrefix(h, ".") || strings.Contains(h, "..") {
+		return &PolicyError{Reason: ReasonInvalidHostname}
 	}
 	return nil
 }

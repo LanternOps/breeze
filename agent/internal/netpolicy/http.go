@@ -61,7 +61,8 @@ type Purpose string
 const (
 	// ControlPlaneDownload fetches updater artifacts from the configured
 	// control plane, which a self-hosted deployment may legitimately serve over
-	// plain HTTP on a private network.
+	// plain HTTP on a private network. Cleartext is permitted ONLY for an exact
+	// ControlPlaneOrigins entry; every other host requires HTTPS.
 	ControlPlaneDownload Purpose = "control_plane_download"
 
 	// ManagedSoftwareDownload fetches installer packages from vendor CDNs or
@@ -83,11 +84,14 @@ type Policy struct {
 	Purpose Purpose
 
 	// ControlPlaneOrigins are the configured server_url and backup_server_url
-	// origins. They may be private addresses.
+	// origins. They may be private addresses. Membership grants exactly two
+	// things at that exact origin: reachability to a private address, and
+	// (for ControlPlaneDownload) permission to use plain HTTP.
 	ControlPlaneOrigins []string
 
 	// ApprovedPrivateOrigins are organization- or site-approved origins for
-	// private managed-software sources.
+	// private managed-software sources. Membership grants reachability to a
+	// private address only — never a cleartext channel.
 	ApprovedPrivateOrigins []string
 
 	// MaxRedirects bounds the redirect chain. Zero or negative means the
@@ -223,17 +227,8 @@ func validateRequestURL(u *url.URL, policy Policy) error {
 	}
 
 	scheme := strings.ToLower(u.Scheme)
-	switch policy.Purpose {
-	case ManagedSoftwareDownload:
-		// Rule 1: managed software carries executable payloads and always
-		// requires HTTPS, regardless of what the origin is.
-		if scheme != "https" {
-			return &PolicyError{Reason: ReasonSchemeNotAllowed}
-		}
-	default:
-		if scheme != "http" && scheme != "https" {
-			return &PolicyError{Reason: ReasonSchemeNotAllowed}
-		}
+	if scheme != "http" && scheme != "https" {
+		return &PolicyError{Reason: ReasonSchemeNotAllowed}
 	}
 
 	if u.User != nil {
@@ -257,6 +252,40 @@ func validateRequestURL(u *url.URL, policy Policy) error {
 	// allowlist, which the dial path applies.
 	if a, err := netip.ParseAddr(host); err == nil && classifyAddress(a) == classForbidden {
 		return &PolicyError{Reason: ReasonForbiddenAddress}
+	}
+
+	return checkCleartext(u, scheme, policy)
+}
+
+// checkCleartext implements rule 1's narrow reading: plain HTTP is permitted
+// only for the CONFIGURED control plane, which a self-hosted deployment may
+// legitimately serve over http on a private network. Keying the scheme on
+// Purpose alone would let a hostile control plane hand the updater
+// "http://attacker.example/agent.msi", or 302 an initial cleartext request
+// onward to one, and have the agent fetch an executable artifact over a
+// MITM-able channel. Managed software is always https, whatever is configured.
+//
+// It runs last because it needs a well-formed origin: a malformed host, a
+// forbidden hostname or a forbidden IP literal is reported as itself.
+func checkCleartext(u *url.URL, scheme string, policy Policy) error {
+	if scheme == "https" {
+		return nil
+	}
+	if policy.Purpose != ControlPlaneDownload {
+		return &PolicyError{Reason: ReasonSchemeNotAllowed}
+	}
+	origin, err := originFromURL(u)
+	if err != nil {
+		return err
+	}
+	// Only ControlPlaneOrigins grants cleartext. ApprovedPrivateOrigins grants
+	// reachability to a private address, never a downgrade of the channel.
+	configured, err := newOriginSet(policy.ControlPlaneOrigins)
+	if err != nil {
+		return err
+	}
+	if !configured.contains(origin) {
+		return &PolicyError{Reason: ReasonCleartextNotAllowed}
 	}
 	return nil
 }

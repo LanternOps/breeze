@@ -61,6 +61,22 @@ func TestClassifyAddress(t *testing.T) {
 		{"teredo wrapping loopback", "2001::80ff:fffe", classForbidden},
 		{"nat64 wrapping loopback", "64:ff9b::7f00:1", classForbidden},
 		{"nat64 wrapping rfc1918", "64:ff9b::a00:5", classPrivate},
+		{"ipv4-compatible wrapping loopback", "::7f00:1", classForbidden},
+		{"ipv4-compatible wrapping rfc1918", "::a00:5", classPrivate},
+		{"ipv4-translated wrapping loopback", "::ffff:0:7f00:1", classForbidden},
+		{"ipv4-translated wrapping metadata", "::ffff:0:a9fe:a9fe", classForbidden},
+
+		// D3: reserved ranges that are reachable on a real network but are
+		// never a legitimate download source.
+		{"this-network 0.0.0.0/8", "0.1.2.3", classForbidden},
+		{"this-network high", "0.255.255.255", classForbidden},
+		{"ietf protocol assignments", "192.0.0.1", classForbidden},
+		{"ietf protocol assignments high", "192.0.0.255", classForbidden},
+		{"benchmarking 198.18/15 low", "198.18.0.1", classForbidden},
+		{"benchmarking 198.18/15 high", "198.19.255.255", classForbidden},
+		{"reserved 240/4", "240.0.0.1", classForbidden},
+		{"reserved 240/4 high", "255.255.255.254", classForbidden},
+		{"limited broadcast", "255.255.255.255", classForbidden},
 
 		// RFC1918 + IPv6 ULA — allowlistable by exact origin only.
 		{"rfc1918 10/8", "10.0.0.5", classPrivate},
@@ -71,13 +87,21 @@ func TestClassifyAddress(t *testing.T) {
 		{"ipv6 ula fc00", "fc00::1", classPrivate},
 		{"ipv6 ula fd00", "fd12:3456:789a::1", classPrivate},
 
+		// D3: CGNAT is allowlist-gated private, not public. It is Tailscale's
+		// range, so a tailnet-joined endpoint would otherwise be an SSRF pivot
+		// onto arbitrary tailnet peers. A legitimate CDN is never CGNAT.
+		{"cgnat low", "100.64.0.1", classPrivate},
+		{"cgnat high", "100.127.255.255", classPrivate},
+		{"cgnat metadata stays forbidden", "100.100.100.200", classForbidden},
+
 		// Public.
 		{"public ipv4", "8.8.8.8", classPublic},
 		{"public ipv4 just outside 172.16/12", "172.32.0.1", classPublic},
+		{"public ipv4 just below cgnat", "100.63.255.255", classPublic},
+		{"public ipv4 just above cgnat", "100.128.0.1", classPublic},
+		{"public ipv4 just above benchmarking", "198.20.0.1", classPublic},
+		{"public ipv4 just above protocol assignments", "192.0.1.1", classPublic},
 		{"public ipv6", "2606:4700::1111", classPublic},
-		// Only the explicit metadata address inside the CGNAT range is
-		// forbidden; the rest of 100.64/10 is not in the brief's deny set.
-		{"cgnat non-metadata", "100.64.0.1", classPublic},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +157,12 @@ func TestValidateResolution(t *testing.T) {
 		{"ula unapproved", []string{"fd00::1"}, false, ReasonPrivateAddressNotAllowed},
 		{"private approved", []string{"10.0.0.5"}, true, ""},
 		{"mixed public and private approved", []string{"8.8.8.8", "192.168.1.10"}, true, ""},
+		// D3: CGNAT behaves exactly like RFC1918 — gated, not banned.
+		{"cgnat unapproved", []string{"100.64.1.2"}, false, ReasonPrivateAddressNotAllowed},
+		{"cgnat approved", []string{"100.64.1.2"}, true, ""},
+		// ...but a reserved range is never reachable, approved or not.
+		{"reserved with private approved", []string{"240.1.2.3"}, true, ReasonForbiddenAddress},
+		{"broadcast with private approved", []string{"255.255.255.255"}, true, ReasonForbiddenAddress},
 	}
 
 	for _, tt := range tests {
@@ -309,6 +339,8 @@ func TestCheckHostShape(t *testing.T) {
 		{"0177.0.0.1", ReasonAmbiguousIPEncoding},      // octal IPv4
 		{"0x7f.0.0.1", ReasonAmbiguousIPEncoding},      // hex IPv4
 		{"127.1", ReasonAmbiguousIPEncoding},           // short-form IPv4
+		{"host..example", ReasonInvalidHostname},       // empty label
+		{".host.example", ReasonInvalidHostname},       // leading empty label
 	}
 	for _, tt := range invalid {
 		t.Run(tt.host, func(t *testing.T) {
@@ -322,6 +354,9 @@ func TestForbiddenHostname(t *testing.T) {
 		"metadata.google.internal",
 		"METADATA.GOOGLE.INTERNAL",
 		"metadata.google.internal.",
+		// Extra root dots must not be a bypass spelling for the map lookup.
+		"metadata.google.internal..",
+		"Metadata.Google.Internal...",
 	}
 	for _, h := range forbidden {
 		if !isForbiddenHostname(normalizeHostname(h)) {
