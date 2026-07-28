@@ -624,225 +624,225 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // tool error further up the stack (aiAgentSdkTools.ts) WITHOUT ever
         // stopping a plan a matched step belonged to.
         try {
-        // ---- Tier 3+: durable action-intents flow (spec §6.1) ----
-        // For M365 mutation tools, enrich the approval card with the customer
-        // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
-        // the default description rather than throwing into the approval path.
-        let m365Summary: string | null = null;
-        try {
-          const sessRow = await loadSession(session.breezeSessionId);
-          if (sessRow?.delegantM365ConnectionId) {
-            const conn = await loadConnection(sessRow.delegantM365ConnectionId);
-            m365Summary = buildM365RiskSummary(toolName, input as Record<string, unknown>, conn);
+          // ---- Tier 3+: durable action-intents flow (spec §6.1) ----
+          // For M365 mutation tools, enrich the approval card with the customer
+          // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
+          // the default description rather than throwing into the approval path.
+          let m365Summary: string | null = null;
+          try {
+            const sessRow = await loadSession(session.breezeSessionId);
+            if (sessRow?.delegantM365ConnectionId) {
+              const conn = await loadConnection(sessRow.delegantM365ConnectionId);
+              m365Summary = buildM365RiskSummary(toolName, input as Record<string, unknown>, conn);
+            }
+          } catch { /* non-fatal: fall back to default description */ }
+          const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+
+          // Create the durable intent. This fans out to eligible org approvers
+          // (or the sole-operator self-approval row), dispatches mobile push, and
+          // writes the intent_created outbox row — all internally, in one
+          // transaction (services/actionIntents/intentService.ts). Replaces the
+          // old direct approval_requests insert + dispatchApprovalPushToTokens
+          // call: createActionIntent is now the single place that does both.
+          let intent: Awaited<ReturnType<typeof createActionIntent>>;
+          try {
+            intent = await createActionIntent(session.auth, {
+              toolName,
+              input: input as Record<string, unknown>,
+              source: 'chat',
+              reason: riskSummary,
+              orgId: session.orgId,
+            });
+          } catch (err) {
+            console.error('[AI-SDK] Failed to create action intent:', toolName, err);
+            return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
           }
-        } catch { /* non-fatal: fall back to default description */ }
-        const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
 
-        // Create the durable intent. This fans out to eligible org approvers
-        // (or the sole-operator self-approval row), dispatches mobile push, and
-        // writes the intent_created outbox row — all internally, in one
-        // transaction (services/actionIntents/intentService.ts). Replaces the
-        // old direct approval_requests insert + dispatchApprovalPushToTokens
-        // call: createActionIntent is now the single place that does both.
-        let intent: Awaited<ReturnType<typeof createActionIntent>>;
-        try {
-          intent = await createActionIntent(session.auth, {
-            toolName,
-            input: input as Record<string, unknown>,
-            source: 'chat',
-            reason: riskSummary,
-            orgId: session.orgId,
-          });
-        } catch (err) {
-          console.error('[AI-SDK] Failed to create action intent:', toolName, err);
-          return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
-        }
+          // Stamp the intent link onto the ledger row so handleApproval (web
+          // chat's POST /ai/sessions/:id/approve/:executionId route,
+          // services/aiAgent.ts) can detect this is an intent-backed execution
+          // and refuse to report a self-approval success for it (whole-branch
+          // review CRITICAL-3) — the intents flow is a four-eyes model, decided
+          // via the /approvals surface (mobile push or Approvals queue), never
+          // this endpoint. Stamped before the SSE event below so the row is
+          // already linked by the time the UI could possibly hit approve.
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db
+                  .update(aiToolExecutions)
+                  .set({ intentId: intent.id })
+                  .where(eq(aiToolExecutions.id, approvalExec!.id))
+            );
+          } catch (err) {
+            console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
+          }
 
-        // Stamp the intent link onto the ledger row so handleApproval (web
-        // chat's POST /ai/sessions/:id/approve/:executionId route,
-        // services/aiAgent.ts) can detect this is an intent-backed execution
-        // and refuse to report a self-approval success for it (whole-branch
-        // review CRITICAL-3) — the intents flow is a four-eyes model, decided
-        // via the /approvals surface (mobile push or Approvals queue), never
-        // this endpoint. Stamped before the SSE event below so the row is
-        // already linked by the time the UI could possibly hit approve.
-        try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db
-                .update(aiToolExecutions)
-                .set({ intentId: intent.id })
-                .where(eq(aiToolExecutions.id, approvalExec!.id))
-          );
-        } catch (err) {
-          console.error('[AI-SDK] Failed to stamp intent id onto execution:', approvalExec.id, err);
-        }
-
-        // Emit approval_required event via session event bus. `intentBacked:
-        // true` always means the four-eyes waiting state UNLESS
-        // selfApprovalRequestId is also set — in that case the sole-operator
-        // branch applies and the card offers an inline WebAuthn self-approve
-        // for that one row (an L3 proof satisfying, not bypassing, the decide
-        // handler's gate).
-        session.eventBus.publish({
-          type: 'approval_required',
-          executionId: approvalExec.id,
-          approvalRequestId: intent.approvalRequestIds[0],
-          // Set ONLY when the fan-out created a row for the requester (the
-          // sole-operator branch) — the web card offers the inline L3
-          // WebAuthn self-approve for exactly that row. In a multi-approver
-          // org the requester holds no row and this stays undefined; the
-          // card keeps its waiting state (four-eyes preserved).
-          selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
-          // The intent's real server-side deadline, so the self-approve card's
-          // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
-          // rather than a mount-relative client constant that can silently drift
-          // from it.
-          intentExpiresAt: intent.expiresAt.toISOString(),
-          toolName,
-          input,
-          description,
-          deviceContext,
-          intentBacked: true,
-        });
-
-        // Block until an approver decides, OR the chat wait window (still 300s
-        // — matches the intent's own 5-minute chat expiry) elapses. Unlike the
-        // old waitForApproval, this NEVER mutates the intent on timeout: giving
-        // up here leaves it pending_approval so an approver can still decide it
-        // — and the durable release worker (jobs/intentReleaseWorker.ts) will
-        // execute it — after this session has moved on or died. This is the
-        // new durable capability the design adds (spec §6.1).
-        const decisionStatus = await waitForIntentDecision(
-          intent.id,
-          300_000,
-          session.abortController.signal,
-        );
-
-        if (decisionStatus === 'pending_approval') {
-          return await failMatchedPlanStep(
-            {
-              allowed: false,
-              error: 'Approval still pending; this action will complete once approved.',
-            },
-            ' The plan has been stopped.',
-          );
-        }
-
-        if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
-          return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
-        }
-
-        // decisionStatus is one of approved/executing/completed/failed here.
-        // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
-        // durable release worker also consumes the intent_approved outbox and
-        // may already be executing (or have executed/failed) this same intent.
-        // The `approved -> executing` CAS is the SINGLE mutual-exclusion point
-        // between this session and the worker — whichever side wins it is the
-        // only side allowed to run the tool. transitionIntent re-checks the
-        // CURRENT status atomically, so it's correct to attempt it here
-        // regardless of which terminal-ish status waitForIntentDecision
-        // happened to observe (that read can be stale by the time we get here).
-        const wonRelease = await transitionIntent(
-          intent.id,
-          'approved',
-          'executing',
-          // Stamp execution_started_at at the claim, symmetric with the durable
-          // worker (jobs/intentReleaseWorker.ts) — so the stale-execution reaper
-          // keys off a real execution-start time here too, not just the
-          // decided_at COALESCE fallback.
-          { executedAt: null, executionStartedAt: new Date() },
-          { requireNotExpired: true },
-        );
-        if (!wonRelease) {
-          // Lost the race: the release worker (or a duplicate outbox delivery)
-          // already claimed this intent for execution. Do NOT run the tool
-          // inline — that would double-execute a real side effect. The worker
-          // owns the ledger write and the intent's final result/error_code.
-          return await failMatchedPlanStep({
-            allowed: false,
-            error: 'This action is already being completed by the approval worker; it will not run twice.',
-          });
-        }
-
-        // Won the release: re-prove the requester's CURRENT authorization
-        // before executing. The inline path runs the tool under the live
-        // `session.auth` captured when the tool call began — which can be up to
-        // 5 minutes stale by now — so it MUST run the same fail-closed
-        // revalidation the durable worker does (actor still active + still has
-        // access to intent.orgId, org still active, tier not escalated, RBAC
-        // still held). Without this, winning the CAS was a silent bypass of
-        // every durability check the worker enforces. We hold the intent in
-        // `executing` (we won the CAS), so on any failure we CAS it straight to
-        // `failed` with the same error_code the worker uses and refuse to run.
-        const { intentRow, winningApproval } = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(async () => {
-            const [row] = await db
-              .select()
-              .from(actionIntents)
-              .where(eq(actionIntents.id, intent.id))
-              .limit(1);
-            const [approvalRow] = await db
-              .select({ boundArgumentDigest: approvalRequests.boundArgumentDigest })
-              .from(approvalRequests)
-              .where(and(eq(approvalRequests.intentId, intent.id), eq(approvalRequests.status, 'approved')))
-              .limit(1);
-            return { intentRow: row ?? null, winningApproval: approvalRow ?? null };
-          }),
-        );
-
-        if (!intentRow) {
-          console.error(`[AI-SDK] intent ${intent.id} vanished after winning release CAS`);
-          return await failMatchedPlanStep({ allowed: false, error: 'Approved action could not be revalidated for execution.' });
-        }
-
-        const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
-        if (!revalidation.ok) {
-          await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
-          console.error(
-            `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
-          );
-          return await failMatchedPlanStep({
-            allowed: false,
-            error: 'Authorization for this action could no longer be verified; it was not executed.',
-          });
-        }
-
-        // Won the release: track the intent id so createSessionPostToolUse can
-        // CAS it executing -> completed|failed once the inline tool call
-        // actually finishes (see pendingIntentBySession above).
-        pendingIntentBySession.set(session, intent.id);
-        createdIntentId = intent.id;
-
-        // The step is now genuinely authorized: the intent was approved, we
-        // won the executing CAS, and the requester's authorization was
-        // re-proved. Only now is it correct to record plan progress.
-        // Advancing any earlier would mark a step complete that may never
-        // run (see the plan block above).
-        if (matchedPlanStepIndex !== null && session.activePlanId) {
+          // Emit approval_required event via session event bus. `intentBacked:
+          // true` always means the four-eyes waiting state UNLESS
+          // selfApprovalRequestId is also set — in that case the sole-operator
+          // branch applies and the card offers an inline WebAuthn self-approve
+          // for that one row (an L3 proof satisfying, not bypassing, the decide
+          // handler's gate).
           session.eventBus.publish({
-            type: 'plan_step_start',
-            planId: session.activePlanId,
-            stepIndex: matchedPlanStepIndex,
+            type: 'approval_required',
+            executionId: approvalExec.id,
+            approvalRequestId: intent.approvalRequestIds[0],
+            // Set ONLY when the fan-out created a row for the requester (the
+            // sole-operator branch) — the web card offers the inline L3
+            // WebAuthn self-approve for exactly that row. In a multi-approver
+            // org the requester holds no row and this stays undefined; the
+            // card keeps its waiting state (four-eyes preserved).
+            selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
+            // The intent's real server-side deadline, so the self-approve card's
+            // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
+            // rather than a mount-relative client constant that can silently drift
+            // from it.
+            intentExpiresAt: intent.expiresAt.toISOString(),
             toolName,
+            input,
+            description,
+            deviceContext,
+            intentBacked: true,
           });
-          session.currentPlanStepIndex = matchedPlanStepIndex + 1;
-        }
 
-        // Mark as executing
-        try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db
-                .update(aiToolExecutions)
-                .set({ status: 'executing' })
-                .where(eq(aiToolExecutions.id, approvalExec!.id))
+          // Block until an approver decides, OR the chat wait window (still 300s
+          // — matches the intent's own 5-minute chat expiry) elapses. Unlike the
+          // old waitForApproval, this NEVER mutates the intent on timeout: giving
+          // up here leaves it pending_approval so an approver can still decide it
+          // — and the durable release worker (jobs/intentReleaseWorker.ts) will
+          // execute it — after this session has moved on or died. This is the
+          // new durable capability the design adds (spec §6.1).
+          const decisionStatus = await waitForIntentDecision(
+            intent.id,
+            300_000,
+            session.abortController.signal,
           );
-        } catch (err) {
-          console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
-        }
+
+          if (decisionStatus === 'pending_approval') {
+            return await failMatchedPlanStep(
+              {
+                allowed: false,
+                error: 'Approval still pending; this action will complete once approved.',
+              },
+              ' The plan has been stopped.',
+            );
+          }
+
+          if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
+            return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+          }
+
+          // decisionStatus is one of approved/executing/completed/failed here.
+          // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
+          // durable release worker also consumes the intent_approved outbox and
+          // may already be executing (or have executed/failed) this same intent.
+          // The `approved -> executing` CAS is the SINGLE mutual-exclusion point
+          // between this session and the worker — whichever side wins it is the
+          // only side allowed to run the tool. transitionIntent re-checks the
+          // CURRENT status atomically, so it's correct to attempt it here
+          // regardless of which terminal-ish status waitForIntentDecision
+          // happened to observe (that read can be stale by the time we get here).
+          const wonRelease = await transitionIntent(
+            intent.id,
+            'approved',
+            'executing',
+            // Stamp execution_started_at at the claim, symmetric with the durable
+            // worker (jobs/intentReleaseWorker.ts) — so the stale-execution reaper
+            // keys off a real execution-start time here too, not just the
+            // decided_at COALESCE fallback.
+            { executedAt: null, executionStartedAt: new Date() },
+            { requireNotExpired: true },
+          );
+          if (!wonRelease) {
+            // Lost the race: the release worker (or a duplicate outbox delivery)
+            // already claimed this intent for execution. Do NOT run the tool
+            // inline — that would double-execute a real side effect. The worker
+            // owns the ledger write and the intent's final result/error_code.
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'This action is already being completed by the approval worker; it will not run twice.',
+            });
+          }
+
+          // Won the release: re-prove the requester's CURRENT authorization
+          // before executing. The inline path runs the tool under the live
+          // `session.auth` captured when the tool call began — which can be up to
+          // 5 minutes stale by now — so it MUST run the same fail-closed
+          // revalidation the durable worker does (actor still active + still has
+          // access to intent.orgId, org still active, tier not escalated, RBAC
+          // still held). Without this, winning the CAS was a silent bypass of
+          // every durability check the worker enforces. We hold the intent in
+          // `executing` (we won the CAS), so on any failure we CAS it straight to
+          // `failed` with the same error_code the worker uses and refuse to run.
+          const { intentRow, winningApproval } = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(async () => {
+              const [row] = await db
+                .select()
+                .from(actionIntents)
+                .where(eq(actionIntents.id, intent.id))
+                .limit(1);
+              const [approvalRow] = await db
+                .select({ boundArgumentDigest: approvalRequests.boundArgumentDigest })
+                .from(approvalRequests)
+                .where(and(eq(approvalRequests.intentId, intent.id), eq(approvalRequests.status, 'approved')))
+                .limit(1);
+              return { intentRow: row ?? null, winningApproval: approvalRow ?? null };
+            }),
+          );
+
+          if (!intentRow) {
+            console.error(`[AI-SDK] intent ${intent.id} vanished after winning release CAS`);
+            return await failMatchedPlanStep({ allowed: false, error: 'Approved action could not be revalidated for execution.' });
+          }
+
+          const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
+          if (!revalidation.ok) {
+            await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
+            console.error(
+              `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
+            );
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'Authorization for this action could no longer be verified; it was not executed.',
+            });
+          }
+
+          // Won the release: track the intent id so createSessionPostToolUse can
+          // CAS it executing -> completed|failed once the inline tool call
+          // actually finishes (see pendingIntentBySession above).
+          pendingIntentBySession.set(session, intent.id);
+          createdIntentId = intent.id;
+
+          // The step is now genuinely authorized: the intent was approved, we
+          // won the executing CAS, and the requester's authorization was
+          // re-proved. Only now is it correct to record plan progress.
+          // Advancing any earlier would mark a step complete that may never
+          // run (see the plan block above).
+          if (matchedPlanStepIndex !== null && session.activePlanId) {
+            session.eventBus.publish({
+              type: 'plan_step_start',
+              planId: session.activePlanId,
+              stepIndex: matchedPlanStepIndex,
+              toolName,
+            });
+            session.currentPlanStepIndex = matchedPlanStepIndex + 1;
+          }
+
+          // Mark as executing
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db
+                  .update(aiToolExecutions)
+                  .set({ status: 'executing' })
+                  .where(eq(aiToolExecutions.id, approvalExec!.id))
+            );
+          } catch (err) {
+            console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
+          }
         } catch (err) {
           console.error('[AI-SDK] Unexpected error in tier-3 durable-intent flow:', toolName, err);
           return await failMatchedPlanStep({
