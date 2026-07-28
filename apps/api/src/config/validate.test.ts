@@ -1001,6 +1001,85 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- Security remediation Wave 5, Task 8 (TRANSPORT-001) — canonical
+  // PUBLIC_API_URL form, required only when FORCE_HTTPS=true --------------
+  describe('PUBLIC_API_URL canonical form (gated on FORCE_HTTPS)', () => {
+    it('is not required when FORCE_HTTPS is unset — does not retroactively boot-refuse existing deployments', () => {
+      withEnv(validEnv, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('is not required when FORCE_HTTPS is explicitly false', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'false' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('boot-refuses when FORCE_HTTPS=true and PUBLIC_API_URL is missing', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses when FORCE_HTTPS=1 and PUBLIC_API_URL is missing (accepts the "1" truthy form too)', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: '1' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses a non-https PUBLIC_API_URL when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'http://api.example.com' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses a PUBLIC_API_URL with embedded userinfo when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'https://user:pass@api.example.com' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses a PUBLIC_API_URL with a query string when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'https://api.example.com?x=1' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses a PUBLIC_API_URL with a fragment when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'https://api.example.com#section' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('boot-refuses a malformed PUBLIC_API_URL when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).toThrow('PUBLIC_API_URL');
+      });
+    });
+
+    it('accepts a canonical https PUBLIC_API_URL when FORCE_HTTPS=true', () => {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+        FORCE_HTTPS: 'true',
+        PUBLIC_API_URL: 'https://api.breeze.example.com',
+      }, () => {
+        const config = validateConfig();
+        expect(config.PUBLIC_API_URL).toBe('https://api.breeze.example.com');
+      });
+    });
+
+    it('accepts a canonical https PUBLIC_API_URL with a non-default port when FORCE_HTTPS=true', () => {
+      withEnv({ ...validEnv, FORCE_HTTPS: 'true', PUBLIC_API_URL: 'https://api.example.com:8443' }, () => {
+        const config = validateConfig();
+        expect(config.PUBLIC_API_URL).toBe('https://api.example.com:8443');
+      });
+    });
+  });
+
   // ---- OAuth DCR (Dynamic Client Registration) hardening (Task 21) -------
   // When DCR is on in production it must declare an anti-spam posture: EITHER
   // gate registration behind an initial-access-token (OAUTH_DCR_REQUIRE_IAT)

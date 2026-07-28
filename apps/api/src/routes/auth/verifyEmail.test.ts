@@ -69,6 +69,10 @@ vi.mock('../../services/sentry', () => ({
 
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
+  // requestTransport.ts's effectiveRequestScheme (used by isRequestConnectionSecure
+  // when setting auth cookies) checks this unconditionally, unlike the pre-TRANSPORT-001
+  // code which only called it when an X-Forwarded-Proto header was present.
+  trustsForwardedHeadersFrom: vi.fn(() => false),
 }));
 
 vi.mock('../../config/env', () => ({

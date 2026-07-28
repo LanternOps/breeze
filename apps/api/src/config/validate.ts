@@ -477,6 +477,15 @@ const envSchema = z
     // -- Production-required -------------------------------------------------
     CORS_ALLOWED_ORIGINS: z.string().optional(),
     FORCE_HTTPS: z.string().optional(),
+    // Security remediation Wave 5, Task 8 (TRANSPORT-001): PUBLIC_API_URL is
+    // the ONLY source for the canonical HTTPS redirect Location
+    // (services/requestTransport.ts) — inbound Host is never trusted or
+    // reflected. Shape is only checked when FORCE_HTTPS=true (see the
+    // superRefine block below); PUBLIC_API_URL is used unvalidated in many
+    // other places (installer links, agent enrollment, etc.) when
+    // FORCE_HTTPS is off, so this must not retroactively boot-refuse existing
+    // deployments that don't force HTTPS.
+    PUBLIC_API_URL: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
@@ -822,6 +831,78 @@ const envSchema = z
             'ANTHROPIC_BASE_URL must be a well-formed http(s) URL (e.g. http://localhost:8000 or '
             + 'https://litellm.internal/v1).',
         });
+      }
+    }
+
+    // PUBLIC_API_URL canonical form (Wave 5, Task 8 — TRANSPORT-001): the
+    // force-HTTPS redirect (services/requestTransport.ts) builds its
+    // Location ONLY from PUBLIC_API_URL, never from inbound Host. That
+    // guarantee is only as good as PUBLIC_API_URL itself, so when
+    // FORCE_HTTPS=true it must be unambiguous: https, no embedded
+    // credentials (userinfo would either leak into every redirect or get
+    // silently dropped depending on the client), and no query/fragment
+    // (those would duplicate or get clobbered on every redirect since only
+    // the request's OWN path/query are carried over). Gated purely on
+    // FORCE_HTTPS=true, not NODE_ENV/isProduction — PUBLIC_API_URL is used
+    // unvalidated in many other places when FORCE_HTTPS is off, so this must
+    // never retroactively boot-refuse an existing deployment that doesn't
+    // force HTTPS.
+    {
+      const forceHttpsNormalized = (data.FORCE_HTTPS ?? '').trim().toLowerCase();
+      const isForceHttpsEnabled = forceHttpsNormalized === 'true' || forceHttpsNormalized === '1';
+      if (isForceHttpsEnabled) {
+        const publicApiUrlRaw = data.PUBLIC_API_URL?.trim();
+        if (!publicApiUrlRaw) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['PUBLIC_API_URL'],
+            message:
+              'PUBLIC_API_URL is required when FORCE_HTTPS=true — the canonical HTTPS redirect Location is built from it alone.',
+          });
+        } else {
+          let parsedPublicApiUrl: URL | null = null;
+          try {
+            parsedPublicApiUrl = new URL(publicApiUrlRaw);
+          } catch {
+            parsedPublicApiUrl = null;
+          }
+          if (!parsedPublicApiUrl) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['PUBLIC_API_URL'],
+              message: 'PUBLIC_API_URL must be a well-formed URL when FORCE_HTTPS=true.',
+            });
+          } else {
+            if (parsedPublicApiUrl.protocol !== 'https:') {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must use https:// when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.username || parsedPublicApiUrl.password) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a username or password when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.search) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a query string when FORCE_HTTPS=true.',
+              });
+            }
+            if (parsedPublicApiUrl.hash) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['PUBLIC_API_URL'],
+                message: 'PUBLIC_API_URL must not contain a fragment when FORCE_HTTPS=true.',
+              });
+            }
+          }
+        }
       }
     }
 
@@ -1530,6 +1611,7 @@ export function validateConfig(): AppConfig {
     PARTNER_API_CURSOR_SIGNING_KEY: env.PARTNER_API_CURSOR_SIGNING_KEY,
     CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
     FORCE_HTTPS: env.FORCE_HTTPS,
+    PUBLIC_API_URL: env.PUBLIC_API_URL,
     TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
     TRUSTED_PROXY_CIDRS: env.TRUSTED_PROXY_CIDRS,
     AGENT_ENROLLMENT_SECRET: env.AGENT_ENROLLMENT_SECRET,

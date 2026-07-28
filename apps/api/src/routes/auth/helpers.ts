@@ -13,6 +13,7 @@ import {
   getUserEpochs
 } from '../../services';
 import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../../services/clientIp';
+import { effectiveRequestScheme } from '../../services/requestTransport';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
@@ -499,19 +500,26 @@ export function isSecureCookieEnvironment(): boolean {
  * NOT reflect the browser's transport. So an `http` URL with no trusted
  * `X-Forwarded-Proto` is ambiguous — we fall back to `NODE_ENV` rather than
  * downgrading a genuinely HTTPS deployment whose proxy strips the header.
+ *
+ * Security remediation Wave 5, Task 8 (TRANSPORT-001): the trusted-proxy gate
+ * and scheme resolution below are delegated to `effectiveRequestScheme`
+ * (`services/requestTransport.ts`) — the same authority `middleware/security.ts`
+ * uses for the force-HTTPS redirect, so the two surfaces can never disagree
+ * about what counts as a trusted forwarded signal. The presence check on the
+ * raw header here is NOT re-deriving that trust decision; it only decides
+ * whether this call has a CONFIDENT signal (trusted proxy sent a proto,
+ * whatever it says) versus an ambiguous one that still needs the NODE_ENV
+ * fallback + breadcrumb below.
  */
 export function isRequestConnectionSecure(c: Context): boolean {
   const forwardedProto = c.req.header('x-forwarded-proto');
-  if (forwardedProto && trustsForwardedHeadersFrom(c)) {
-    // A proxy chain may append hops ("https, http"); the first is client-facing.
-    return forwardedProto.split(',')[0]?.trim().toLowerCase() === 'https';
+  const hasTrustedForwardedSignal = Boolean(forwardedProto) && trustsForwardedHeadersFrom(c);
+  const scheme = effectiveRequestScheme(c);
+  if (hasTrustedForwardedSignal) {
+    return scheme === 'https';
   }
-  try {
-    if (new URL(c.req.url).protocol === 'https:') {
-      return true;
-    }
-  } catch {
-    // Malformed URL — no positive signal; same ambiguous fall-through below.
+  if (scheme === 'https') {
+    return true;
   }
   warnAmbiguousCookieTransport(c, forwardedProto);
   return isSecureCookieEnvironment();
