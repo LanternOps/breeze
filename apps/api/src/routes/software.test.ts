@@ -83,10 +83,12 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
-  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id' },
-  deploymentResults: { deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status', retryCount: 'retry_count' },
+  softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id', createdAt: 'created_at', dispatchedAt: 'dispatched_at' },
+  deploymentResults: { id: 'dr_id', deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status', startedAt: 'started_at', completedAt: 'completed_at', exitCode: 'exit_code', output: 'output', errorMessage: 'error_message', retryCount: 'retry_count', deviceCommandId: 'device_command_id' },
   softwareInventory: { deviceId: 'device_id', name: 'name' },
   devices: { id: 'id', orgId: 'org_id', agentId: 'agent_id', siteId: 'site_id', hostname: 'hostname', customFields: 'custom_fields' },
+  // Distinct literals so cancel-purge assertions are unambiguous vs the other tables.
+  deviceCommands: { id: 'dc_id', deviceId: 'dc_device_id', status: 'dc_status', completedAt: 'dc_completed_at', result: 'dc_result' },
   organizations: { id: 'id', name: 'name' },
   sites: { id: 'id', orgId: 'org_id', name: 'name' },
 }));
@@ -1127,6 +1129,468 @@ describe('software routes', () => {
       const res = await retry({ deviceIds: ['not-a-uuid'] });
       expect(res.status).toBe(400);
       expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // PR 2 — API polish (list pagination/counts, summary, results enrichment,
+  // honest cancel, legacy-route delegation)
+  // -------------------------------------------------------------------------
+
+  // Thenable that resolves to `rows` regardless of Drizzle chain shape.
+  const selectResult = (rows: any): any => {
+    const p: any = new Proxy(() => p, {
+      get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+    });
+    return p;
+  };
+
+  // Like selectResult, but records every chained method call so tests can
+  // assert SQL-side pagination (`.limit(n)`, `.offset(n)`).
+  const selectCapture = (rows: any) => {
+    const calls: Record<string, any[][]> = {};
+    const p: any = new Proxy(() => p, {
+      get: (_t, prop) => {
+        if (prop === 'then') return (resolve: any) => resolve(rows);
+        return (...args: any[]) => {
+          (calls[String(prop)] ??= []).push(args);
+          return p;
+        };
+      },
+    });
+    return { chain: p, calls };
+  };
+
+  // Introspectable update chain so tests can assert the .set() payload.
+  const updateChain = (rows: any) => {
+    const returning = vi.fn().mockResolvedValue(rows);
+    const where = vi.fn(() => ({ returning }));
+    const set = vi.fn(() => ({ where }));
+    return { set, where, returning };
+  };
+
+  describe('GET /software/deployments (list)', () => {
+    const DEP_ID = '99999999-9999-4999-8999-999999999999';
+
+    it('paginates in SQL and enriches each row with aggregate status and per-status counts', async () => {
+      const deploymentRow = { id: DEP_ID, orgId: 'org-123', name: 'List Deploy' };
+      const page = selectCapture([deploymentRow]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(page.chain)                       // page of deployments
+        .mockReturnValueOnce(selectResult([{ count: 42 }]))    // total count
+        .mockReturnValueOnce(selectResult([                    // grouped status rows
+          { deploymentId: DEP_ID, status: 'pending', count: 2 },
+          { deploymentId: DEP_ID, status: 'downloading', count: 1 },
+          { deploymentId: DEP_ID, status: 'completed', count: 1 },
+          { deploymentId: DEP_ID, status: 'failed', count: 1 },
+        ]));
+
+      const res = await app.request('/software/deployments?page=2&limit=10', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // total comes from the SQL count, not the page length
+      expect(body.pagination).toEqual({ page: 2, limit: 10, total: 42 });
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].status).toBe('in_progress');
+      expect(body.data[0].counts).toEqual({
+        pending: 2,
+        inProgress: 1,
+        completed: 1,
+        failed: 1,
+        cancelled: 0,
+        total: 5,
+      });
+      // Pagination pushed into SQL — no full-org fetch + JS slice.
+      expect(page.calls.limit).toEqual([[10]]);
+      expect(page.calls.offset).toEqual([[10]]);
+      // 3 queries total for the page: items, count, grouped statuses (no N+1).
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns zeroed counts for a deployment with no result rows', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([{ id: DEP_ID, orgId: 'org-123', name: 'Empty' }]))
+        .mockReturnValueOnce(selectResult([{ count: 1 }]))
+        .mockReturnValueOnce(selectResult([]));
+
+      const res = await app.request('/software/deployments', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].status).toBe('pending');
+      expect(body.data[0].counts).toEqual({
+        pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, total: 0,
+      });
+    });
+  });
+
+  describe('GET /software/deployments/summary', () => {
+    it('is served by the summary route, not captured as :id (which would 400 on uuid validation)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectResult([]));
+
+      const res = await app.request('/software/deployments/summary', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      // The :id route would reject 'summary' as a non-UUID param with 400 (or
+      // 404 on the deployment lookup). 200 with the summary shape proves the
+      // static route won.
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: { active: 0, scheduled: 0, completedLast7d: 0, failedLast7d: 0 },
+      });
+    });
+
+    it('buckets deployments into active / scheduled / completedLast7d / failedLast7d', async () => {
+      const now = Date.now();
+      const recent = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
+      const old = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      vi.mocked(db.select).mockReturnValueOnce(selectResult([
+        // active: dispatched, still has pending rows
+        { deploymentId: 'dep-active', dispatchedAt: recent, createdAt: recent, status: 'pending', count: 2, lastCompletedAt: null },
+        // scheduled: not dispatched yet
+        { deploymentId: 'dep-sched', dispatchedAt: null, createdAt: recent, status: 'pending', count: 1, lastCompletedAt: null },
+        // scheduled: no result rows at all (LEFT JOIN null status)
+        { deploymentId: 'dep-empty', dispatchedAt: null, createdAt: recent, status: null, count: 0, lastCompletedAt: null },
+        // cancelled before dispatch: terminal, must NOT count as scheduled forever
+        { deploymentId: 'dep-cancelled', dispatchedAt: null, createdAt: recent, status: 'cancelled', count: 2, lastCompletedAt: recent },
+        // completed within the last 7 days
+        { deploymentId: 'dep-done', dispatchedAt: old, createdAt: old, status: 'completed', count: 3, lastCompletedAt: recent },
+        // failed within the last 7 days
+        { deploymentId: 'dep-fail', dispatchedAt: old, createdAt: old, status: 'failed', count: 1, lastCompletedAt: recent },
+        // completed outside the 7-day window: excluded
+        { deploymentId: 'dep-old', dispatchedAt: old, createdAt: old, status: 'completed', count: 1, lastCompletedAt: old },
+      ]));
+
+      const res = await app.request('/software/deployments/summary', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: { active: 1, scheduled: 2, completedLast7d: 1, failedLast7d: 1 },
+      });
+      // One grouped query — no per-deployment fan-out.
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies an org-scoped token requesting a different orgId', async () => {
+      const res = await app.request('/software/deployments/summary?orgId=44444444-4444-4444-8444-444444444444', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /software/deployments/:id', () => {
+    const DEP_ID = '99999999-9999-4999-8999-999999999999';
+
+    it('carries aggregate status and per-status counts', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([{ id: DEP_ID, orgId: 'org-123', name: 'One Deploy' }]))
+        .mockReturnValueOnce(selectResult([
+          { deploymentId: DEP_ID, status: 'completed', count: 2 },
+          { deploymentId: DEP_ID, status: 'failed', count: 1 },
+        ]));
+
+      const res = await app.request(`/software/deployments/${DEP_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.status).toBe('completed_with_errors');
+      expect(body.data.counts).toEqual({
+        pending: 0, inProgress: 0, completed: 2, failed: 1, cancelled: 0, total: 3,
+      });
+    });
+  });
+
+  describe('GET /software/deployments/:id/results', () => {
+    const DEP_ID = '99999999-9999-4999-8999-999999999999';
+    const DEVICE_A = '22222222-2222-4222-8222-222222222222';
+
+    const deploymentRow = { id: DEP_ID, orgId: 'org-123', name: 'Results Deploy' };
+
+    it('returns hostname-joined rows with queuedOffline and a total, paginated in SQL', async () => {
+      const resultRow = {
+        id: 'res-1',
+        deploymentId: DEP_ID,
+        deviceId: DEVICE_A,
+        status: 'pending',
+        startedAt: null,
+        completedAt: null,
+        exitCode: null,
+        output: null,
+        errorMessage: null,
+        retryCount: 0,
+        deviceCommandId: 'cmd-1',
+        hostname: 'WS-01',
+        queuedOffline: true,
+      };
+      const page = selectCapture([resultRow]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))   // deployment lookup
+        .mockReturnValueOnce(page.chain)                      // joined page query
+        .mockReturnValueOnce(selectResult([{ count: 7 }]));   // filtered total
+
+      const res = await app.request(
+        `/software/deployments/${DEP_ID}/results?limit=1000&offset=5`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(7);
+      expect(body.data).toEqual([resultRow]);
+      // hostname join + derived flag are part of the row shape
+      expect(body.data[0].hostname).toBe('WS-01');
+      expect(body.data[0].queuedOffline).toBe(true);
+      // limit capped at 500; offset passed through — all in SQL
+      expect(page.calls.limit).toEqual([[500]]);
+      expect(page.calls.offset).toEqual([[5]]);
+      // one joined page query + one count — never a per-row device fetch
+      expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    it('applies the ?status= filter to the results WHERE clause', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([]))
+        .mockReturnValueOnce(selectResult([{ count: 0 }]));
+
+      const res = await app.request(
+        `/software/deployments/${DEP_ID}/results?status=failed`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: [], total: 0 });
+      // deploymentResults.status mocks to the literal 'status'
+      expect(eq).toHaveBeenCalledWith('status', 'failed');
+    });
+
+    it('rejects an unknown status filter with 400', async () => {
+      const res = await app.request(
+        `/software/deployments/${DEP_ID}/results?status=exploded`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a deployment outside the caller org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectResult([]));
+
+      const res = await app.request(`/software/deployments/${DEP_ID}/results`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Deployment not found' });
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('POST /software/deployments/:id/cancel', () => {
+    const DEP_ID = '99999999-9999-4999-8999-999999999999';
+    const deploymentRow = { id: DEP_ID, orgId: 'org-123', name: 'Cancel Deploy' };
+
+    const cancel = () =>
+      app.request(`/software/deployments/${DEP_ID}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({}),
+      });
+
+    it('purges still-queued commands, leaves delivered ones alone, and reports the count', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))   // deployment lookup
+        .mockReturnValueOnce(selectResult([                   // post-cancel status map
+          { deploymentId: DEP_ID, status: 'cancelled', count: 3 },
+        ]));
+      // Flip returns three cancelled results: two queued-offline links, one
+      // WS-dispatched row without a linked command.
+      const flip = updateChain([
+        { deviceCommandId: 'cmd-1' },
+        { deviceCommandId: 'cmd-2' },
+        { deviceCommandId: null },
+      ]);
+      // The guarded purge only matches cmd-1 — cmd-2 was already claimed
+      // ('sent'), so the status='pending' guard skips it.
+      const purge = updateChain([{ id: 'cmd-1' }]);
+      vi.mocked(db.update)
+        .mockReturnValueOnce({ set: flip.set } as any)
+        .mockReturnValueOnce({ set: purge.set } as any);
+
+      const res = await cancel();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.cancelledQueuedCommands).toBe(1);
+      expect(body.data.status).toBe('cancelled');
+      expect(body.data.counts).toEqual({
+        pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 3, total: 3,
+      });
+
+      // Purge targets exactly the linked command ids, guarded on still-pending
+      // (deviceCommands mocks to dc_* literals).
+      expect(inArray).toHaveBeenCalledWith('dc_id', ['cmd-1', 'cmd-2']);
+      expect(eq).toHaveBeenCalledWith('dc_status', 'pending');
+      // Same result payload shape as the stale reaper's tier-2 cancel.
+      expect(purge.set).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        result: expect.objectContaining({
+          status: 'cancelled',
+          cancelledBy: 'user-123',
+        }),
+      }));
+
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'software.deployment.cancel',
+        details: expect.objectContaining({
+          cancelledResultCount: 3,
+          cancelledQueuedCommands: 1,
+        }),
+      }));
+    });
+
+    it('skips the command purge entirely when no flipped row was queued', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([
+          { deploymentId: DEP_ID, status: 'cancelled', count: 1 },
+        ]));
+      const flip = updateChain([{ deviceCommandId: null }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await cancel();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.cancelledQueuedCommands).toBe(0);
+      // Only the results flip ran — no device_commands UPDATE was issued.
+      expect(db.update).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('POST /software/deploy delegation', () => {
+    const SOFTWARE_ID = '11111111-1111-4111-8111-111111111111';
+    const VERSION_ID = '55555555-5555-4555-8555-555555555555';
+    const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+
+    const catalogRow = { id: SOFTWARE_ID, orgId: 'org-123', name: 'TestApp', integrationProvider: null };
+    const versionRow = { id: VERSION_ID, catalogId: SOFTWARE_ID, version: '1.2.3' };
+
+    const deploy = () =>
+      app.request('/software/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          softwareId: SOFTWARE_ID,
+          version: '1.2.3',
+          targets: { deviceIds: [DEVICE_ID] },
+        }),
+      });
+
+    it('delegates to createSoftwareDeployment with equivalent args and preserves the legacy response shape', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))   // catalog lookup
+        .mockReturnValueOnce(selectResult([versionRow]));  // version-by-name lookup
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      const deploymentRow = {
+        id: 'dep-legacy',
+        orgId: 'org-123',
+        name: 'Deploy TestApp v1.2.3',
+        scheduleType: 'immediate',
+      };
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: 'dep-legacy',
+        deployment: deploymentRow,
+        status: 'pending',
+        dispatchedDeviceIds: [DEVICE_ID],
+      });
+
+      const res = await deploy();
+
+      expect(res.status).toBe(201);
+      // Legacy shape: full row under `data` plus a top-level `id`.
+      expect(await res.json()).toEqual({ data: deploymentRow, id: 'dep-legacy' });
+
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(createDeploymentMock).toHaveBeenCalledWith({
+        orgId: 'org-123',
+        softwareVersionId: VERSION_ID,
+        deploymentType: 'install',
+        deviceIds: [DEVICE_ID],
+        scheduleType: 'immediate',
+        createdBy: 'user-123',
+        name: 'Deploy TestApp v1.2.3',
+        targetType: 'devices',
+        targetIds: [DEVICE_ID],
+      });
+
+      // The route no longer re-implements insert/results/dispatch inline.
+      expect(db.insert).not.toHaveBeenCalled();
+
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'software.deployment.create',
+        resourceId: 'dep-legacy',
+        details: expect.objectContaining({ version: '1.2.3', deviceCount: 1, deprecated: true }),
+      }));
+    });
+
+    it('preserves the legacy 200 failed-status body when the service reports failure', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([versionRow]));
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: 'dep-failed',
+        deployment: { id: 'dep-failed' },
+        status: 'failed',
+        message: 'No installer available for this version',
+        dispatchedDeviceIds: [],
+      });
+
+      const res = await deploy();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: { id: 'dep-failed', status: 'failed', message: 'No installer available for this version' },
+      });
+      // Failure path never audits (matches the pre-dedupe behavior).
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('still 404s when the catalog item belongs to another org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ ...catalogRow, orgId: 'other-org' }]),
+      );
+
+      const res = await deploy();
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Catalog item not found' });
+      expect(createDeploymentMock).not.toHaveBeenCalled();
     });
   });
 

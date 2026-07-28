@@ -10,20 +10,18 @@ import {
   deploymentResults,
   softwareInventory,
   devices,
+  deviceCommands,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
-import { resolveEdrInstaller, type ResolvedInstaller } from '../services/edrInstallerResolver';
 import {
   uploadBinary,
   getPresignedUrl,
   isS3Configured,
-  isS3NotFound,
   S3ConfigError,
   S3OperationError,
 } from '../services/s3Storage';
-import { sendCommandToAgent, type AgentCommand } from './agentWs';
 import {
   parseStreamingMultipart,
   MultipartError,
@@ -124,6 +122,14 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
+// limit/offset pagination (the per-device results endpoint) — defaults to 100
+// rows, hard-capped at 500 so a huge deployment can't be pulled in one request.
+function getLimitOffset(query: { limit?: string; offset?: string }) {
+  const limit = Math.min(500, Math.max(1, Number.parseInt(query.limit ?? '100', 10) || 100));
+  const offset = Math.max(0, Number.parseInt(query.offset ?? '0', 10) || 0);
+  return { limit, offset };
+}
+
 const ALLOWED_EXTENSIONS = new Set(['.msi', '.exe', '.dmg', '.deb', '.pkg']);
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
 type SoftwareDeploymentAggregateStatus =
@@ -194,9 +200,61 @@ export function computeSoftwareDeploymentAggregateStatus(
   return 'in_progress';
 }
 
+/**
+ * Per-status result counts for one deployment, folded into the five buckets
+ * the UI progress bars care about (raw agent-side statuses like 'downloading'
+ * and 'installing' land in `inProgress`). `total` is the device count.
+ */
+export interface SoftwareDeploymentStatusCounts {
+  pending: number;
+  inProgress: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  total: number;
+}
+
+function emptyStatusCounts(): SoftwareDeploymentStatusCounts {
+  return { pending: 0, inProgress: 0, completed: 0, failed: 0, cancelled: 0, total: 0 };
+}
+
+function summarizeStatusCounts(
+  groups: Array<{ status: string; count: number }>,
+): SoftwareDeploymentStatusCounts {
+  const counts = emptyStatusCounts();
+  for (const { status, count } of groups) {
+    const n = Number(count);
+    counts.total += n;
+    switch (status) {
+      case 'pending':
+      case 'draft':
+        counts.pending += n;
+        break;
+      case 'completed':
+        counts.completed += n;
+        break;
+      case 'failed':
+        counts.failed += n;
+        break;
+      case 'cancelled':
+        counts.cancelled += n;
+        break;
+      default:
+        // running / paused / downloading / installing / rollback
+        counts.inProgress += n;
+    }
+  }
+  return counts;
+}
+
+interface DeploymentStatusEntry {
+  status: SoftwareDeploymentAggregateStatus;
+  counts: SoftwareDeploymentStatusCounts;
+}
+
 async function getDeploymentStatusMap(deploymentIds: string[]) {
   if (deploymentIds.length === 0) {
-    return new Map<string, SoftwareDeploymentAggregateStatus>();
+    return new Map<string, DeploymentStatusEntry>();
   }
 
   const rows = await db
@@ -216,12 +274,13 @@ async function getDeploymentStatusMap(deploymentIds: string[]) {
     grouped.set(row.deploymentId, bucket);
   }
 
-  const statusMap = new Map<string, SoftwareDeploymentAggregateStatus>();
+  const statusMap = new Map<string, DeploymentStatusEntry>();
   for (const deploymentId of deploymentIds) {
-    statusMap.set(
-      deploymentId,
-      computeSoftwareDeploymentAggregateStatus(grouped.get(deploymentId) ?? []),
-    );
+    const groups = grouped.get(deploymentId) ?? [];
+    statusMap.set(deploymentId, {
+      status: computeSoftwareDeploymentAggregateStatus(groups),
+      counts: summarizeStatusCounts(groups),
+    });
   }
 
   return statusMap;
@@ -381,6 +440,26 @@ const listDeploymentsSchema = z.object({
 });
 
 const deploymentIdParamSchema = z.object({ id: z.string().guid() });
+
+// Known deployment_results statuses (deploymentStatusEnum minus 'draft', which
+// results never take — they default to 'pending' at insert).
+const DEPLOYMENT_RESULT_STATUSES = [
+  'pending',
+  'running',
+  'paused',
+  'downloading',
+  'installing',
+  'completed',
+  'failed',
+  'cancelled',
+  'rollback',
+] as const;
+
+const listDeploymentResultsSchema = z.object({
+  status: z.enum(DEPLOYMENT_RESULT_STATUSES).optional(),
+  limit: z.string().optional(),
+  offset: z.string().optional(),
+});
 
 const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
@@ -1111,24 +1190,143 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
-    const items = await db.select().from(softwareDeployments)
-      .where(eq(softwareDeployments.orgId, orgId))
-      .orderBy(desc(softwareDeployments.createdAt));
+
+    // NOTE on ?status=: the deployment status is a *computed aggregate* over
+    // grouped deployment_results (computeSoftwareDeploymentAggregateStatus),
+    // so filtering on it in SQL would mean re-expressing that derivation as a
+    // correlated subquery. Server-side aggregate filtering is intentionally
+    // not implemented; the param stays accepted for backwards compatibility
+    // but is ignored — clients filter the returned page on the computed
+    // `status` field instead. (Previously the route fetched every org row,
+    // filtered in JS and sliced — SQL pagination replaces that.)
+    const orgCondition = eq(softwareDeployments.orgId, orgId);
+    const [items, countRows] = await Promise.all([
+      db.select().from(softwareDeployments)
+        .where(orgCondition)
+        .orderBy(desc(softwareDeployments.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(softwareDeployments)
+        .where(orgCondition),
+    ]);
 
     const statusMap = await getDeploymentStatusMap(items.map((item) => item.id));
-    const enrichedItems = items.map((item) => ({
-      ...item,
-      status: statusMap.get(item.id) ?? 'pending',
-    }));
-    const filteredItems = query.status
-      ? enrichedItems.filter((item) => item.status === query.status)
-      : enrichedItems;
-    const paginatedItems = filteredItems.slice(offset, offset + limit);
+    const enrichedItems = items.map((item) => {
+      const entry = statusMap.get(item.id);
+      return {
+        ...item,
+        status: entry?.status ?? 'pending',
+        counts: entry?.counts ?? emptyStatusCounts(),
+      };
+    });
 
     return c.json({
-      data: paginatedItems,
-      pagination: { page, limit, total: filteredItems.length }
+      data: enrichedItems,
+      pagination: { page, limit, total: Number(countRows[0]?.count ?? 0) }
     });
+  }
+);
+
+// GET /deployments/summary - Aggregate counts for the overview cards.
+// MUST be registered before GET /deployments/:id: Hono matches routes in
+// registration order, so registering it later would let the :id route capture
+// 'summary' as a path param (and 400 on the uuid validation).
+softwareRoutes.get(
+  '/deployments/summary',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareRead,
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    // One grouped query: deployments LEFT JOIN results, grouped by
+    // (deployment, result status). A deployment with no result rows still
+    // appears (status NULL, count 0). The aggregate status per deployment is
+    // then derived in JS with the same computeSoftwareDeploymentAggregateStatus
+    // used everywhere else — no N+1, no per-deployment queries.
+    const rows = await db
+      .select({
+        deploymentId: softwareDeployments.id,
+        dispatchedAt: softwareDeployments.dispatchedAt,
+        createdAt: softwareDeployments.createdAt,
+        status: deploymentResults.status,
+        count: sql<number>`count(${deploymentResults.id})::int`,
+        lastCompletedAt: sql<string | Date | null>`max(${deploymentResults.completedAt})`,
+      })
+      .from(softwareDeployments)
+      .leftJoin(deploymentResults, eq(deploymentResults.deploymentId, softwareDeployments.id))
+      .where(eq(softwareDeployments.orgId, orgId))
+      .groupBy(
+        softwareDeployments.id,
+        softwareDeployments.dispatchedAt,
+        softwareDeployments.createdAt,
+        deploymentResults.status,
+      );
+
+    type SummaryAccumulator = {
+      dispatchedAt: unknown;
+      createdAt: unknown;
+      groups: Array<{ status: string; count: number }>;
+      /** epoch ms of max(deployment_results.completed_at); 0 = none */
+      lastCompletedAt: number;
+    };
+    const byDeployment = new Map<string, SummaryAccumulator>();
+    for (const row of rows) {
+      let entry = byDeployment.get(row.deploymentId);
+      if (!entry) {
+        entry = { dispatchedAt: row.dispatchedAt, createdAt: row.createdAt, groups: [], lastCompletedAt: 0 };
+        byDeployment.set(row.deploymentId, entry);
+      }
+      if (row.status != null) {
+        entry.groups.push({ status: row.status, count: Number(row.count) });
+      }
+      if (row.lastCompletedAt) {
+        const t = new Date(row.lastCompletedAt as string | Date).getTime();
+        if (Number.isFinite(t) && t > entry.lastCompletedAt) entry.lastCompletedAt = t;
+      }
+    }
+
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let active = 0;
+    let scheduled = 0;
+    let completedLast7d = 0;
+    let failedLast7d = 0;
+    for (const entry of byDeployment.values()) {
+      const aggregate = computeSoftwareDeploymentAggregateStatus(entry.groups);
+      const terminal =
+        aggregate === 'completed' ||
+        aggregate === 'completed_with_errors' ||
+        aggregate === 'failed' ||
+        aggregate === 'cancelled';
+
+      if (!entry.dispatchedAt) {
+        // Awaiting the scheduler. A deployment cancelled before it ever
+        // dispatched is terminal and must not count as "scheduled" forever.
+        if (!terminal) scheduled++;
+        continue;
+      }
+      if (!terminal) {
+        // Dispatched with at least one pending/in-progress result.
+        active++;
+        continue;
+      }
+      // Terminal reference time: max(deployment_results.completed_at) is the
+      // moment the last device finished — the cheapest correct "when did this
+      // deployment end" already produced by the grouped query. Fallback to
+      // createdAt for degenerate rows that never got a completed_at.
+      const refTime = entry.lastCompletedAt
+        || new Date(entry.createdAt as string | Date).getTime();
+      if (refTime >= sevenDaysAgo) {
+        if (aggregate === 'completed') completedLast7d++;
+        else if (aggregate === 'failed' || aggregate === 'completed_with_errors') failedLast7d++;
+        // 'cancelled' deliberately counts in neither 7d bucket.
+      }
+    }
+
+    return c.json({ data: { active, scheduled, completedLast7d, failedLast7d } });
   }
 );
 
@@ -1261,7 +1459,6 @@ softwareRoutes.post(
     const softwareId = body.softwareId;
     const version = body.version;
     const deviceIds = body.targets?.deviceIds ?? [];
-    const scheduleType = body.configuration?.scheduleType ?? 'immediate';
 
     // Look up the catalog item + version. RLS restricts visibility to the caller's
     // org rows + their partner's built-ins; the org guard below rejects a (visible)
@@ -1306,125 +1503,44 @@ softwareRoutes.post(
       return c.json({ error: 'No devices resolved for the selected targets' }, 400);
     }
 
-    // Insert deployment
-    const [deployment] = await db.insert(softwareDeployments).values({
+    // Delegate to the canonical create path (services/softwareDeployment.ts):
+    // deployment + per-device result inserts, presign, EDR resolution,
+    // installer-variable substitution, detection rules, failure pre-writes and
+    // honest WS-vs-queue dispatch — this route previously re-implemented all
+    // of that inline and had drifted. The legacy route exposes no
+    // force-reinstall toggle (no options => forceReinstall false, matching the
+    // old hardcode) and only ever creates immediate installs — the superRefine
+    // above rejects every other scheduleType, so `scheduleType` is 'immediate'
+    // by the time we get here.
+    const result = await createSoftwareDeployment({
       orgId,
-      name: `Deploy ${catalogItem.name} v${version}`,
       softwareVersionId: versionRecord.id,
       deploymentType: 'install',
+      deviceIds: resolvedDeviceIds,
+      scheduleType: 'immediate',
+      createdBy: auth.user?.id ?? null,
+      name: `Deploy ${catalogItem.name} v${version}`,
       targetType: 'devices',
       targetIds: resolvedDeviceIds,
-      scheduleType,
-      createdBy: auth.user?.id ?? null,
-    }).returning();
+    });
 
-    // Insert per-device results
-    if (resolvedDeviceIds.length > 0) {
-      await db.insert(deploymentResults).values(
-        resolvedDeviceIds.map((deviceId: string) => ({
-          deploymentId: deployment!.id,
-          deviceId,
-          status: 'pending' as const,
-        }))
-      );
-
-      // Dispatch immediate installs
-      if (scheduleType === 'immediate') {
-        let downloadUrl: string | null = null;
-        if (versionRecord.s3Key && isS3Configured()) {
-          try {
-            downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
-          } catch (err) {
-            // Don't swallow: surface transport/auth faults even though we still
-            // fall back to the stored downloadUrl below (#1808).
-            console[isS3NotFound(err) ? 'warn' : 'error'](
-              `[software-deploy] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
-              err,
-            );
-          }
-        }
-        downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
-
-        // Built-in EDR packages: resolve per-org keys server-side before the dispatch
-        // gate. On failure, fail the results and return — never dispatch, never no-op.
-        let resolvedInstaller: ResolvedInstaller | null = null;
-        if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
-          const resolved = await resolveEdrInstaller({
-            provider: catalogItem.integrationProvider,
-            orgId,
-            downloadUrlTemplate: versionRecord.downloadUrl,
-            silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-          });
-          if ('error' in resolved) {
-            await db.update(deploymentResults)
-              .set({ status: 'failed', errorMessage: resolved.error, completedAt: new Date() })
-              .where(eq(deploymentResults.deploymentId, deployment!.id));
-            return c.json({ data: { id: deployment!.id, status: 'failed', message: resolved.error } }, 200);
-          }
-          resolvedInstaller = resolved;
-        }
-
-        const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
-        const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
-
-        if (!finalDownloadUrl) {
-          await db.update(deploymentResults)
-            .set({
-              status: 'failed',
-              errorMessage: 'No installer available for this version — upload an installer (or check storage configuration) before deploying.',
-              completedAt: new Date(),
-            })
-            .where(eq(deploymentResults.deploymentId, deployment!.id));
-          return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
-        }
-
-        const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
-          .from(devices)
-          .where(and(
-            eq(devices.orgId, orgId),
-            inArray(devices.id, resolvedDeviceIds),
-          ));
-
-        // Carry detection rules (#2022) so the agent can skip-if-present and
-        // verify real state. This legacy route exposes no force-reinstall toggle,
-        // so forceReinstall is always false here (the canonical /deployments path
-        // honors options.forceReinstall via the softwareDeployment service).
-        const detectionRules = Array.isArray(versionRecord.detectionRules)
-          ? versionRecord.detectionRules
-          : undefined;
-
-        for (const device of targetDevices) {
-          const command: AgentCommand = {
-            id: `sw-install-${deployment!.id}-${device.id}`,
-            type: 'software_install',
-            payload: {
-              deploymentId: deployment!.id,
-              downloadUrl: finalDownloadUrl,
-              checksum: versionRecord.checksum,
-              fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-              fileType: versionRecord.fileType ?? 'exe',
-              silentInstallArgs: finalSilentInstallArgs,
-              softwareName: catalogItem.name,
-              version: versionRecord.version,
-              ...(detectionRules ? { detectionRules } : {}),
-              forceReinstall: false,
-            },
-          };
-          sendCommandToAgent(device.agentId, command);
-        }
-      }
+    // Preserve the legacy failure contract: HTTP 200 with a failed status body
+    // (EDR resolution error / no installer available), no audit write.
+    if (result.status === 'failed') {
+      return c.json({ data: { id: result.deploymentId, status: 'failed', message: result.message } }, 200);
     }
 
     writeRouteAudit(c, {
       orgId,
       action: 'software.deployment.create',
       resourceType: 'software_deployment',
-      resourceId: deployment!.id,
+      resourceId: result.deploymentId,
       resourceName: catalogItem.name,
       details: { version, deviceCount: resolvedDeviceIds.length, deprecated: true },
     });
 
-    return c.json({ data: deployment, id: deployment!.id }, 201);
+    // Legacy response shape: full row under `data` plus a top-level `id`.
+    return c.json({ data: result.deployment, id: result.deploymentId }, 201);
   }
 );
 
@@ -1446,11 +1562,13 @@ softwareRoutes.get(
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     const statusMap = await getDeploymentStatusMap([deployment.id]);
+    const entry = statusMap.get(deployment.id);
 
     return c.json({
       data: {
         ...deployment,
-        status: statusMap.get(deployment.id) ?? 'pending',
+        status: entry?.status ?? 'pending',
+        counts: entry?.counts ?? emptyStatusCounts(),
       },
     });
   }
@@ -1475,13 +1593,50 @@ softwareRoutes.post(
       .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
-    // Update pending results to cancelled
-    await db.update(deploymentResults)
+    // Update pending results to cancelled. `.returning()` surfaces which rows
+    // carried a queued device_commands link (offline-queue fallback) so the
+    // not-yet-delivered commands can be purged below.
+    const flipped = await db.update(deploymentResults)
       .set({ status: 'cancelled', completedAt: new Date() })
       .where(and(
         eq(deploymentResults.deploymentId, id),
         eq(deploymentResults.status, 'pending')
-      ));
+      ))
+      .returning({ deviceCommandId: deploymentResults.deviceCommandId });
+
+    // Honest cancel: a queued-offline install must not execute when the agent
+    // eventually reconnects. Cancel the linked device_commands rows that are
+    // STILL 'pending' (not yet claimed by the agent) — mirrors the stale
+    // reaper's tier-2 guarded cancel, same result payload shape. Delivered
+    // ('sent') commands are left alone: in-flight installs run to completion
+    // by design, and their late results no-op against the already-cancelled
+    // result rows via the pending-status guard.
+    const queuedCommandIds = [
+      ...new Set(
+        flipped
+          .map((row) => row.deviceCommandId)
+          .filter((commandId): commandId is string => typeof commandId === 'string'),
+      ),
+    ];
+    let cancelledQueuedCommands = 0;
+    if (queuedCommandIds.length > 0) {
+      const cancelledCommands = await db.update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: new Date(),
+          result: {
+            status: 'cancelled',
+            error: 'Deployment cancelled before delivery',
+            cancelledBy: auth.user?.id ?? 'software-deployment-cancel',
+          },
+        })
+        .where(and(
+          inArray(deviceCommands.id, queuedCommandIds),
+          eq(deviceCommands.status, 'pending'),
+        ))
+        .returning({ id: deviceCommands.id });
+      cancelledQueuedCommands = cancelledCommands.length;
+    }
 
     writeRouteAudit(c, {
       orgId,
@@ -1489,11 +1644,23 @@ softwareRoutes.post(
       resourceType: 'software_deployment',
       resourceId: id,
       resourceName: deployment.name,
+      details: {
+        cancelledResultCount: flipped.length,
+        cancelledQueuedCommands,
+      },
     });
 
     const statusMap = await getDeploymentStatusMap([id]);
+    const entry = statusMap.get(id);
 
-    return c.json({ data: { ...deployment, status: statusMap.get(id) ?? 'cancelled' } });
+    return c.json({
+      data: {
+        ...deployment,
+        status: entry?.status ?? 'cancelled',
+        counts: entry?.counts ?? emptyStatusCounts(),
+      },
+      cancelledQueuedCommands,
+    });
   }
 );
 
@@ -1658,12 +1825,13 @@ softwareRoutes.post(
   }
 );
 
-// GET /deployments/:id/results - Get per-device results
+// GET /deployments/:id/results - Get per-device results (enriched)
 softwareRoutes.get(
   '/deployments/:id/results',
   requireScope('organization', 'partner', 'system'),
   requireSoftwareRead,
   zValidator('param', deploymentIdParamSchema),
+  zValidator('query', listDeploymentResultsSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -1671,14 +1839,55 @@ softwareRoutes.get(
     const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
+    const query = c.req.valid('query');
+    const { limit, offset } = getLimitOffset(query);
+
     const [deployment] = await db.select().from(softwareDeployments)
       .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
-    const results = await db.select().from(deploymentResults)
-      .where(eq(deploymentResults.deploymentId, id));
+    const conditions: SQL[] = [eq(deploymentResults.deploymentId, id)];
+    if (query.status) {
+      conditions.push(eq(deploymentResults.status, query.status));
+    }
+    const whereClause = and(...conditions);
 
-    return c.json({ data: results });
+    // Single joined page query: devices for hostname (the UI must not render
+    // UUIDs or N+1-fetch device names), device_commands for the derived
+    // queuedOffline flag — a result still 'pending' whose offline-queued
+    // command has not been claimed by the agent yet ("queued — device
+    // offline", not a misleading in-progress spinner). COALESCE folds the
+    // NULLs from the left joins (WS-dispatched rows have no linked command)
+    // to false.
+    const [results, countRows] = await Promise.all([
+      db.select({
+        id: deploymentResults.id,
+        deploymentId: deploymentResults.deploymentId,
+        deviceId: deploymentResults.deviceId,
+        status: deploymentResults.status,
+        startedAt: deploymentResults.startedAt,
+        completedAt: deploymentResults.completedAt,
+        exitCode: deploymentResults.exitCode,
+        output: deploymentResults.output,
+        errorMessage: deploymentResults.errorMessage,
+        retryCount: deploymentResults.retryCount,
+        deviceCommandId: deploymentResults.deviceCommandId,
+        hostname: devices.hostname,
+        queuedOffline: sql<boolean>`coalesce(${deploymentResults.status} = 'pending' and ${deploymentResults.deviceCommandId} is not null and ${deviceCommands.status} = 'pending', false)`,
+      })
+        .from(deploymentResults)
+        .leftJoin(devices, eq(deploymentResults.deviceId, devices.id))
+        .leftJoin(deviceCommands, eq(deploymentResults.deviceCommandId, deviceCommands.id))
+        .where(whereClause)
+        .orderBy(devices.hostname, deploymentResults.deviceId)
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(deploymentResults)
+        .where(whereClause),
+    ]);
+
+    return c.json({ data: results, total: Number(countRows[0]?.count ?? 0) });
   }
 );
 
