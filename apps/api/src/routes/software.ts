@@ -1763,16 +1763,38 @@ softwareRoutes.post(
       );
     }
 
+    // Site is an app-layer concept only — RLS doesn't defend it — so a
+    // site-restricted caller must not be able to re-trigger installs on
+    // devices in sites outside their allowlist (see PR #864/#868).
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    let siteAllowedDeviceIds: string[] | null = null;
+    if (permissions?.allowedSiteIds) {
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, orgId));
+      siteAllowedDeviceIds = orgDevices
+        .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+        .map((device) => device.id);
+      if (siteAllowedDeviceIds.length === 0) {
+        return c.json({ retriedDeviceIds: [], skippedDeviceIds: deviceIds ?? [] });
+      }
+    }
+
     // Flip targeted failed rows back to pending, bumping retryCount and
     // clearing prior-attempt fields. .returning() tells us which rows actually
     // flipped — requested devices that were not in failed status (or not part
-    // of this deployment) are reported as skipped.
+    // of this deployment), or outside the caller's site scope, are reported as
+    // skipped.
     const conditions = [
       eq(deploymentResults.deploymentId, id),
       eq(deploymentResults.status, 'failed'),
     ];
     if (deviceIds && deviceIds.length > 0) {
       conditions.push(inArray(deploymentResults.deviceId, deviceIds));
+    }
+    if (siteAllowedDeviceIds) {
+      conditions.push(inArray(deploymentResults.deviceId, siteAllowedDeviceIds));
     }
 
     const flipped = await db.update(deploymentResults)
@@ -1849,6 +1871,23 @@ softwareRoutes.get(
     const conditions: SQL[] = [eq(deploymentResults.deploymentId, id)];
     if (query.status) {
       conditions.push(eq(deploymentResults.status, query.status));
+    }
+    // Site is an app-layer concept only — RLS doesn't defend it — so a
+    // site-restricted caller must not see per-device results (hostname, exit
+    // code, output) for devices in sites outside their allowlist (#864/#868).
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (permissions?.allowedSiteIds) {
+      const orgDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.orgId, orgId));
+      const siteAllowedDeviceIds = orgDevices
+        .filter((device) => typeof device.siteId === 'string' && canAccessSite(permissions, device.siteId))
+        .map((device) => device.id);
+      if (siteAllowedDeviceIds.length === 0) {
+        return c.json({ data: [], total: 0 });
+      }
+      conditions.push(inArray(deploymentResults.deviceId, siteAllowedDeviceIds));
     }
     const whereClause = and(...conditions);
 

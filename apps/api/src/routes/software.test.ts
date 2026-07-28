@@ -1006,6 +1006,70 @@ describe('software routes', () => {
       }));
     });
 
+    it('narrows the retry to the caller\'s site-allowed devices; out-of-scope devices are skipped', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'organization',
+          orgId: 'org-123',
+          partnerId: null,
+        });
+        c.set('permissions', { allowedSiteIds: ['site-1'] });
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))  // deployment lookup
+        .mockReturnValueOnce(selectResult([                  // org devices for site narrowing
+          { id: DEVICE_A, siteId: 'site-1' },
+          { id: DEVICE_B, siteId: 'site-2' },
+        ]))
+        .mockReturnValueOnce(selectResult([versionRow]))     // version lookup
+        .mockReturnValueOnce(selectResult([catalogRow]));    // catalog lookup
+      const flip = updateChain([{ deviceId: DEVICE_A }]);    // only in-scope row flips
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+
+      const res = await retry({ deviceIds: [DEVICE_A, DEVICE_B] });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [DEVICE_B],
+      });
+    });
+
+    it('short-circuits with nothing retried when the caller has zero in-scope devices', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'organization',
+          orgId: 'org-123',
+          partnerId: null,
+        });
+        c.set('permissions', { allowedSiteIds: ['site-9'] });
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([{ id: DEVICE_A, siteId: 'site-1' }]));
+
+      const res = await retry({ deviceIds: [DEVICE_A] });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [],
+        skippedDeviceIds: [DEVICE_A],
+      });
+      // No rows flipped, nothing re-dispatched.
+      expect(db.update).not.toHaveBeenCalled();
+      expect(buildDispatchMock).not.toHaveBeenCalled();
+    });
+
     it('audits the retry as software.deployment.retry', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([deploymentRow]))
@@ -1405,6 +1469,36 @@ describe('software routes', () => {
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'Deployment not found' });
       expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('short-circuits to empty results for a caller with zero in-scope devices (site scope)', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'organization',
+          orgId: 'org-123',
+          partnerId: null,
+        });
+        c.set('permissions', { allowedSiteIds: ['site-9'] });
+        return next();
+      });
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))                       // deployment lookup
+        .mockReturnValueOnce(selectResult([{ id: DEVICE_A, siteId: 'site-1' }])); // org devices, all out of scope
+
+      const res = await app.request(`/software/deployments/${DEP_ID}/results`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: [], total: 0 });
+      // Never reached the joined page/count queries — per-device rows
+      // (hostname, exit code, output) stay invisible to out-of-scope callers.
+      expect(db.select).toHaveBeenCalledTimes(2);
     });
   });
 
