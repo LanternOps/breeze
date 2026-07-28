@@ -78,9 +78,10 @@ Breeze optionally integrates with **Cloudflare API Shield** to issue mTLS client
    Rule name: Require mTLS for the protected agent route set
    Expression:
    (
-     http.request.uri.path matches "^/api/v1/agents/[0-9a-fA-F-]{36}(?:/.*)?$"
+     http.request.uri.path matches "^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$"
      or http.request.uri.path eq "/api/v1/agents/renew-cert/confirm"
-     or http.request.uri.path matches "^/api/v1/agent-ws/[0-9a-fA-F-]{36}/ws$"
+     or http.request.uri.path matches "^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$"
+     or http.request.uri.path matches "^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$"
    )
    and http.request.uri.path not in {
      "/api/v1/agents/enroll"
@@ -90,6 +91,13 @@ Breeze optionally integrates with **Cloudflare API Shield** to issue mTLS client
    and not cf.tls_client_auth.cert_verified
    Action: Block
    ```
+
+   The identity segment is **64 hex characters**, not a UUID: the agent ID is
+   `randomBytes(32).toString('hex')`. A UUID-shaped `{36}` pattern matches no agent route at all
+   while wrongly matching the 36-character UUID **admin** routes (`/api/v1/agents/<deviceId>/approve`
+   and friends), which are browser/user-JWT routes with no client certificate. The fourth pattern
+   covers extensions that declare `agentRoutes: true`, which mount a second agent-token surface at
+   `/api/v1/ext/<extension>/agent/<agentId>` and `/api/v1/<routeNamespace>/agent/<agentId>`.
 
    The renewal **confirmation** route (`/renew-cert/confirm`) is deliberately protected, not
    exempted — it proves possession of the newly issued identity. Only the three bearer-only
@@ -111,13 +119,29 @@ Cloudflare's WAF rule above blocks unverified traffic at the edge, but the API s
 
 These are trusted only when the request arrives from a configured trusted proxy — the API never
 reads raw Cloudflare headers (`Cf-Client-Cert-*`) directly. The bundled `docker/Caddyfile.prod`
-normalizes this at the last hop before the API: it discards any inbound copy of the two Breeze
-headers a client could forge directly, discards Cloudflare's raw certificate material (including
-PEM/DER, which must never reach the API), and sets the two Breeze headers only from a verified
-Cloudflare result via a strict allowlist map. The serial is gated on that **same** verified
-condition — not just the verified flag — so an unverified or spoofed result can never carry a
-real-looking serial number downstream. Full detail: `docs/operations/cloudflare-mtls-setup.md`
-(including a spoofing-resistance test you can run against your own deployment).
+normalizes this at the last hop before the API in two distinct places, and the split is
+load-bearing:
+
+- **Globally, before any routing**, the site block deletes inbound
+  `X-Breeze-Client-Cert-Verified` and `X-Breeze-Client-Cert-Serial` with `request_header -...`.
+  This covers **every** route that reaches the API origin, not just the main `/api/*` one —
+  `/api/v1/mcp/sse`, `/api/v1/ai/sessions/*/stream`, `/api/v1/helper/chat/sessions/*/messages`,
+  `/oauth/*` and the OAuth `.well-known` endpoints each proxy to the same `api:3001` through their
+  own `handle` blocks, and a per-route strip would have to be remembered for each new one. Stripping
+  once, globally, makes the safe state the default for future routes as well.
+- **Per route, at the proxy hop**, Cloudflare's raw certificate material (`Cf-Client-Cert-*`,
+  including PEM/DER, which must never reach the API) is discarded, and — only in the `/api/*`
+  block — the two Breeze headers are set from a verified Cloudflare result via a strict allowlist
+  map. The serial is gated on that **same** verified condition, not just the verified flag, so an
+  unverified or spoofed result can never carry a real-looking serial number downstream.
+
+The set and the delete must never live in the same `reverse_proxy` block: Caddy compiles a
+`reverse_proxy`'s `header_up` lines into a single header operation and applies deletes **after**
+sets, regardless of the order they were written, so a co-located `header_up -X-Breeze-...` silently
+erases the value the neighbouring `header_up X-Breeze-... {placeholder}` just produced and the
+binding layer goes inert with no error anywhere. `scripts/check-agent-mtls-edge-policy.sh` rejects
+that shape. Full detail: `docs/operations/cloudflare-mtls-setup.md` (including a
+spoofing-resistance test you can run against your own deployment).
 
 <Aside type="danger">
   This contract depends entirely on the API never being reachable except through the trusted edge.

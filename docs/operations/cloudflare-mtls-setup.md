@@ -218,9 +218,10 @@ so all three copies stay identical by construction.
 ```
 Expression:
 (
-  http.request.uri.path matches "^/api/v1/agents/[0-9a-fA-F-]{36}(?:/.*)?$"
+  http.request.uri.path matches "^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$"
   or http.request.uri.path eq "/api/v1/agents/renew-cert/confirm"
-  or http.request.uri.path matches "^/api/v1/agent-ws/[0-9a-fA-F-]{36}/ws$"
+  or http.request.uri.path matches "^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$"
+  or http.request.uri.path matches "^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$"
 )
 and http.request.uri.path not in {
   "/api/v1/agents/enroll"
@@ -236,9 +237,24 @@ Protected set, exactly:
 
 | Set | Expression | Why |
 |---|---|---|
-| REST identity | `^/api/v1/agents/[0-9a-fA-F-]{36}(?:/.*)?$` | Every per-device agent REST route (heartbeat, metrics, commands, etc.) |
+| REST identity | `^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$` | Every per-device agent REST route (heartbeat, metrics, commands, etc.) |
 | Renewal confirmation | `/api/v1/agents/renew-cert/confirm` (exact) | Proves possession of the **newly issued** identity — protected even though renewal itself is bearer-only |
-| Command WebSocket | `^/api/v1/agent-ws/[0-9a-fA-F-]{36}/ws$` | The command channel carries the same device identity as REST and must get the same coverage |
+| Command WebSocket | `^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$` | The command channel carries the same device identity as REST and must get the same coverage |
+| Extension agent mount | `^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$` | Extensions that declare `agentRoutes: true` mount a second agent-token surface at `/api/v1/ext/<extension>/agent/<agentId>` and `/api/v1/<routeNamespace>/agent/<agentId>`, authenticated by the same device identity |
+
+### Why the identity segment is 64 hex characters, not a UUID
+
+The path parameter on every agent route is the **agent ID**, not the device UUID. It is generated as
+`randomBytes(32).toString('hex')` (`apps/api/src/routes/agents/helpers.ts`, `generateAgentId`) — a
+**64-character hex string** — and is matched against `devices.agent_id` by
+`apps/api/src/middleware/agentAuth.ts` and `apps/api/src/routes/agentWs.ts`.
+
+An earlier form of this rule used `[0-9a-fA-F-]{36}`, a UUID shape. That was **exactly inverted**: it
+matched no agent route at all, while it *did* match the 36-character UUID **admin** routes
+(`/api/v1/agents/<deviceId>/approve`, `/reject`, `/quarantined`, …). Those are user-JWT +
+permission-gated browser routes whose operators have no client certificate, so the rule would have
+blocked administrators while leaving every agent route unprotected. `{64}` cannot match a 36-character
+UUID, so the admin surface is excluded structurally — not by an exemption entry that could be dropped.
 
 Exact exemptions (bearer-only; a device has no active certificate identity to bind yet):
 
@@ -247,7 +263,7 @@ Exact exemptions (bearer-only; a device has no active certificate identity to bi
 - `/api/v1/agents/renew-cert/challenge` — proof-of-possession challenge issuance
 
 **Do not use `contains`, a trailing-wildcard renewal path, or any other broad substring match for the
-exemption.** The identity regex above already requires a full 36-character UUID segment, so none of
+exemption.** The identity regex above already requires a full 64-character hex segment, so none of
 the three exempt paths can ever match it by accident — the exemption clause exists for defense in
 depth and auditability, not because the regex is ambiguous. A broad substring match on the renewal
 path (the previous form of this rule) also accidentally exempted the confirmation route, which
@@ -335,10 +351,18 @@ these two.
 last hop before the origin (Internet → cloudflared → Caddy → API):
 
 1. **Discard** any inbound `X-Breeze-Client-Cert-Verified` / `X-Breeze-Client-Cert-Serial` a client
-   sent directly — a request must never be able to forge these itself.
+   sent directly — a request must never be able to forge these itself. This is done **once,
+   globally**, as the first directive in the site block (`request_header -X-Breeze-...`), *not* per
+   route. Several routes reach the same `api:3001` origin through their own `handle` blocks —
+   `/api/v1/mcp/sse`, `/api/v1/ai/sessions/*/stream`,
+   `/api/v1/helper/chat/sessions/*/messages`, `/oauth/*`, and the OAuth `.well-known` endpoints —
+   and a per-route strip has to be remembered for every one of them, including routes added later.
+   A global strip makes the safe state the default.
 2. **Discard** raw provider certificate headers arriving from any upstream that isn't the trusted
    proxy hop (Cloudflare's `Cf-Client-Cert-*` family) — they are edge-internal, not part of the
-   contract the API understands.
+   contract the API understands. This *is* per route, on every `reverse_proxy` that reaches the API
+   origin, because the `/api/*` block still needs to read `Cf-Client-Cert-Verified` to derive the
+   assertion (step 3) before discarding it.
 3. **Set** the two Breeze headers **only** from a verified Cloudflare mTLS result — in the bundled
    config, a Cloudflare Transform Rule ("Modify Request Header") that templates
    `cf.tls_client_auth.cert_verified` and `cf.tls_client_auth.cert_serial` into
@@ -351,6 +375,19 @@ last hop before the origin (Internet → cloudflared → Caddy → API):
    the normalized verified/serial pair crosses this hop. Cloudflare's own certificate-forwarding
    headers (`Cf-Client-Cert-Der-Base64`, `Cf-Client-Cert-Sha256`) are explicitly stripped even if a
    future change to your zone's *Client Certificate Forwarding* setting starts sending them.
+
+> **Never put step 1's discard and step 3's set in the same `reverse_proxy` block.** Caddy compiles
+> all of a `reverse_proxy`'s `header_up` lines into one header-operation set and applies **deletes
+> after sets**, regardless of the order they appear in the Caddyfile. A
+> `header_up -X-Breeze-Client-Cert-Verified` written above a
+> `header_up X-Breeze-Client-Cert-Verified {breeze_agent_cert_verified}` therefore erases the value
+> that was just derived, and the origin receives *no* assertion at all — the binding layer goes
+> silently inert, `enforce` denies every request, and nothing logs an error. The global
+> `request_header` strip in step 1 avoids this by construction, and
+> `scripts/check-agent-mtls-edge-policy.sh` fails the build if the two are ever co-located again.
+> Note also that a `header_up X-Foo {placeholder}` **replaces** an inbound `X-Foo` rather than
+> appending to it, even when the placeholder resolves to the empty string, so the set in step 3 is
+> independently sufficient to keep a forged inbound value from surviving.
 
 ### Direct-origin bypass warning
 
