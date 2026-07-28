@@ -1,6 +1,24 @@
 # Sentry Triage: BREEZE-12/13, BREEZE-P, BREEZE-X — Implementation Plan
 
-> **Status:** ready-to-grab (3 independent PRs; PR A is the only urgent one)
+> **Status:** implemented 2026-07-28 — all three code changes landed on branch
+> `ToddHebebrand/sentry-bugs`. Three checkboxes remain open on purpose; they are
+> human/controller actions, not code.
+>
+> | PR | Commit | Result |
+> |---|---|---|
+> | A — BREEZE-12/13 | `d7a498e6a` | Reproduced BOTH shipped error shapes (23503 and 22P02) against real Postgres with the fix reverted, then fixed. |
+> | B — BREEZE-P residuals (a)+(b) | `03112c5df` | AI-tool bypass closed, blank-string persist stopped. |
+> | C — BREEZE-X | `2856b5a08` | `prior_status`/`cas_label` tags on both the WS and REST 0-row CAS paths. |
+>
+> Still open (deliberately): the Sentry release check + BREEZE-P resolution (:163);
+> the prod backfill audit query (:184) — needs prod DB access, no migration was
+> written; and "do not resolve BREEZE-X yet" (:279), which stays open until events
+> carrying `prior_status` arrive.
+>
+> Two follow-ups the reviews say to file alongside the merge: the inert
+> `mobileDeviceBlockedMiddleware` gap (see PR A's out-of-scope section), and the
+> unauthenticated `huntress`/`automations` webhook id-cast 500s — same defect class
+> as BREEZE-12/13, but reachable without auth.
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or
 > `superpowers:executing-plans`. Steps use `- [ ]` checkboxes for tracking.
 
@@ -99,41 +117,41 @@ Three properties this buys, in order of importance:
 
 ### Tasks
 
-- [ ] Read `apps/api/src/routes/authenticator.ts:291-361` and
+- [x] Read `apps/api/src/routes/authenticator.ts:291-361` and
       `apps/api/src/services/mobileDeviceBinding.ts` in full before editing.
-- [ ] **Write the failing tests first** (TDD — this is an auth path):
-  - [ ] Rewrite `apps/api/src/routes/authenticator.test.ts:476-500`. That test
+- [x] **Write the failing tests first** (TDD — this is an auth path):
+  - [x] Rewrite `apps/api/src/routes/authenticator.test.ts:476-500`. That test
         (`records the per-install mobileDeviceId from the header on registration`)
         **currently pins the bug** — it asserts the raw header lands in the insert. It
         must become: header that resolves to an owned row → inserts the row's `id`.
-  - [ ] New: header present, no matching `mobile_devices` row → **201** with
+  - [x] New: header present, no matching `mobile_devices` row → **201** with
         `mobileDeviceId: null` (not 500).
-  - [ ] New: header matches a row owned by a *different* user → **201** with
+  - [x] New: header matches a row owned by a *different* user → **201** with
         `mobileDeviceId: null`, and assert the *other* user's `mobile_devices.id` never
         appears in the insert values.
-  - [ ] New: non-UUID junk header (`'hello'`) → **201**, `mobileDeviceId: null`, no throw.
-  - [ ] New: header absent → 201, `mobileDeviceId: null` (regression guard).
-  - [ ] Assert the ownership predicate is actually in the `where` — the suite's Drizzle
+  - [x] New: non-UUID junk header (`'hello'`) → **201**, `mobileDeviceId: null`, no throw.
+  - [x] New: header absent → 201, `mobileDeviceId: null` (regression guard).
+  - [x] Assert the ownership predicate is actually in the `where` — the suite's Drizzle
         mock (`authenticator.test.ts:91-140`) returns string column stubs, so capture and
         assert on the recorded where-expression. A test that only checks the inserted
         value would still pass if `eq(mobileDevices.userId, ...)` were deleted.
-- [ ] Implement the resolution block. Import `mobileDevices` into `authenticator.ts`
+- [x] Implement the resolution block. Import `mobileDevices` into `authenticator.ts`
       (check for the schema import cycle the comment at `db/schema/authenticatorDevices.ts:44`
       warns about — that comment is why the Drizzle-level `.references()` was omitted).
-- [ ] Audit detail (`:355`): record the **resolved** id. If the raw header is still
+- [x] Audit detail (`:355`): record the **resolved** id. If the raw header is still
       wanted for forensics, log it under a distinct key
       (`mobileDeviceHeaderUnresolved`) so the two are never conflated again.
-- [ ] Add an **integration test** against real Postgres
+- [x] Add an **integration test** against real Postgres
       (`apps/api/src/__tests__/integration/`) that inserts a real `mobile_devices` row and
       registers an authenticator device. The unit suite fully mocks the DB, so the FK,
       the uuid cast, and RLS are all structurally invisible to it — that is exactly how
       this shipped. This test is the one that would have caught it.
-- [ ] Delete-the-line injection proof: revert the `eq(mobileDevices.userId, ...)` line
+- [x] Delete-the-line injection proof: revert the `eq(mobileDevices.userId, ...)` line
       and confirm a test goes red; revert the whole block and confirm several do.
-- [ ] Add a code comment stating plainly that the header is
+- [x] Add a code comment stating plainly that the header is
       `mobile_devices.device_id` (varchar), **not** `mobile_devices.id` (uuid PK) — this
       confusion has now cost one shipped outage and one wrong plan doc.
-- [ ] Full API suite + `pnpm db:check-drift`.
+- [x] Full API suite + `pnpm db:check-drift`.
 
 ### Out of scope — file as a separate issue
 
@@ -165,7 +183,7 @@ ago" (≈2026-07-22) predates that rollout. Existing coverage is good, including
 
 Three residual gaps justify a small follow-up PR:
 
-- [ ] **(a) The AI tool bypasses validation entirely — the one remaining save-time hole.**
+- [x] **(a) The AI tool bypasses validation entirely — the one remaining save-time hole.**
       `manage_backup_configs` (`services/aiToolsPolicyPrereqs.ts:733`) writes
       `providerConfig` raw on both create (`:805-810`, `as any`) and update (`:841`), and
       its schema advertises `endpoint?` at `:743`. Route it through `validateS3Details`
@@ -174,7 +192,7 @@ Three residual gaps justify a small follow-up PR:
       than a 500 — but it still ships a broken endpoint to every agent, and
       `agent/internal/backup/providers/s3.go:262-269` does no coercion of its own.
       Add a test.
-- [ ] **(b) Blank strings still persist.** `configs.ts:238` and `:374` guard with
+- [x] **(b) Blank strings still persist.** `configs.ts:238` and `:374` guard with
       `if (endpoint) details.endpoint = endpoint;`. When input is `''` (the web form's
       initial state — `BackupDestinationSection.tsx:78`), `coerceS3EndpointUrl` returns
       `undefined`, the branch is skipped, and the **raw `''` from the payload survives in
@@ -244,15 +262,15 @@ cancellation (`cancelled`).
 
 ### Tasks
 
-- [ ] Add `prior_status` and `cas_label` to `ALLOWED_TAG_NAMES` (`sentry.ts:25-34`).
+- [x] Add `prior_status` and `cas_label` to `ALLOWED_TAG_NAMES` (`sentry.ts:25-34`).
       Both are low-cardinality enum-ish strings, no PII. Update the pinning tests:
       `sentry.test.ts:75-88` (asserts non-allowlisted tags are dropped), `:90-111`, `:113-122`.
-- [ ] Plumb an optional `tags` argument through `dbWriteExpectingRows`
+- [x] Plumb an optional `tags` argument through `dbWriteExpectingRows`
       (`db/dbWriteExpectingRows.ts`) to `captureMessage`, and emit the label as
       `cas_label` so the issue is groupable at all. Only two call sites —
       `agentWs.ts:1804` and `routes/auth/login.ts:583`. Update
       `dbWriteExpectingRows.test.ts` (4 tests pin the current signature).
-- [ ] On the **0-row branch only**, re-SELECT the row by PK inside the existing system
+- [x] On the **0-row branch only**, re-SELECT the row by PK inside the existing system
       context and tag `prior_status` (plus `timedOutBy` folded into the same tag value,
       e.g. `failed:server-timeout`, to avoid a second allowlist entry).
   - Keep it conditional. `agentWs.test.ts:2351-2430` (`device_commands access context on
@@ -264,16 +282,16 @@ cancellation (`cancelled`).
     when 0 rows match, so it cannot yield the prior status. (`RETURNING OLD.*` is PG18-only.)
     A single-statement CTE works on postgres.js but would replace the Drizzle builder
     every mock in `agentWs.test.ts` is written against — not worth the blast radius.
-- [ ] **Make the REST twin report too.** `routes/agents/commands.ts:321-323` returns
+- [x] **Make the REST twin report too.** `routes/agents/commands.ts:321-323` returns
       `{success:true}` silently on 0 rows and does not use `dbWriteExpectingRows` at all.
       Without a matching signal you cannot confirm the race from the WS side alone. Give
       it its own label (`device_commands.rest_result_terminal_cas`) and the same
       `prior_status` tag. Note it usually short-circuits earlier at `:261-266` on a
       terminal pre-read, so this branch should be rarer still — which is itself
       informative.
-- [ ] Correct the comment at `agentWs.ts:1794-1801` to name the reaper and the
+- [x] Correct the comment at `agentWs.ts:1794-1801` to name the reaper and the
       cancellation paths. As written it tells the next reader that a reaper race is a defect.
-- [ ] Tests: 0-row branch tags the prior status; the extra read does **not** occur on the
+- [x] Tests: 0-row branch tags the prior status; the extra read does **not** occur on the
       happy path; `commands.test.ts` gains its first 0-row CAS test (currently none of
       its 8 tests touch that branch).
 - [ ] **Do not resolve BREEZE-X yet.** Ship, wait for events carrying `prior_status`,
