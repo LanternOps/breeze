@@ -78,10 +78,14 @@ describe('AcceptInviteForm — pre-hydration fallback must never GET-submit cred
   });
 
   it('SSR HTML renders the submit button disabled until hydration', () => {
-    const html = renderToString(<AcceptInviteForm token="invite-token-abc" />);
-    const button = html.match(/<button[^>]*type="submit"[^>]*>/i)?.[0];
-    expect(button).toBeDefined();
-    expect(button).toContain('disabled');
+    // Parse the SSR HTML instead of substring-matching the tag: the button's
+    // className contains Tailwind `disabled:` variants, so a naive
+    // `toContain('disabled')` passes even when the attribute is missing.
+    const container = document.createElement('div');
+    container.innerHTML = renderToString(<AcceptInviteForm token="invite-token-abc" />);
+    const button = container.querySelector('button[type="submit"]');
+    expect(button).not.toBeNull();
+    expect(button?.hasAttribute('disabled')).toBe(true);
   });
 
   it('enables the submit button after hydration and still submits via fetch', async () => {
