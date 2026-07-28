@@ -79,8 +79,13 @@ vi.mock('../../services/auditBaselineService', () => ({
 
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
+  // BREEZE-X: the terminal CAS now runs through dbWriteExpectingRows, which
+  // calls captureMessage on the 0-row branch. Omitting it here would fail the
+  // whole route with "captureMessage is not a function".
+  captureMessage: vi.fn(),
 }));
 
+import { captureMessage } from '../../services/sentry';
 import { commandsRoutes } from './commands';
 
 describe('agent commands routes', () => {
@@ -420,5 +425,72 @@ describe('agent commands routes', () => {
     };
     expect(handlerArg.error).toBe('verify failed [PRIVATE_KEY_REDACTED] end');
     expect(JSON.stringify(handlerArg)).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  // BREEZE-X: the REST twin of the WS terminal compare-and-set used to return
+  // {success:true} on 0 rows with no signal at all, so a cross-transport race
+  // could not be confirmed from the WS side alone. It now reports with its own
+  // cas_label and the same prior_status evidence.
+  describe('terminal CAS 0-row branch', () => {
+    function queueTerminalCas(updatedRows: unknown[], priorRow?: unknown) {
+      // 1st select: the command pre-read (still non-terminal, so the route
+      // does NOT short-circuit and actually attempts the CAS).
+      selectMock.mockReturnValueOnce(
+        chainMock([
+          {
+            id: commandId,
+            deviceId: 'device-1',
+            type: 'run_script',
+            status: 'sent',
+            targetRole: 'agent',
+          },
+        ])
+      );
+      // 2nd select (0-row branch only): the prior-status diagnostic re-read.
+      selectMock.mockReturnValueOnce(chainMock(priorRow === undefined ? [] : [priorRow]));
+      updateMock.mockReturnValueOnce(chainMock(updatedRows));
+    }
+
+    async function postResult() {
+      return app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', exitCode: 0, stdout: 'ok' }),
+      });
+    }
+
+    it('reports the 0-row CAS to Sentry with cas_label + prior_status', async () => {
+      queueTerminalCas([], {
+        status: 'failed',
+        result: { status: 'timeout', error: 'no response', timedOutBy: 'server' },
+      });
+
+      const res = await postResult();
+
+      // Behaviour is unchanged for the agent — this is observability only.
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ success: true });
+
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(captureMessage).mock.calls[0]!;
+      expect(call[1]).toBe('warning');
+      expect(call[3]).toEqual({
+        cas_label: 'device_commands.rest_result_terminal_cas',
+        prior_status: 'failed:server-timeout',
+      });
+      // Pre-read + the diagnostic re-read, nothing more.
+      expect(selectMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not re-read the row or capture anything when the CAS moves a row', async () => {
+      queueTerminalCas([{ id: commandId }], { status: 'failed', result: null });
+
+      const res = await postResult();
+
+      expect(res.status).toBe(200);
+      expect(captureMessage).not.toHaveBeenCalled();
+      // Only the pre-read: the diagnostic read must stay on the 0-row branch.
+      expect(selectMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

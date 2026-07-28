@@ -3,6 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
+import { commandCasPriorStatusTags } from '../../services/commandCasDiagnostics';
 import { deviceCommands, deploymentResults } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -287,32 +289,44 @@ commandsRoutes.post(
     // write can touch — it makes the guard's invariant in db/index.ts true on
     // this path too. Without it, this route was the largest remaining source of
     // BREEZE-7 events after the WS path was fixed.
-    const updated = await runOutsideDbContext(async () => withSystemDbAccessContext(async () => {
-      const query = db
-        .update(deviceCommands)
-        .set({
-          status: normalizedData.status === 'completed' ? 'completed' : 'failed',
-          completedAt: new Date(),
-          result: buildStoredCommandResult(command.type, normalizedData, stdout),
-          // Credentials ride the payload for some commands (e.g. FileVault
-          // rotation); blank them once the command is terminal.
-          ...(hasSensitivePayload(command.type) ? { payload: null } : {}),
-        })
-        .where(and(
-          eq(deviceCommands.id, commandId),
-          eq(deviceCommands.deviceId, deviceId),
-          eq(deviceCommands.targetRole, agent.role),
-          inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
-        )) as any;
+    //
+    // BREEZE-X: this branch used to return `{success:true}` silently on 0 rows,
+    // so the WS twin's Sentry warning had no REST-side counterpart to correlate
+    // against — you could not confirm a cross-transport race from one side
+    // alone. It gets its own `cas_label` and the same `prior_status` tag. It
+    // should be RARER than the WS twin because the terminal pre-read above
+    // usually short-circuits first — which is itself a useful signal.
+    let updated: unknown;
+    const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
+      dbWriteExpectingRows(
+        'device_commands.rest_result_terminal_cas',
+        async () => {
+          const query = db
+            .update(deviceCommands)
+            .set({
+              status: normalizedData.status === 'completed' ? 'completed' : 'failed',
+              completedAt: new Date(),
+              result: buildStoredCommandResult(command.type, normalizedData, stdout),
+              // Credentials ride the payload for some commands (e.g. FileVault
+              // rotation); blank them once the command is terminal.
+              ...(hasSensitivePayload(command.type) ? { payload: null } : {}),
+            })
+            .where(and(
+              eq(deviceCommands.id, commandId),
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.targetRole, agent.role),
+              inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+            )) as any;
 
-      return typeof query.returning === 'function'
-        ? query.returning({ id: deviceCommands.id })
-        : query;
-    }));
+          updated = typeof query.returning === 'function'
+            ? await query.returning({ id: deviceCommands.id })
+            : await query;
 
-    const updatedRows = Array.isArray(updated)
-      ? updated
-      : [];
+          return Array.isArray(updated) ? updated : [];
+        },
+        () => commandCasPriorStatusTags(commandId)
+      )
+    ));
 
     if (updated === undefined) {
       console.warn(`[agents] command result update returned undefined for ${commandId} — treating as failed update`);

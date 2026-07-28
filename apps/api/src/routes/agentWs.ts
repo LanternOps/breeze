@@ -5,6 +5,7 @@ import { eq, and, inArray, notInArray, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
+import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
 import {
   handleTerminalOutput,
@@ -1792,32 +1793,45 @@ async function processCommandResult(
     // under an explicit system context", db/index.ts) actually true here.
     //
     // dbWriteExpectingRows (#1379 A2): the SELECT above matched this exact
-    // predicate and returned a row, so a 0-row result here is only *benign*
-    // when another writer (the REST twin in routes/agents/commands.ts, or a
-    // second socket) drove the command terminal in the intervening window.
+    // predicate and returned a row, so a 0-row result here means another writer
+    // drove the command terminal in the intervening window. Several BENIGN
+    // writers can, not just the REST twin:
+    //   - routes/agents/commands.ts (the REST twin) or a second socket — a
+    //     duplicate result: terminal with a real agent result;
+    //   - jobs/staleCommandReaper.ts — fleet-wide and on a schedule; an agent
+    //     replying just past the timeout boundary is exactly this race, and is
+    //     probably the most common non-REST cause;
+    //   - the cancellation paths (admin/abuse.ts, software.ts, scripts.ts,
+    //     cisHardening.ts, discovery.ts, backup/restore.ts, maintenance.ts,
+    //     playbookRetention.ts, backup/verificationScheduled.ts).
     // Every other cause — a contextless/denied write, a future RLS policy on
     // device_commands, a misrouted connection — is a defect that would
-    // otherwise vanish into the console.warn below. Non-throwing, so the stale
-    // -result early-return keeps its existing behaviour.
+    // otherwise vanish into the console.warn below. The prior_status tag
+    // (resolved ONLY on the 0-row branch, so the happy path pays nothing) is
+    // what tells those apart in Sentry. Non-throwing, so the stale-result
+    // early-return keeps its existing behaviour.
     const updatedCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
-        dbWriteExpectingRows('device_commands.ws_result_terminal_cas', () =>
-          db
-            .update(deviceCommands)
-            .set({
-                status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
-                completedAt: new Date(),
-                result: buildStoredCommandResult(command.type, normalizedResult, stdout)
-            })
-            .where(
-              and(
-                eq(deviceCommands.id, result.commandId),
-                eq(deviceCommands.deviceId, resolvedDeviceId!),
-                eq(deviceCommands.targetRole, 'agent'),
-                inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+        dbWriteExpectingRows(
+          'device_commands.ws_result_terminal_cas',
+          () =>
+            db
+              .update(deviceCommands)
+              .set({
+                  status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
+                  completedAt: new Date(),
+                  result: buildStoredCommandResult(command.type, normalizedResult, stdout)
+              })
+              .where(
+                and(
+                  eq(deviceCommands.id, result.commandId),
+                  eq(deviceCommands.deviceId, resolvedDeviceId!),
+                  eq(deviceCommands.targetRole, 'agent'),
+                  inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+                )
               )
-            )
-            .returning({ id: deviceCommands.id })
+              .returning({ id: deviceCommands.id }),
+          () => commandCasPriorStatusTags(result.commandId)
         )
       )
     );
