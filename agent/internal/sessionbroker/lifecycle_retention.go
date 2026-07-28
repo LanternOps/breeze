@@ -34,6 +34,7 @@ func applyDisconnectedRetention(desired map[HelperKey]bool, sessions []DetectedS
 			continue
 		}
 		if now.Sub(since) >= ttl {
+			log.Info("retention: pruning SYSTEM helper for long-disconnected RDP session", "session", id, "disconnectedFor", now.Sub(since).String())
 			delete(desired, HelperKey{WindowsSessionID: id, Role: ipc.HelperRoleSystem})
 		}
 	}
