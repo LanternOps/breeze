@@ -146,6 +146,17 @@ export interface BuildAndDispatchSoftwareInstallsInput {
    * the `dispatched_at IS NULL` conditional update.
    */
   markDispatched: boolean;
+  /**
+   * Retry path (#1.6): restrict the fan-out to a device subset. When set,
+   * every failure pre-write (EDR resolution error, missing installer URL,
+   * unresolvable `{{...}}` variables) additionally filters
+   * `inArray(deploymentResults.deviceId, scopeToDeviceIds)` and the dispatch
+   * loop only targets these devices — so previously COMPLETED result rows of
+   * the deployment are never clobbered to 'failed'. When unset, behavior is
+   * unchanged: deployment-wide pre-writes are fine for the create/scheduler
+   * paths where every result row is still pending.
+   */
+  scopeToDeviceIds?: string[];
 }
 
 export interface SoftwareInstallFanoutResult {
@@ -156,8 +167,10 @@ export interface SoftwareInstallFanoutResult {
 
 /**
  * Build per-device software_install payloads and dispatch them — the shared
- * fan-out used by the immediate path (createSoftwareDeployment) and the
- * scheduler (jobs/softwareDeploymentScheduler). Covers everything between
+ * fan-out used by the immediate path (createSoftwareDeployment), the
+ * scheduler (jobs/softwareDeploymentScheduler), and the retry endpoint
+ * (routes/software.ts, which passes scopeToDeviceIds so failure pre-writes
+ * never touch completed rows). Covers everything between
  * "deployment + result rows exist" and "commands are on the wire":
  * S3 presign, built-in EDR installer resolution, `{{...}}` installer-variable
  * substitution, detection rules / forceReinstall, the failure pre-writes
@@ -167,7 +180,21 @@ export interface SoftwareInstallFanoutResult {
 export async function buildAndDispatchSoftwareInstalls(
   input: BuildAndDispatchSoftwareInstallsInput,
 ): Promise<SoftwareInstallFanoutResult> {
-  const { deploymentId, orgId, versionRecord, catalogItem, deviceIds, options, createdBy, markDispatched } = input;
+  const { deploymentId, orgId, versionRecord, catalogItem, deviceIds, options, createdBy, markDispatched, scopeToDeviceIds } = input;
+
+  // WHERE clause for the deployment-wide failure pre-writes below. Scoped to
+  // the retried subset when scopeToDeviceIds is set (retry path); otherwise
+  // the whole deployment, byte-for-byte the pre-existing behavior.
+  const failurePreWriteScope = scopeToDeviceIds
+    ? and(
+        eq(deploymentResults.deploymentId, deploymentId),
+        inArray(deploymentResults.deviceId, scopeToDeviceIds),
+      )
+    : eq(deploymentResults.deploymentId, deploymentId);
+
+  // Device ids the dispatch loop targets: intersection with the scope when set.
+  const scopeSet = scopeToDeviceIds ? new Set(scopeToDeviceIds) : null;
+  const fanoutDeviceIds = scopeSet ? deviceIds.filter((id) => scopeSet.has(id)) : deviceIds;
 
   // Get presigned URL for download
   let downloadUrl: string | null = null;
@@ -203,7 +230,7 @@ export async function buildAndDispatchSoftwareInstalls(
       await db
         .update(deploymentResults)
         .set({ status: 'failed', errorMessage: resolved.error, completedAt: new Date() })
-        .where(eq(deploymentResults.deploymentId, deploymentId));
+        .where(failurePreWriteScope);
       return {
         status: 'failed',
         message: resolved.error,
@@ -228,7 +255,7 @@ export async function buildAndDispatchSoftwareInstalls(
           'No installer available for this version — upload an installer (or check storage configuration) before deploying.',
         completedAt: new Date(),
       })
-      .where(eq(deploymentResults.deploymentId, deploymentId));
+      .where(failurePreWriteScope);
     return {
       status: 'failed',
       message: 'No installer available for this version',
@@ -250,7 +277,7 @@ export async function buildAndDispatchSoftwareInstalls(
     .where(
       and(
         eq(devices.orgId, orgId),
-        inArray(devices.id, deviceIds),
+        inArray(devices.id, fanoutDeviceIds),
       ),
     );
 

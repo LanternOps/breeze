@@ -19,16 +19,16 @@ import { writeRouteAudit } from '../services/auditEvents';
 
 // Hoist the softwareDeployment service mock factories so the references are
 // available both inside the vi.mock factory and in the test body.
-const { createDeploymentMock, dispatchInstallMock } = vi.hoisted(() => ({
+const { createDeploymentMock, buildDispatchMock } = vi.hoisted(() => ({
   createDeploymentMock: vi.fn(),
-  dispatchInstallMock: vi.fn(),
+  buildDispatchMock: vi.fn(),
 }));
 
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/softwareDeployment', () => ({
   createSoftwareDeployment: createDeploymentMock,
-  dispatchSoftwareInstallToDevice: dispatchInstallMock,
+  buildAndDispatchSoftwareInstalls: buildDispatchMock,
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -952,17 +952,14 @@ describe('software routes', () => {
       });
 
     beforeEach(() => {
-      dispatchInstallMock.mockResolvedValue({ transport: 'ws', deviceCommandId: null });
+      buildDispatchMock.mockResolvedValue({ status: 'pending', dispatchedDeviceIds: [DEVICE_A] });
     });
 
     it('flips failed rows to pending with incremented retryCount, cleared fields, and re-dispatches (no body)', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([deploymentRow]))  // deployment lookup
         .mockReturnValueOnce(selectResult([versionRow]))     // version lookup
-        .mockReturnValueOnce(selectResult([catalogRow]))     // catalog lookup
-        .mockReturnValueOnce(selectResult([                  // target devices
-          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
-        ]));
+        .mockReturnValueOnce(selectResult([catalogRow]));    // catalog lookup
       const flip = updateChain([{ deviceId: DEVICE_A }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
 
@@ -987,31 +984,31 @@ describe('software routes', () => {
         deviceCommandId: null,
       }));
 
-      // Re-dispatch goes through the shared dispatch helper with the rebuilt payload.
-      expect(dispatchInstallMock).toHaveBeenCalledTimes(1);
-      expect(dispatchInstallMock).toHaveBeenCalledWith(
-        DEP_ID,
-        expect.objectContaining({ id: DEVICE_A, agentId: 'agent-a' }),
-        expect.objectContaining({
-          deploymentId: DEP_ID,
+      // Re-dispatch goes through the shared fan-out, scoped to the flipped
+      // rows so its failure pre-writes can never clobber completed rows, and
+      // without re-stamping the deployment's dispatched_at claim.
+      expect(buildDispatchMock).toHaveBeenCalledTimes(1);
+      expect(buildDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+        deploymentId: DEP_ID,
+        orgId: 'org-123',
+        versionRecord: expect.objectContaining({
           downloadUrl: 'https://example.com/pkg.exe',
           silentInstallArgs: '/S',
-          softwareName: 'TestApp',
           version: '1.0.0',
-          forceReinstall: false,
         }),
-        'user-123',
-      );
+        catalogItem: expect.objectContaining({ name: 'TestApp' }),
+        deviceIds: [DEVICE_A],
+        scopeToDeviceIds: [DEVICE_A],
+        createdBy: 'user-123',
+        markDispatched: false,
+      }));
     });
 
     it('audits the retry as software.deployment.retry', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([deploymentRow]))
         .mockReturnValueOnce(selectResult([versionRow]))
-        .mockReturnValueOnce(selectResult([catalogRow]))
-        .mockReturnValueOnce(selectResult([
-          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
-        ]));
+        .mockReturnValueOnce(selectResult([catalogRow]));
       const flip = updateChain([{ deviceId: DEVICE_A }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
 
@@ -1032,10 +1029,7 @@ describe('software routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([deploymentRow]))
         .mockReturnValueOnce(selectResult([versionRow]))
-        .mockReturnValueOnce(selectResult([catalogRow]))
-        .mockReturnValueOnce(selectResult([
-          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
-        ]));
+        .mockReturnValueOnce(selectResult([catalogRow]));
       const flip = updateChain([{ deviceId: DEVICE_A }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
 
@@ -1049,16 +1043,18 @@ describe('software routes', () => {
       // The UPDATE's WHERE must include the deviceIds subset filter
       // (deploymentResults.deviceId mocks to the literal 'device_id').
       expect(inArray).toHaveBeenCalledWith('device_id', [DEVICE_A]);
+      // ... and the shared fan-out is scoped to the same subset.
+      expect(buildDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+        deviceIds: [DEVICE_A],
+        scopeToDeviceIds: [DEVICE_A],
+      }));
     });
 
     it('reports requested devices that did not flip (non-failed / not part of deployment) as skipped', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectResult([deploymentRow]))
         .mockReturnValueOnce(selectResult([versionRow]))
-        .mockReturnValueOnce(selectResult([catalogRow]))
-        .mockReturnValueOnce(selectResult([
-          { id: DEVICE_A, agentId: 'agent-a', siteId: 'site-1', hostname: 'host-a', customFields: {} },
-        ]));
+        .mockReturnValueOnce(selectResult([catalogRow]));
       // Only DEVICE_A was actually in failed status.
       const flip = updateChain([{ deviceId: DEVICE_A }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
@@ -1070,14 +1066,36 @@ describe('software routes', () => {
         skippedDeviceIds: [DEVICE_B],
       });
 
-      // Only the flipped row is re-dispatched.
-      expect(dispatchInstallMock).toHaveBeenCalledTimes(1);
-      expect(dispatchInstallMock).toHaveBeenCalledWith(
-        DEP_ID,
-        expect.objectContaining({ id: DEVICE_A }),
-        expect.anything(),
-        'user-123',
-      );
+      // Only the flipped row is re-dispatched — DEVICE_B never reaches the
+      // fan-out, not even in the scope list.
+      expect(buildDispatchMock).toHaveBeenCalledTimes(1);
+      expect(buildDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+        deviceIds: [DEVICE_A],
+        scopeToDeviceIds: [DEVICE_A],
+        createdBy: 'user-123',
+      }));
+    });
+
+    it('surfaces the shared fan-out failure message in the response', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([deploymentRow]))
+        .mockReturnValueOnce(selectResult([versionRow]))
+        .mockReturnValueOnce(selectResult([catalogRow]));
+      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
+      buildDispatchMock.mockResolvedValueOnce({
+        status: 'failed',
+        message: 'Organization not mapped to Huntress',
+        dispatchedDeviceIds: [],
+      });
+
+      const res = await retry({});
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        retriedDeviceIds: [DEVICE_A],
+        skippedDeviceIds: [],
+        message: 'Organization not mapped to Huntress',
+      });
     });
 
     it('returns 409 when the deployment was never dispatched', async () => {
@@ -1090,7 +1108,7 @@ describe('software routes', () => {
       const body = await res.json();
       expect(body.error).toMatch(/not been dispatched/i);
       expect(db.update).not.toHaveBeenCalled();
-      expect(dispatchInstallMock).not.toHaveBeenCalled();
+      expect(buildDispatchMock).not.toHaveBeenCalled();
     });
 
     it('returns 404 when the deployment belongs to another org', async () => {
@@ -1102,7 +1120,7 @@ describe('software routes', () => {
       expect(await res.json()).toEqual({ error: 'Deployment not found' });
       expect(eq).toHaveBeenCalledWith('org_id', 'org-123');
       expect(db.update).not.toHaveBeenCalled();
-      expect(dispatchInstallMock).not.toHaveBeenCalled();
+      expect(buildDispatchMock).not.toHaveBeenCalled();
     });
 
     it('rejects a non-UUID deviceIds entry with 400', async () => {

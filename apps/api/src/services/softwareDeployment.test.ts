@@ -39,6 +39,13 @@ vi.mock('../db', () => ({
   },
 }));
 
+// Wrap drizzle's condition builders in spies (behavior preserved) so tests can
+// assert the scopeToDeviceIds WHERE filters, not just that a write ran.
+vi.mock('drizzle-orm', async () => {
+  const actual = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+  return { ...actual, inArray: vi.fn(actual.inArray), eq: vi.fn(actual.eq) };
+});
+
 vi.mock('../db/schema', () => ({
   softwareCatalog: {
     id: 'sc.id',
@@ -65,8 +72,13 @@ vi.mock('../db/schema', () => ({
   sites: { id: 's.id', name: 's.name', orgId: 's.orgId' },
 }));
 
-import { createSoftwareDeployment, dispatchSoftwareInstallToDevice } from './softwareDeployment';
+import {
+  buildAndDispatchSoftwareInstalls,
+  createSoftwareDeployment,
+  dispatchSoftwareInstallToDevice,
+} from './softwareDeployment';
 import { resolveEdrInstaller } from './edrInstallerResolver';
+import { inArray } from 'drizzle-orm';
 
 const resolveEdrMock = vi.mocked(resolveEdrInstaller);
 
@@ -729,6 +741,130 @@ describe('createSoftwareDeployment', () => {
         maintenanceWindowId: null,
       })
     );
+  });
+});
+
+describe('buildAndDispatchSoftwareInstalls scopeToDeviceIds (retry path)', () => {
+  const catalogItem = { name: 'TestApp', integrationProvider: null };
+  const edrCatalogItem = { name: 'Huntress', integrationProvider: 'huntress' };
+  const versionRecord = {
+    downloadUrl: 'https://dl/pkg.exe',
+    s3Key: null,
+    checksum: null,
+    originalFileName: 'pkg.exe',
+    fileType: 'exe',
+    silentInstallArgs: '/S',
+    version: '1.0.0',
+    detectionRules: null,
+  };
+
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    vi.mocked(inArray).mockClear();
+    sendCommandMock.mockReturnValue(true);
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+  });
+
+  it('scopes the EDR-failure pre-write to scopeToDeviceIds instead of the whole deployment', async () => {
+    resolveEdrMock.mockResolvedValueOnce({ error: 'Organization not mapped to Huntress' });
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem: edrCatalogItem,
+      deviceIds: ['dev-failed'],
+      scopeToDeviceIds: ['dev-failed'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    // Exactly one failure pre-write, and its WHERE carries the device-subset
+    // filter (deploymentResults.deviceId mocks to 'dr.deviceId') — a
+    // deployment-wide write would clobber previously completed rows.
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-failed']);
+  });
+
+  it('scopes the missing-installer pre-write to scopeToDeviceIds', async () => {
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord: { ...versionRecord, downloadUrl: null },
+      catalogItem,
+      deviceIds: ['dev-failed'],
+      scopeToDeviceIds: ['dev-failed'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toMatch(/No installer available/i);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-failed']);
+  });
+
+  it('limits the dispatch loop to the scoped devices', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]), // devices query (already scope-filtered)
+    );
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a', 'dev-b'],
+      scopeToDeviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-a']);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    // The devices query only asks for the intersection of deviceIds and the
+    // scope ('d.id' is the mocked devices.id column).
+    expect(inArray).toHaveBeenCalledWith('d.id', ['dev-a']);
+    // markDispatched:false — no dispatched_at re-stamp on retry.
+    expect(updateSetCalls.filter((v) => v.dispatchedAt instanceof Date)).toHaveLength(0);
+  });
+
+  it('keeps the EDR-failure pre-write deployment-wide when scopeToDeviceIds is unset', async () => {
+    resolveEdrMock.mockResolvedValueOnce({ error: 'Organization not mapped to Huntress' });
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-full',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem: edrCatalogItem,
+      deviceIds: ['dev-1'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    // Unscoped: the pre-write must NOT filter on deviceId — every (pending)
+    // row of the deployment fails, byte-for-byte the pre-existing behavior.
+    expect(inArray).not.toHaveBeenCalledWith('dr.deviceId', expect.anything());
   });
 });
 

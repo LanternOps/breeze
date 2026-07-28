@@ -10,8 +10,6 @@ import {
   deploymentResults,
   softwareInventory,
   devices,
-  organizations,
-  sites,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -38,13 +36,9 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
+  buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
-  dispatchSoftwareInstallToDevice,
 } from '../services/softwareDeployment';
-import {
-  resolveInstallerVariables,
-  type InstallerVariableContext,
-} from '../services/installerVariables';
 import { detectionRulesSchema } from '@breeze/shared';
 
 export const softwareRoutes = new Hono();
@@ -1507,23 +1501,20 @@ softwareRoutes.post(
 // Retry dispatch helper
 // ---------------------------------------------------------------------------
 
-// TODO(plan 2026-07-28-software-deployment-visibility §1.6): fold into the
-// shared fan-out `buildAndDispatchSoftwareInstalls` (services/
-// softwareDeployment.ts) once its failure pre-writes can be scoped to a
-// device subset. Today that helper fails EVERY deployment_results row of the
-// deployment on EDR-resolution/missing-installer errors (fine for the
-// create/scheduler paths where all rows are pending) — on a retry that would
-// clobber previously COMPLETED rows to failed. This local variant mirrors it
-// exactly (presigned URL, EDR per-org resolution, `{{...}}` installer-variable
-// substitution, detection rules, forceReinstall) but restricts all failure
-// writes to the retried rows only.
+// Re-dispatch a retried device subset through the shared fan-out
+// (services/softwareDeployment.ts). `scopeToDeviceIds` restricts the shared
+// builder's failure pre-writes (EDR resolution error, missing installer,
+// unresolvable `{{...}}` variables) to the retried rows only — previously
+// COMPLETED rows are never clobbered to failed. The version/catalog lookups
+// live here because the builder takes them as inputs; if either row has been
+// deleted since the original dispatch, fail just the retried rows.
 async function redispatchSoftwareInstall(opts: {
   deployment: typeof softwareDeployments.$inferSelect;
   orgId: string;
   deviceIds: string[];
   createdBy: string | null;
 }): Promise<{ dispatchedDeviceIds: string[]; error?: string }> {
-  const { deployment, orgId, deviceIds } = opts;
+  const { deployment, orgId, deviceIds, createdBy } = opts;
 
   const failTargets = async (errorMessage: string) => {
     await db.update(deploymentResults)
@@ -1555,135 +1546,24 @@ async function redispatchSoftwareInstall(opts: {
     return { dispatchedDeviceIds: [], error };
   }
 
-  // Presigned URL for the stored installer, falling back to the version's
-  // static downloadUrl (mirrors createSoftwareDeployment, #1808).
-  let downloadUrl: string | null = null;
-  if (versionRecord.s3Key && isS3Configured()) {
-    try {
-      downloadUrl = await getPresignedUrl(versionRecord.s3Key, 3600);
-    } catch (err) {
-      console[isS3NotFound(err) ? 'warn' : 'error'](
-        `[software-retry] S3 presign failed for ${versionRecord.s3Key}, falling back to stored downloadUrl:`,
-        err,
-      );
-    }
-  }
-  downloadUrl = downloadUrl ?? versionRecord.downloadUrl;
+  // markDispatched: false — the deployment already carries its dispatched_at
+  // claim from the original run; a retry must not re-stamp it.
+  const fanout = await buildAndDispatchSoftwareInstalls({
+    deploymentId: deployment.id,
+    orgId,
+    versionRecord,
+    catalogItem,
+    deviceIds,
+    scopeToDeviceIds: deviceIds,
+    options: (deployment.options ?? null) as Record<string, unknown> | null,
+    createdBy,
+    markDispatched: false,
+  });
 
-  // Built-in EDR packages: resolve per-org keys server-side before dispatch.
-  let resolvedInstaller: ResolvedInstaller | null = null;
-  if (catalogItem.integrationProvider === 'huntress' || catalogItem.integrationProvider === 'sentinelone') {
-    const resolved = await resolveEdrInstaller({
-      provider: catalogItem.integrationProvider,
-      orgId,
-      downloadUrlTemplate: versionRecord.downloadUrl,
-      silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-    });
-    if ('error' in resolved) {
-      await failTargets(resolved.error);
-      return { dispatchedDeviceIds: [], error: resolved.error };
-    }
-    resolvedInstaller = resolved;
-  }
-
-  const finalDownloadUrl = resolvedInstaller?.downloadUrl ?? downloadUrl;
-  const finalSilentInstallArgs = resolvedInstaller?.silentInstallArgs ?? versionRecord.silentInstallArgs;
-
-  if (!finalDownloadUrl) {
-    const error =
-      'No installer available for this version — upload an installer (or check storage configuration) before retrying.';
-    await failTargets(error);
-    return { dispatchedDeviceIds: [], error };
-  }
-
-  const targetDevices = await db.select({
-    id: devices.id,
-    agentId: devices.agentId,
-    siteId: devices.siteId,
-    hostname: devices.hostname,
-    customFields: devices.customFields,
-  })
-    .from(devices)
-    .where(and(
-      eq(devices.orgId, orgId),
-      inArray(devices.id, deviceIds),
-    ));
-
-  // `{{...}}` installer variables: load org + site names once (not per device).
-  const templatesUseVariables =
-    (finalDownloadUrl?.includes('{{') ?? false) ||
-    (finalSilentInstallArgs?.includes('{{') ?? false);
-
-  let orgName = '';
-  const siteNames = new Map<string, string>();
-  if (templatesUseVariables) {
-    const [org] = await db.select({ name: organizations.name })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1);
-    orgName = org?.name ?? '';
-    const siteRows = await db.select({ id: sites.id, name: sites.name })
-      .from(sites)
-      .where(eq(sites.orgId, orgId));
-    for (const s of siteRows) siteNames.set(s.id, s.name);
-  }
-
-  const detectionRules = Array.isArray(versionRecord.detectionRules)
-    ? versionRecord.detectionRules
-    : undefined;
-  const deploymentOptions = (deployment.options ?? null) as Record<string, unknown> | null;
-  const forceReinstall = deploymentOptions?.forceReinstall === true;
-
-  const dispatchedDeviceIds: string[] = [];
-  for (const device of targetDevices) {
-    let deviceDownloadUrl = finalDownloadUrl;
-    let deviceSilentInstallArgs = finalSilentInstallArgs;
-    if (templatesUseVariables) {
-      const ctx: InstallerVariableContext = {
-        org: { id: orgId, name: orgName },
-        site: { id: device.siteId, name: siteNames.get(device.siteId) ?? '' },
-        device: {
-          hostname: device.hostname,
-          customFields: (device.customFields as Record<string, unknown> | null) ?? {},
-        },
-      };
-      const resolved = resolveInstallerVariables(finalDownloadUrl, finalSilentInstallArgs, ctx);
-      if (resolved.unresolved.length > 0) {
-        await db.update(deploymentResults)
-          .set({
-            status: 'failed',
-            errorMessage: `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
-            completedAt: new Date(),
-          })
-          .where(and(
-            eq(deploymentResults.deploymentId, deployment.id),
-            eq(deploymentResults.deviceId, device.id),
-          ));
-        continue;
-      }
-      deviceDownloadUrl = resolved.downloadUrl ?? finalDownloadUrl;
-      deviceSilentInstallArgs = resolved.silentInstallArgs;
-    }
-
-    // deploymentId MUST ride in the payload — the queued fallback's
-    // device_commands row keys result reconciliation on it.
-    const payload: AgentCommand['payload'] = {
-      deploymentId: deployment.id,
-      downloadUrl: deviceDownloadUrl,
-      checksum: versionRecord.checksum,
-      fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
-      fileType: versionRecord.fileType ?? 'exe',
-      silentInstallArgs: deviceSilentInstallArgs,
-      softwareName: catalogItem.name,
-      version: versionRecord.version,
-      ...(detectionRules ? { detectionRules } : {}),
-      forceReinstall,
-    };
-    await dispatchSoftwareInstallToDevice(deployment.id, device, payload, opts.createdBy);
-    dispatchedDeviceIds.push(device.id);
-  }
-
-  return { dispatchedDeviceIds };
+  return {
+    dispatchedDeviceIds: fanout.dispatchedDeviceIds,
+    ...(fanout.status === 'failed' && fanout.message ? { error: fanout.message } : {}),
+  };
 }
 
 // POST /deployments/:id/retry - Retry failed per-device results
