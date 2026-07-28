@@ -1,5 +1,5 @@
 import { and, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
-import { db, hasDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
@@ -38,38 +38,49 @@ export const OFFBOARDING_DRAIN_WINDOW_HOURS = RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW
 const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
 
 /**
- * #2877 — run entry/abort DB work on the CALLER's transaction when one is
- * active; only open a fresh system context when there is none.
+ * #2877 — run entry/abort DB work on the CALLER's transaction when that
+ * transaction can SEE the target tenant row; otherwise open a fresh system
+ * context.
  *
  * The org/partner status routes call the begin/abort functions AFTER `UPDATE ...
  * RETURNING` on the very organizations/partners row, inside the request
  * transaction the auth middleware wraps around the whole handler. The old
  * shape here — `runOutsideDbContext(() => withSystemDbAccessContext(fn))` —
- * opened a SECOND pooled connection and UPDATEd the SAME row, which then
- * waited forever on the request transaction's row lock while the request
- * could not commit until this function returned: a cross-connection cycle
- * Postgres's deadlock detector cannot see (each side looks merely blocked /
- * idle-in-transaction). Killing the wedged request tore the entry — the
- * status write rolled back while the fresh connection's side effects
- * committed.
+ * unconditionally opened a SECOND pooled connection and UPDATEd the SAME
+ * row, which then waited forever on the request transaction's row lock while
+ * the request could not commit until this function returned: a
+ * cross-connection cycle Postgres's deadlock detector cannot see (each side
+ * looks merely blocked / idle-in-transaction). Killing the wedged request
+ * tore the entry — the status write rolled back while the fresh connection's
+ * side effects committed.
  *
  * Reusing the ambient transaction removes the second connection (no lock to
  * wait on) AND makes the transition atomic: status + drain stamp + queued/
  * cancelled uninstalls commit or roll back together, so the torn state is
  * unreachable.
  *
- * RLS: on the ambient path the work runs under the CALLER's scope, not
- * system. That is sufficient by construction for every route caller: it only
- * reaches this function after its own UPDATE on the same organizations/
- * partners row succeeded under that scope (so the stamp UPDATE passes the
- * identical policy), the org's devices are covered by the same org
- * allowlist, and device_commands is intentionally unscoped (see the
- * rls-coverage allowlist). Callers with NO ambient context (e.g. a bare job
- * entrypoint) keep the fresh system context, exactly as before. Note the
- * drain reaper DOES run inside a system ambient context — it never calls the
- * begin/abort functions, but a future background caller that does would take
- * the ambient branch, which is the desired behavior there too (its own
- * transaction, no second connection).
+ * The visibility gate is what makes the ambient path RLS-correct: the work
+ * only reuses the caller's transaction when that context's allowlists (the
+ * exact inputs to breeze_has_org_access / breeze_has_partner_access) grant
+ * the target row, so the stamp UPDATE, the devices FOR UPDATE, and the
+ * device_commands writes (unscoped anyway) all resolve the same rows a
+ * system context would. When the ambient context CANNOT see the row —
+ * #2879's suspended-lifecycle override is the live case: the suspended org
+ * is excluded from accessibleOrgIds, so the route ran its status UPDATE on
+ * its own short system transaction — running here under the caller's scope
+ * would silently 0-row the stamp and queue nothing. The fallback to a fresh
+ * system context is deadlock-safe precisely BECAUSE of the invisibility: an
+ * ambient transaction that cannot see the row cannot have UPDATEd it, so it
+ * holds no lock for the fresh connection to wait on. (On that path the entry
+ * is two transactions; a crash between them leaves status-without-stamp,
+ * which repairIncompleteEntry already backstops.)
+ *
+ * Callers with NO ambient context (e.g. a bare job entrypoint) keep the
+ * fresh system context, exactly as before. Note the drain reaper DOES run
+ * inside a system ambient context — it never calls the begin/abort
+ * functions, but a future background caller that does would take the ambient
+ * branch (scope 'system' always passes the gate), which is the desired
+ * behavior there too: its own transaction, no second connection.
  *
  * Cost, accepted deliberately: on the ambient path the request transaction
  * now holds the queueDrainUninstalls device FOR UPDATE locks (and performs
@@ -79,9 +90,20 @@ const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
  * admin operations — a short, bounded hold, vs. the alternative of a
  * permanent deadlock (#1105 tripwire still watches the duration).
  */
-function inCallerOrSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
-  if (hasDbAccessContext()) {
-    return fn();
+function inCallerOrSystemDbContext<T>(
+  target: { orgId: string } | { partnerId: string },
+  fn: () => Promise<T>
+): Promise<T> {
+  const ambient = getCurrentDbAccessContext();
+  if (ambient) {
+    const visible =
+      ambient.scope === 'system' ||
+      ('orgId' in target
+        ? (ambient.accessibleOrgIds?.includes(target.orgId) ?? false)
+        : (ambient.accessiblePartnerIds?.includes(target.partnerId) ?? false));
+    if (visible) {
+      return fn();
+    }
   }
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
@@ -220,7 +242,7 @@ export async function beginOrganizationOffboarding(
   // retrying the PATCH (or by reactivation's restore path).
   const revocation = await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
 
-  return inCallerOrSystemDbContext(async () => {
+  return inCallerOrSystemDbContext({ orgId }, async () => {
     // Preserve the original start on re-entry so a repeated PATCH can't
     // extend the drain window indefinitely.
     await db
@@ -242,7 +264,7 @@ export async function beginPartnerOffboarding(
   // Ambient-path RLS note: the partner status routes are system-scope only
   // (requireScope('system')), so the org enumeration below sees every org
   // under the partner even when run on the request transaction.
-  return inCallerOrSystemDbContext(async () => {
+  return inCallerOrSystemDbContext({ partnerId }, async () => {
     await db
       .update(partners)
       .set({ offboardingStartedAt: DB_NOW, updatedAt: new Date() })
@@ -309,7 +331,7 @@ export async function abortOrganizationOffboarding(orgId: string): Promise<Offbo
   // routes (and DELETE /organizations/:id) call this right after UPDATEing the
   // same organizations row in the request transaction, so the stamp-clear must
   // run on that transaction, not a fresh connection.
-  return inCallerOrSystemDbContext(async () => {
+  return inCallerOrSystemDbContext({ orgId }, async () => {
     const cleared = await db
       .update(organizations)
       .set({ offboardingStartedAt: null, updatedAt: new Date() })
@@ -328,7 +350,7 @@ export async function abortOrganizationOffboarding(orgId: string): Promise<Offbo
 }
 
 export async function abortPartnerOffboarding(partnerId: string): Promise<OffboardingAbortResult> {
-  return inCallerOrSystemDbContext(async () => {
+  return inCallerOrSystemDbContext({ partnerId }, async () => {
     const cleared = await db
       .update(partners)
       .set({ offboardingStartedAt: null, updatedAt: new Date() })

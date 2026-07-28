@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
-const { selectMock, updateMock, insertMock, hasDbAccessContextMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, insertMock, getCurrentDbAccessContextMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   insertMock: vi.fn(),
-  // #2877 — default false (background-caller shape). Ambient-context tests
-  // flip it with mockReturnValueOnce so nothing leaks across tests.
-  hasDbAccessContextMock: vi.fn(() => false),
+  // #2877 — default undefined (no ambient context; background-caller shape).
+  // Ambient-context tests set a context object and restore in afterEach.
+  getCurrentDbAccessContextMock: vi.fn<() => Record<string, unknown> | undefined>(() => undefined),
 }));
 
 vi.mock('../db', () => {
@@ -18,7 +18,7 @@ vi.mock('../db', () => {
       // transaction; the tx handle proxies to the same mocked surface.
       transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(surface)),
     },
-    hasDbAccessContext: hasDbAccessContextMock,
+    getCurrentDbAccessContext: getCurrentDbAccessContextMock,
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
@@ -273,8 +273,19 @@ describe('beginPartnerOffboarding', () => {
 // transaction, which already holds the org/partner row lock from the route's
 // own status UPDATE. Entry/abort must reuse that ambient transaction (same
 // connection, atomic commit) instead of opening a fresh system-context
-// connection that would wait on the lock forever.
+// connection that would wait on the lock forever — but ONLY when the ambient
+// context can actually SEE the target row (#2879's suspended-lifecycle
+// override runs the status UPDATE on its own system connection precisely
+// because the org is outside the caller's allowlist; reusing the ambient
+// partner scope there would silently 0-row the stamp).
 describe('#2877 ambient request-transaction reuse', () => {
+  const PARTNER_AMBIENT = {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: ['org-1'],
+    accessiblePartnerIds: ['partner-1'],
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     setupWrites();
@@ -285,11 +296,11 @@ describe('#2877 ambient request-transaction reuse', () => {
   // to the system branch mid-test. Restored here so it can't leak into the
   // background-caller suites.
   afterEach(() => {
-    hasDbAccessContextMock.mockReturnValue(false);
+    getCurrentDbAccessContextMock.mockReturnValue(undefined);
   });
 
-  it('entry runs on the ambient context — no fresh connection is opened', async () => {
-    hasDbAccessContextMock.mockReturnValue(true);
+  it('entry runs on the ambient context when it can see the org — no fresh connection', async () => {
+    getCurrentDbAccessContextMock.mockReturnValue(PARTNER_AMBIENT);
     queueSelect([]); // devices
 
     await beginOrganizationOffboarding('org-1', 'user-1');
@@ -300,8 +311,8 @@ describe('#2877 ambient request-transaction reuse', () => {
     expect(updatesFor(organizations)).toHaveLength(1);
   });
 
-  it('abort runs on the ambient context — no fresh connection is opened', async () => {
-    hasDbAccessContextMock.mockReturnValue(true);
+  it('abort runs on the ambient context when it can see the org — no fresh connection', async () => {
+    getCurrentDbAccessContextMock.mockReturnValue(PARTNER_AMBIENT);
     updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
     queueSelect([{ id: 'd1' }]); // devices in org
     updateReturningQueue.push([{ id: 'cmd-1' }]); // cancelled commands
@@ -311,6 +322,43 @@ describe('#2877 ambient request-transaction reuse', () => {
     expect(result.aborted).toBe(true);
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('partner entry reuses a system-scope ambient context (partner routes are system-only)', async () => {
+    getCurrentDbAccessContextMock.mockReturnValue({
+      scope: 'system',
+      orgId: null,
+      accessibleOrgIds: null,
+      accessiblePartnerIds: null,
+    });
+    queueSelect([{ id: 'org-1' }]); // orgs under partner
+    queueSelect([]); // devices
+
+    await beginPartnerOffboarding('partner-1', null);
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a fresh system context when the ambient context cannot see the org (#2879 override)', async () => {
+    // The suspended-lifecycle override: partner-scope request whose allowlist
+    // EXCLUDES the (suspended) org. The route already ran its status UPDATE on
+    // a separate system connection, so the ambient tx holds no row lock and
+    // the fresh system context is both safe and required for RLS visibility.
+    getCurrentDbAccessContextMock.mockReturnValue({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: ['some-other-org'],
+      accessiblePartnerIds: ['partner-1'],
+    });
+    queueSelect([]); // devices
+
+    await beginOrganizationOffboarding('org-1', null);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // The stamp write still happened — under the system context.
+    expect(updatesFor(organizations)).toHaveLength(1);
   });
 
   it('callers with no ambient context still get a fresh system context', async () => {

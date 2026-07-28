@@ -2,7 +2,13 @@ import './setup';
 
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
 import { deviceCommands, devices, organizations, partners } from '../../db/schema';
 import {
   abortOrganizationOffboarding,
@@ -250,6 +256,52 @@ describe('#2877 offboarding entry inside the request transaction', () => {
     expect(commands).toHaveLength(1);
     expect(commands[0]!.status).toBe('cancelled');
     expect((commands[0]!.result as { reason?: string }).reason).toBe('organization_offboarding_aborted');
+  });
+
+  runDb('#2879 override shape: entry works when the ambient context cannot see the org', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const org = await createOrganization({ partnerId: partner.id, status: 'suspended' });
+    const site = await createSite({ orgId: org.id });
+    const device = await seedDevice(org.id, site.id, 'override');
+
+    // Mirror updateOrgHandler's suspended-lifecycle override (#2887): the
+    // suspended org is EXCLUDED from the request context's allowlist, so the
+    // route runs its status UPDATE on a short system-scoped connection and
+    // the ambient partner transaction never touches (or even sees) the row.
+    // The service must therefore NOT reuse the ambient transaction — a
+    // partner-scoped stamp UPDATE would silently match zero rows — and its
+    // fresh system context is deadlock-free because no ambient lock exists.
+    await expectNoDeadlock(
+      withDbAccessContext(partnerRequestContext(partner.id, [/* org NOT visible */]), async () => {
+        const [updated] = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(async () =>
+            db
+              .update(organizations)
+              .set({ status: 'offboarding', updatedAt: new Date() })
+              .where(and(
+                eq(organizations.id, org.id),
+                eq(organizations.partnerId, partner.id),
+                eq(organizations.status, 'suspended')
+              ))
+              .returning({ id: organizations.id })
+          )
+        );
+        expect(updated?.id).toBe(org.id);
+
+        return beginOrganizationOffboarding(org.id, null);
+      }),
+      'organization offboarding entry (suspended-lifecycle override)'
+    );
+
+    // The entry's side effects landed despite the caller's blind allowlist:
+    // stamp set and the uninstall queued (via the system-context fallback).
+    const after = await readOrg(org.id);
+    expect(after.status).toBe('offboarding');
+    expect(after.startedAt).not.toBeNull();
+
+    const queued = await readUninstalls(device.id);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.status).toBe('pending');
   });
 
   runDb('partner entry completes with the partner row locked by the request txn', async () => {
