@@ -69,6 +69,7 @@
     "actions": {
       "reopen": "Rouvrir",
       "remediate": "Corriger",
+      "remediateNoPatch": "Aucun correctif disponible pour les constats sélectionnés",
       "acceptRisk": "Accepter le risque",
       "mitigate": "Atténuer",
       "createTicket": "Créer un ticket"
@@ -155,6 +156,7 @@
     "actions": {
       "reopen": "Rouvrir",
       "remediate": "Corriger",
+      "remediateNoPatch": "Aucun correctif disponible pour les constats sélectionnés",
       "acceptRisk": "Accepter le risque",
       "mitigate": "Atténuer",
       "createTicket": "Créer un ticket"

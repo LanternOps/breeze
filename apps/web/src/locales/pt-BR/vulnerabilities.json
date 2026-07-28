@@ -69,6 +69,7 @@
     "actions": {
       "reopen": "Reabrir",
       "remediate": "Remediar",
+      "remediateNoPatch": "Nenhuma correção disponível para os achados selecionados",
       "acceptRisk": "Aceitar risco",
       "mitigate": "Mitigar",
       "createTicket": "Criar chamado"
@@ -155,6 +156,7 @@
     "actions": {
       "reopen": "Reabrir",
       "remediate": "Remediar",
+      "remediateNoPatch": "Nenhuma correção disponível para os achados selecionados",
       "acceptRisk": "Aceitar risco",
       "mitigate": "Mitigar",
       "createTicket": "Criar chamado"

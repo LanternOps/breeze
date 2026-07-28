@@ -69,6 +69,7 @@
     "actions": {
       "reopen": "Riapri",
       "remediate": "Correggi",
+      "remediateNoPatch": "Nessuna patch disponibile per i rilevamenti selezionati",
       "acceptRisk": "Accetta rischio",
       "mitigate": "Mitiga",
       "createTicket": "Crea ticket"
@@ -155,6 +156,7 @@
     "actions": {
       "reopen": "Riapri",
       "remediate": "Correggi",
+      "remediateNoPatch": "Nessuna patch disponibile per i rilevamenti selezionati",
       "acceptRisk": "Accetta rischio",
       "mitigate": "Mitiga",
       "createTicket": "Crea ticket"

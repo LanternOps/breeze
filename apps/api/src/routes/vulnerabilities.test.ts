@@ -558,6 +558,43 @@ describe('GET /vulnerabilities/software/:groupKey (drawer payload)', () => {
     const denied = await app().request(`/vulnerabilities/software/${key}?orgId=${ORG_DENIED}`);
     expect(denied.status).toBe(403);
   });
+
+  it('applies the table filters (severity/kevOnly/patchAvailable) but never a status filter', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
+      fleetRow(), // critical, KEV, patch available, open
+      fleetRow({ deviceVulnerabilityId: 'dv-2', deviceId: 'dev-2', status: 'accepted', cveId: 'CVE-2026-0002', vulnerabilityId: 'v-2', severity: 'critical' }),
+      fleetRow({ deviceVulnerabilityId: 'dv-3', deviceId: 'dev-3', cveId: 'CVE-2026-0003', vulnerabilityId: 'v-3', severity: 'low', knownExploited: false }),
+    ]);
+    const key = encodeURIComponent('sw:google chrome|google llc');
+    const res = await app().request(`/vulnerabilities/software/${key}?severity=critical`);
+    expect(res.status).toBe(200);
+    // Still fetched across ALL statuses — the drawer keeps accepted/mitigated
+    // rows visible (Reopen lives there); only the table's other filters apply.
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all' }),
+    );
+    const body = await res.json();
+    // The low-severity dv-3 is filtered out; the accepted critical dv-2 stays.
+    expect(body.findings.map((f: any) => f.deviceVulnerabilityId).sort()).toEqual(['dv-1', 'dv-2']);
+    expect(body.group.deviceCount).toBe(2);
+
+    const kevRes = await app().request(`/vulnerabilities/software/${key}?kevOnly=true&patchAvailable=true`);
+    const kevBody = await kevRes.json();
+    expect(kevBody.findings.map((f: any) => f.deviceVulnerabilityId).sort()).toEqual(['dv-1', 'dv-2']);
+  });
+
+  it('404s when the filters remove every finding in the group', async () => {
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([fleetRow({ severity: 'critical' })]);
+    const key = encodeURIComponent('sw:google chrome|google llc');
+    const res = await app().request(`/vulnerabilities/software/${key}?severity=low`);
+    expect(res.status).toBe(404);
+  });
+
+  it('400s on a malformed severity filter', async () => {
+    const key = encodeURIComponent('sw:google chrome|google llc');
+    const res = await app().request(`/vulnerabilities/software/${key}?severity=apocalyptic`);
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('GET /vulnerabilities/devices/:deviceId/software', () => {
@@ -673,8 +710,9 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns the catalog record + fleet findings for the CVE (case-insensitive match)', async () => {
+  it('returns the catalog record + fleet findings for the CVE, narrowed by vulnerabilityId in SQL', async () => {
     vi.mocked(fetchCveCatalogRecord).mockResolvedValue({
+      id: 'v-1',
       cveId: 'CVE-2026-0001',
       description: 'Bad bug',
       references: ['https://example.test/advisory'],
@@ -688,20 +726,25 @@ describe('GET /vulnerabilities/:cveId/devices (CVE drawer payload)', () => {
       publishedAt: '2026-01-01T00:00:00.000Z',
       modifiedAt: null,
     });
-    vi.mocked(fetchFleetFindingRows).mockResolvedValue([
-      fleetRow(),
-      fleetRow({ deviceVulnerabilityId: 'dv-2', cveId: 'CVE-2026-9999', vulnerabilityId: 'v-9' }), // other CVE — excluded
-    ]);
+    // The SQL layer (vulnerability_id = v-1) already narrows to this CVE's rows.
+    vi.mocked(fetchFleetFindingRows).mockResolvedValue([fleetRow()]);
     const res = await app().request('/vulnerabilities/cve-2026-0001/devices');
     expect(res.status).toBe(200);
+    // Filtering happens in SQL: the catalog id is passed down as vulnerabilityId.
+    expect(vi.mocked(fetchFleetFindingRows)).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'all', vulnerabilityId: 'v-1' }),
+    );
     const body = await res.json();
     expect(body.cve.cveId).toBe('CVE-2026-0001');
+    // The internal catalog id never leaks onto the wire.
+    expect(body.cve.id).toBeUndefined();
     expect(body.findings).toHaveLength(1);
     expect(body.findings[0].deviceVulnerabilityId).toBe('dv-1');
   });
 
   it('forwards orgId into the fleet query and 403s a denied org (before the catalog lookup)', async () => {
     vi.mocked(fetchCveCatalogRecord).mockResolvedValueOnce({
+      id: 'v-1',
       cveId: 'CVE-2026-0001',
       description: 'Bad bug',
       references: [],

@@ -20,6 +20,7 @@ import {
   remediateVuln,
   reopenVuln,
   type SoftwareGroupDetail,
+  type SoftwareGroupDetailFilters,
 } from '../../lib/api/vulnerabilities';
 
 const ACTION_BTN =
@@ -59,11 +60,16 @@ function groupByDevice(findings: Finding[]): DeviceGroup[] {
 
 export function SoftwareGroupDrawer({
   groupKey,
+  filters,
   onClose,
   onActionComplete,
   onSelectCve,
 }: {
   groupKey: string;
+  /** The table's active severity/KEV/patch filters — forwarded so the drawer's
+   *  counts match the clicked row. Status is intentionally not part of this
+   *  (the drawer always shows all statuses so Reopen stays reachable). */
+  filters?: SoftwareGroupDetailFilters;
   onClose: () => void;
   onActionComplete: () => void;
   onSelectCve: (cveId: string) => void;
@@ -92,7 +98,12 @@ export function SoftwareGroupDrawer({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const d = await fetchSoftwareGroupDetail(groupKey);
+      const d = await fetchSoftwareGroupDetail(groupKey, {
+        severity: filters?.severity,
+        kevOnly: filters?.kevOnly,
+        patchAvailable: filters?.patchAvailable,
+        expiringWithinDays: filters?.expiringWithinDays,
+      });
       setDetail(d);
       // Pre-select only OPEN findings — they're the actionable ones; accepted/mitigated/patched rows start unchecked.
       setSelected(new Set(d.findings.filter((f) => f.status === 'open').map((f) => f.deviceVulnerabilityId)));
@@ -100,7 +111,9 @@ export function SoftwareGroupDrawer({
       setDetail(null);
       setError(err instanceof Error ? err.message : t('softwareGroupDrawer.errors.load'));
     }
-  }, [groupKey, t]);
+    // Depend on the individual filter fields — the parent recreates the filters
+    // object every render, and depending on it wholesale would refetch endlessly.
+  }, [groupKey, filters?.severity, filters?.kevOnly, filters?.patchAvailable, filters?.expiringWithinDays, t]);
 
   useEffect(() => {
     void load();
@@ -124,6 +137,9 @@ export function SoftwareGroupDrawer({
   const selectedIds = [...selected];
   const selectedFindings = detail ? detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
   const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
+  // Remediation schedules patch installs — pointless when no selected finding
+  // has a patch available, so the button grays out instead of failing later.
+  const selectionHasPatch = selectedFindings.some((f) => f.patchAvailable);
 
   const deviceGroups = useMemo(() => groupByDevice(detail?.findings ?? []), [detail]);
   // Only OPEN findings are selectable — accepted/mitigated/patched rows go
@@ -445,7 +461,8 @@ export function SoftwareGroupDrawer({
               type="button"
               data-testid="vuln-action-remediate"
               className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
-              disabled={busy !== null || selectedIds.length === 0}
+              disabled={busy !== null || selectedIds.length === 0 || !selectionHasPatch}
+              title={selectedIds.length > 0 && !selectionHasPatch ? t('softwareGroupDrawer.actions.remediateNoPatch') : undefined}
               onClick={() => {
                 setModalError(null);
                 setModal('remediate');

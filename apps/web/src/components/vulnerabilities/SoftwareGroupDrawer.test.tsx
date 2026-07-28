@@ -463,6 +463,61 @@ describe('SoftwareGroupDrawer', () => {
     expect(document.activeElement).toBe(screen.getByTestId('vuln-tab-cves'));
   });
 
+  it('forwards the table filters (severity/kevOnly/patchAvailable) into the detail fetch', async () => {
+    render(
+      <SoftwareGroupDrawer
+        groupKey="sw:google chrome|google llc"
+        filters={{ severity: 'critical', kevOnly: true }}
+        onClose={() => {}}
+        onActionComplete={() => {}}
+        onSelectCve={() => {}}
+      />,
+    );
+    await screen.findByTestId('vuln-software-drawer');
+    expect(api.fetchSoftwareGroupDetail).toHaveBeenCalledWith(
+      'sw:google chrome|google llc',
+      expect.objectContaining({ severity: 'critical', kevOnly: true }),
+    );
+  });
+
+  it('disables Remediate with an explanatory title when no selected finding has a patch', async () => {
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
+      ...DETAIL,
+      findings: [{ ...DETAIL.findings[0]!, patchAvailable: false }],
+    });
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    const remediate = await screen.findByTestId('vuln-action-remediate');
+    // The open patchless finding is pre-selected — remediation would be a no-op.
+    expect(screen.getByTestId('vuln-software-drawer')).toHaveTextContent('1 selected');
+    expect(remediate).toBeDisabled();
+    expect(remediate).toHaveAttribute('title', 'No patch available for the selected findings');
+    // The other bulk actions stay available for a patchless selection.
+    expect(screen.getByTestId('vuln-action-accept')).toBeEnabled();
+  });
+
+  it('enables Remediate (no tooltip) when at least one selected finding has a patch', async () => {
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
+      ...DETAIL,
+      findings: [
+        { ...DETAIL.findings[0]!, patchAvailable: false },
+        { ...DETAIL.findings[0]!, deviceVulnerabilityId: 'dv-3', cveId: 'CVE-2026-0002', patchAvailable: true },
+      ],
+    });
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    const remediate = await screen.findByTestId('vuln-action-remediate');
+    expect(remediate).toBeEnabled();
+    expect(remediate).not.toHaveAttribute('title');
+    // Narrow the selection down to only the patchless finding — Remediate grays out.
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    fireEvent.click(screen.getByTestId('vuln-finding-check-dv-3'));
+    expect(remediate).toBeDisabled();
+    expect(remediate).toHaveAttribute('title', 'No patch available for the selected findings');
+  });
+
   it('shows an inline retry on fetch failure', async () => {
     vi.mocked(api.fetchSoftwareGroupDetail).mockRejectedValueOnce(new Error('boom'));
     render(

@@ -144,6 +144,17 @@ const softwareQuerySchema = z.object({
   orgId: orgIdQuerySchema,
 });
 
+// Drawer detail: same filter surface as the /software list (so the drawer's
+// counts match the table row the user clicked) MINUS status — the drawer
+// always fetches all statuses (see the route comment).
+const groupDetailQuerySchema = z.object({
+  severity: severitySchema.optional(),
+  kevOnly: boolQuerySchema.optional(),
+  patchAvailable: boolQuerySchema.optional(),
+  expiringWithinDays: expiringWithinDaysSchema.optional(),
+  orgId: orgIdQuerySchema,
+});
+
 const SOFTWARE_GROUP_CAP = 500;
 // Same cap + hasMore contract for the by-CVE fleet view (one row per CVE, so
 // cardinality is catalog-bounded; a cap with a truncation notice beats pagination).
@@ -647,10 +658,11 @@ vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), a
 });
 
 // Software-group drawer payload: group summary + per-CVE rollup + raw findings.
-vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParamSchema), zValidator('query', orgScopeQuerySchema), async (c) => {
+vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParamSchema), zValidator('query', groupDetailQuerySchema), async (c) => {
   const auth = c.get('auth');
   const { groupKey } = c.req.valid('param');
-  const { orgId } = c.req.valid('query');
+  const query = c.req.valid('query');
+  const { orgId } = query;
   if (orgId && !auth.canAccessOrg(orgId)) {
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
@@ -658,7 +670,18 @@ vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParam
   // status 'all' so the drawer can show accepted/mitigated findings alongside
   // open ones (reopen lives in the drawers).
   const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds, orgId });
-  const detail = buildGroupDetail(groupKey, rows);
+  // Apply the table's severity/KEV/patch/expiring filters so the drawer's
+  // counts match the row the user clicked — but deliberately NOT status:
+  // the drawer must keep non-open (accepted/mitigated/patched) findings
+  // visible so Reopen stays reachable regardless of the table's status filter.
+  const filtered = filterFindings(rows, {
+    status: 'all',
+    severity: query.severity,
+    kevOnly: query.kevOnly,
+    patchAvailable: query.patchAvailable,
+    expiringWithinDays: query.expiringWithinDays,
+  });
+  const detail = buildGroupDetail(groupKey, filtered);
   if (!detail) {
     return c.json({ error: 'Group not found' }, 404);
   }
@@ -746,15 +769,23 @@ vulnerabilityRoutes.get('/:cveId/devices', zValidator('param', cveIdParamSchema)
   if (orgId && !auth.canAccessOrg(orgId)) {
     return c.json({ error: 'Access to this organization denied' }, 403);
   }
-  const cve = await fetchCveCatalogRecord(cveId);
-  if (!cve) {
+  const record = await fetchCveCatalogRecord(cveId);
+  if (!record) {
     return c.json({ error: 'CVE not found' }, 404);
   }
+  // The internal catalog id narrows the findings query in SQL (indexed on
+  // device_vulnerabilities.vulnerability_id) instead of fetching every fleet
+  // row and filtering in JS. It stays off the wire — the response `cve` shape
+  // is the shared CveCatalogRecord, unchanged.
+  const { id: vulnerabilityId, ...cve } = record;
   const perms = c.get('permissions') as UserPermissions | undefined;
-  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds, orgId });
-  const target = cveId.toLowerCase();
+  const rows = await fetchFleetFindingRows({
+    status: 'all',
+    allowedSiteIds: perms?.allowedSiteIds,
+    orgId,
+    vulnerabilityId,
+  });
   const findings = rows
-    .filter((r) => r.cveId.toLowerCase() === target)
     .map(toGroupFinding)
     .sort((a, b) => a.deviceName.localeCompare(b.deviceName));
   return c.json({ cve, findings });

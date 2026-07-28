@@ -186,6 +186,38 @@ describe('CveDrawer', () => {
     expect(screen.getByTestId('vuln-action-remediate')).toBeDisabled();
   });
 
+  it('disables Remediate with an explanatory title when no selected finding has a patch', async () => {
+    vi.mocked(api.fetchCveDevices).mockResolvedValue({
+      ...PAYLOAD,
+      findings: [{ ...PAYLOAD.findings[0]!, patchAvailable: false }],
+    });
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    const remediate = await screen.findByTestId('vuln-action-remediate');
+    // The open patchless finding is pre-selected — remediation would be a no-op.
+    expect(remediate).toBeDisabled();
+    expect(remediate).toHaveAttribute('title', 'No patch available for the selected findings');
+    // The other bulk actions stay available for a patchless selection.
+    expect(screen.getByTestId('vuln-action-accept')).toBeEnabled();
+  });
+
+  it('enables Remediate (no tooltip) when at least one selected finding has a patch', async () => {
+    vi.mocked(api.fetchCveDevices).mockResolvedValue({
+      ...PAYLOAD,
+      findings: [
+        { ...PAYLOAD.findings[0]!, patchAvailable: false },
+        { ...PAYLOAD.findings[0]!, deviceVulnerabilityId: 'dv-3', deviceId: 'dev-3', deviceName: 'WS-03', patchAvailable: true },
+      ],
+    });
+    render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
+    const remediate = await screen.findByTestId('vuln-action-remediate');
+    expect(remediate).toBeEnabled();
+    expect(remediate).not.toHaveAttribute('title');
+    // Narrow the selection down to only the patchless finding — Remediate grays out.
+    fireEvent.click(screen.getByTestId('vuln-finding-check-dv-3'));
+    expect(remediate).toBeDisabled();
+    expect(remediate).toHaveAttribute('title', 'No patch available for the selected findings');
+  });
+
   it('passes the selected device names (no CVE id — the drawer IS the CVE) to the bulk modal summary', async () => {
     render(<CveDrawer cveId="CVE-2026-0001" onClose={() => {}} onActionComplete={() => {}} />);
     fireEvent.click(await screen.findByTestId('vuln-action-accept'));

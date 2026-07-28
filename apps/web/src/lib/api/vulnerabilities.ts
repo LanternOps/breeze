@@ -217,8 +217,25 @@ export async function fetchSoftwareGroups(
   return res.json() as Promise<{ items: SoftwareGroup[]; hasMore: boolean }>;
 }
 
-export async function fetchSoftwareGroupDetail(groupKey: string): Promise<SoftwareGroupDetail> {
-  const res = await fetchWithAuth(`/vulnerabilities/software/${encodeURIComponent(groupKey)}`);
+/** Filters the group-detail drawer inherits from the table so its counts match
+ *  the clicked row. Deliberately excludes `status`: the drawer always shows all
+ *  statuses (Reopen needs the non-open rows). */
+export type SoftwareGroupDetailFilters = Partial<
+  Pick<VulnFleetFilters, 'severity' | 'kevOnly' | 'patchAvailable' | 'expiringWithinDays'>
+>;
+
+export async function fetchSoftwareGroupDetail(
+  groupKey: string,
+  filters: SoftwareGroupDetailFilters = {},
+): Promise<SoftwareGroupDetail> {
+  const res = await fetchWithAuth(
+    `/vulnerabilities/software/${encodeURIComponent(groupKey)}${buildVulnQuery({
+      severity: filters.severity,
+      kevOnly: filters.kevOnly,
+      patchAvailable: filters.patchAvailable,
+      expiringWithinDays: filters.expiringWithinDays,
+    })}`,
+  );
   if (!res.ok) throw new Error('Failed to load software group');
   return res.json() as Promise<SoftwareGroupDetail>;
 }

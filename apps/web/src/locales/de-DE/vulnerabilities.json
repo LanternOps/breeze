@@ -69,6 +69,7 @@
     "actions": {
       "reopen": "Wieder öffnen",
       "remediate": "Abhilfe schaffen",
+      "remediateNoPatch": "Für die ausgewählten Befunde ist kein Patch verfügbar",
       "acceptRisk": "Akzeptieren Sie das Risiko",
       "mitigate": "Abmildern",
       "createTicket": "Ticket erstellen"
@@ -155,6 +156,7 @@
     "actions": {
       "reopen": "Wieder öffnen",
       "remediate": "Abhilfe schaffen",
+      "remediateNoPatch": "Für die ausgewählten Befunde ist kein Patch verfügbar",
       "acceptRisk": "Akzeptieren Sie das Risiko",
       "mitigate": "Abmildern",
       "createTicket": "Ticket erstellen"

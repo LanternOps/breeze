@@ -102,6 +102,9 @@ export function CveDrawer({
   const selectedIds = [...selected];
   const selectedFindings = payload ? payload.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
   const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
+  // Remediation schedules patch installs — pointless when no selected finding
+  // has a patch available, so the button grays out instead of failing later.
+  const selectionHasPatch = selectedFindings.some((f) => f.patchAvailable);
 
   // All/none toggle for the pre-checked findings list — deselecting a large
   // pre-selection one checkbox at a time is unreasonable.
@@ -302,7 +305,8 @@ export function CveDrawer({
               type="button"
               data-testid="vuln-action-remediate"
               className={`${ACTION_BTN} bg-primary text-primary-foreground hover:bg-primary/90`}
-              disabled={busy !== null || selectedIds.length === 0}
+              disabled={busy !== null || selectedIds.length === 0 || !selectionHasPatch}
+              title={selectedIds.length > 0 && !selectionHasPatch ? t('cveDrawer.actions.remediateNoPatch') : undefined}
               onClick={() => {
                 setModalError(null);
                 setModal('remediate');
