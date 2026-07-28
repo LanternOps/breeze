@@ -1,5 +1,5 @@
-import { and, eq, gte, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { and, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
@@ -36,6 +36,90 @@ const RAW_WINDOW_HOURS = envInt('OFFBOARDING_DRAIN_WINDOW_HOURS', 72);
 export const OFFBOARDING_DRAIN_WINDOW_HOURS = RAW_WINDOW_HOURS >= 1 ? RAW_WINDOW_HOURS : 72;
 
 const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
+
+/**
+ * #2877 — run entry/abort DB work on the CALLER's transaction when that
+ * transaction can SEE the target tenant row; otherwise open a fresh system
+ * context.
+ *
+ * The org/partner status routes call the begin/abort functions AFTER `UPDATE ...
+ * RETURNING` on the very organizations/partners row, inside the request
+ * transaction the auth middleware wraps around the whole handler. The old
+ * shape here — `runOutsideDbContext(() => withSystemDbAccessContext(fn))` —
+ * unconditionally opened a SECOND pooled connection and UPDATEd the SAME
+ * row, which then waited forever on the request transaction's row lock while
+ * the request could not commit until this function returned: a
+ * cross-connection cycle Postgres's deadlock detector cannot see (each side
+ * looks merely blocked / idle-in-transaction). Killing the wedged request
+ * tore the entry — the status write rolled back while the fresh connection's
+ * side effects committed.
+ *
+ * Reusing the ambient transaction removes the second connection (no lock to
+ * wait on) AND makes the transition atomic: status + drain stamp + queued/
+ * cancelled uninstalls commit or roll back together, so the torn state is
+ * unreachable.
+ *
+ * The visibility gate is what makes the ambient path RLS-correct: the work
+ * only reuses the caller's transaction when that context's allowlists (the
+ * exact inputs to breeze_has_org_access / breeze_has_partner_access) grant
+ * the target row, so the stamp UPDATE, the devices FOR UPDATE, and the
+ * device_commands writes (unscoped anyway) all resolve the same rows a
+ * system context would. When the ambient context CANNOT see the row —
+ * #2879's suspended-lifecycle override is the live case: the suspended org
+ * is excluded from accessibleOrgIds, so the route ran its status UPDATE on
+ * its own short system transaction — running here under the caller's scope
+ * would silently 0-row the stamp and queue nothing. The fallback to a fresh
+ * system context is deadlock-safe precisely BECAUSE of the invisibility: an
+ * ambient transaction that cannot see the row cannot have UPDATEd it, so it
+ * holds no lock for the fresh connection to wait on. (On that path the entry
+ * is two transactions; a crash between them leaves status-without-stamp,
+ * which repairIncompleteEntry already backstops.)
+ *
+ * Callers with NO ambient context (e.g. a bare job entrypoint) keep the
+ * fresh system context, exactly as before. Note the drain reaper DOES run
+ * inside a system ambient context — it never calls the begin/abort
+ * functions, but a future background caller that does would take the ambient
+ * branch (scope 'system' always passes the gate), which is the desired
+ * behavior there too: its own transaction, no second connection.
+ *
+ * Cost, accepted deliberately: on the ambient path the request transaction
+ * now holds the queueDrainUninstalls device FOR UPDATE locks (and performs
+ * the abort path's Redis cache invalidation) until the handler commits. The
+ * remaining handler work after these calls is only a fire-and-forget audit
+ * write and response serialization, and offboarding transitions are rare
+ * admin operations — a short, bounded hold, vs. the alternative of a
+ * permanent deadlock (#1105 tripwire still watches the duration).
+ */
+function inCallerOrSystemDbContext<T>(
+  target: { orgId: string } | { partnerId: string },
+  fn: () => Promise<T>
+): Promise<T> {
+  const ambient = getCurrentDbAccessContext();
+  if (ambient) {
+    const visible =
+      ambient.scope === 'system' ||
+      ('orgId' in target
+        ? (ambient.accessibleOrgIds?.includes(target.orgId) ?? false)
+        : (ambient.accessiblePartnerIds?.includes(target.partnerId) ?? false));
+    if (visible) {
+      return fn();
+    }
+  }
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/**
+ * The drain stamp must come from the DATABASE clock, not `new Date()`:
+ * `collectAndCancelOutstanding` scopes the finalize report's terminal counts
+ * with `gte(device_commands.created_at, stamp)`, and `created_at` defaults to
+ * the DB's `now()`. A JS-clock stamp written in the same transaction lands a
+ * couple of ms AFTER the transaction's `now()`, so every uninstall queued at
+ * entry fell just outside the window and `offboarding_completed` reported
+ * `uninstallsCompleted: 0` despite a completed drain (#2877). Inside one
+ * transaction `now()` is constant, so stamp == created_at and `gte` includes
+ * the entry's own commands.
+ */
+const DB_NOW = sql`now()`;
 
 export interface OffboardingEntryResult {
   revocation: TenantRevocationResult;
@@ -150,21 +234,25 @@ export async function beginOrganizationOffboarding(
   actorUserId: string | null
 ): Promise<OffboardingEntryResult> {
   // Users/API keys/OAuth out immediately; agent channel kept (drain mode).
+  // This runs on its own short system contexts BEFORE the ambient-transaction
+  // work below: it never writes the organizations row (no lock conflict with
+  // the route's held request transaction), and its non-DB side effects
+  // (session/WS teardown, Redis) could not be transactional anyway. It is
+  // idempotent, so a rollback of the request transaction is recoverable by
+  // retrying the PATCH (or by reactivation's restore path).
   const revocation = await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
 
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      // Preserve the original start on re-entry so a repeated PATCH can't
-      // extend the drain window indefinitely.
-      await db
-        .update(organizations)
-        .set({ offboardingStartedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(organizations.id, orgId), isNull(organizations.offboardingStartedAt)));
+  return inCallerOrSystemDbContext({ orgId }, async () => {
+    // Preserve the original start on re-entry so a repeated PATCH can't
+    // extend the drain window indefinitely.
+    await db
+      .update(organizations)
+      .set({ offboardingStartedAt: DB_NOW, updatedAt: new Date() })
+      .where(and(eq(organizations.id, orgId), isNull(organizations.offboardingStartedAt)));
 
-      const queued = await queueDrainUninstalls([orgId], actorUserId);
-      return { revocation, ...queued };
-    })
-  );
+    const queued = await queueDrainUninstalls([orgId], actorUserId);
+    return { revocation, ...queued };
+  });
 }
 
 export async function beginPartnerOffboarding(
@@ -173,22 +261,23 @@ export async function beginPartnerOffboarding(
 ): Promise<OffboardingEntryResult> {
   const revocation = await revokePartnerTenantAccess(partnerId, { agentChannel: 'drain' });
 
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      await db
-        .update(partners)
-        .set({ offboardingStartedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(partners.id, partnerId), isNull(partners.offboardingStartedAt)));
+  // Ambient-path RLS note: the partner status routes are system-scope only
+  // (requireScope('system')), so the org enumeration below sees every org
+  // under the partner even when run on the request transaction.
+  return inCallerOrSystemDbContext({ partnerId }, async () => {
+    await db
+      .update(partners)
+      .set({ offboardingStartedAt: DB_NOW, updatedAt: new Date() })
+      .where(and(eq(partners.id, partnerId), isNull(partners.offboardingStartedAt)));
 
-      const orgRows = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, partnerId));
+    const orgRows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
 
-      const queued = await queueDrainUninstalls(orgRows.map((row) => row.id), actorUserId);
-      return { revocation, ...queued };
-    })
-  );
+    const queued = await queueDrainUninstalls(orgRows.map((row) => row.id), actorUserId);
+    return { revocation, ...queued };
+  });
 }
 
 /**
@@ -238,51 +327,51 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
  * churning. Reactivate the PARTNER to abort a partner-level drain.
  */
 export async function abortOrganizationOffboarding(orgId: string): Promise<OffboardingAbortResult> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const cleared = await db
-        .update(organizations)
-        .set({ offboardingStartedAt: null, updatedAt: new Date() })
-        .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
-        .returning({ id: organizations.id });
+  // Same #2877 structure as entry: the suspended/churned/active transition
+  // routes (and DELETE /organizations/:id) call this right after UPDATEing the
+  // same organizations row in the request transaction, so the stamp-clear must
+  // run on that transaction, not a fresh connection.
+  return inCallerOrSystemDbContext({ orgId }, async () => {
+    const cleared = await db
+      .update(organizations)
+      .set({ offboardingStartedAt: null, updatedAt: new Date() })
+      .where(and(eq(organizations.id, orgId), isNotNull(organizations.offboardingStartedAt)))
+      .returning({ id: organizations.id });
 
-      if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
 
-      const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-        [orgId],
-        'organization_offboarding_aborted'
-      );
-      await invalidateAgentTenantCache([orgId]);
-      return { aborted: true, uninstallsCancelled };
-    })
-  );
+    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+      [orgId],
+      'organization_offboarding_aborted'
+    );
+    await invalidateAgentTenantCache([orgId]);
+    return { aborted: true, uninstallsCancelled };
+  });
 }
 
 export async function abortPartnerOffboarding(partnerId: string): Promise<OffboardingAbortResult> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const cleared = await db
-        .update(partners)
-        .set({ offboardingStartedAt: null, updatedAt: new Date() })
-        .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
-        .returning({ id: partners.id });
+  return inCallerOrSystemDbContext({ partnerId }, async () => {
+    const cleared = await db
+      .update(partners)
+      .set({ offboardingStartedAt: null, updatedAt: new Date() })
+      .where(and(eq(partners.id, partnerId), isNotNull(partners.offboardingStartedAt)))
+      .returning({ id: partners.id });
 
-      if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
+    if (cleared.length === 0) return { aborted: false, uninstallsCancelled: 0 };
 
-      const orgRows = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.partnerId, partnerId));
-      const orgIds = orgRows.map((row) => row.id);
+    const orgRows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.partnerId, partnerId));
+    const orgIds = orgRows.map((row) => row.id);
 
-      const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
-        orgIds,
-        'partner_offboarding_aborted'
-      );
-      await invalidateAgentTenantCache(orgIds);
-      return { aborted: true, uninstallsCancelled };
-    })
-  );
+    const uninstallsCancelled = await cancelDrainUninstallsForOrgIds(
+      orgIds,
+      'partner_offboarding_aborted'
+    );
+    await invalidateAgentTenantCache(orgIds);
+    return { aborted: true, uninstallsCancelled };
+  });
 }
 
 async function countOutstandingUninstalls(orgIds: string[]): Promise<number> {
@@ -528,13 +617,14 @@ export async function finalizePartnerOffboarding(
 }
 
 /**
- * Repair an entry that committed the status but not the drain work. The route
- * writes `status='offboarding'` before calling begin*Offboarding, so a throw
- * in between leaves a tenant whose users are (maybe) revoked and whose fleet
- * has NO queued uninstall. Without this the next sweep would see zero
- * outstanding commands, finalize immediately, and emit an empty report
- * indistinguishable from a clean drain — reintroducing the exact false
- * confidence #2774 exists to remove.
+ * Repair an entry that committed the status but not the drain work. Since
+ * #2877 the route path commits status + stamp + queued uninstalls in ONE
+ * transaction, so this is defense in depth: it still covers rows torn by the
+ * pre-#2877 two-connection entry, and any future caller that writes the
+ * status outside begin*Offboarding's transaction. Without it the next sweep
+ * would see zero outstanding commands, finalize immediately, and emit an
+ * empty report indistinguishable from a clean drain — reintroducing the
+ * exact false confidence #2774 exists to remove.
  *
  * Queueing is idempotent (dedupes against in-flight uninstalls), so re-running
  * it is safe; the stamp write is the marker that the entry is now complete.
@@ -548,21 +638,46 @@ async function repairIncompleteEntry(
   console.warn(
     `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
   );
+  // Take the TENANT ROW lock first, matching the request path's acquisition
+  // order (route UPDATE on organizations/partners, then key/device work).
+  // Without this, a repair racing an operator's PATCH retry on the same torn
+  // tenant inverts the order: the reaper locks enrollment_keys/devices/
+  // device_commands and then blocks on the tenant row the request holds,
+  // while the request's fresh-connection revoke blocks on those key rows —
+  // the same cross-connection cycle Postgres cannot detect (#2877). Row lock
+  // first means whichever side wins the tenant row proceeds while the other
+  // waits holding nothing.
+  if (scope === 'organization') {
+    await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, scopeId))
+      .for('update');
+  } else {
+    await db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(eq(partners.id, scopeId))
+      .for('update');
+  }
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave
   // a window where the uninstall exists but the fleet is still 401ing.
   await prepareAgentDrainForOrgIds(orgIds);
   const queued = await queueDrainUninstalls(orgIds, null);
 
+  // DB_NOW, not the sweep's JS `now`, for the same clock-skew reason as
+  // begin*Offboarding: the finalize report's gte(created_at, stamp) window
+  // must include the commands this very repair just queued.
   if (scope === 'organization') {
     await db
       .update(organizations)
-      .set({ offboardingStartedAt: now, updatedAt: now })
+      .set({ offboardingStartedAt: DB_NOW, updatedAt: now })
       .where(and(eq(organizations.id, scopeId), isNull(organizations.offboardingStartedAt)));
   } else {
     await db
       .update(partners)
-      .set({ offboardingStartedAt: now, updatedAt: now })
+      .set({ offboardingStartedAt: DB_NOW, updatedAt: now })
       .where(and(eq(partners.id, scopeId), isNull(partners.offboardingStartedAt)));
   }
 
