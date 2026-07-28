@@ -3462,14 +3462,17 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if isDowngrade(response.UpgradeTo, h.agentVersion) {
-			// SECURITY: never auto-downgrade. A compromised/MITM'd control plane
-			// could otherwise force a fleet-wide rollback to an older,
-			// still-validly-signed, known-vulnerable build. Deliberate rollback
-			// is an operator action via the (default-off) dev_update path.
-			log.Error("SECURITY: refusing server-directed auto-update downgrade",
+		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
+			// SECURITY: never auto-downgrade, and never accept a malformed or
+			// prerelease-mis-ordered target. A compromised/MITM'd control
+			// plane could otherwise force a fleet-wide rollback to an older,
+			// still-validly-signed, known-vulnerable build. Deliberate
+			// rollback is an operator action via the (default-off)
+			// dev_update path.
+			log.Error("SECURITY: refusing server-directed auto-update",
 				"currentVersion", h.agentVersion,
 				"targetVersion", response.UpgradeTo,
+				"reason", decision.Reason,
 				"hint", "deliberate rollback uses the operator dev_update path")
 		} else if h.manifestTrustRotationRejected.Load() {
 			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
@@ -5300,28 +5303,21 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
-	// SECURITY: the target always originates from the control plane and must be
-	// a real release semver. Fail CLOSED on an unparseable target (matching the
-	// helper-upgrade guard's posture) so a compromised/MITM'd control plane
-	// can't slip a non-semver value past the downgrade check below — isDowngrade
-	// fails OPEN on unparseable input, which is the right call for agent "dev"
-	// builds but wrong for a server-directed privileged swap.
-	if _, _, _, ok := parseSemver(targetVersion); !ok {
-		log.Error("SECURITY: refusing watchdog upgrade to non-semver target",
-			"targetVersion", targetVersion)
-		return
-	}
-
-	// SECURITY: never auto-downgrade the watchdog. The signed manifest only
-	// binds manifest.Release == requested version, so a compromised/MITM'd
-	// control plane could otherwise replay an older, validly-signed,
-	// known-vulnerable watchdog. The watchdog ships in lockstep with the agent,
-	// so the running agent's version is a safe floor. (Note: the target normally
-	// EQUALS the agent version — both at latest — which is exactly when a stale
-	// watchdog needs swapping, so equality must NOT be treated as a no-op.)
-	if isDowngrade(targetVersion, h.agentVersion) {
-		log.Error("SECURITY: refusing server-directed watchdog downgrade",
-			"agentVersion", h.agentVersion, "targetVersion", targetVersion)
+	// SECURITY: the target always originates from the control plane and must
+	// be a real release semver, and must not be OLDER than the running
+	// agent. The signed manifest only binds manifest.Release == requested
+	// version, so a compromised/MITM'd control plane could otherwise replay
+	// a malformed target or an older, validly-signed, known-vulnerable
+	// watchdog. The watchdog ships in lockstep with the agent, so the
+	// running agent's version is a safe floor — routed through
+	// InstalledComponentCurrent (not MainAgentCurrent), so an agent "dev"
+	// build does NOT waive this guard the way it does for its own
+	// self-update. (Note: the target normally EQUALS the agent version —
+	// both at latest — which is exactly when a stale watchdog needs
+	// swapping, so equality must NOT be treated as a no-op.)
+	if decision := watchdogUpgradeDecision(targetVersion, h.agentVersion); !decision.Allowed {
+		log.Error("SECURITY: refusing server-directed watchdog upgrade",
+			"agentVersion", h.agentVersion, "targetVersion", targetVersion, "reason", decision.Reason)
 		return
 	}
 
