@@ -1394,7 +1394,16 @@
       "createdBy": "Created by",
       "noDeploymentsMatchYourFilters": "No deployments match your filters.",
       "running3": "running",
-      "pending": "pending"
+      "pending": "pending",
+      "inProgress": "In progress",
+      "completedWithErrors": "Completed with errors",
+      "immediate": "Immediate",
+      "loadingDeployments": "Loading deployments…",
+      "failedToLoadDeployments": "Failed to load deployments",
+      "noDeploymentsYet": "No deployments have been created yet.",
+      "failedToCancelDeployment": "Failed to cancel deployment",
+      "deploymentCancelled": "Deployment cancelled",
+      "pageOf": "Page {{page}} of {{pages}}"
     },
     "deploymentProgress": {
       "queued": "Queued",
@@ -1416,7 +1425,20 @@
       "completed3": "Completed",
       "error": "Error",
       "deploymentComplete": "Deployment complete",
-      "inProgress": "In progress"
+      "inProgress": "In progress",
+      "autoRefreshing": "Auto-refreshing every 5 seconds",
+      "queuedOffline": "Queued — device offline",
+      "cancelled": "Cancelled",
+      "downloading": "Downloading",
+      "installing": "Installing",
+      "exitCode": "Exit code",
+      "retryStarted": "Retry started",
+      "failedToRetryDeployment": "Failed to retry deployment",
+      "failedToCancelDeployment": "Failed to cancel deployment",
+      "deploymentCancelled": "Deployment cancelled",
+      "failedToLoadDeployment": "Failed to load deployment",
+      "loadingDeployment": "Loading deployment…",
+      "devicesFinished": "{{finished}} of {{total}} devices finished"
     },
     "deploymentWizard": {
       "selectSoftware": "Select Software",

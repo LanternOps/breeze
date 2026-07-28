@@ -1394,7 +1394,16 @@
       "createdBy": "Creado por",
       "noDeploymentsMatchYourFilters": "Ninguna implementación coincide con sus filtros.",
       "running3": "en ejecución",
-      "pending": "pendiente"
+      "pending": "pendiente",
+      "inProgress": "En curso",
+      "completedWithErrors": "Completado con errores",
+      "immediate": "Inmediato",
+      "loadingDeployments": "Cargando implementaciones…",
+      "failedToLoadDeployments": "No se pudieron cargar las implementaciones",
+      "noDeploymentsYet": "Aún no se han creado implementaciones.",
+      "failedToCancelDeployment": "No se pudo cancelar la implementación",
+      "deploymentCancelled": "Implementación cancelada",
+      "pageOf": "Página {{page}} de {{pages}}"
     },
     "deploymentProgress": {
       "queued": "En cola",
@@ -1416,7 +1425,20 @@
       "completed3": "Terminado",
       "error": "Error",
       "deploymentComplete": "Implementación completa",
-      "inProgress": "En curso"
+      "inProgress": "En curso",
+      "autoRefreshing": "Actualización automática cada 5 segundos",
+      "queuedOffline": "En cola — dispositivo sin conexión",
+      "cancelled": "Cancelado",
+      "downloading": "Descargando",
+      "installing": "Instalando",
+      "exitCode": "Código de salida",
+      "retryStarted": "Reintento iniciado",
+      "failedToRetryDeployment": "No se pudo reintentar la implementación",
+      "failedToCancelDeployment": "No se pudo cancelar la implementación",
+      "deploymentCancelled": "Implementación cancelada",
+      "failedToLoadDeployment": "No se pudo cargar la implementación",
+      "loadingDeployment": "Cargando implementación…",
+      "devicesFinished": "{{finished}} de {{total}} dispositivos finalizados"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleccionar software",

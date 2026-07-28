@@ -1394,7 +1394,16 @@
       "createdBy": "Criado por",
       "noDeploymentsMatchYourFilters": "Nenhuma implantação corresponde aos seus filtros.",
       "running3": "running",
-      "pending": "pending"
+      "pending": "pending",
+      "inProgress": "Em andamento",
+      "completedWithErrors": "Concluído com erros",
+      "immediate": "Imediato",
+      "loadingDeployments": "Carregando implantações…",
+      "failedToLoadDeployments": "Falha ao carregar as implantações",
+      "noDeploymentsYet": "Nenhuma implantação foi criada ainda.",
+      "failedToCancelDeployment": "Falha ao cancelar a implantação",
+      "deploymentCancelled": "Implantação cancelada",
+      "pageOf": "Página {{page}} de {{pages}}"
     },
     "deploymentProgress": {
       "queued": "Na fila",
@@ -1416,7 +1425,20 @@
       "completed3": "Concluído",
       "error": "Erro",
       "deploymentComplete": "Implantação concluída",
-      "inProgress": "Em andamento"
+      "inProgress": "Em andamento",
+      "autoRefreshing": "Atualização automática a cada 5 segundos",
+      "queuedOffline": "Na fila — dispositivo offline",
+      "cancelled": "Cancelado",
+      "downloading": "Baixando",
+      "installing": "Instalando",
+      "exitCode": "Código de saída",
+      "retryStarted": "Nova tentativa iniciada",
+      "failedToRetryDeployment": "Falha ao repetir a implantação",
+      "failedToCancelDeployment": "Falha ao cancelar a implantação",
+      "deploymentCancelled": "Implantação cancelada",
+      "failedToLoadDeployment": "Falha ao carregar a implantação",
+      "loadingDeployment": "Carregando implantação…",
+      "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos"
     },
     "deploymentWizard": {
       "selectSoftware": "Selecionar Software",

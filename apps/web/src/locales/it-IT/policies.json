@@ -1394,7 +1394,16 @@
       "createdBy": "Creato da",
       "noDeploymentsMatchYourFilters": "Nessuna distribuzione corrisponde ai filtri.",
       "running3": "running",
-      "pending": "pending"
+      "pending": "pending",
+      "inProgress": "In corso",
+      "completedWithErrors": "Completata con errori",
+      "immediate": "Immediata",
+      "loadingDeployments": "Caricamento delle distribuzioni…",
+      "failedToLoadDeployments": "Impossibile caricare le distribuzioni",
+      "noDeploymentsYet": "Non è stata ancora creata alcuna distribuzione.",
+      "failedToCancelDeployment": "Impossibile annullare la distribuzione",
+      "deploymentCancelled": "Distribuzione annullata",
+      "pageOf": "Pagina {{page}} di {{pages}}"
     },
     "deploymentProgress": {
       "queued": "In coda",
@@ -1416,7 +1425,20 @@
       "completed3": "Completato",
       "error": "Errore",
       "deploymentComplete": "Distribuzione completata",
-      "inProgress": "In corso"
+      "inProgress": "In corso",
+      "autoRefreshing": "Aggiornamento automatico ogni 5 secondi",
+      "queuedOffline": "In coda — dispositivo offline",
+      "cancelled": "Annullata",
+      "downloading": "Download in corso",
+      "installing": "Installazione in corso",
+      "exitCode": "Codice di uscita",
+      "retryStarted": "Nuovo tentativo avviato",
+      "failedToRetryDeployment": "Impossibile ripetere la distribuzione",
+      "failedToCancelDeployment": "Impossibile annullare la distribuzione",
+      "deploymentCancelled": "Distribuzione annullata",
+      "failedToLoadDeployment": "Impossibile caricare la distribuzione",
+      "loadingDeployment": "Caricamento della distribuzione…",
+      "devicesFinished": "{{finished}} dispositivi su {{total}} completati"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleziona software",

@@ -1394,7 +1394,16 @@
       "createdBy": "Erstellt von",
       "noDeploymentsMatchYourFilters": "Keine Bereitstellung entspricht Ihren Filtern.",
       "running3": "wird ausgeführt",
-      "pending": "ausstehend"
+      "pending": "ausstehend",
+      "inProgress": "In Bearbeitung",
+      "completedWithErrors": "Mit Fehlern abgeschlossen",
+      "immediate": "Sofort",
+      "loadingDeployments": "Bereitstellungen werden geladen…",
+      "failedToLoadDeployments": "Bereitstellungen konnten nicht geladen werden",
+      "noDeploymentsYet": "Es wurden noch keine Bereitstellungen erstellt.",
+      "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
+      "deploymentCancelled": "Bereitstellung abgebrochen",
+      "pageOf": "Seite {{page}} von {{pages}}"
     },
     "deploymentProgress": {
       "queued": "In der Warteschlange",
@@ -1416,7 +1425,20 @@
       "completed3": "Abgeschlossen",
       "error": "Fehler",
       "deploymentComplete": "Bereitstellung abgeschlossen",
-      "inProgress": "In Bearbeitung"
+      "inProgress": "In Bearbeitung",
+      "autoRefreshing": "Automatische Aktualisierung alle 5 Sekunden",
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "cancelled": "Abgebrochen",
+      "downloading": "Wird heruntergeladen",
+      "installing": "Wird installiert",
+      "exitCode": "Exit-Code",
+      "retryStarted": "Wiederholung gestartet",
+      "failedToRetryDeployment": "Bereitstellung konnte nicht wiederholt werden",
+      "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
+      "deploymentCancelled": "Bereitstellung abgebrochen",
+      "failedToLoadDeployment": "Bereitstellung konnte nicht geladen werden",
+      "loadingDeployment": "Bereitstellung wird geladen…",
+      "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen"
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",
