@@ -35,6 +35,29 @@ func init() {
 	handlerRegistry[tools.CmdDevUpdate] = handleDevUpdate
 }
 
+// devUpdaterConfig builds the *updater.Config shared by every dev_update
+// component handler (user-helper, desktop-helper, and the base of agent's).
+// It is IDENTICAL in shape to the auto-update path's config (see doUpgrade in
+// heartbeat.go) — same ServerURL/BackupServerURL providers, same
+// PinnedManifestPubKeys — so dev_update downloads through the exact same
+// netpolicy-enforced client, not a separate, unaudited one. Its checksum-only
+// trust model (no signed-manifest verification) is unrelated to and NOT
+// broadened by this: network-destination safety and payload-trust are
+// orthogonal gates, and this function only ever affects the former.
+// Extracted (rather than inlined at each call site) so tests can assert the
+// wiring directly, without needing to trip the windows/darwin platform gates
+// on handleDevUpdateUserHelper/handleDevUpdateDesktopHelper or wait on
+// handleDevUpdateAgent's background goroutine.
+func devUpdaterConfig(h *Heartbeat) *updater.Config {
+	return &updater.Config{
+		ServerURL:             h.serverURL,
+		BackupServerURL:       h.backupServerURL(),
+		AuthToken:             h.secureToken,
+		CurrentVersion:        h.agentVersion,
+		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+	}
+}
+
 func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
@@ -107,13 +130,7 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 		return tools.NewErrorResult(fmt.Errorf("user-helper dev push is only implemented on windows"), time.Since(start).Milliseconds())
 	}
 
-	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
-	}
-	u := updater.New(updaterCfg)
+	u := updater.New(devUpdaterConfig(h))
 
 	tempPath, err := u.DownloadAndVerify(downloadURL, checksum)
 	if err != nil {
@@ -290,14 +307,9 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	}
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
-	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		BinaryPath:            binaryPath,
-		BackupPath:            backupPath,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
-	}
+	updaterCfg := devUpdaterConfig(h)
+	updaterCfg.BinaryPath = binaryPath
+	updaterCfg.BackupPath = backupPath
 
 	u := updater.New(updaterCfg)
 
@@ -308,7 +320,15 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 		// future dev-push surface needs to swap a companion binary too, pass
 		// updater.UpdateOptions{UserHelper: ...} here.
 		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
-			log.Error("dev_update failed", "version", version, "error", err.Error())
+			// See heartbeat.go's doUpgrade for why this must not log
+			// err.Error() on a network-policy rejection: net/http wraps the
+			// bounded PolicyError in a *url.Error that repeats the full
+			// request URL.
+			if reason, ok := updater.PolicyRejectionReason(err); ok {
+				log.Error("dev_update failed: network policy rejected the download", "version", version, "policyReason", reason)
+			} else {
+				log.Error("dev_update failed", "version", version, "error", err.Error())
+			}
 		}
 	}()
 
@@ -329,13 +349,7 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 		return tools.NewErrorResult(fmt.Errorf("desktop-helper dev push is only implemented on darwin"), time.Since(start).Milliseconds())
 	}
 
-	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
-	}
-	u := updater.New(updaterCfg)
+	u := updater.New(devUpdaterConfig(h))
 
 	// Download + verify into a temp file. The caller is responsible for
 	// moving it into place and cleaning up.

@@ -1162,6 +1162,7 @@ func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Co
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
 		ServerURL:             serverURL,
+		BackupServerURL:       cfg.BackupServerURL,
 		AuthToken:             tok,
 		CurrentVersion:        "", // Not tracking agent version from watchdog.
 		BinaryPath:            binaryPath,
@@ -1169,10 +1170,17 @@ func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Co
 		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
-		journal.Log(watchdog.LevelError, "update.agent_failed", map[string]any{
-			"version": targetVersion,
-			"error":   err.Error(),
-		})
+		// A download failure may wrap a *netpolicy.PolicyError inside
+		// net/http's *url.Error, whose message repeats the full request URL
+		// (including any capability query string). Journal the bounded
+		// policy reason instead of the raw error whenever one is present.
+		fields := map[string]any{"version": targetVersion}
+		if reason, ok := updater.PolicyRejectionReason(err); ok {
+			fields["policyReason"] = reason
+		} else {
+			fields["error"] = err.Error()
+		}
+		journal.Log(watchdog.LevelError, "update.agent_failed", fields)
 		return err
 	}
 	journal.Log(watchdog.LevelInfo, "update.agent_success", map[string]any{
@@ -1196,6 +1204,7 @@ func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config
 	}
 	u := updater.New(&updater.Config{
 		ServerURL:             serverURL,
+		BackupServerURL:       cfg.BackupServerURL,
 		AuthToken:             tok,
 		CurrentVersion:        version,
 		Component:             "watchdog",
@@ -1204,10 +1213,15 @@ func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config
 		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
-		journal.Log(watchdog.LevelError, "update.watchdog_failed", map[string]any{
-			"version": targetVersion,
-			"error":   err.Error(),
-		})
+		// See doUpdateAgent above: avoid logging a raw *url.Error that would
+		// repeat the full request URL on a network-policy rejection.
+		fields := map[string]any{"version": targetVersion}
+		if reason, ok := updater.PolicyRejectionReason(err); ok {
+			fields["policyReason"] = reason
+		} else {
+			fields["error"] = err.Error()
+		}
+		journal.Log(watchdog.LevelError, "update.watchdog_failed", fields)
 		return err
 	}
 	journal.Log(watchdog.LevelInfo, "update.watchdog_success", map[string]any{

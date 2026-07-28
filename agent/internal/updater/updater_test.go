@@ -169,11 +169,12 @@ func TestEmbeddedTrustRootMatchesRepoPubKey(t *testing.T) {
 
 func TestNewCreatesUpdater(t *testing.T) {
 	cfg := &Config{
-		ServerURL:      staticServerURL("http://localhost:3001"),
-		AuthToken:      secmem.NewSecureString("brz_test"),
-		CurrentVersion: "0.1.0",
-		BinaryPath:     "/usr/local/bin/breeze-agent",
-		BackupPath:     "/usr/local/bin/breeze-agent.backup",
+		ServerURL:       staticServerURL("http://localhost:3001"),
+		BackupServerURL: "http://localhost:3002",
+		AuthToken:       secmem.NewSecureString("brz_test"),
+		CurrentVersion:  "0.1.0",
+		BinaryPath:      "/usr/local/bin/breeze-agent",
+		BackupPath:      "/usr/local/bin/breeze-agent.backup",
 	}
 	u := New(cfg)
 	if u == nil {
@@ -184,6 +185,38 @@ func TestNewCreatesUpdater(t *testing.T) {
 	}
 	if u.client == nil {
 		t.Fatal("HTTP client not created")
+	}
+	if u.clientErr != nil {
+		t.Fatalf("valid config should not produce a client construction error: %v", u.clientErr)
+	}
+}
+
+// TestNewFailsClosedOnMalformedOrigin proves New() does not panic or produce
+// a usable-but-unenforced client when the configured server/backup URLs are
+// malformed — it stores the netpolicy construction error and every download
+// entry point (checkClient) must refuse to proceed rather than silently
+// falling back to an unenforced client.
+func TestNewFailsClosedOnMalformedOrigin(t *testing.T) {
+	cfg := &Config{
+		// Userinfo in a configured origin is rejected by netpolicy
+		// (ReasonUserinfoPresent) at NewClient construction time.
+		ServerURL: staticServerURL("http://user:pw@breeze.example"),
+	}
+	u := New(cfg)
+	if u == nil {
+		t.Fatal("New returned nil")
+	}
+	if u.clientErr == nil {
+		t.Fatal("expected a client construction error for a malformed configured origin")
+	}
+	if u.client != nil {
+		t.Fatal("client must be nil when construction failed — no unenforced fallback")
+	}
+	if err := u.checkClient(); err == nil {
+		t.Fatal("checkClient should surface the construction error")
+	}
+	if _, err := u.downloadFromURL("https://cdn.example/file.bin"); err == nil {
+		t.Fatal("downloadFromURL must fail closed when the client failed to construct")
 	}
 }
 
@@ -1043,6 +1076,12 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	// we get to the AuthToken check. Use a path that exists and is writable
 	// so we DO reach downloadBinary and fail there with "auth token not
 	// available" — exercises the same UpdateTo error-return path on every OS.
+	//
+	// ServerURL below uses port 1, not 0: port 0 is itself an invalid_port
+	// per netpolicy's origin validation (New would fail closed on a
+	// misconfigured client and downloadBinary would return that error
+	// instead of "auth token not available", changing what this test proves
+	// without changing whether it passes).
 	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -1051,7 +1090,7 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
 
 	u := New(&Config{
-		ServerURL:  staticServerURL("http://localhost:0"),
+		ServerURL:  staticServerURL("http://localhost:1"),
 		BinaryPath: binaryFile.Name(),
 		BackupPath: binaryFile.Name() + ".backup",
 		// AuthToken intentionally nil — forces downloadBinary to return early.
@@ -1087,7 +1126,7 @@ func TestUpdateToWithOptions_NoUserHelperIsNoOp(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(binaryFile.Name()) })
 
 	u := New(&Config{
-		ServerURL:  staticServerURL("http://localhost:0"),
+		ServerURL:  staticServerURL("http://localhost:1"),
 		BinaryPath: binaryFile.Name(),
 		BackupPath: binaryFile.Name() + ".backup",
 	})
@@ -1114,7 +1153,7 @@ func TestUpdateTo_DelegatesToUpdateToWithOptions(t *testing.T) {
 
 	mkUpdater := func() *Updater {
 		return New(&Config{
-			ServerURL:  staticServerURL("http://localhost:0"),
+			ServerURL:  staticServerURL("http://localhost:1"),
 			BinaryPath: binaryFile.Name(),
 			BackupPath: binaryFile.Name() + ".backup",
 		})

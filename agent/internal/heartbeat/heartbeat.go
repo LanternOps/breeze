@@ -567,6 +567,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			helper.WithBackupServerURL(h.BackupServerURL),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -595,6 +596,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			helper.WithBackupServerURL(h.BackupServerURL),
 		)
 	}
 
@@ -2965,6 +2967,25 @@ func (h *Heartbeat) serverURL() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.config.ServerURL
+}
+
+// backupServerURL returns the current backup control-plane URL, mirroring
+// serverURL's locking. Updater construction sites pass this (as the plain-
+// string updater.Config.BackupServerURL, not a re-resolving provider — see
+// that field's doc) so netpolicy's ControlPlaneOrigins includes the backup
+// control plane alongside the primary; omitting it silently rejects
+// cleartext/private-address downloads from the backup after a failover.
+func (h *Heartbeat) backupServerURL() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.BackupServerURL
+}
+
+// BackupServerURL is the exported form of backupServerURL, passed to
+// long-lived callers (e.g. the helper.Manager) as a provider so they
+// re-resolve it on every download instead of pinning a startup snapshot.
+func (h *Heartbeat) BackupServerURL() string {
+	return h.backupServerURL()
 }
 
 // ServerURL returns the current server base URL, reflecting any
@@ -5381,6 +5402,7 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
 		ServerURL:             h.serverURL,
+		BackupServerURL:       h.backupServerURL(),
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		Component:             "watchdog",
@@ -5451,6 +5473,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	if download == nil {
 		helperCfg := &updater.Config{
 			ServerURL:             h.serverURL,
+			BackupServerURL:       h.backupServerURL(),
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -5544,6 +5567,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	if download == nil {
 		helperCfg := &updater.Config{
 			ServerURL:             h.serverURL,
+			BackupServerURL:       h.backupServerURL(),
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -5667,6 +5691,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 
 	updaterCfg := &updater.Config{
 		ServerURL:             h.serverURL,
+		BackupServerURL:       h.backupServerURL(),
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		BinaryPath:            binaryPath,
@@ -5705,7 +5730,17 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
 			return
 		}
-		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
+		// A download failure here may be a *netpolicy.PolicyError wrapped in
+		// net/http's *url.Error, whose message repeats the full request URL —
+		// including any capability query string. Log the bounded policy
+		// reason instead of the raw error whenever one is present; only fall
+		// back to err.Error() for non-network failures (checksum mismatch,
+		// manifest verification, etc.) where no URL is at risk.
+		if reason, ok := updater.PolicyRejectionReason(err); ok {
+			log.Error("failed to update: network policy rejected the download", "targetVersion", targetVersion, "policyReason", reason)
+		} else {
+			log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
+		}
 		return
 	}
 

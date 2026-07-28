@@ -21,6 +21,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -42,6 +43,18 @@ type Config struct {
 	BinaryPath     string
 	BackupPath     string
 
+	// BackupServerURL is the configured backup control-plane URL, as a plain
+	// string rather than a re-resolving provider (contrast ServerURL): each
+	// construction site here builds a fresh Updater per download operation,
+	// so a snapshot taken at New() time is never stale within that call. It
+	// is passed to netpolicy alongside ServerURL() as a ControlPlaneOrigins
+	// member — origin membership is what grants cleartext HTTP and private-
+	// address reachability, and it is exact (scheme+host+port), so omitting
+	// this field silently makes the backup control plane unreachable for
+	// updater downloads even though heartbeat/failover treat it as a first-
+	// class server.
+	BackupServerURL string
+
 	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
 	// by the API via enrollment/heartbeat and pinned TOFU-style. Format
 	// matches agent config: "<keyId>:<base64-raw-pubkey>". Merged with the
@@ -54,14 +67,88 @@ type Config struct {
 type Updater struct {
 	config *Config
 	client *http.Client
+	// clientErr is set when netpolicy.NewClient rejected the policy built
+	// from config (e.g. a malformed configured server/backup URL). It is
+	// surfaced lazily — at the first download attempt, via checkClient —
+	// rather than changing New's signature to return an error, which every
+	// one of the ten production construction sites would otherwise need to
+	// handle. The failure mode is closed: client is nil whenever clientErr
+	// is set, and every download entry point checks clientErr first.
+	clientErr error
 }
 
-// New creates a new Updater
+// New creates a new Updater. The returned client enforces netpolicy on every
+// download this Updater performs — the control-plane metadata request AND
+// the (possibly cross-origin, CDN-hosted) binary artifact fetch alike. See
+// updaterPolicy for the exact policy shape.
 func New(cfg *Config) *Updater {
-	return &Updater{
-		config: cfg,
-		client: &http.Client{Timeout: 5 * time.Minute},
+	client, err := netpolicy.NewClient(updaterPolicy(cfg))
+	if err != nil {
+		// err is always a *netpolicy.PolicyError carrying a bounded reason
+		// (e.g. a malformed configured server/backup URL) — safe to log
+		// directly, unlike the *url.Error net/http produces at download
+		// time, which repeats the full request URL.
+		log.Error("updater network policy misconfigured; downloads will fail closed", "error", err.Error())
 	}
+	return &Updater{
+		config:    cfg,
+		client:    client,
+		clientErr: err,
+	}
+}
+
+// updaterPolicy builds the netpolicy.Policy that governs every network
+// destination this Updater talks to. ControlPlaneOrigins carries BOTH the
+// primary (cfg.ServerURL()) and the configured backup server URL, snapshotted
+// once here — matching BackupServerURL's plain-string (non-reresolving)
+// shape, since every construction site builds a fresh Updater per download
+// rather than holding one across a failover promotion. Origin membership is
+// what grants cleartext HTTP and private-address reachability for the
+// ControlPlaneDownload purpose; omitting either origin silently makes that
+// control plane's downloads fail with cleartext_not_allowed or
+// private_address_not_allowed.
+func updaterPolicy(cfg *Config) netpolicy.Policy {
+	var origins []string
+	if cfg != nil {
+		if cfg.ServerURL != nil {
+			origins = append(origins, cfg.ServerURL())
+		}
+		origins = append(origins, cfg.BackupServerURL)
+	}
+	return netpolicy.Policy{
+		Purpose:             netpolicy.ControlPlaneDownload,
+		ControlPlaneOrigins: origins,
+		MaxRedirects:        10,
+		RequestTimeout:      5 * time.Minute,
+		MaxResponseBytes:    maxUpdateBinaryBytes,
+	}
+}
+
+// checkClient fails closed when New's netpolicy client construction failed,
+// or (defensively) when a directly-constructed Updater in a test never set
+// client at all. Called at the top of every method that reaches u.client.
+func (u *Updater) checkClient() error {
+	if u.clientErr != nil {
+		return fmt.Errorf("updater network client unavailable: %w", u.clientErr)
+	}
+	if u.client == nil {
+		return fmt.Errorf("updater network client not initialized")
+	}
+	return nil
+}
+
+// PolicyRejectionReason extracts the bounded netpolicy.PolicyError reason
+// from a download error, if the error chain contains one. Callers logging a
+// download failure MUST use this instead of err.Error(): net/http wraps
+// every client/transport error in *url.Error, whose message repeats the full
+// request URL — including any capability query string — regardless of what
+// error netpolicy itself returned.
+func PolicyRejectionReason(err error) (string, bool) {
+	var pe *netpolicy.PolicyError
+	if errors.As(err, &pe) {
+		return pe.Reason, true
+	}
+	return "", false
 }
 
 // serverURL resolves the control-plane base URL from the ServerURL provider.
@@ -83,7 +170,12 @@ var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 // but this sentinel prevents misclassification as ErrReadOnlyFS.
 var ErrTextBusy = fmt.Errorf("binary is currently executing")
 
-const maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
+// maxUpdateBinaryBytes bounds both the netpolicy transport (Policy.
+// MaxResponseBytes) and the explicit CopyBounded call in downloadFromURL. A
+// var (not const), matching the trustedUpdateManifestPublicKeys pattern in
+// this file, solely so tests can shrink it — serving/copying the real 500 MiB
+// bound in a unit test is impractical. Production behavior is unchanged.
+var maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
 
 // trustedUpdateManifestPublicKeys is the embedded trust root for release
 // manifest signatures. It MUST match the raw Ed25519 public key in
@@ -672,6 +764,9 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 // second round-trip; it is safe to use because verifyUpdateManifest has already
 // checked its Ed25519 signature.
 func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
+	if err := u.checkClient(); err != nil {
+		return "", updateManifest{}, nil, err
+	}
 	if u.config.AuthToken == nil {
 		return "", updateManifest{}, nil, fmt.Errorf("auth token not available")
 	}
@@ -932,41 +1027,26 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions
 	return nil
 }
 
-// downloadFromURL downloads a binary directly from the given URL to a temp file.
-// The URL origin (host and scheme) must match the configured ServerURL to prevent credential leakage.
+// downloadFromURL downloads a binary directly from the given URL to a temp
+// file. rawURL may be cross-origin from the configured control plane — the
+// signed-manifest flow legitimately follows a control-plane URL to a public
+// CDN — so this method does NOT compare origins itself. All destination
+// safety (scheme, dial-time address, redirect chain, credential stripping on
+// origin change) is enforced by u.client, which netpolicy.NewClient built
+// from updaterPolicy(u.config); this is the single, dial-time-authoritative
+// check. A local host/scheme comparison here would be redundant at best and
+// a silent divergence risk at worst — removed, not duplicated (#SSRF-AGENT-001).
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
+	if err := u.checkClient(); err != nil {
+		return "", err
+	}
 	if u.config.AuthToken == nil {
 		return "", fmt.Errorf("auth token not available")
-	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid download URL: %w", err)
-	}
-	serverParsed, err := url.Parse(u.serverURL())
-	if err != nil {
-		return "", fmt.Errorf("invalid server URL: %w", err)
-	}
-	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return "", fmt.Errorf("unsupported download URL scheme: %q", parsed.Scheme)
-	}
-	if serverParsed.Scheme != "https" && serverParsed.Scheme != "http" {
-		return "", fmt.Errorf("unsupported server URL scheme: %q", serverParsed.Scheme)
-	}
-	if parsed.Host != serverParsed.Host {
-		return "", fmt.Errorf("download URL host %q does not match server %q", parsed.Host, serverParsed.Host)
-	}
-	// Never downgrade from an HTTPS control plane to HTTP binary downloads.
-	if serverParsed.Scheme == "https" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("insecure download URL scheme %q for HTTPS server", parsed.Scheme)
-	}
-	// Keep protocol aligned to avoid credential scope surprises.
-	if parsed.Scheme != serverParsed.Scheme && !(serverParsed.Scheme == "http" && parsed.Scheme == "https") {
-		return "", fmt.Errorf("download URL scheme %q does not match server scheme %q", parsed.Scheme, serverParsed.Scheme)
 	}
 
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid download URL: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
@@ -986,9 +1066,14 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	}
 	defer tempFile.Close()
 
-	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+	// CopyBounded, not io.Copy: the transport already caps the response body
+	// via Policy.MaxResponseBytes when u.client is netpolicy-backed, but a
+	// caller that overrides u.client (or a future policy change) must not be
+	// able to reintroduce an unbounded write to disk. CopyBounded errors
+	// rather than truncating silently.
+	if _, err := netpolicy.CopyBounded(tempFile, resp.Body, maxUpdateBinaryBytes); err != nil {
 		removeCleanup(tempFile.Name())
-		return "", err
+		return "", fmt.Errorf("failed to download binary: %w", err)
 	}
 
 	return tempFile.Name(), nil

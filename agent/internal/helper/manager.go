@@ -75,6 +75,16 @@ func WithManifestKeys(keys []string) Option {
 	return func(m *Manager) { m.manifestKeys = keys }
 }
 
+// WithBackupServerURL sets a provider for the configured backup control-plane
+// URL, threaded into the verified downloader's netpolicy.Policy so the backup
+// origin (not just serverURL's primary) is reachable for helper downloads
+// after a failover. Omitting this option leaves the backup control plane
+// unreachable for helper downloads even if serverURL follows the promotion —
+// it does not default to serverURL's value.
+func WithBackupServerURL(backupServerURL func() string) Option {
+	return func(m *Manager) { m.backupServerURL = backupServerURL }
+}
+
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
 type Manager struct {
 	mu         sync.Mutex
@@ -85,7 +95,12 @@ type Manager struct {
 	// re-resolves it at call time and follows the heartbeat's backup-server-URL
 	// promotion (#2323) after a failover, instead of pinning the dead primary
 	// captured at construction (#2478).
-	serverURL         func() string
+	serverURL func() string
+	// backupServerURL resolves the configured backup control-plane URL, set
+	// via WithBackupServerURL. Nil means no backup is configured/known to
+	// this Manager — defaultHelperDownloader treats that as "no backup", not
+	// an error.
+	backupServerURL   func() string
 	authToken         *secmem.SecureString
 	agentID           string
 	ctx               context.Context
@@ -137,7 +152,7 @@ func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureS
 		m.spawnFunc = defaultSpawnFunc
 	}
 	if m.downloadFunc == nil {
-		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.authToken, m.agentVersion, m.manifestKeys)
+		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.backupServerURL, m.authToken, m.agentVersion, m.manifestKeys)
 	}
 	return m
 }
