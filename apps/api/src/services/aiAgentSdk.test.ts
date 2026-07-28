@@ -4,6 +4,7 @@ import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
+import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
 
 // ============================================
 // Mocks
@@ -125,8 +126,11 @@ vi.mock('./actionIntents/intentService', () => ({
 // the real module's ../aiTools import chain (which would otherwise drag in
 // aiToolSchemas' drizzle-enum schemas the ../db/schema mock doesn't provide).
 // Default: still authorized. Fail-path tests override the resolved value.
+// Typed as the real discriminated union (not a loosened `{ ok, auth }`
+// shape) so a test can legitimately assert the `{ ok: false; errorCode }`
+// failure arm without a type-checker escape hatch.
 const mockRevalidateApprovedIntentForRelease = vi.fn((..._args: unknown[]) =>
-  Promise.resolve({ ok: true, auth: {} } as { ok: boolean; auth: unknown }),
+  Promise.resolve({ ok: true, auth: {} } as IntentReleaseRevalidation),
 );
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: (...args: unknown[]) =>
@@ -576,7 +580,7 @@ describe('createSessionPreToolUse', () => {
       mockWaitForIntentDecision.mockReset();
       mockTransitionIntent.mockReset();
       mockRevalidateApprovedIntentForRelease.mockReset();
-      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} });
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
       // Default chainable for the inline release-win system read (loads the
       // intent row + winning approval before revalidation). Revalidation itself
       // is mocked above, so the row contents only need to be non-null.
@@ -1969,11 +1973,12 @@ describe('inline secret-bearing completion (Task 6)', () => {
 
 describe('Task 2: plan index advances only once the step is authorized', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockCreateActionIntent.mockReset();
     mockWaitForIntentDecision.mockReset();
     mockTransitionIntent.mockReset();
     mockRevalidateApprovedIntentForRelease.mockReset();
-    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} });
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
     // Default chainable for the inline release-win system read (loads the
     // intent row + winning approval before revalidation) — same shape as the
     // Tier 3 describe's beforeEach above.
@@ -2071,6 +2076,42 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       error: 'This action is already being completed by the approval worker; it will not run twice.',
     });
     expect(session.currentPlanStepIndex).toBe(0);
+  });
+
+  // The release CAS win alone is NOT authorization — the requester's access
+  // must also be re-proved by revalidateApprovedIntentForRelease before the
+  // step counts as run. Winning the CAS but failing revalidation must not
+  // advance the plan.
+  it('does NOT advance when the release CAS is won but revalidation fails', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-revalidate-fail', approvalRequestIds: ['appr-plan-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization for this action could no longer be verified; it was not executed.',
+    });
+    expect(session.currentPlanStepIndex).toBe(0);
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'plan_step_start' }),
+    );
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the
@@ -2175,6 +2216,16 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       expect.objectContaining({ type: 'plan_complete', planId: 'plan-1', status: 'completed' }),
     );
     expect(session.activePlanId).toBeNull();
+    // Matches the original PR #2853 assertion this guard restores: the plan
+    // slot map itself is cleared on completion, not just the id/index.
+    expect(session.approvedPlanSteps.size).toBe(0);
+    // Pins the actual defect narrative from this commit: plan_step_complete
+    // must be indexed against the step that just ran (0), not a stale or
+    // off-by-one index — mis-indexing this event is exactly what a
+    // regressed advance point would produce.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'plan_step_complete', planId: 'plan-1', stepIndex: 0, toolName: 'execute_command' }),
+    );
   });
 });
 
