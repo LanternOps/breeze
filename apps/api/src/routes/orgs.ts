@@ -1619,7 +1619,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     resourceType: 'organization',
     resourceId: organization.id,
     resourceName: organization.name,
-    details: { changedFields: Object.keys(data) }
+    details: {
+      changedFields: Object.keys(data),
+      // #2879 — flag transitions that used the suspended-org escape hatch so
+      // forensic review of override usage is a single audit-log filter.
+      ...(suspendedLifecycleOverride ? { suspendedLifecycleOverride: true } : {})
+    }
   });
 
   return c.json(organization);
