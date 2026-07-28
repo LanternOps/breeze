@@ -1571,6 +1571,17 @@ jobs:
           REMOTE_ACCESS_ADMISSION_MODE=open
           REMOTE_WS_AUTH_MODE=post_upgrade
           REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
+          # docker-compose.yml defaults FORCE_HTTPS=true, but this smoke stack
+          # has no TLS terminator in front of the API — the harness reaches it
+          # directly over http://localhost with a non-canonical Host. Wave 5
+          # Task 8 (TRANSPORT-001) made scheme detection authoritative
+          # (effectiveRequestScheme reports http for a direct request even with
+          # no X-Forwarded-Proto), so under FORCE_HTTPS such requests now
+          # correctly 400 on the unrecognized Host instead of silently serving
+          # plaintext — which is right for a real edge but breaks a proxy-less
+          # smoke stack. FORCE_HTTPS belongs on the edge tier, not a bare API,
+          # so disable it here to match this topology.
+          FORCE_HTTPS=false
           EOF
 
       - name: Build and start containers
