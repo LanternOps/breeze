@@ -163,6 +163,7 @@ type Command struct {
 type helperLifecycleController interface {
 	Stop()
 	Done() <-chan struct{}
+	Mode() string
 }
 
 type Heartbeat struct {
@@ -1033,7 +1034,7 @@ func (h *Heartbeat) Start() {
 	var lifecycle *sessionbroker.HelperLifecycleManager
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
 		h.mu.Lock()
 		h.helperLifecycle = lifecycle
 		h.lifecycleCancel = cancel

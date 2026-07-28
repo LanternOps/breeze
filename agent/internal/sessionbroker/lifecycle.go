@@ -36,15 +36,19 @@ const (
 	wtsSessionTerminate  = 0xb
 )
 
-func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent) *HelperLifecycleManager {
+func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent, modeOverride string) *HelperLifecycleManager {
+	rdsHost := detectRDSHost()
+	mode := resolveLifecycleMode(modeOverride, rdsHost)
+	log.Info("helper lifecycle mode resolved", "mode", string(mode), "rdsHost", rdsHost, "override", modeOverride)
 	manager, err := buildWindowsHelperLifecycleManager(broker, scmCh, newWindowsHelperSpawner)
 	if err != nil {
 		// Keep heartbeat startup operational, but disable proactive spawning.
 		// Reconciliation will retry on the next agent/service restart, when a
 		// fresh Job Object can be created before any helper process exists.
 		log.Error("lifecycle: failed to initialize helper Job Object", "error", err.Error())
-		return newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
+		manager = newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
 	}
+	manager.mode = mode
 	return manager
 }
 

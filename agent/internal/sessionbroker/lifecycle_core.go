@@ -159,6 +159,8 @@ type HelperLifecycleManager struct {
 
 	disconnectedSince map[uint32]time.Time
 	now               func() time.Time
+
+	mode LifecycleMode
 }
 
 func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <-chan SCMSessionEvent, spawner helperSpawner) *HelperLifecycleManager {
@@ -176,6 +178,8 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 
 		disconnectedSince: make(map[uint32]time.Time),
 		now:               time.Now,
+
+		mode: LifecycleModeAlwaysOn,
 	}
 	if broker != nil {
 		m.observerRemove = broker.AddSessionLifecycleObserver(m.sessionAuthenticated, m.sessionClosed)
@@ -184,6 +188,10 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 }
 
 func (m *HelperLifecycleManager) Done() <-chan struct{} { return m.done }
+
+// Mode reports the resolved lifecycle mode ("always-on" | "on-demand") for
+// heartbeat reporting and diagnostics.
+func (m *HelperLifecycleManager) Mode() string { return string(m.mode) }
 
 func (m *HelperLifecycleManager) finishStart() {
 	m.doneOnce.Do(func() { close(m.done) })

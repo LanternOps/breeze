@@ -24,6 +24,8 @@ func (l *blockingLifecycleShutdown) Stop() {
 
 func (l *blockingLifecycleShutdown) Done() <-chan struct{} { return l.done }
 
+func (l *blockingLifecycleShutdown) Mode() string { return "always-on" }
+
 func TestBootstrapHelperLifecycleBeforeBrokerListen(t *testing.T) {
 	var order []string
 	err := bootstrapThenListen(func() error {

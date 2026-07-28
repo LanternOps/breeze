@@ -46,3 +46,13 @@ func TestResolveLifecycleMode(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerModeDefaultsToAlwaysOn(t *testing.T) {
+	m := newHelperLifecycleManager(nil, nil, nil, nil)
+	if m.mode != LifecycleModeAlwaysOn {
+		t.Fatalf("mode = %q, want always-on default", m.mode)
+	}
+	if m.Mode() != string(LifecycleModeAlwaysOn) {
+		t.Fatalf("Mode() = %q, want %q", m.Mode(), LifecycleModeAlwaysOn)
+	}
+}
