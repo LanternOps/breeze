@@ -14,7 +14,6 @@ import (
 	"syscall"
 )
 
-const plistLabel = "com.breeze.helper"
 const plistPath = "/Library/LaunchAgents/com.breeze.helper.plist"
 const appBundleName = "Breeze Helper.app"
 
