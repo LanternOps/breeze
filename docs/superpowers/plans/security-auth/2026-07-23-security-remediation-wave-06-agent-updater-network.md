@@ -26,6 +26,40 @@
 - Manifest rotation remains frozen until exact-ID handling and signed delegation are deployed and fleet adoption is proven.
 - Apply one independent review round. Rerun the full agent race suite when review changes version precedence, URL/address classification, manifest trust, filesystem opening, or config persistence.
 
+## Approved Deviations
+
+Ruled before execution, 2026-07-28. These override the task text they name.
+
+**D1 — the managed-software capability gate ships behind a mode env var (Tasks 5 and 9).**
+As written, Task 5 denies *every* managed-software command to a device reporting
+`outboundNetworkPolicyVersion = 0`, including a plainly public download URL. The API ships
+before the fleet upgrades, so on deploy day every software deployment to a not-yet-updated
+agent fails — the same fleet-outage shape Waves 3, 4, and 5 each avoided with a mode variable.
+Ship the gate behind `MANAGED_SOFTWARE_POLICY_MODE`:
+
+- `compat` (**default**): a private-origin destination still requires capability ≥ 1 and fails
+  closed exactly as Task 5 specifies — that is the security fix, and it is on from the first
+  deploy. An apparently-public destination remains permitted to a capability-0 device.
+- `enforce`: Task 5's original behavior — every managed-software command requires capability ≥ 1,
+  public destinations included.
+
+The capability-0-public-hostname-that-pivots-private case Task 5 calls out is *not* excused by
+`compat`: the agent-side dial-time policy (Task 2) is the authoritative defense there and ships
+in the same wave. `compat` accepts that a capability-0 agent keeps its current, pre-Wave-06
+exposure on public URLs until the operator flips `enforce` — it never grants a capability-0
+agent something it could not already do. Task 9 owns the variable (validate.ts, `.env.example`,
+both compose files, runbook rows, and a canary-ring row for the `compat → enforce` flip);
+Task 5 owns the gate itself and must test both modes; Task 10's regression list gains a
+compat-mode case.
+
+**D2 — partner-wide ownership of the download policy is deferred (Task 4).**
+Task 4 persists `softwareDownloadPolicy` on organization and site settings only, which sits
+against the repository's partner-wide-first principle for config surfaces. Accepted as written
+for this wave: the policy lives in existing settings JSONB rather than a new table, so the
+partner-ownership migration playbook does not literally apply, and widening ownership mid-wave
+would grow an already-large security branch. A follow-up issue tracks adding a partner tier so
+the effective allowlist becomes a partner + organization + site union.
+
 ## Finding Coverage
 
 | Finding | Owning tasks | Red-green regression | Enforcement acceptance |
