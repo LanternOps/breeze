@@ -1,7 +1,22 @@
 # Handoff — M365 communications-delegated executor & session state
 
-**Date:** 2026-07-28
-**Status:** Design drafted and reviewed. **Do not start implementation** — the design needs revision first (§3).
+**Date:** 2026-07-28 (updated same day)
+**Status:** Design drafted, reviewed, and **revised to v2**. Next step is a re-review of v2 (§6), not implementation — except task 0 (principal kind), which is unblocked now.
+
+> **Update.** The revision §3 called for is **done**. The design doc is now v2 with a §0 changelog mapping each v1 position to what replaced it. §3 below is retained as the *record of what the review found* — it is the input to that revision, not an open work list. What changed, in one line each:
+>
+> | §3 item | Resolution in v2 |
+> |---|---|
+> | 1 effect digest | §5 — canonical effect envelope; digest recomputed **inside the executor** before credential access; mapper no longer rebuilds; shared canonicalizer |
+> | 2 sender binding | §5.2 — connection/tenant/sender/**consent generation** pinned at creation. Generation is the load-bearing part: reconnect reuses the same row, so `connectionId` alone cannot detect it |
+> | 3 principal kind | §6 — carved out as **task 0, its own PR**, before any comms code |
+> | 4 delegated consent | §4.2 — new `delegated_consent` phase, `/common` authorize, tenant learned from the ID token, **verify-then-persist** (v1 had the ordering backwards) |
+> | 5 bootstrap constraint | §4.1 — status-aware `credential_location_check` + single atomic promotion UPDATE |
+> | 6 Key Vault as token store | §3.1/§3.2 — **replaced**. MSAL confidential client + encrypted CAS token cache; Key Vault reverts to `get`-only on two immutable secrets; the single-replica constraint is gone (no rolling deploy can honour it) |
+>
+> Two things a re-reviewer should push on hardest, because they are the least settled:
+> - **Where the token-cache store lives** (§3.2). Recommended: a store the executor owns. Fallback: Breeze Postgres, which widens executor egress toward the tenant DB and needs an explicit master-spec §6.1 amendment first. This is Todd's call, not the reviewer's.
+> - **The §6 open question** on Tier-3 auto-execute over MCP, which is bigger than this design.
 
 ---
 
@@ -94,9 +109,15 @@ Spot-checked directly, not taken from the reviewer:
 
 ## 6. Recommended next step
 
-Revise the design against §3 items 1–6, then re-review before writing any code. The rework is real: items 1, 2, and 6 change the architecture, not the wording.
+**Done:** the v2 revision (see the update box at the top).
 
-If a smaller win is preferred first, the **principal-kind discriminator** (§4) is self-contained, valuable on its own, and a hard prerequisite for this executor regardless of how the rest of the design lands.
+**Now, in order:**
+
+1. **Re-review v2** — same posture as the first pass (read-only, `xhigh`), focused on §3.2 (token cache), §4 (consent + constraint), §5 (envelope), §6 (principal kind). Give the reviewer the §0 changelog so it reviews the new architecture rather than re-finding v1's problems.
+2. **Ship task 0 (principal kind) regardless of the re-review outcome.** It is self-contained, valuable on its own, unblocked now, and a hard prerequisite for this executor however the rest lands. v2 scopes it as a no-behaviour-change PR — add the required field, let the compiler enumerate every `AuthContext` construction site, gate nothing yet — so a regression is isolable.
+3. **Todd's calls, which no amount of review resolves:** where the token-cache store lives (§3.2 of the design), whether master-spec §6.1 gets the proposed amendment, and the Tier-3-over-MCP question in §4 below.
+
+Everything in §5 (release, Azure provisioning, executor runtime, acceptance run) is unchanged and still blocking production, independent of this design.
 
 ## 7. Environment notes
 
