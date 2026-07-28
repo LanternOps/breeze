@@ -260,8 +260,8 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners         sync.Map // desktop session ID -> helper session ID
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners                sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool

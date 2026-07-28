@@ -58,11 +58,11 @@ type Config struct {
 	// the still-current set, never in place of it: that is what makes a crash at
 	// any point during rotation survivable. On startup an agent that finds these
 	// populated re-drives the confirmation instead of silently dropping them.
-	PendingAuthToken             string `mapstructure:"pending_auth_token"`
-	PendingWatchdogAuthToken     string `mapstructure:"pending_watchdog_auth_token"`
-	PendingHelperAuthToken       string `mapstructure:"pending_helper_auth_token"`
-	OrgID                        string `mapstructure:"org_id"`
-	SiteID                       string `mapstructure:"site_id"`
+	PendingAuthToken         string `mapstructure:"pending_auth_token"`
+	PendingWatchdogAuthToken string `mapstructure:"pending_watchdog_auth_token"`
+	PendingHelperAuthToken   string `mapstructure:"pending_helper_auth_token"`
+	OrgID                    string `mapstructure:"org_id"`
+	SiteID                   string `mapstructure:"site_id"`
 	// DeviceID is the server's device row UUID (devices.id), distinct from
 	// AgentID (devices.agent_id). Security remediation Wave 5 Task 4's
 	// expired-certificate recovery proof is canonicalized on this value (see
@@ -80,7 +80,7 @@ type Config struct {
 	// this field existed, whenever the org's binding mode requires one). This
 	// is a known, accepted gap for already-enrolled fleets at rollout, not a
 	// bug in agents enrolled after this field landed.
-	DeviceID string `mapstructure:"device_id"`
+	DeviceID                     string `mapstructure:"device_id"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
