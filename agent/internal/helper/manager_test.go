@@ -325,6 +325,10 @@ func TestApplySweepsLegacyAutoStartOncePerProcess(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
+	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
+	// (false) regardless of whether the platform-default helper binary path
+	// happens to exist on the machine running this test.
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
 	mgr.sessionEnumerator = &mockEnumerator{}
 
 	mgr.Apply(&Settings{Enabled: false})
@@ -356,6 +360,10 @@ func TestApplySkipsLegacyAutoStartSweepOffWindows(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
+	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
+	// (false) regardless of whether the platform-default helper binary path
+	// happens to exist on the machine running this test.
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
 	mgr.sessionEnumerator = &mockEnumerator{}
 
 	mgr.Apply(&Settings{Enabled: false})
