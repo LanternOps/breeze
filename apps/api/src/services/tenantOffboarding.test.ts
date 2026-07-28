@@ -1,9 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { selectMock, updateMock, insertMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, insertMock, hasDbAccessContextMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   insertMock: vi.fn(),
+  // #2877 — default false (background-caller shape). Ambient-context tests
+  // flip it with mockReturnValueOnce so nothing leaks across tests.
+  hasDbAccessContextMock: vi.fn(() => false),
 }));
 
 vi.mock('../db', () => {
@@ -15,6 +18,7 @@ vi.mock('../db', () => {
       // transaction; the tx handle proxies to the same mocked surface.
       transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(surface)),
     },
+    hasDbAccessContext: hasDbAccessContextMock,
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
@@ -103,8 +107,14 @@ vi.mock('drizzle-orm', () => ({
   isNull: vi.fn((c) => ({ isNull: c })),
   isNotNull: vi.fn((c) => ({ isNotNull: c })),
   ne: vi.fn((l, r) => ({ ne: [l, r] })),
+  // Tagged-template tag: sql`now()` → { sql: 'now()' } (see DB_NOW, #2877).
+  sql: vi.fn((strings: TemplateStringsArray) => ({ sql: strings.join('') })),
 }));
 
+// The marker DB_NOW (sql`now()`) resolves to under the drizzle-orm mock above.
+const SQL_NOW = { sql: 'now()' };
+
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, partners } from '../db/schema';
 import { writeAuditEvent } from './auditEvents';
 import {
@@ -195,7 +205,9 @@ describe('beginOrganizationOffboarding', () => {
     await beginOrganizationOffboarding('org-1', 'user-1');
 
     const stamp = updatesFor(organizations)[0]!;
-    expect(stamp.values.offboardingStartedAt).toBeInstanceOf(Date);
+    // DB clock, not new Date(): the finalize report's gte(created_at, stamp)
+    // window must include the entry's own commands (#2877 clock skew).
+    expect(stamp.values.offboardingStartedAt).toEqual(SQL_NOW);
     expect(JSON.stringify(stamp.where)).toContain('isNull');
   });
 
@@ -251,9 +263,55 @@ describe('beginPartnerOffboarding', () => {
     const result = await beginPartnerOffboarding('partner-1', 'user-1');
 
     expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1', { agentChannel: 'drain' });
-    expect(updatesFor(partners)[0]!.values.offboardingStartedAt).toBeInstanceOf(Date);
+    expect(updatesFor(partners)[0]!.values.offboardingStartedAt).toEqual(SQL_NOW);
     expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
     expect(result.uninstallsQueued).toBe(1);
+  });
+});
+
+// #2877 — the route callers run inside the auth middleware's request
+// transaction, which already holds the org/partner row lock from the route's
+// own status UPDATE. Entry/abort must reuse that ambient transaction (same
+// connection, atomic commit) instead of opening a fresh system-context
+// connection that would wait on the lock forever.
+describe('#2877 ambient request-transaction reuse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupWrites();
+  });
+
+  it('entry runs on the ambient context — no fresh connection is opened', async () => {
+    hasDbAccessContextMock.mockReturnValueOnce(true);
+    queueSelect([]); // devices
+
+    await beginOrganizationOffboarding('org-1', 'user-1');
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    // The drain work itself still happened, on the ambient transaction.
+    expect(updatesFor(organizations)).toHaveLength(1);
+  });
+
+  it('abort runs on the ambient context — no fresh connection is opened', async () => {
+    hasDbAccessContextMock.mockReturnValueOnce(true);
+    updateReturningQueue.push([{ id: 'org-1' }]); // stamp-clear finds a stamp
+    queueSelect([{ id: 'd1' }]); // devices in org
+    updateReturningQueue.push([{ id: 'cmd-1' }]); // cancelled commands
+
+    const result = await abortOrganizationOffboarding('org-1');
+
+    expect(result.aborted).toBe(true);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('background callers (no ambient context) still get a fresh system context', async () => {
+    queueSelect([]); // devices
+
+    await beginOrganizationOffboarding('org-1', null);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -517,7 +575,7 @@ describe('sweepOffboardingTenants', () => {
     expect(result.orgsFinalized).toBe(0);
     expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
     const stamp = updatesFor(organizations)[0]!;
-    expect(stamp.values.offboardingStartedAt).toBe(NOW);
+    expect(stamp.values.offboardingStartedAt).toEqual(SQL_NOW);
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'organization.offboarding_entry_repaired' })
