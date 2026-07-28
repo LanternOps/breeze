@@ -9,22 +9,31 @@ import {
 } from '../../db/schema';
 
 const CONSENT_SESSION_TTL_MS = 10 * 60_000;
-const CUSTOMER_GRAPH_READ_PROFILE = 'customer-graph-read' as const;
 const RANDOM_VALUE_BYTES = 32;
 
 export type M365ConsentSession = M365ConsentSessionRow;
+
+/**
+ * Consent sessions exist only for the certificate-based customer Graph
+ * profiles that run the two-phase admin-consent + identity-verification flow.
+ * This is narrower than M365ConnectionProfile on purpose and matches the
+ * m365_consent_sessions.profile column type / CHECK constraint.
+ */
+export type M365ConsentSessionProfile = 'customer-graph-read' | 'customer-graph-actions';
 
 export interface ConsentSessionOwnerInput {
   connectionId: string;
   orgId: string;
   consentAttemptId: string;
   userId: string;
+  profile: M365ConsentSessionProfile;
 }
 
 export interface ConsentSessionAttemptInput {
   connectionId: string;
   orgId: string;
   consentAttemptId: string;
+  profile: M365ConsentSessionProfile;
 }
 
 export interface ConsumeConsentSessionInput extends ConsentSessionAttemptInput {
@@ -71,7 +80,7 @@ async function insertConsentSessionInTransaction(
     const rows = await db.insert(m365ConsentSessions).values({
       ...input,
       stateHash: sha256Hex(rawState),
-      profile: CUSTOMER_GRAPH_READ_PROFILE,
+      profile: input.profile,
       expiresAt,
     }).onConflictDoNothing({
       target: m365ConsentSessions.stateHash,
@@ -116,6 +125,7 @@ export function createIdentityVerificationSessionInTransaction(
       orgId: input.orgId,
       consentAttemptId: input.consentAttemptId,
       userId: input.userId,
+      profile: input.profile,
     },
     prepareIdentityVerificationSession({ tenantHint: input.tenantHint }),
   );
@@ -143,7 +153,7 @@ export async function insertPreparedIdentityVerificationSessionInTransaction(
   const rows = await db.insert(m365ConsentSessions).values({
     ...input,
     stateHash: sha256Hex(prepared.rawState),
-    profile: CUSTOMER_GRAPH_READ_PROFILE,
+    profile: input.profile,
     phase: 'identity_verification',
     tenantHintHash: prepared.tenantHintHash,
     nonce: prepared.nonce,
@@ -182,7 +192,7 @@ export async function consumeConsentSessionInTransaction(
     gt(m365ConsentSessions.expiresAt, sql`now()`),
     eq(m365ConsentSessions.connectionId, input.connectionId),
     eq(m365ConsentSessions.orgId, input.orgId),
-    eq(m365ConsentSessions.profile, CUSTOMER_GRAPH_READ_PROFILE),
+    eq(m365ConsentSessions.profile, input.profile),
     eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
   )).returning();
   return rows[0] ?? null;
@@ -198,7 +208,7 @@ export async function deleteConsentSessionsForAttemptInTransaction(
   await db.delete(m365ConsentSessions).where(and(
     eq(m365ConsentSessions.connectionId, input.connectionId),
     eq(m365ConsentSessions.orgId, input.orgId),
-    eq(m365ConsentSessions.profile, CUSTOMER_GRAPH_READ_PROFILE),
+    eq(m365ConsentSessions.profile, input.profile),
     eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
   ));
 }

@@ -97,6 +97,14 @@ export function m365CustomerGraphReadOnboardingEnabled(): boolean {
   return envFlag('M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED', false);
 }
 
+// New customer Graph-actions consent initiation is dark by default and rolled
+// out independently per organization. Read at call time so disabling
+// initiation does not require module reloads and does not gate existing
+// connection flows.
+export function m365CustomerGraphActionsOnboardingEnabled(): boolean {
+  return envFlag('M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED', false);
+}
+
 // Breeze AI for Office (Excel add-in / client AI). The Entra application
 // (client) ID of the multi-tenant add-in app registration. Empty = the whole
 // /client-ai surface is dark (exchange and admin routes return 404), mirroring

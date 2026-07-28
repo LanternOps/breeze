@@ -115,6 +115,7 @@ const owner = {
   orgId: ORG_ID,
   consentAttemptId: ATTEMPT_ID,
   userId: USER_ID,
+  profile: 'customer-graph-read' as const,
 };
 
 describe('M365 consent sessions', () => {
@@ -246,6 +247,7 @@ describe('M365 consent sessions', () => {
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
       consentAttemptId: ATTEMPT_ID,
+      profile: 'customer-graph-read' as const,
     };
 
     await expect(consumeConsentSession(input)).resolves.toEqual(stored);
@@ -281,6 +283,7 @@ describe('M365 consent sessions', () => {
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
       consentAttemptId: ATTEMPT_ID,
+      profile: 'customer-graph-read',
     })).resolves.toEqual(stored);
 
     expect(contextMocks.runOutside).not.toHaveBeenCalled();
@@ -302,8 +305,49 @@ describe('M365 consent sessions', () => {
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
       consentAttemptId: ATTEMPT_ID,
+      profile: 'customer-graph-read',
       ...overrides,
     })).resolves.toBeNull();
+  });
+
+  it('scopes admin-consent sessions by profile', async () => {
+    const base = {
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+      consentAttemptId: ATTEMPT_ID,
+      userId: USER_ID,
+    };
+    const { rawState } = await createAdminConsentSession({ ...base, profile: 'customer-graph-actions' });
+
+    expect(dbMocks.insertedValues[0]).toEqual(expect.objectContaining({ profile: 'customer-graph-actions' }));
+
+    // wrong-profile consume must miss
+    dbMocks.deleteResults.push([]);
+    expect(await consumeConsentSession({
+      connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, rawState, phase: 'admin_consent',
+      profile: 'customer-graph-read',
+    })).toBeNull();
+    expect(dbMocks.deleteWhere).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: m365ConsentSessions.profile, value: 'customer-graph-read' },
+      ]),
+    }));
+
+    // correct-profile consume hits
+    dbMocks.deleteResults.push([sessionRow({
+      stateHash: createHash('sha256').update(rawState).digest('hex'),
+      profile: 'customer-graph-actions',
+    })]);
+    const hit = await consumeConsentSession({
+      connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, rawState, phase: 'admin_consent',
+      profile: 'customer-graph-actions',
+    });
+    expect(hit?.profile).toBe('customer-graph-actions');
+    expect(dbMocks.deleteWhere).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: m365ConsentSessions.profile, value: 'customer-graph-actions' },
+      ]),
+    }));
   });
 
   it('deletes only the fixed-profile sessions owned by an exact attempt', async () => {
@@ -311,6 +355,7 @@ describe('M365 consent sessions', () => {
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
       consentAttemptId: ATTEMPT_ID,
+      profile: 'customer-graph-read',
     });
 
     expect(dbMocks.deleteWhere).toHaveBeenCalledWith({
@@ -332,6 +377,7 @@ describe('M365 consent sessions', () => {
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,
       consentAttemptId: ATTEMPT_ID,
+      profile: 'customer-graph-read',
     });
 
     expect(created.session.phase).toBe('admin_consent');

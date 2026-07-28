@@ -154,6 +154,107 @@ describe('acceptQuote deposit snapshot', () => {
     expect(setMock.mock.calls[0]![0]).not.toHaveProperty('depositDue');
   });
 
+  // #2875: token-based (public) accepts must claim + consume the durable
+  // response capability (2026-08-06-c columns) in the same quotes update that
+  // flips status→converted; portal accepts (no jti) must leave them untouched.
+  it('public accept (acceptanceTokenJti set) consumes the durable response capability in the quotes update', async () => {
+    queueAcceptHappyPath();
+
+    await acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-durable-1' });
+
+    const setMock = (db as unknown as Chain).set;
+    // calls[0] = invoices issueFields update; calls[1] = quotes status update.
+    const quotesSet = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(quotesSet).toMatchObject({
+      status: 'converted',
+      publicResponseJti: 'jti-durable-1',
+      publicResponseOutcome: 'accepted',
+    });
+    expect(quotesSet.publicResponseConsumedAt).toBeInstanceOf(Date);
+  });
+
+  it('portal accept (no acceptanceTokenJti) leaves the durable response columns untouched', async () => {
+    queueAcceptHappyPath();
+
+    await acceptQuote(baseParams); // acceptanceTokenJti: null
+
+    const setMock = (db as unknown as Chain).set;
+    const quotesSet = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(quotesSet).toMatchObject({ status: 'converted' });
+    expect(quotesSet).not.toHaveProperty('publicResponseJti');
+    expect(quotesSet).not.toHaveProperty('publicResponseConsumedAt');
+    expect(quotesSet).not.toHaveProperty('publicResponseOutcome');
+  });
+
+  // #2875 durable replay backstop: a jti already consumed on the row is
+  // rejected 401 BEFORE the status guard and before any write — this is what
+  // holds when the Redis revocation marker has been flushed.
+  it('throws 401 RESPONSE_CONSUMED and writes nothing when the jti was already durably consumed', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted',
+      expiryDate: null, quoteNumber: 'Q-2026-0001', taxRate: null,
+      currencyCode: 'USD', siteId: null,
+      publicResponseJti: 'jti-durable-1',
+      publicResponseConsumedAt: new Date('2026-07-27T00:00:00Z'),
+      publicResponseOutcome: 'accepted',
+    }]); // 1: select quote FOR UPDATE — nothing further should run
+
+    await expect(acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-durable-1' }))
+      .rejects.toMatchObject({ status: 401, code: 'RESPONSE_CONSUMED' });
+
+    const chain = db as unknown as Chain;
+    expect(chain.insert.mock.calls).toHaveLength(0); // no acceptance/invoice written
+    expect(chain.set.mock.calls).toHaveLength(0);    // no update issued
+  });
+
+  // v1 forward-compat guard: once public_token_version=1 rows exist (jti
+  // persisted at send), only the issued jti may consume — a different signed
+  // token must never claim/rewrite the stored jti.
+  it('v1 row with a mismatched jti → 401 RESPONSE_CONSUMED, nothing written', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
+      expiryDate: null, quoteNumber: 'Q-2026-0001', taxRate: null,
+      currencyCode: 'USD', siteId: null,
+      publicTokenVersion: 1, publicResponseJti: 'jti-issued-at-send',
+      publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]);
+
+    await expect(acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-forged' }))
+      .rejects.toMatchObject({ status: 401, code: 'RESPONSE_CONSUMED' });
+
+    const chain = db as unknown as Chain;
+    expect(chain.insert.mock.calls).toHaveLength(0);
+    expect(chain.set.mock.calls).toHaveLength(0);
+  });
+
+  it('v1 row with the ISSUED jti proceeds and consumes normally', async () => {
+    queueAcceptHappyPath({ publicTokenVersion: 1, publicResponseJti: 'jti-issued-at-send', publicResponseConsumedAt: null });
+
+    await acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-issued-at-send' });
+
+    const setMock = (db as unknown as Chain).set;
+    const quotesSet = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(quotesSet).toMatchObject({
+      status: 'converted',
+      publicResponseJti: 'jti-issued-at-send',
+      publicResponseOutcome: 'accepted',
+    });
+  });
+
+  it('a consumed row with a DIFFERENT jti does not trip the backstop (falls through to the status guard)', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted',
+      expiryDate: null, quoteNumber: 'Q-2026-0001', taxRate: null,
+      currencyCode: 'USD', siteId: null,
+      publicResponseJti: 'jti-someone-else',
+      publicResponseConsumedAt: new Date('2026-07-27T00:00:00Z'),
+      publicResponseOutcome: 'declined',
+    }]);
+
+    await expect(acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-durable-1' }))
+      .rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
   it('stages Phase 5 before the final quote read and exposes the order id', async () => {
     const { quote, line } = queueAcceptHappyPath();
     stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: 'pax8-order-1', lineCount: 1 });

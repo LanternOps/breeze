@@ -153,10 +153,23 @@ export const M365_PERMISSION_PROFILES = {
     applicationPermissions: [
       'User.ReadWrite.All',
       'User-PasswordProfile.ReadWrite.All',
-      'Group.ReadWrite.All',
-      'DeviceManagementManagedDevices.PrivilegedOperations.All',
-      'DeviceManagementConfiguration.ReadWrite.All',
-      'Sites.ReadWrite.All',
+      // roadmap (each future action needs a manifest version bump + customer re-consent):
+      //   'Group.ReadWrite.All',
+      //   'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      //   'DeviceManagementConfiguration.ReadWrite.All',
+      //   'Sites.ReadWrite.All',
+    ],
+    applicationPermissionAssignments: [
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4',
+        value: 'User.ReadWrite.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7',
+        value: 'User-PasswordProfile.ReadWrite.All',
+      },
     ],
   },
   'customer-exchange-powershell': {

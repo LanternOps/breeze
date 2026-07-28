@@ -17,6 +17,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { quotes, quoteLines } from '../../db/schema/quotes';
 import { createPartner, createOrganization } from './db-utils';
 import { createQuoteAcceptToken } from '../../services/quoteAcceptToken';
+import { getRedis } from '../../services/redis';
 import { quotesPublicRoutes } from '../../routes/quotesPublic';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -164,6 +165,56 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     // Token revoked post-accept → replay is blocked at the resolve() gate (401, not 409).
     expect((await app().request(`/quotes/public/${token}`)).status).toBe(401);
     expect((await postJson(`/quotes/public/${token}/accept`, { signerName: 'Replay' })).status).toBe(401);
+  });
+
+  // #2875: the durable response-capability columns (2026-08-06-c) are written in
+  // the same transaction as the accept, and act as a replay backstop that holds
+  // even when the Redis jti-revocation marker is lost (flush/failover/TTL).
+  runDb('POST accept consumes the durable response capability; replay is 401 even after the Redis marker is lost', async () => {
+    const { quoteId, token } = await seedQuote({ lines: [{ description: 'Setup', unitPrice: '250.00' }] });
+    const res = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Prospect Pat' });
+    expect(res.status).toBe(200);
+    const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.publicResponseJti).toBeTruthy();
+    expect(q!.publicResponseConsumedAt).toBeTruthy();
+    expect(q!.publicResponseOutcome).toBe('accepted');
+    // Simulate a Redis flush: delete the jti revocation marker outright.
+    const redis = getRedis();
+    expect(redis).toBeTruthy();
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`);
+    // Replay passes the resolve() gate (marker gone) but the durable backstop
+    // still rejects it — 401 (same shape as the Redis path), quote untouched.
+    const replay = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Replay Ray' });
+    expect(replay.status).toBe(401);
+    // Cross-route: a decline replay of the consumed accept link is 401 too.
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`); // backstop re-armed the marker — drop it again
+    expect((await postJson(`/quotes/public/${token}/decline`, { reason: 'flip' })).status).toBe(401);
+    const [q2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q2!.status).toBe('converted');
+    expect(q2!.publicResponseOutcome).toBe('accepted');
+  });
+
+  runDb('POST decline consumes the durable response capability; replay (decline OR accept) is 401 even after the Redis marker is lost', async () => {
+    const { quoteId, token } = await seedQuote({ lines: [{ description: 'Setup', unitPrice: '250.00' }] });
+    const res = await postJson(`/quotes/public/${token}/decline`, { reason: 'Budget cut' });
+    expect(res.status).toBe(200);
+    const [q] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q!.status).toBe('declined');
+    expect(q!.publicResponseJti).toBeTruthy();
+    expect(q!.publicResponseConsumedAt).toBeTruthy();
+    expect(q!.publicResponseOutcome).toBe('declined');
+    // Simulate a Redis flush, then replay both mutation routes.
+    const redis = getRedis();
+    expect(redis).toBeTruthy();
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`);
+    expect((await postJson(`/quotes/public/${token}/decline`, { reason: 'again' })).status).toBe(401);
+    // The backstop re-arms the Redis marker on a replay — drop it again so the
+    // cross-route accept replay below also proves the DURABLE path, not Redis.
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`);
+    expect((await postJson(`/quotes/public/${token}/accept`, { signerName: 'Flip Flop' })).status).toBe(401);
+    const [q2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
+    expect(q2!.status).toBe('declined');
+    expect(q2!.declineReason).toBe('Budget cut');
   });
 
   runDb('POST accept requires a signer name (zValidator 400)', async () => {

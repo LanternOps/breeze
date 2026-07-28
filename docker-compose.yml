@@ -136,6 +136,10 @@ services:
       # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
       AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
+      # boot refuses to start without it (see that var's comment). Must be set
+      # here AND in .env; compose only interpolates vars listed in this block.
+      APP_ENCRYPTION_KEY_ID: ${APP_ENCRYPTION_KEY_ID:-}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
       MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
@@ -194,6 +198,16 @@ services:
       # as the Graph-read executor above: intentionally not part of this
       # generic Compose stack — deploy it separately with a workload identity,
       # private ingress, and controlled HTTPS egress. Disabled by default.
+      # ONBOARDING_ENABLED gates the org-facing consent card; TOOLS_ENABLED
+      # (below) independently gates the AI tools/headless execution — either
+      # one enabled forces full executor descriptor validation at boot, which
+      # in production also requires PUBLIC_APP_URL/PUBLIC_API_URL (or
+      # PUBLIC_URL) to derive the consent callback origin.
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false}
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS:-}
+      # Enabling this also requires APP_ENCRYPTION_KEY_ID above — boot refuses
+      # to start without it, because the m365_reset_password reveal-secret
+      # path seals its temp credential with AAD-bound v3 ciphertext.
       M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
       M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
       M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
