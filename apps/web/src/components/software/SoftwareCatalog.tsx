@@ -11,8 +11,11 @@ import {
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
+import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
 import DeploymentWizard from "./DeploymentWizard";
+import DeploymentList from "./DeploymentList";
+import DeploymentProgress from "./DeploymentProgress";
 import SoftwareVersionManager from "./SoftwareVersionManager";
 import AddPackageModal, { type CreatedPackage } from "./AddPackageModal";
 import {
@@ -45,6 +48,35 @@ type SoftwareItem = {
  */
 const needsInstallerUpload = (item: SoftwareItem): boolean =>
   item.integrationProvider === "sentinelone" && (item.versionCount ?? 0) === 0;
+/**
+ * Hash grammar for /software (URL state lives in the hash per repo convention):
+ *   (empty) | #catalog     → Catalog tab (default)
+ *   #deployments           → Deployments tab: summary cards + deployment list
+ *   #deployment=<id>       → Deployments tab: a single deployment's progress
+ *   #deploy=<id>,<id>,...  → consumed on arrival (#2866): opens the deploy
+ *                            wizard with those devices pre-selected, then the
+ *                            hash is cleared via replaceState so a refresh
+ *                            doesn't re-open the wizard.
+ */
+type CatalogView =
+  | { tab: "catalog" }
+  | { tab: "deployments"; deploymentId?: string };
+function parseCatalogView(hash: string): CatalogView | undefined {
+  if (hash === "catalog") return { tab: "catalog" };
+  if (hash === "deployments") return { tab: "deployments" };
+  if (hash.startsWith("deployment=")) {
+    const id = hash.slice("deployment=".length);
+    if (id) return { tab: "deployments", deploymentId: id };
+  }
+  return undefined;
+}
+/** Shape of GET /software/deployments/summary → data. */
+type DeploymentSummary = {
+  active: number;
+  scheduled: number;
+  completedLast7d: number;
+  failedLast7d: number;
+};
 const categoryStyles: Record<string, string> = {
   browser: "bg-blue-500/20 text-blue-700 border-blue-500/40",
   utility: "bg-amber-500/20 text-amber-700 border-amber-500/40",
@@ -88,6 +120,11 @@ export default function SoftwareCatalog() {
   );
   const [showDeployWizard, setShowDeployWizard] = useState(false);
   const [deployCatalogId, setDeployCatalogId] = useState<string | undefined>();
+  // Devices carried over from a device-list bulk selection (#2866); seeds the
+  // wizard's target step when the modal was opened via #deploy=<ids>.
+  const [deployDeviceIds, setDeployDeviceIds] = useState<
+    string[] | undefined
+  >();
   const [showAddModal, setShowAddModal] = useState(false);
   const [detailTab, setDetailTab] = useState<"details" | "versions">("details");
   const [catalogItems, setCatalogItems] = useState<SoftwareItem[]>([]);
@@ -95,10 +132,100 @@ export default function SoftwareCatalog() {
   const [error, setError] = useState<string>();
   const [confirmDelete, setConfirmDelete] = useState<SoftwareItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Catalog vs. Deployments tab (+ selected deployment), driven by the URL
+  // hash so deep links and back/forward work (see parseCatalogView).
+  const [view, setView] = useHashState<CatalogView>(
+    { tab: "catalog" },
+    parseCatalogView,
+  );
+  const [summary, setSummary] = useState<DeploymentSummary | null>(null);
   const openDeploy = (catalogId?: string) => {
     setDeployCatalogId(catalogId);
+    setDeployDeviceIds(undefined);
     setShowDeployWizard(true);
   };
+  const closeDeployWizard = () => {
+    setShowDeployWizard(false);
+    setDeployCatalogId(undefined);
+    setDeployDeviceIds(undefined);
+  };
+  const selectTab = (next: "catalog" | "deployments") => {
+    if (typeof window !== "undefined") window.location.hash = next;
+    setView(next === "catalog" ? { tab: "catalog" } : { tab: "deployments" });
+  };
+  const openDeploymentDetail = (id: string) => {
+    if (typeof window !== "undefined")
+      window.location.hash = `deployment=${id}`;
+    setView({ tab: "deployments", deploymentId: id });
+  };
+  const backToDeployments = () => {
+    if (typeof window !== "undefined") window.location.hash = "deployments";
+    setView({ tab: "deployments" });
+  };
+  // "View deployment" from the wizard's success card: close the modal and jump
+  // straight to that deployment's progress view.
+  const handleViewDeployment = (id: string) => {
+    closeDeployWizard();
+    openDeploymentDetail(id);
+  };
+  // #2866: consume a #deploy=<id>,<id>,... hash (bulk selection carried over
+  // from the devices pages) — open the wizard with those devices pre-selected,
+  // then clear the hash so a refresh doesn't re-open it.
+  useEffect(() => {
+    const consumeDeployHash = () => {
+      const raw = window.location.hash.replace(/^#/, "");
+      if (!raw.startsWith("deploy=")) return;
+      const ids = raw
+        .slice("deploy=".length)
+        .split(",")
+        .filter(Boolean);
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+      if (ids.length === 0) return;
+      setDeployCatalogId(undefined); // no package preselected — user picks first
+      setDeployDeviceIds(ids);
+      setShowDeployWizard(true);
+    };
+    consumeDeployHash();
+    window.addEventListener("hashchange", consumeDeployHash);
+    return () => window.removeEventListener("hashchange", consumeDeployHash);
+  }, []);
+  // Summary cards for the Deployments tab. Re-runs whenever the list view
+  // becomes active again (e.g. returning from a deployment's detail), so the
+  // counts stay fresh without a manual refresh control.
+  const deploymentsListActive =
+    view.tab === "deployments" && !view.deploymentId;
+  useEffect(() => {
+    if (!deploymentsListActive) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetchWithAuth("/software/deployments/summary");
+        if (!response.ok) return;
+        const payload = await response.json();
+        const data = (payload?.data ?? payload) as Record<
+          string,
+          unknown
+        > | null;
+        if (cancelled || !data) return;
+        setSummary({
+          active: Number(data.active ?? 0),
+          scheduled: Number(data.scheduled ?? 0),
+          completedLast7d: Number(data.completedLast7d ?? 0),
+          failedLast7d: Number(data.failedLast7d ?? 0),
+        });
+      } catch {
+        // Non-fatal read: the cards simply don't render; the list below still
+        // loads (and surfaces its own errors).
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deploymentsListActive]);
   const fetchCatalog = useCallback(async () => {
     try {
       setLoading(true);
@@ -222,7 +349,9 @@ export default function SoftwareCatalog() {
       setDeleting(false);
     }
   };
-  if (loading) {
+  // Only the Catalog tab depends on the catalog fetch — a deep link to
+  // #deployments must render immediately, not wait behind it.
+  if (loading && view.tab === "catalog") {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
@@ -234,6 +363,46 @@ export default function SoftwareCatalog() {
       </div>
     );
   }
+  const tabs: {
+    key: "catalog" | "deployments";
+    label: string;
+    icon: typeof Package;
+  }[] = [
+    {
+      key: "catalog",
+      label: i18n.t("policies:software.softwareCatalog.catalogTab"),
+      icon: Package,
+    },
+    {
+      key: "deployments",
+      label: i18n.t("policies:software.deploymentList.deployments"),
+      icon: Rocket,
+    },
+  ];
+  const summaryCards = summary
+    ? [
+        {
+          key: "active",
+          label: i18n.t("policies:software.deploymentList.inProgress"),
+          value: summary.active,
+        },
+        {
+          key: "scheduled",
+          label: i18n.t("policies:software.deploymentList.scheduled"),
+          value: summary.scheduled,
+        },
+        {
+          key: "completed-7d",
+          label: i18n.t("policies:software.softwareCatalog.summaryCompleted7d"),
+          value: summary.completedLast7d,
+        },
+        {
+          key: "failed-7d",
+          label: i18n.t("policies:software.softwareCatalog.summaryFailed7d"),
+          value: summary.failedLast7d,
+        },
+      ]
+    : [];
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -267,7 +436,59 @@ export default function SoftwareCatalog() {
         </div>
       </div>
 
-      {error && (
+      {/* Catalog | Deployments tab bar (styling per SoftwarePage's tabs). */}
+      <div className="flex gap-1 border-b">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            data-testid={`software-tab-${t.key}`}
+            onClick={() => selectTab(t.key)}
+            className={cn(
+              "inline-flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors",
+              view.tab === t.key
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:border-muted hover:text-foreground",
+            )}
+          >
+            <t.icon className="h-4 w-4" />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {view.tab === "deployments" &&
+        (view.deploymentId ? (
+          <DeploymentProgress
+            deploymentId={view.deploymentId}
+            onBack={backToDeployments}
+          />
+        ) : (
+          <div className="space-y-6">
+            {summaryCards.length > 0 && (
+              <div
+                className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+                data-testid="deployment-summary-cards"
+              >
+                {summaryCards.map((card) => (
+                  <div
+                    key={card.key}
+                    data-testid={`deployment-summary-${card.key}`}
+                    className="rounded-lg border bg-card p-4 shadow-xs"
+                  >
+                    <p className="text-xs font-medium uppercase text-muted-foreground">
+                      {card.label}
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold">{card.value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <DeploymentList onSelectDeployment={openDeploymentDetail} />
+          </div>
+        ))}
+
+      {view.tab === "catalog" && error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
           <button
@@ -280,6 +501,8 @@ export default function SoftwareCatalog() {
         </div>
       )}
 
+      {view.tab === "catalog" && (
+      <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative w-full sm:max-w-sm">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -448,6 +671,8 @@ export default function SoftwareCatalog() {
             </div>
           ))}
         </div>
+      )}
+      </>
       )}
 
       {/* Detail modal */}
@@ -648,7 +873,7 @@ export default function SoftwareCatalog() {
       {showDeployWizard && (
         <Dialog
           open={showDeployWizard}
-          onClose={() => setShowDeployWizard(false)}
+          onClose={closeDeployWizard}
           title={i18n.t("policies:software.softwareCatalog.softwareDeployment")}
           labelledBy="deploy-wizard-title"
           maxWidth="4xl"
@@ -665,7 +890,7 @@ export default function SoftwareCatalog() {
             </h2>
             <button
               type="button"
-              onClick={() => setShowDeployWizard(false)}
+              onClick={closeDeployWizard}
               aria-label={i18n.t("common:actions.close")}
               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
             >
@@ -673,7 +898,11 @@ export default function SoftwareCatalog() {
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-            <DeploymentWizard initialCatalogId={deployCatalogId} />
+            <DeploymentWizard
+              initialCatalogId={deployCatalogId}
+              initialDeviceIds={deployDeviceIds}
+              onViewDeployment={handleViewDeployment}
+            />
           </div>
         </Dialog>
       )}

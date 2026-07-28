@@ -190,9 +190,26 @@ function getSelectedTargetSummary(
 interface DeploymentWizardProps {
   /** When launched from a specific package's Deploy button, preselect it. */
   initialCatalogId?: string;
+  /**
+   * Devices to pre-check on the targets step (#2866) — carried over from a
+   * device-list bulk selection via the `/software#deploy=<id>,...` hash. The
+   * user still picks the package first; these seed both the hierarchy-tree
+   * selection and the advanced manual selection so the create payload includes
+   * them whichever mode is active.
+   */
+  initialDeviceIds?: string[];
+  /**
+   * Invoked when the user clicks "View deployment" on the success card. Hosts
+   * that embed the wizard (SoftwareCatalog's modal) close the modal and switch
+   * to the Deployments tab; without a handler the wizard falls back to a full
+   * navigation to /software#deployment=<id>.
+   */
+  onViewDeployment?: (id: string) => void;
 }
 export default function DeploymentWizard({
   initialCatalogId,
+  initialDeviceIds,
+  onViewDeployment,
 }: DeploymentWizardProps = {}) {
   useTranslation("policies");
   const steps = createSteps();
@@ -208,8 +225,10 @@ export default function DeploymentWizard({
   const [targetTree, setTargetTree] = useState<TargetNode[]>([]);
   const [selectedSoftwareId, setSelectedSoftwareId] = useState<string>("");
   const [selectedVersionId, setSelectedVersionId] = useState<string>("");
+  // Seeded from a device-list bulk selection (#2866) so the targets step shows
+  // the carried-over devices pre-checked in the default tree mode.
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(
-    new Set(),
+    () => new Set(initialDeviceIds ?? []),
   );
   const [scheduleType, setScheduleType] = useState<
     "immediate" | "scheduled" | "maintenance"
@@ -219,10 +238,14 @@ export default function DeploymentWizard({
   // matches (i.e. bypasses skip-if-already-installed). Default off (#2022).
   const [forceReinstall, setForceReinstall] = useState(false);
   const [targetMode, setTargetMode] = useState<"tree" | "advanced">("tree");
-  const [targetConfig, setTargetConfig] = useState<DeploymentTargetConfig>({
-    type: "devices",
-    deviceIds: [],
-  });
+  const [targetConfig, setTargetConfig] = useState<DeploymentTargetConfig>(
+    () => ({
+      type: "devices",
+      // Mirror the seeded selection so switching to advanced targeting keeps
+      // the carried-over devices (#2866).
+      deviceIds: initialDeviceIds ? [...initialDeviceIds] : [],
+    }),
+  );
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
@@ -636,6 +659,10 @@ export default function DeploymentWizard({
     );
   }
   if (deploymentComplete) {
+    // The POST can succeed without echoing an id (older API shapes); the state
+    // then holds the "deployment-created" sentinel, which is not linkable.
+    const linkableDeploymentId =
+      deploymentId && deploymentId !== "deployment-created" ? deploymentId : "";
     return (
       <div className="rounded-lg border bg-card p-6 text-center shadow-xs space-y-4">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20">
@@ -649,17 +676,34 @@ export default function DeploymentWizard({
             "policies:software.deploymentWizard.yourDeploymentHasBeenQueuedSuccessfully",
           )}
         </p>
-        {deploymentId && (
-          <p className="text-xs text-muted-foreground">
-            {i18n.t("policies:software.deploymentWizard.deploymentID")}
-            {deploymentId}
-          </p>
-        )}
-        <div className="pt-4">
+        <div className="flex items-center justify-center gap-2 pt-4">
+          {linkableDeploymentId && (
+            <button
+              type="button"
+              data-testid="view-deployment-button"
+              onClick={() => {
+                if (onViewDeployment) {
+                  onViewDeployment(linkableDeploymentId);
+                } else {
+                  window.location.assign(
+                    `/software#deployment=${linkableDeploymentId}`,
+                  );
+                }
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {i18n.t("policies:software.deploymentWizard.viewDeployment")}
+            </button>
+          )}
           <button
             type="button"
             onClick={resetWizard}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className={cn(
+              "inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium",
+              linkableDeploymentId
+                ? "border bg-background hover:bg-muted"
+                : "bg-primary text-primary-foreground hover:bg-primary/90",
+            )}
           >
             {i18n.t("policies:software.deploymentWizard.startNewDeployment")}
           </button>

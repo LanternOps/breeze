@@ -719,7 +719,8 @@ export default function DevicesPage() {
           break;
 
         case 'deploy-software':
-          void navigateTo('/software');
+          // Carry the device into the deploy wizard via the hash (#2866).
+          void navigateTo(`/software#deploy=${device.id}`);
           return;
 
         case 'terminal':
@@ -905,7 +906,18 @@ export default function DevicesPage() {
     }
 
     if (action === 'deploy-software') {
-      void navigateTo('/software');
+      // Carry the bulk selection into the deploy wizard via the hash (#2866);
+      // SoftwareCatalog consumes #deploy=<id>,... and opens the wizard with
+      // those devices pre-selected. Cap at 200 ids for URL-length safety —
+      // 200 UUIDs is ~7.4 KB, close to common ~8 KB URL limits.
+      let deployIds = deviceIds;
+      if (deployIds.length > 200) {
+        console.warn(
+          `deploy-software: truncating selection from ${deployIds.length} to 200 devices (URL-length safety)`,
+        );
+        deployIds = deployIds.slice(0, 200);
+      }
+      void navigateTo(`/software#deploy=${deployIds.join(',')}`);
       return;
     }
 

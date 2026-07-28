@@ -1521,7 +1521,8 @@
       "deviceCount_one": "{{count}} device",
       "deviceCount_other": "{{count}} devices",
       "groupCount_one": "{{count}} group",
-      "groupCount_other": "{{count}} groups"
+      "groupCount_other": "{{count}} groups",
+      "viewDeployment": "View deployment"
     },
     "detectionRulesEditor": {
       "detectionRules": "Detection Rules",
@@ -1651,7 +1652,10 @@
       "deleting": "Deleting...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Deploy Software",
-      "bulkSoftwareDeployment": "Bulk Software Deployment"
+      "bulkSoftwareDeployment": "Bulk Software Deployment",
+      "catalogTab": "Catalog",
+      "summaryCompleted7d": "Completed (7d)",
+      "summaryFailed7d": "Failed (7d)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Software Compliance Report",

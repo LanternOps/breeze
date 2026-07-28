@@ -1521,7 +1521,8 @@
       "deviceCount_one": "{{count}} dispositivo",
       "deviceCount_other": "{{count}} dispositivos",
       "groupCount_one": "{{count}} grupo",
-      "groupCount_other": "{{count}} grupos"
+      "groupCount_other": "{{count}} grupos",
+      "viewDeployment": "Ver implantação"
     },
     "detectionRulesEditor": {
       "detectionRules": "Regras de detecção",
@@ -1651,7 +1652,10 @@
       "deleting": "Excluindo...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Implantar software",
-      "bulkSoftwareDeployment": "Implantação de software em massa"
+      "bulkSoftwareDeployment": "Implantação de software em massa",
+      "catalogTab": "Catálogo",
+      "summaryCompleted7d": "Concluídas (7 dias)",
+      "summaryFailed7d": "Com falha (7 dias)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Relatório de conformidade de software",
