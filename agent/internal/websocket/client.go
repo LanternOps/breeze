@@ -123,6 +123,17 @@ type Client struct {
 	// them onto the fresh connection, so a plain WS blip loses nothing.
 	resultChan      chan outboundResult
 	binaryFrameChan chan []byte
+	// orderedCmdChan carries order-sensitive interactive commands (terminal
+	// input/resize/lifecycle) to a single consumer goroutine. Dispatching every
+	// command on its own goroutine (`go processCommand`) is fine for
+	// independent commands, but terminal_data frames are a byte stream into a
+	// PTY: back-to-back frames raced by the scheduler write out of order and
+	// scramble the shell input (#2870). One channel + one consumer preserves
+	// arrival order end-to-end. The pump is lazily started on first ordered
+	// command and lives for the client lifetime (not per connection), so
+	// ordering also holds across reconnects.
+	orderedCmdChan  chan Command
+	orderedPumpOnce sync.Once
 	stopOnce        sync.Once
 	isRunning       bool
 	runningMu       sync.RWMutex
@@ -167,6 +178,7 @@ func New(cfg *Config, handler CommandHandler) *Client {
 		sendChan:        make(chan []byte, 256),
 		resultChan:      make(chan outboundResult, 256),
 		binaryFrameChan: make(chan []byte, 30),
+		orderedCmdChan:  make(chan Command, 512),
 	}
 }
 
@@ -428,7 +440,61 @@ func (c *Client) readPump() {
 			continue
 		}
 
+		c.dispatchCommand(cmd)
+	}
+}
+
+// isOrderedCommand reports whether a command type is part of an interactive
+// byte stream whose relative order is load-bearing. terminal_data frames are
+// raw PTY input: executing them on independent goroutines lets the scheduler
+// reorder back-to-back keystrokes and scrambles the shell (#2870 — `hostname`
+// arriving as `snehoe`). The terminal lifecycle commands ride the same lane so
+// data can never overtake the start that creates the session or trail the stop
+// that destroys it.
+func isOrderedCommand(cmdType string) bool {
+	switch cmdType {
+	case "terminal_start", "terminal_data", "terminal_resize", "terminal_stop":
+		return true
+	}
+	return false
+}
+
+// dispatchCommand routes a decoded command to its execution lane: ordered
+// interactive commands are serialized through orderedCmdChan (one consumer,
+// FIFO), everything else keeps the concurrent per-command goroutine so a slow
+// script can never head-of-line-block an unrelated command.
+//
+// The ordered send deliberately BLOCKS when the lane is full (same philosophy
+// as SendTunnelData): dropping PTY input corrupts the byte stream, so the read
+// loop stalls instead and TCP backpressure throttles the sender. The <-c.done
+// arm keeps a stopped client from wedging the read pump forever.
+func (c *Client) dispatchCommand(cmd Command) {
+	if !isOrderedCommand(cmd.Type) {
 		go c.processCommand(cmd)
+		return
+	}
+
+	c.orderedPumpOnce.Do(func() { go c.orderedCommandPump() })
+
+	select {
+	case c.orderedCmdChan <- cmd:
+	case <-c.done:
+		log.Warn("dropping ordered command, client stopped", "commandId", cmd.ID, "commandType", cmd.Type)
+	}
+}
+
+// orderedCommandPump is the single consumer for order-sensitive commands.
+// Runs for the client lifetime (started lazily by dispatchCommand), so
+// ordering holds across reconnects; exits when the client is stopped.
+func (c *Client) orderedCommandPump() {
+	defer observability.Recoverer("websocket.orderedCommandPump")
+	for {
+		select {
+		case cmd := <-c.orderedCmdChan:
+			c.processCommand(cmd)
+		case <-c.done:
+			return
+		}
 	}
 }
 
@@ -577,7 +643,12 @@ func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {
 
 func (c *Client) processCommand(cmd Command) {
 	defer observability.Recoverer("websocket.processCommand")
-	log.Info("processing command", "commandId", cmd.ID, "commandType", cmd.Type)
+	// "dispatching", not "processing": the heartbeat layer logs
+	// "processing command" for the same command a moment later, and the
+	// identical wording read as the command being executed twice
+	// (websocket + heartbeat components, same commandId — #2870's initial
+	// misdiagnosis). One delivery produces exactly one of each line.
+	log.Info("dispatching command", "commandId", cmd.ID, "commandType", cmd.Type)
 
 	result := c.cmdHandler(cmd)
 	result.Type = "command_result"
