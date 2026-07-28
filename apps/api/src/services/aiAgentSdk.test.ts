@@ -1148,28 +1148,15 @@ describe('createSessionPreToolUse', () => {
   });
 
   describe('plan-step shortcut is gated on effective tier', () => {
-    it.each(['action_plan', 'hybrid_plan'] as const)(
-      'still shortcuts an effective-tier-1 step in %s mode',
-      async (mode) => {
-        vi.mocked(checkGuardrails).mockReturnValue({
-          allowed: true,
-          tier: 1,
-          requiresApproval: false,
-          description: 'Get device details',
-        } as any);
-        const session = makeActiveSession({
-          approvalMode: mode,
-          activePlanId: 'plan-1',
-          approvedPlanSteps: new Map([[0, { toolName: 'get_device_details', input: {} }]]),
-        });
-
-        const res = await createSessionPreToolUse(session)('get_device_details', {});
-
-        expect(res).toEqual({ allowed: true });
-        expect(mockCreateActionIntent).not.toHaveBeenCalled();
-      },
-    );
-
+    // A "still shortcuts an effective-tier-1 step" case originally lived here.
+    // Removed (Task 1 review finding, reported in task-1-report.md): tier 1
+    // never enters the `guardrailCheck.tier >= 2` block at all (:313), so the
+    // whole plan-shortcut code path — gate included — is unreached. The
+    // assertions (`allowed:true`, createActionIntent not called) would pass
+    // identically with the gate deleted, the plan block deleted, or the gate
+    // set to `tier < 0`; it proved nothing about this change. The real
+    // "shortcut still works for an eligible tool" case is covered below by
+    // "still takes the plan shortcut for a non-secret, effective-tier-2 tool".
     it.each(['action_plan', 'hybrid_plan'] as const)(
       'does NOT shortcut a statically-tier-3 step in %s mode',
       async (mode) => {
@@ -1228,6 +1215,47 @@ describe('createSessionPreToolUse', () => {
       await createSessionPreToolUse(session)('file_operations', { action: 'read', path: '/etc/shadow' });
 
       expect(mockCreateActionIntent).toHaveBeenCalled();
+    });
+
+    // Proves the retained `!isSecretBearingTool(toolName)` clause actually
+    // discriminates (Task 1 review finding, reported in task-1-report.md):
+    // every other secret-bearing test in this file runs at effective tier 3,
+    // where `guardrailCheck.tier < 3` alone already blocks the shortcut —
+    // deleting `&& !isSecretBearingTool(toolName)` would leave every one of
+    // them green. Tier 2 here is the only tier at which the clause is the
+    // SOLE thing standing between a secret-bearing tool and the shortcut —
+    // exactly the "future mis-tiering" defence-in-depth scenario it exists
+    // for.
+    it('declines the shortcut for a secret-bearing tool even at an eligible (non-tier-3) effective tier', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: true,
+        description: 'Reset password',
+      } as any);
+      mockInsertReturning({ id: 'exec-gate-secret-tier2' });
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([
+          [0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com' } }],
+        ]),
+      });
+
+      const result = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+
+      // tier < 3, so if the isSecretBearingTool clause were removed the
+      // shortcut WOULD fire here — this is exactly the case it guards.
+      // Tier 2 also never reaches the tier-3 createActionIntent branch (that
+      // branch is gated on guardrailCheck.tier >= 3), so the decline falls
+      // through to the tier-2 legacy approval bridge instead.
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'plan_step_start' }),
+      );
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
     });
   });
 });
@@ -1931,7 +1959,6 @@ describe('inline secret-bearing completion (Task 6)', () => {
       });
     });
   });
-
 });
 
 // ============================================

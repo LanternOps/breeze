@@ -424,6 +424,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Tier-3 (effective, post-escalation) and secret-bearing tools never take
       // this shortcut — they must fall through to the tier-3 createActionIntent
       // branch below so the action has a durable, second-approver intent row.
+
       // Set when this call matches an approved plan step but declines the
       // shortcut (effective tier 3, or secret-bearing). Tasks 2/3 use it to
       // advance the plan index only once the step is authorized, and to abort
