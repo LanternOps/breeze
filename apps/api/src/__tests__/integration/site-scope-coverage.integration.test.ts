@@ -176,6 +176,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // ---- Not the bug class: platform-admin-only, portal-session auth, or a
   // mobile/OAuth device row (not an RMM device with a site).
   'routes/admin/abuse.ts:POST /partners/:id/suspend-for-abuse',
+  // Resolves a mobile/OAuth device row (mobile_devices, no site_id/org_id) to
+  // scope authenticator registration — already narrowed by userId, tighter
+  // than site-scope, so a site gate is not meaningful here.
+  'routes/authenticator.ts:POST /devices',
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',
   'routes/mobile.ts:POST /devices',
@@ -218,6 +222,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
 // future regression where a non-user-auth file is migrated to plain user auth.
 const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<string>([
   // Mobile/OAuth device rows keyed on the user — not RMM devices with a site.
+  // routes/authenticator.ts resolves the row itself — already narrowed by
+  // userId, tighter than site-scope.
+  'routes/authenticator.ts:POST /devices',
   'routes/mobile.ts:POST /devices',
   'routes/mobile.ts:POST /notifications/register',
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
