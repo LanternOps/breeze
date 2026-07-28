@@ -161,6 +161,9 @@ type HelperLifecycleManager struct {
 	now               func() time.Time
 
 	mode LifecycleMode
+
+	leases map[HelperKey]*helperLease
+	kickCh chan struct{}
 }
 
 func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <-chan SCMSessionEvent, spawner helperSpawner) *HelperLifecycleManager {
@@ -180,6 +183,9 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 		now:               time.Now,
 
 		mode: LifecycleModeAlwaysOn,
+
+		leases: make(map[HelperKey]*helperLease),
+		kickCh: make(chan struct{}, 1),
 	}
 	if broker != nil {
 		m.observerRemove = broker.AddSessionLifecycleObserver(m.sessionAuthenticated, m.sessionClosed)
