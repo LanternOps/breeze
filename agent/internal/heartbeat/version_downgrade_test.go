@@ -1,6 +1,10 @@
 package heartbeat
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/breeze-rmm/agent/internal/versionpolicy"
+)
 
 // TestMainAgentUpgradeDecision exercises the agent self-update adapter over
 // versionpolicy.Decide with MainAgentCurrent — the only policy granted the
@@ -98,6 +102,18 @@ func TestHelperUpgradeAllowed(t *testing.T) {
 		{name: "fresh install empty installed allowed", target: "0.68.2", installed: "", installedOnDisk: false, wantAllowed: true, wantReason: false},
 		{name: "fresh install whitespace installed allowed", target: "0.68.2", installed: "   ", installedOnDisk: false, wantAllowed: true, wantReason: false},
 
+		// SECURITY (fix round 1): installedOnDisk alone must NOT select the
+		// fresh-install policy. A partial uninstall (package binary removed
+		// but the sessions-dir status-file cleanup failed and only warned —
+		// see helper.Manager.uninstallLocked) can leave IsInstalled() == false
+		// while InstalledVersion() still returns the last real, higher
+		// version. That stale non-empty "installed" must still be compared
+		// for real — not discarded as "no prior version" — or a
+		// compromised/MITM'd control plane could replay an older signed
+		// release right through the fresh-install branch.
+		{name: "off-disk but stale higher version still compared, downgrade refused", target: "0.68.2", installed: "0.90.0", installedOnDisk: false, wantAllowed: false, wantReason: true},
+		{name: "off-disk but stale lower version still compared, upgrade allowed", target: "0.90.0", installed: "0.68.2", installedOnDisk: false, wantAllowed: true, wantReason: false},
+
 		// SECURITY (the fix this preserves): helper present on disk but version
 		// unreadable. Empty version + on-disk must FAIL CLOSED — we cannot
 		// prove the directive isn't a downgrade replay. This must use
@@ -130,6 +146,27 @@ func TestHelperUpgradeAllowed(t *testing.T) {
 				t.Fatalf("helperUpgradeAllowed(%q, %q, %v) allowed but returned reason %q", tc.target, tc.installed, tc.installedOnDisk, reason)
 			}
 		})
+	}
+}
+
+// TestHelperUpgradeAllowed_PartialUninstallStaleVersionDeniesDowngrade pins
+// the exact refusal reason (not just non-empty) for the fix-round-1 finding:
+// installedOnDisk == false must not, by itself, make helperUpgradeAllowed
+// treat a genuinely stale-but-real installed version as "no prior install".
+// A partial uninstall (binary removed, but the sessions-dir status-file
+// cleanup only warned and left old status files behind — see
+// helper.Manager.uninstallLocked) can produce exactly this combination:
+// IsInstalled() == false with InstalledVersion() still returning the last
+// real, higher version. The target here is older than that stale version,
+// so it must be refused as a downgrade, not waved through as a fresh
+// install.
+func TestHelperUpgradeAllowed_PartialUninstallStaleVersionDeniesDowngrade(t *testing.T) {
+	allowed, reason := helperUpgradeAllowed("1.0.0", "2.0.0", false)
+	if allowed {
+		t.Fatalf(`helperUpgradeAllowed("1.0.0", "2.0.0", false) = allowed, want refused (downgrade replay against stale off-disk version)`)
+	}
+	if reason != versionpolicy.ReasonDowngrade {
+		t.Fatalf(`helperUpgradeAllowed("1.0.0", "2.0.0", false) reason = %q, want %q`, reason, versionpolicy.ReasonDowngrade)
 	}
 }
 

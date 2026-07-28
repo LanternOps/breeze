@@ -1,6 +1,10 @@
 package heartbeat
 
-import "github.com/breeze-rmm/agent/internal/versionpolicy"
+import (
+	"strings"
+
+	"github.com/breeze-rmm/agent/internal/versionpolicy"
+)
 
 // mainAgentUpgradeDecision decides whether the agent should install target,
 // given its own currently-running version. This is the only update path
@@ -30,15 +34,29 @@ func mainAgentUpgradeDecision(target, current string) versionpolicy.Decision {
 // directive isn't a downgrade replay.
 //
 // An empty installed version is only treated as a fresh install (allowed)
-// when the helper binary is genuinely absent from disk (installedOnDisk
-// false). If the binary IS on disk but its version is unreadable — e.g. no
-// user session has written a status file yet, or a status read failed — we
-// must FAIL CLOSED: an attacker-replayed older signed release could
+// when it is ALSO genuinely absent from disk (installedOnDisk false) — both
+// signals must agree. installedOnDisk and installed come from independent
+// sources (helper.Manager.IsInstalled() stats the binary path; InstalledVersion()
+// reads separate per-session status files), and a partial uninstall can
+// desync them: e.g. package removal succeeds but clearing the sessions
+// directory fails (locked file, permission error) and only logs a warning,
+// leaving IsInstalled() == false while InstalledVersion() still returns the
+// last real installed version. If installedOnDisk alone selected the
+// fresh-install policy, that stale non-empty "installed" would be discarded
+// entirely and any signed-but-older target would sail through as a "fresh
+// install" — reintroducing exactly the downgrade-replay this function
+// exists to block. So the fresh-install policy requires installed to be
+// itself empty/whitespace; a non-empty installed version — on disk or not —
+// is always compared for real via InstalledComponentCurrent.
+//
+// If the binary IS on disk but its version is unreadable — e.g. no user
+// session has written a status file yet, or a status read failed — we must
+// also FAIL CLOSED: an attacker-replayed older signed release could
 // otherwise be installed during that window. Distinguishing "absent" from
 // "present but version unknown" is the caller's job (helper.Manager.IsInstalled()).
 func helperUpgradeAllowed(target, installed string, installedOnDisk bool) (allowed bool, reason string) {
 	policy := versionpolicy.InstalledComponentCurrent
-	if !installedOnDisk {
+	if !installedOnDisk && strings.TrimSpace(installed) == "" {
 		policy = versionpolicy.AbsentComponentCurrent
 	}
 	d := versionpolicy.Decide(target, installed, policy)
